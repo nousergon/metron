@@ -96,16 +96,50 @@ def load_ledger(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID)
     return build_ledger(txns)
 
 
+def _position_rows(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID):
+    """Fetch ``(quantity, avg_cost, ticker)`` for broker-reported positions in a
+    portfolio (snapshot-sourced accounts: Flex/SnapTrade)."""
+    stmt = (
+        select(models.Position.quantity, models.Position.avg_cost, models.Security.symbol)
+        .join(models.Account, models.Position.account_id == models.Account.id)
+        .join(models.Security, models.Position.security_id == models.Security.id)
+        .where(models.Position.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+    )
+    return session.execute(stmt).all()
+
+
 def holdings(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[Holding]:
-    """Current open positions with FIFO average cost + total cost basis."""
+    """Current open positions with share-weighted average cost + total cost basis.
+
+    Unions the two ingestion models, aggregated by ticker: positions **derived from
+    the transaction ledger** (CSV/OFX accounts) and positions **reported directly by
+    the broker** (Flex/SnapTrade → the ``positions`` table). Per-account ownership
+    guarantees a single account is only one source, so the two sets never double-count
+    the same holding; a ticker held in both a CSV account and a Flex account correctly
+    sums across accounts."""
+    # ticker → [total_shares, total_cost_basis]
+    agg: dict[str, list[float]] = {}
+
     ledger = load_ledger(session, tenant_id, portfolio_id)
-    out: list[Holding] = []
-    for ticker in sorted(ledger.open_lots):
+    for ticker in ledger.open_lots:
         shares, avg_cost = ledger.position(ticker)
-        if shares <= 0:
+        if shares > 0:
+            agg.setdefault(ticker, [0.0, 0.0])
+            agg[ticker][0] += shares
+            agg[ticker][1] += shares * avg_cost
+
+    for quantity, avg_cost, ticker in _position_rows(session, tenant_id, portfolio_id):
+        qty = float(quantity)
+        if qty <= 0:
             continue
-        out.append(Holding(ticker=ticker, quantity=shares, avg_cost=avg_cost, cost_basis=shares * avg_cost))
-    return out
+        agg.setdefault(ticker, [0.0, 0.0])
+        agg[ticker][0] += qty
+        agg[ticker][1] += qty * float(avg_cost)
+
+    return [
+        Holding(ticker=t, quantity=shares, avg_cost=basis / shares if shares else 0.0, cost_basis=basis)
+        for t, (shares, basis) in sorted(agg.items())
+    ]
 
 
 def realized(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[RealizedLot]:

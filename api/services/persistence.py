@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from api.db import models
@@ -42,10 +43,7 @@ class PersistResult:
     securities_created: int = 0
     transactions_inserted: int = 0
     transactions_skipped: int = 0  # already present (idempotent re-import)
-
-
-def _ticker_for(security_id: str, securities: dict[str, models.Security]) -> str:
-    return securities[security_id].symbol if security_id in securities else ""
+    positions_imported: int = 0    # broker-reported holdings written (snapshot sources)
 
 
 def _upsert_securities(
@@ -161,6 +159,46 @@ def _insert_activities(
             result.transactions_inserted += 1
 
 
+def _replace_positions(
+    session: Session,
+    snapshot: ConnectorSnapshot,
+    tenant_id: uuid.UUID,
+    accounts: dict[str, models.Account],
+    securities: dict[str, models.Security],
+    result: PersistResult,
+) -> None:
+    """Replace broker-reported positions per account (point-in-time snapshot truth).
+
+    Holdings are a snapshot, not events: each sync carries the *current* full position
+    set for an account, so a closed-out position must vanish. We therefore delete the
+    account's existing positions and re-insert — last-write-wins, no ghosts. (Only
+    snapshot sources like Flex/SnapTrade populate ``holdings``; CSV/OFX derive
+    positions from the transaction ledger instead and never reach here.)"""
+    touched: set[uuid.UUID] = {
+        accounts[h.account_number].id for h in snapshot.holdings if h.account_number in accounts
+    }
+    for account_id in touched:
+        session.execute(delete(models.Position).where(models.Position.account_id == account_id))
+
+    for h in snapshot.holdings:
+        account = accounts.get(h.account_number)
+        security = securities.get(h.security_id)
+        if account is None or security is None:  # pragma: no cover — connector pairs holding↔security
+            continue
+        session.add(
+            models.Position(
+                tenant_id=tenant_id,
+                account_id=account.id,
+                security_id=security.id,
+                quantity=h.quantity,
+                avg_cost=h.avg_cost,
+                currency=h.currency,
+                as_of=(h.as_of.date() if h.as_of is not None else date.today()),
+            )
+        )
+        result.positions_imported += 1
+
+
 def persist_snapshot(
     session: Session,
     *,
@@ -170,13 +208,14 @@ def persist_snapshot(
 ) -> PersistResult:
     """Persist a canonical snapshot for one tenant/portfolio and commit.
 
-    Order matters: securities (global) → accounts (tenant) → activities (FK both).
-    Idempotent on re-run — securities/accounts upsert, transactions union by
-    ``source_key``.
+    Order matters: securities (global) → accounts (tenant) → activities + positions
+    (FK both). Idempotent on re-run — securities/accounts upsert, transactions union
+    by ``source_key``, positions replaced per account (snapshot semantics).
     """
     result = PersistResult()
     securities = _upsert_securities(session, snapshot, result)
     accounts = _upsert_accounts(session, snapshot, tenant_id, portfolio_id, result)
     _insert_activities(session, snapshot, tenant_id, accounts, securities, result)
+    _replace_positions(session, snapshot, tenant_id, accounts, securities, result)
     session.commit()
     return result
