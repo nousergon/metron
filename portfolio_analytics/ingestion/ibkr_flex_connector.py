@@ -188,11 +188,18 @@ class IbkrFlexConnector:
 
     source = SOURCE
 
-    def __init__(self, token: str, query_id: str, *, opener=urllib.request.urlopen, fetcher=None):
+    def __init__(
+        self, token: str, query_id: str, *, opener=urllib.request.urlopen, fetcher=None, persist_bronze: bool = True
+    ):
         self._token = token
         self._query_id = query_id
         # ``fetcher`` is injectable for tests (returns the statement XML directly).
         self._fetcher = fetcher or (lambda: fetch_flex_xml(token, query_id, opener=opener))
+        # Bronze lands the raw statement to a local cache dir — correct for the
+        # single-tenant dashboard, but a multi-tenant API must NOT dump one user's raw
+        # brokerage data into a shared local path, so that path constructs with
+        # ``persist_bronze=False``.
+        self._persist_bronze = persist_bronze
 
     def sync(self, state: dict | None = None) -> ConnectorSnapshot:
         try:
@@ -201,7 +208,8 @@ class IbkrFlexConnector:
             logger.warning("IBKR Flex sync failed: %s", e)
             return ConnectorSnapshot(source=SOURCE, error=str(e))
 
-        save_bronze(SOURCE, xml)  # land the raw statement for replay/audit
+        if self._persist_bronze:
+            save_bronze(SOURCE, xml)  # land the raw statement for replay/audit
         try:
             root = ET.fromstring(xml)
         except ET.ParseError as e:
