@@ -25,9 +25,9 @@ from __future__ import annotations
 
 import csv
 import io
-from dataclasses import dataclass, field
 from datetime import date, datetime
 
+from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult, SkippedRecord
 from portfolio_analytics.domain.ledger import TxnType
 from portfolio_analytics.ingestion.base import SYNC_FULL_REFRESH, BrokerConnector, ConnectorSnapshot
 from portfolio_analytics.ingestion.schema import (
@@ -93,27 +93,8 @@ _TYPE_SYNONYMS: dict[str, TxnType] = {
 _SECURITY_REQUIRED = {TxnType.BUY, TxnType.SELL, TxnType.SPLIT}
 
 
-class CsvImportError(ValueError):
+class CsvImportError(FileImportError):
     """The CSV is structurally unusable (missing a required column / no header)."""
-
-
-@dataclass
-class RowError:
-    """One un-importable row, surfaced to the user verbatim."""
-
-    line: int          # 1-based line number in the uploaded file (header = line 1)
-    reason: str
-    raw: dict = field(default_factory=dict)
-
-
-@dataclass
-class CsvImportResult:
-    """Outcome of parsing one CSV: the canonical snapshot + a per-row error log."""
-
-    snapshot: ConnectorSnapshot
-    errors: list[RowError] = field(default_factory=list)
-    parsed: int = 0     # rows that produced an activity
-    skipped: int = 0    # rows recorded in ``errors``
 
 
 def _normalize_headers(fieldnames: list[str]) -> dict[str, str]:
@@ -181,11 +162,11 @@ def parse_transactions_csv(
     *,
     default_account: str = DEFAULT_ACCOUNT,
     source: str = SOURCE,
-) -> CsvImportResult:
+) -> FileImportResult:
     """Parse a transactions CSV into a canonical ``ConnectorSnapshot``.
 
     Header-flexible (see ``_HEADER_ALIASES``); ``date`` and ``type`` columns are
-    mandatory. Per-row failures are collected into ``CsvImportResult.errors`` rather
+    mandatory. Per-row failures are collected into ``FileImportResult.errors`` rather
     than raised, so one bad row never rejects the file; a missing required column
     raises ``CsvImportError``.
     """
@@ -200,7 +181,7 @@ def parse_transactions_csv(
     accounts: dict[str, CanonicalAccount] = {}
     securities: dict[str, CanonicalSecurity] = {}
     activities: list[CanonicalActivity] = []
-    errors: list[RowError] = []
+    errors: list[SkippedRecord] = []
 
     def cell(row: dict, field_: str) -> str | None:
         header = cols.get(field_)
@@ -249,7 +230,7 @@ def parse_transactions_csv(
                 )
             )
         except ValueError as e:
-            errors.append(RowError(line=offset, reason=str(e), raw=dict(row)))
+            errors.append(SkippedRecord(ref=f"line {offset}", reason=str(e), raw=dict(row)))
 
     snapshot = ConnectorSnapshot(
         source=source,
@@ -259,7 +240,7 @@ def parse_transactions_csv(
         activities=activities,
         sync_mode=SYNC_FULL_REFRESH,
     )
-    return CsvImportResult(snapshot=snapshot, errors=errors, parsed=len(activities), skipped=len(errors))
+    return FileImportResult(snapshot=snapshot, errors=errors, parsed=len(activities), skipped=len(errors))
 
 
 class CsvConnector(BrokerConnector):
@@ -273,7 +254,7 @@ class CsvConnector(BrokerConnector):
     def __init__(self, text: str, *, default_account: str = DEFAULT_ACCOUNT) -> None:
         self._text = text
         self._default_account = default_account
-        self.result: CsvImportResult | None = None
+        self.result: FileImportResult | None = None
 
     def sync(self, state: dict | None = None) -> ConnectorSnapshot:
         try:

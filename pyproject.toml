@@ -38,6 +38,8 @@ dependencies = [
     # Thin SnapTrade REST client used by portfolio_analytics.broker_io.snaptrade_reader
     # (imported at module load; tests stub the client but the import still runs).
     "snaptrade-python-sdk>=11.0.198",
+    # OFX/QFX parsing (spec-strict) for the free-tier OFX import path.
+    "ofxtools>=0.9.5",
 ]
 
 [project.optional-dependencies]

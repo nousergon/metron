@@ -1,13 +1,13 @@
-"""Portfolios router — CRUD + CSV ingestion + ledger-derived analytics (PH1).
+"""Portfolios router — CRUD + file ingestion + ledger-derived analytics (PH1).
 
 Tenant resolution is stubbed (``X-Tenant-Id`` header) until auth lands in PH4; the
 real product derives the tenant from the authenticated session.
 
-PH1 adds the ingestion round-trip the free beta is built on: ``POST
-…/import/csv`` lands a broker CSV through the canonical pipeline + persistence
-bridge, and ``GET …/holdings`` / ``…/transactions`` / ``…/realized`` read the
-ledger-derived view back out. Price-dependent analytics (market value, performance,
-risk) arrive in later PH1–PH3 increments.
+PH1 adds the ingestion round-trip the free beta is built on: ``POST …/import/csv``
+and ``POST …/import/ofx`` land a broker CSV or OFX/QFX download through the same
+canonical pipeline + persistence bridge, and ``GET …/holdings`` / ``…/transactions``
+/ ``…/realized`` read the ledger-derived view back out. Price-dependent analytics
+(market value, performance, risk) arrive in later PH1–PH3 increments.
 """
 
 from __future__ import annotations
@@ -23,7 +23,9 @@ from sqlalchemy.orm import Session
 from api.db import models
 from api.db.session import get_session
 from api.services import analytics, persistence
-from portfolio_analytics.broker_io.csv_import import CsvImportError, parse_transactions_csv
+from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
+from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult
+from portfolio_analytics.broker_io.ofx_import import parse_ofx
 
 router = APIRouter(prefix="/portfolios", tags=["portfolios"])
 
@@ -78,8 +80,8 @@ class TransactionOut(BaseModel):
     currency: str
 
 
-class RowErrorOut(BaseModel):
-    line: int
+class SkipOut(BaseModel):
+    ref: str       # human locator: "line 4" (CSV) | "fitid T123" (OFX)
     reason: str
 
 
@@ -91,7 +93,7 @@ class ImportOut(BaseModel):
     securities_created: int
     transactions_inserted: int
     transactions_skipped: int
-    errors: list[RowErrorOut]
+    errors: list[SkipOut]
 
 
 def _tenant_id(x_tenant_id: str | None = Header(default=None)) -> uuid.UUID:
@@ -147,29 +149,13 @@ def _owned_portfolio(
     return portfolio
 
 
-@router.post("/{portfolio_id}/import/csv", response_model=ImportOut)
-async def import_csv(
-    file: UploadFile = File(...),
-    portfolio: models.Portfolio = Depends(_owned_portfolio),
-    session: Session = Depends(get_session),
+def _persist_and_summarize(
+    session: Session, portfolio: models.Portfolio, result: FileImportResult
 ) -> ImportOut:
-    """Ingest a broker transactions CSV into this portfolio.
+    """Persist a parsed file through the shared bridge and build the import summary.
 
-    Parses with the header-flexible canonical importer, then persists through the
-    shared bridge (securities upsert, accounts upsert, transactions unioned by
-    source_key → idempotent re-upload). Un-importable rows are reported, not fatal;
-    a structurally invalid file (missing date/type column) returns 422.
-    """
-    raw = await file.read()
-    try:
-        text = raw.decode("utf-8-sig")  # tolerate a BOM from spreadsheet exports
-    except UnicodeDecodeError as e:
-        raise HTTPException(status_code=422, detail=f"CSV must be UTF-8 text: {e}") from e
-    try:
-        result = parse_transactions_csv(text)
-    except CsvImportError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-
+    One path for every file type — securities upsert, accounts upsert, transactions
+    unioned by source_key (idempotent re-upload)."""
     persisted = persistence.persist_snapshot(
         session, tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id, snapshot=result.snapshot
     )
@@ -181,8 +167,52 @@ async def import_csv(
         securities_created=persisted.securities_created,
         transactions_inserted=persisted.transactions_inserted,
         transactions_skipped=persisted.transactions_skipped,
-        errors=[RowErrorOut(line=e.line, reason=e.reason) for e in result.errors[:_MAX_ERROR_DETAIL]],
+        errors=[SkipOut(ref=e.ref, reason=e.reason) for e in result.errors[:_MAX_ERROR_DETAIL]],
     )
+
+
+@router.post("/{portfolio_id}/import/csv", response_model=ImportOut)
+async def import_csv(
+    file: UploadFile = File(...),
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> ImportOut:
+    """Ingest a broker transactions CSV into this portfolio.
+
+    Parses with the header-flexible canonical importer, then persists through the
+    shared bridge. Un-importable rows are reported, not fatal; a structurally invalid
+    file (missing date/type column) returns 422.
+    """
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8-sig")  # tolerate a BOM from spreadsheet exports
+    except UnicodeDecodeError as e:
+        raise HTTPException(status_code=422, detail=f"CSV must be UTF-8 text: {e}") from e
+    try:
+        result = parse_transactions_csv(text)
+    except FileImportError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    return _persist_and_summarize(session, portfolio, result)
+
+
+@router.post("/{portfolio_id}/import/ofx", response_model=ImportOut)
+async def import_ofx(
+    file: UploadFile = File(...),
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> ImportOut:
+    """Ingest a broker OFX/QFX download into this portfolio.
+
+    Parses the investment statement (ofxtools) into the same canonical snapshot as
+    CSV and persists through the same bridge. Unsupported individual transactions are
+    reported, not fatal; a file with no parseable investment statement returns 422.
+    """
+    raw = await file.read()
+    try:
+        result = parse_ofx(raw)  # ofxtools reads the OFX header's own encoding from bytes
+    except FileImportError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    return _persist_and_summarize(session, portfolio, result)
 
 
 @router.get("/{portfolio_id}/holdings", response_model=list[HoldingOut])

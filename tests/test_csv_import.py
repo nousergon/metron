@@ -88,7 +88,7 @@ class TestBadRows:
         csv = "date,type,symbol,quantity,price\n2024-01-15,BUY,AAPL,1,100\n2024-01-16,FROBNICATE,AAPL,1,100\n"
         result = parse_transactions_csv(csv)
         assert result.parsed == 1 and result.skipped == 1
-        assert result.errors[0].line == 3  # header is line 1, first data row line 2
+        assert result.errors[0].ref == "line 3"  # header is line 1, first data row line 2
         assert "frobnicate" in result.errors[0].reason.lower()
 
     def test_buy_without_symbol_is_skipped(self):

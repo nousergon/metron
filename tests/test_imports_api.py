@@ -88,7 +88,7 @@ def test_dirty_rows_reported_not_fatal(client, tenant):
     assert r.status_code == 200
     assert r.json()["rows_parsed"] == 1
     assert r.json()["rows_skipped"] == 1
-    assert r.json()["errors"][0]["line"] == 3
+    assert r.json()["errors"][0]["ref"] == "line 3"
 
 
 def test_invalid_csv_returns_422(client, tenant):
@@ -112,3 +112,68 @@ def test_holdings_isolated_per_tenant(client, tenant):
     other = str(uuid.uuid4())
     other_pid = _new_portfolio(client, other, name="Other")
     assert client.get(f"/portfolios/{other_pid}/holdings", headers={"X-Tenant-Id": other}).json() == []
+
+
+# --- OFX round-trip (the second free-tier ingestion path, same bridge) ---
+
+OFX = """OFXHEADER:100
+DATA:OFXSGML
+VERSION:102
+SECURITY:NONE
+ENCODING:USASCII
+CHARSET:1252
+COMPRESSION:NONE
+OLDFILEUID:NONE
+NEWFILEUID:NONE
+
+<OFX>
+<SIGNONMSGSRSV1><SONRS><STATUS><CODE>0<SEVERITY>INFO</STATUS><DTSERVER>20240802120000<LANGUAGE>ENG</SONRS></SIGNONMSGSRSV1>
+<INVSTMTMSGSRSV1><INVSTMTTRNRS><TRNUID>1<STATUS><CODE>0<SEVERITY>INFO</STATUS>
+<INVSTMTRS><DTASOF>20240801120000<CURDEF>USD
+<INVACCTFROM><BROKERID>example.com<ACCTID>U99999999</INVACCTFROM>
+<INVTRANLIST><DTSTART>20240101120000<DTEND>20240801120000
+<BUYSTOCK><INVBUY><INVTRAN><FITID>T1<DTTRADE>20240115120000</INVTRAN><SECID><UNIQUEID>037833100<UNIQUEIDTYPE>CUSIP</SECID><UNITS>10<UNITPRICE>150.00<COMMISSION>1.00<TOTAL>-1501.00<SUBACCTSEC>CASH<SUBACCTFUND>CASH</INVBUY><BUYTYPE>BUY</BUYSTOCK>
+<SELLSTOCK><INVSELL><INVTRAN><FITID>T2<DTTRADE>20240601120000</INVTRAN><SECID><UNIQUEID>037833100<UNIQUEIDTYPE>CUSIP</SECID><UNITS>-4<UNITPRICE>200.00<COMMISSION>1.00<TOTAL>799.00<SUBACCTSEC>CASH<SUBACCTFUND>CASH</INVSELL><SELLTYPE>SELL</SELLSTOCK>
+</INVTRANLIST></INVSTMTRS></INVSTMTTRNRS></INVSTMTMSGSRSV1>
+<SECLISTMSGSRSV1><SECLIST><STOCKINFO><SECINFO><SECID><UNIQUEID>037833100<UNIQUEIDTYPE>CUSIP</SECID><SECNAME>Apple Inc<TICKER>AAPL</SECINFO></STOCKINFO></SECLIST></SECLISTMSGSRSV1>
+</OFX>
+"""
+
+
+def _upload_ofx(client, tenant, pid, text=OFX):
+    return client.post(
+        f"/portfolios/{pid}/import/ofx",
+        files={"file": ("statement.ofx", io.BytesIO(text.encode()), "application/x-ofx")},
+        headers={"X-Tenant-Id": tenant},
+    )
+
+
+def test_ofx_roundtrips_to_holdings(client, tenant):
+    pid = _new_portfolio(client, tenant)
+    r = _upload_ofx(client, tenant, pid)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["source"] == "ofx"
+    assert body["transactions_inserted"] == 2
+
+    holdings = {h["ticker"]: h for h in client.get(f"/portfolios/{pid}/holdings", headers={"X-Tenant-Id": tenant}).json()}
+    # 10 AAPL bought (+$1 fee in basis), 4 sold FIFO → 6 left.
+    assert holdings["AAPL"]["quantity"] == 6
+    realized = client.get(f"/portfolios/{pid}/realized", headers={"X-Tenant-Id": tenant}).json()
+    assert len(realized) == 1 and realized[0]["quantity"] == 4
+
+
+def test_ofx_then_csv_share_security_master(client, tenant):
+    # OFX and CSV both reference AAPL → one global security row, two ingestion paths.
+    pid = _new_portfolio(client, tenant)
+    ofx_created = _upload_ofx(client, tenant, pid).json()["securities_created"]
+    csv_created = _upload(client, tenant, pid, "date,type,symbol,quantity,price\n2024-09-01,BUY,AAPL,1,160\n").json()[
+        "securities_created"
+    ]
+    assert ofx_created == 1 and csv_created == 0  # AAPL master already exists from the OFX import
+
+
+def test_invalid_ofx_returns_422(client, tenant):
+    pid = _new_portfolio(client, tenant)
+    r = _upload_ofx(client, tenant, pid, "not an ofx file")
+    assert r.status_code == 422
