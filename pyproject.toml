@@ -1,0 +1,53 @@
+# portfolio-analytics-app — public multi-tenant portfolio-analytics SaaS (backend).
+#
+# PH0 scaffolding: FastAPI service wrapping the shared `portfolio-analytics` engine
+# + the multi-tenant Postgres schema. Dev on SQLite (no vendor cost); prod on Postgres.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "portfolio-analytics-app"
+version = "0.0.1"
+description = "Public multi-tenant portfolio-analytics SaaS — FastAPI backend over the portfolio-analytics engine."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "UNLICENSED" }
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    # The shared engine. Installed editable from ../portfolio-analytics during dev
+    # (this version pin is a placeholder until it is published / vendored).
+    "portfolio-analytics>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",            # FastAPI TestClient
+    "psycopg[binary]>=3.2",   # Postgres driver (prod); SQLite needs nothing extra
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["api"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4"]
+ignore = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection markers are designed to be called in argument
+# defaults — whitelist them so B008 doesn't fight the framework's idiom.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "fastapi.Query", "fastapi.Path", "fastapi.Body"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
