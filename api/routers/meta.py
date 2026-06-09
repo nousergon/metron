@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import importlib.metadata
 
-import portfolio_analytics
 from fastapi import APIRouter
+
+import portfolio_analytics
 
 router = APIRouter(prefix="/meta", tags=["system"])
 

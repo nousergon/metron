@@ -1,40 +1,53 @@
 # Metron
 
-**Portfolio analytics, measured.** The Nous Ergon multi-tenant SaaS for
-institutional-grade portfolio analytics on real accounts — at `metron.nousergon.ai`.
-**No AI, no ads/trackers, no advice, read-only.**
+**Portfolio analytics, measured.**
 
-This **private** repo is the commercial product from the commercialization plan
-(`robodashboard/private/commercialization-plan-260609.md`). It is the **app** half of
-an open-core split: it depends on the **public** [`portfolio-analytics`](../portfolio-analytics)
-engine (MIT). The personal Streamlit RoboDashboard stays a separate repo, untouched,
-as the dogfood deployment and a future second consumer of the same engine.
+Metron is a multi-tenant dashboard for **institutional-grade portfolio analytics on
+your real accounts** — true returns, attribution, factor risk, scenarios, income, and
+tax clarity. **No AI, no ads/trackers, no advice, read-only.** We compute; we never
+tell you what to trade.
 
-## Status — PH0 scaffolding
+A [Nous Ergon](https://nousergon.ai) product, hosted at `metron.nousergon.ai`.
 
-- `api/` — FastAPI backend wrapping the `portfolio-analytics` engine.
-- `api/db/models.py` — the multi-tenant Postgres schema (tenant, user, portfolio,
-  account, security, transaction, position, price). Dev runs on **SQLite** (zero
-  vendor cost); production targets Postgres (Neon/Supabase) with per-tenant RLS.
-- Frontend (Next.js + Tremor) lands in **PH2** — not in this repo yet.
+## Open source
 
-The build phases (PH0–PH5) and their gates live in the commercialization plan §6.
+Metron is **AGPL-3.0**. Self-host it freely. The hosted service exists for the
+zero-ops convenience (managed sync, hosting, updates) and the proprietary data feeds
+that don't ship in this repo — that's the commercial side; the product itself is open.
 
-## Run (dev)
+The quant core (factor risk, attribution, returns, VaR/CVaR, riskstats) is **not**
+duplicated here — it lives in the public, MIT-licensed
+[`alpha-engine-lib`](https://pypi.org/project/alpha-engine-lib/) and is imported.
+
+## Layout
+
+One codebase, two top-level Python packages (+ a web frontend in PH2):
+
+| Path | What |
+|---|---|
+| `portfolio_analytics/` | The pure engine. `domain/` (ledger, realized income, tax lots, stress), `broker_io/` (IBKR Flex, SnapTrade, transaction tranching), `ingestion/` (FDX canonical schema + bronze/silver store + broker connectors + `CanonicalReader`). No web/cloud coupling; fully unit-tested. |
+| `api/` | FastAPI service + the multi-tenant Postgres schema (`api/db/models.py`) over the engine. Tenant-isolated via Postgres RLS in prod. |
+| `web/` | Next.js + Tremor frontend — **lands in PH2.** |
+
+Proprietary runtime bits (LLM advisor prompt templates, private signal feeds) are
+**never committed** — they load at runtime from gitignored config, so a self-host
+runs the full open product without them and the hosted product layers them on.
+
+## Develop
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e '../portfolio-analytics'   # the shared engine (editable)
 pip install -e '.[dev]'
+pytest                      # engine + API
 uvicorn api.main:app --reload
-# → http://127.0.0.1:8000/health  and  /docs
+# → http://127.0.0.1:8000/health  ·  /meta  ·  /docs
 ```
 
-`DATABASE_URL` defaults to a local SQLite file. Point it at Postgres for production
-(`postgresql+psycopg://…`); no schema changes required.
+`DATABASE_URL` defaults to a local SQLite file (zero vendor cost). Point it at Postgres
+(`postgresql+psycopg://…`) for production — no model changes required.
 
-## Cost posture
+## Provenance
 
-Nothing in this repo requires a paid subscription to develop or run locally. Paid
-dependencies (SnapTrade auto-sync, a licensed EOD price feed, hosting) are deferred
-to later phases per the plan's cost model (§3) and are gated behind explicit opt-in.
+Metron is the successor to the personal RoboDashboard (Streamlit), whose
+front-end-agnostic engine was extracted here on 2026-06-09. RoboDashboard is being
+retired once Metron reaches feature parity.
