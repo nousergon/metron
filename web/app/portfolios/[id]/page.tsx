@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getAccounts, getHoldings, getIncome, getSummary, MetronApiError } from "@/lib/api";
 import { money, quantity, signClass, signedMoney } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
+import { ImportPanel } from "@/components/import-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -42,6 +43,10 @@ export default async function PortfolioPage({ params }: { params: { id: string }
         <StatCard label="Income" value={money(summary.dividends + summary.interest, ccy)} hint="dividends + interest" />
         <StatCard label="Accounts" value={String(summary.n_accounts)} />
       </div>
+
+      <Section title="Import" note="CSV / OFX / IBKR Flex — $0, no aggregator">
+        <ImportPanel portfolioId={id} />
+      </Section>
 
       <Section title="Holdings" note="cost basis (market value pending a price feed)">
         {holdings.length === 0 ? (

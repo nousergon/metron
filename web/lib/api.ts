@@ -75,3 +75,61 @@ export const getSummary = (id: string) => get<Summary>(`/portfolios/${id}/summar
 export const getHoldings = (id: string) => get<Holding[]>(`/portfolios/${id}/holdings`);
 export const getIncome = (id: string) => get<IncomeYear[]>(`/portfolios/${id}/income`);
 export const getAccounts = (id: string) => get<Account[]>(`/portfolios/${id}/accounts`);
+
+// --- imports (write) -------------------------------------------------------
+
+export type SkipRecord = { ref: string; reason: string };
+
+export type ImportResult = {
+  source: string;
+  rows_parsed: number;
+  rows_skipped: number;
+  accounts_created: number;
+  securities_created: number;
+  transactions_inserted: number;
+  transactions_skipped: number;
+  positions_imported: number;
+  errors: SkipRecord[];
+};
+
+function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return DEV_TENANT_ID ? { "X-Tenant-Id": DEV_TENANT_ID, ...extra } : extra;
+}
+
+async function readResult(res: Response, label: string): Promise<ImportResult> {
+  if (!res.ok) {
+    // Surface the backend's detail (e.g. 422 "missing date column", 502 Flex error).
+    let detail = `${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      /* non-JSON error body — keep the status */
+    }
+    throw new MetronApiError(res.status, `${label}: ${detail}`);
+  }
+  return res.json() as Promise<ImportResult>;
+}
+
+/** Upload a CSV or OFX file to an import endpoint. ``kind`` selects the route. */
+export async function importFile(id: string, kind: "csv" | "ofx", file: File): Promise<ImportResult> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const res = await fetch(`${API_URL}/portfolios/${id}/import/${kind}`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: form,
+    cache: "no-store",
+  });
+  return readResult(res, `${kind.toUpperCase()} import`);
+}
+
+export async function syncFlex(id: string, token: string, queryId: string): Promise<ImportResult> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/import/flex`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ token, query_id: queryId }),
+    cache: "no-store",
+  });
+  return readResult(res, "IBKR Flex sync");
+}
