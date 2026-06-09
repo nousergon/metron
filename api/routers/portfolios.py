@@ -1,24 +1,35 @@
-"""Portfolios router — PH0 skeleton over the multi-tenant schema.
+"""Portfolios router — CRUD + CSV ingestion + ledger-derived analytics (PH1).
 
 Tenant resolution is stubbed (``X-Tenant-Id`` header) until auth lands in PH4; the
-real product derives the tenant from the authenticated session. Analytics endpoints
-(performance/attribution/risk/…) are added in PH1–PH3 — this file only proves the
-DB + session wiring round-trips.
+real product derives the tenant from the authenticated session.
+
+PH1 adds the ingestion round-trip the free beta is built on: ``POST
+…/import/csv`` lands a broker CSV through the canonical pipeline + persistence
+bridge, and ``GET …/holdings`` / ``…/transactions`` / ``…/realized`` read the
+ledger-derived view back out. Price-dependent analytics (market value, performance,
+risk) arrive in later PH1–PH3 increments.
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
-from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.db import models
 from api.db.session import get_session
+from api.services import analytics, persistence
+from portfolio_analytics.broker_io.csv_import import CsvImportError, parse_transactions_csv
 
 router = APIRouter(prefix="/portfolios", tags=["portfolios"])
+
+# Cap the per-row error detail echoed back so a pathologically dirty upload can't
+# return a multi-megabyte body; the total skipped count is always exact.
+_MAX_ERROR_DETAIL = 100
 
 
 class PortfolioIn(BaseModel):
@@ -30,6 +41,57 @@ class PortfolioOut(BaseModel):
     id: uuid.UUID
     name: str
     base_currency: str
+
+
+class HoldingOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    quantity: float
+    avg_cost: float
+    cost_basis: float
+
+
+class RealizedOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    open_date: date
+    close_date: date
+    quantity: float
+    proceeds: float
+    cost_basis: float
+    gain: float
+    long_term: bool
+
+
+class TransactionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    trade_date: date
+    txn_type: str
+    ticker: str
+    quantity: float
+    price: float
+    amount: float
+    fees: float
+    currency: str
+
+
+class RowErrorOut(BaseModel):
+    line: int
+    reason: str
+
+
+class ImportOut(BaseModel):
+    source: str
+    rows_parsed: int
+    rows_skipped: int
+    accounts_created: int
+    securities_created: int
+    transactions_inserted: int
+    transactions_skipped: int
+    errors: list[RowErrorOut]
 
 
 def _tenant_id(x_tenant_id: str | None = Header(default=None)) -> uuid.UUID:
@@ -65,3 +127,83 @@ def create_portfolio(
     session.commit()
     session.refresh(portfolio)
     return portfolio
+
+
+def _owned_portfolio(
+    portfolio_id: uuid.UUID,
+    tenant_id: uuid.UUID = Depends(_tenant_id),
+    session: Session = Depends(get_session),
+) -> models.Portfolio:
+    """Resolve a portfolio the caller's tenant owns, or 404 (never leak cross-tenant
+    existence — a portfolio of another tenant is indistinguishable from a missing one)."""
+    portfolio = session.scalars(
+        select(models.Portfolio).where(
+            models.Portfolio.id == portfolio_id,
+            models.Portfolio.tenant_id == tenant_id,
+        )
+    ).first()
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return portfolio
+
+
+@router.post("/{portfolio_id}/import/csv", response_model=ImportOut)
+async def import_csv(
+    file: UploadFile = File(...),
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> ImportOut:
+    """Ingest a broker transactions CSV into this portfolio.
+
+    Parses with the header-flexible canonical importer, then persists through the
+    shared bridge (securities upsert, accounts upsert, transactions unioned by
+    source_key → idempotent re-upload). Un-importable rows are reported, not fatal;
+    a structurally invalid file (missing date/type column) returns 422.
+    """
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8-sig")  # tolerate a BOM from spreadsheet exports
+    except UnicodeDecodeError as e:
+        raise HTTPException(status_code=422, detail=f"CSV must be UTF-8 text: {e}") from e
+    try:
+        result = parse_transactions_csv(text)
+    except CsvImportError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    persisted = persistence.persist_snapshot(
+        session, tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id, snapshot=result.snapshot
+    )
+    return ImportOut(
+        source=result.snapshot.source,
+        rows_parsed=result.parsed,
+        rows_skipped=result.skipped,
+        accounts_created=persisted.accounts_created,
+        securities_created=persisted.securities_created,
+        transactions_inserted=persisted.transactions_inserted,
+        transactions_skipped=persisted.transactions_skipped,
+        errors=[RowErrorOut(line=e.line, reason=e.reason) for e in result.errors[:_MAX_ERROR_DETAIL]],
+    )
+
+
+@router.get("/{portfolio_id}/holdings", response_model=list[HoldingOut])
+def get_holdings(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> list[analytics.Holding]:
+    return analytics.holdings(session, portfolio.tenant_id, portfolio.id)
+
+
+@router.get("/{portfolio_id}/transactions", response_model=list[TransactionOut])
+def get_transactions(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> list[analytics.TransactionRow]:
+    return analytics.transactions(session, portfolio.tenant_id, portfolio.id)
+
+
+@router.get("/{portfolio_id}/realized", response_model=list[RealizedOut])
+def get_realized(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> list[analytics.RealizedLot]:
+    return analytics.realized(session, portfolio.tenant_id, portfolio.id)

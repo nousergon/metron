@@ -24,6 +24,8 @@ dependencies = [
     # --- web/API tier ---
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    # Multipart parsing for CSV/OFX file uploads (FastAPI UploadFile requires it).
+    "python-multipart>=0.0.9",
     "sqlalchemy>=2.0",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
@@ -60,7 +62,7 @@ ignore = ["E501", "C408"]
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI's dependency-injection markers are designed to be called in argument
 # defaults — whitelist them so B008 doesn't fight the framework's idiom.
-extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "fastapi.Query", "fastapi.Path", "fastapi.Body"]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "fastapi.Query", "fastapi.Path", "fastapi.Body", "fastapi.File"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
