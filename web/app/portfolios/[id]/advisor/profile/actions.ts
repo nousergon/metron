@@ -1,0 +1,22 @@
+"use server";
+
+// Server Action: save the investor profile the Advisor compares the portfolio against.
+// Runs server-side; revalidates the advisor pages so the new targets take effect.
+
+import { revalidatePath } from "next/cache";
+import { putAdvisorProfile, MetronApiError, type AdvisorProfile } from "@/lib/api";
+import { requireTenantId } from "@/lib/session";
+
+export type ActionResult = { ok: boolean; message: string };
+
+export async function saveProfileAction(portfolioId: string, profile: AdvisorProfile): Promise<ActionResult> {
+  try {
+    const tenantId = await requireTenantId();
+    await putAdvisorProfile(tenantId, portfolioId, profile);
+    revalidatePath(`/portfolios/${portfolioId}/advisor`);
+    revalidatePath(`/portfolios/${portfolioId}/advisor/profile`);
+    return { ok: true, message: "Saved." };
+  } catch (e) {
+    return { ok: false, message: e instanceof MetronApiError ? e.message : "Save failed — backend reachable?" };
+  }
+}

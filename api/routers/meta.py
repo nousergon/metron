@@ -7,6 +7,7 @@ import importlib.metadata
 from fastapi import APIRouter
 
 import portfolio_analytics
+from api.plugins import active_plugins
 
 router = APIRouter(prefix="/meta", tags=["system"])
 
@@ -42,3 +43,18 @@ def meta() -> dict:
             "read_only": True,
         },
     }
+
+
+@router.get("/plugins")
+def plugins() -> list[dict]:
+    """Nav metadata for every active out-of-tree plugin (empty on the public tier).
+
+    The web reads this to render premium nav links + gate premium pages — a surface
+    appears only when its plugin is installed AND its ``enabled()`` gate is on. On a
+    stock public/self-host deploy (no metron-ops) this is always ``[]``, so the
+    no-AI / no-advice posture above holds without the frontend knowing about plugins.
+    """
+    return [
+        {"id": p.nav.id, "label": p.nav.label, "href": p.nav.href, "tier": p.nav.tier}
+        for p in active_plugins()
+    ]

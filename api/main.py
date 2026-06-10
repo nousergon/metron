@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.config import settings
 from api.db.session import create_all
+from api.plugins import active_plugins
 from api.routers import macro, meta, portfolios
 
 
@@ -49,3 +50,11 @@ def health() -> dict:
 app.include_router(meta.router)
 app.include_router(portfolios.router)
 app.include_router(macro.router)
+
+# Mount any out-of-tree premium plugins (metron-ops). Importing them here registers
+# their ORM models on the shared Base *before* lifespan's create_all runs, so a
+# plugin's tables are created on the dev/personal SQLite without a separate migration.
+# A stock public deploy installs no plugins → this loop is a no-op and the surface
+# above is the entire product. See api/plugins.py for the open-core boundary.
+for _plugin in active_plugins():
+    app.include_router(_plugin.router)

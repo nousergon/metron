@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getAccounts, getHoldings, getIncome, getSummary, MetronApiError } from "@/lib/api";
+import { getAccounts, getHoldings, getIncome, getPlugins, getSummary, MetronApiError, type PluginNav } from "@/lib/api";
 import { money, percent, quantity, signClass, signedMoney } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { ImportPanel } from "@/components/import-panel";
@@ -30,6 +30,15 @@ export default async function PortfolioPage({ params }: { params: { id: string }
   const ccy = summary.base_currency;
   const priced = summary.market_value != null;
 
+  // Premium nav (metron-ops). Best-effort + always empty on the public tier — a
+  // failure here must never break the core portfolio view.
+  let plugins: PluginNav[] = [];
+  try {
+    plugins = await getPlugins(tenantId);
+  } catch {
+    plugins = [];
+  }
+
   return (
     <div>
       <div className="flex items-baseline justify-between">
@@ -58,6 +67,15 @@ export default async function PortfolioPage({ params }: { params: { id: string }
           <Link href={`/portfolios/${id}/transactions`} className="text-sm text-muted hover:text-ink">
             Transactions &amp; realized →
           </Link>
+          {plugins.map((p) => (
+            <Link
+              key={p.id}
+              href={`/portfolios/${id}/${p.href}`}
+              className="text-sm font-medium text-ink hover:underline"
+            >
+              {p.label} →
+            </Link>
+          ))}
         </div>
       </div>
 

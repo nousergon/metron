@@ -400,3 +400,115 @@ export async function refreshPrices(tenantId: string, id: string): Promise<Price
   }
   return res.json() as Promise<PriceRefreshResult>;
 }
+
+// ---------------------------------------------------------------------------
+// Extension point — premium plugins (metron-ops). On a stock public deploy no
+// plugins are installed, so `getPlugins` returns [] and none of the advisor
+// surface below is ever reached. Types mirror the metron-ops advisor router.
+// ---------------------------------------------------------------------------
+
+/** Nav metadata for one active out-of-tree plugin (GET /meta/plugins). */
+export type PluginNav = { id: string; label: string; href: string; tier: string };
+
+/** Active premium plugins for this deploy (empty on the public tier). */
+export const getPlugins = (tenantId: string) => get<PluginNav[]>(tenantId, "/meta/plugins");
+
+export type AdvisorSectorWeight = { sector: string; weight_pct: number; flag: string };
+export type AdvisorConcentration = { ticker: string; weight_pct: number; limit_pct: number };
+export type AdvisorGeo = {
+  us_pct: number;
+  intl_pct: number;
+  unknown_pct: number;
+  us_target_pct: number | null;
+  intl_target_pct: number | null;
+  us_gap_pp: number | null;
+  intl_gap_pp: number | null;
+};
+export type AdvisorIncome = {
+  annual_income: number;
+  portfolio_yield_pct: number;
+  income_target: number | null;
+  income_gap: number | null;
+} | null;
+
+export type AdvisorAnalysis = {
+  nav: number;
+  n_holdings: number;
+  geo: AdvisorGeo;
+  sectors: AdvisorSectorWeight[];
+  concentration: AdvisorConcentration[];
+  income: AdvisorIncome;
+};
+
+export type AdvisorCommentary = {
+  narrative: string;
+  considerations: string[];
+  cost_usd: number | null;
+  generated_at: string | null;
+  model: string;
+  posture: string;
+  fresh: boolean;
+} | null;
+
+export type AdvisorView = {
+  analysis: AdvisorAnalysis;
+  has_profile: boolean;
+  signature: string;
+  commentary: AdvisorCommentary;
+};
+
+export type AdvisorProfile = {
+  strategy: string;
+  risk_tolerance: string;
+  time_horizon: string;
+  target_allocation: Record<string, number>;
+  overweight_sectors: string[];
+  avoid_sectors: string[];
+  income_target: number | null;
+  max_single_position: number | null;
+  rebalance_frequency: string;
+};
+
+/** The advisor view (gap analysis + cached commentary) for a portfolio. */
+export const getAdvisor = (tenantId: string, id: string) =>
+  get<AdvisorView>(tenantId, `/ext/advisor/${id}`);
+
+export const getAdvisorProfile = (tenantId: string, id: string) =>
+  get<AdvisorProfile>(tenantId, `/ext/advisor/${id}/profile`);
+
+/** Run the Claude narrative for the current state (the one paid path). */
+export async function generateAdvisor(tenantId: string, id: string): Promise<AdvisorView> {
+  const res = await fetch(`${API_URL}/ext/advisor/${id}/generate`, {
+    method: "POST",
+    headers: { "X-Tenant-Id": tenantId },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail ?? detail;
+    } catch {
+      // non-JSON body — keep the status
+    }
+    throw new MetronApiError(res.status, detail);
+  }
+  return res.json() as Promise<AdvisorView>;
+}
+
+/** Save the tenant's investor profile (the targets the advisor compares against). */
+export async function putAdvisorProfile(
+  tenantId: string,
+  id: string,
+  profile: AdvisorProfile,
+): Promise<AdvisorProfile> {
+  const res = await fetch(`${API_URL}/ext/advisor/${id}/profile`, {
+    method: "PUT",
+    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    body: JSON.stringify(profile),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new MetronApiError(res.status, `save profile → ${res.status}`);
+  }
+  return res.json() as Promise<AdvisorProfile>;
+}
