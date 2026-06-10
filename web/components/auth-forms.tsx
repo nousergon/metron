@@ -1,121 +1,61 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { signIn, signUp } from "@/lib/auth-client";
+import { signIn } from "@/lib/auth-client";
 
 const inputClass = "w-full rounded border border-line px-3 py-2 text-sm";
-const buttonClass =
-  "w-full rounded bg-ink px-3 py-2 text-sm font-medium text-white disabled:opacity-50";
+const buttonClass = "w-full rounded bg-ink px-3 py-2 text-sm font-medium text-white disabled:opacity-50";
 
-function AuthShell({ title, children, alt }: { title: string; children: React.ReactNode; alt: React.ReactNode }) {
+function AuthShell({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="mx-auto mt-12 max-w-sm">
       <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
       <div className="mt-4 space-y-3">{children}</div>
-      <p className="mt-4 text-sm text-muted">{alt}</p>
     </div>
   );
 }
 
-export function SignInForm() {
-  const router = useRouter();
+// Passwordless sign-in: enter email → emailed a one-time link → click → in. The same
+// flow for new and returning users (first link creates the workspace), so there's no
+// separate signup screen.
+export function MagicLinkForm() {
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [sentTo, setSentTo] = useState<string | null>(null);
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const fd = new FormData(e.currentTarget);
+    const email = String(new FormData(e.currentTarget).get("email"));
     setError(null);
     start(async () => {
-      const { error } = await signIn.email({
-        email: String(fd.get("email")),
-        password: String(fd.get("password")),
-      });
-      if (error) setError(error.message ?? "Sign-in failed.");
-      else router.push("/");
+      const { error } = await signIn.magicLink({ email, callbackURL: "/" });
+      if (error) setError(error.message ?? "Couldn't send the sign-in link.");
+      else setSentTo(email);
     });
   }
 
-  return (
-    <AuthShell
-      title="Sign in"
-      alt={
-        <>
-          New here?{" "}
-          <Link href="/signup" className="font-medium text-ink underline">
-            Create an account
-          </Link>
-        </>
-      }
-    >
-      <form onSubmit={onSubmit} className="space-y-3">
-        <input className={inputClass} type="email" name="email" placeholder="Email" required autoComplete="email" />
-        <input
-          className={inputClass}
-          type="password"
-          name="password"
-          placeholder="Password"
-          required
-          autoComplete="current-password"
-        />
-        {error ? <p className="text-sm text-negative">{error}</p> : null}
-        <button className={buttonClass} disabled={pending} type="submit">
-          {pending ? "Signing in…" : "Sign in"}
+  if (sentTo) {
+    return (
+      <AuthShell title="Check your email">
+        <p className="text-sm text-muted">
+          We sent a sign-in link to <span className="font-medium text-ink">{sentTo}</span>. Click it to continue — it
+          expires shortly and can be used once.
+        </p>
+        <button type="button" onClick={() => setSentTo(null)} className="text-sm text-muted underline">
+          Use a different email
         </button>
-      </form>
-    </AuthShell>
-  );
-}
-
-export function SignUpForm() {
-  const router = useRouter();
-  const [pending, start] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-
-  function onSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    setError(null);
-    start(async () => {
-      const { error } = await signUp.email({
-        name: String(fd.get("name") || fd.get("email")),
-        email: String(fd.get("email")),
-        password: String(fd.get("password")),
-      });
-      if (error) setError(error.message ?? "Sign-up failed.");
-      else router.push("/");
-    });
+      </AuthShell>
+    );
   }
 
   return (
-    <AuthShell
-      title="Create your workspace"
-      alt={
-        <>
-          Already have an account?{" "}
-          <Link href="/login" className="font-medium text-ink underline">
-            Sign in
-          </Link>
-        </>
-      }
-    >
+    <AuthShell title="Sign in to Metron">
+      <p className="text-sm text-muted">Enter your email and we&apos;ll send you a one-time sign-in link.</p>
       <form onSubmit={onSubmit} className="space-y-3">
-        <input className={inputClass} type="text" name="name" placeholder="Name (optional)" autoComplete="name" />
         <input className={inputClass} type="email" name="email" placeholder="Email" required autoComplete="email" />
-        <input
-          className={inputClass}
-          type="password"
-          name="password"
-          placeholder="Password (min 8 characters)"
-          required
-          minLength={8}
-          autoComplete="new-password"
-        />
         {error ? <p className="text-sm text-negative">{error}</p> : null}
         <button className={buttonClass} disabled={pending} type="submit">
-          {pending ? "Creating…" : "Create account"}
+          {pending ? "Sending…" : "Send sign-in link"}
         </button>
       </form>
     </AuthShell>

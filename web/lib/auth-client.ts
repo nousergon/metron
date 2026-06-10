@@ -1,8 +1,12 @@
 "use client";
 
 import { createAuthClient } from "better-auth/react";
+import { magicLinkClient } from "better-auth/client/plugins";
 
 // Same-origin base URL is inferred in the browser; the client talks to /api/auth/*.
-export const authClient = createAuthClient();
+// The magicLink client plugin exposes `signIn.magicLink({ email })`.
+export const authClient = createAuthClient({
+  plugins: [magicLinkClient()],
+});
 
-export const { signIn, signUp, signOut, useSession } = authClient;
+export const { signIn, signOut, useSession } = authClient;

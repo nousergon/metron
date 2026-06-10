@@ -1,7 +1,7 @@
-import { SignUpForm } from "@/components/auth-forms";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "Create your workspace — Metron" };
-
+// Magic-link sign-in is the same flow for new and returning users (the first link
+// creates the workspace), so there's no separate signup screen — send everyone to /login.
 export default function SignupPage() {
-  return <SignUpForm />;
+  redirect("/login");
 }
