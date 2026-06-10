@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { getAccounts, getHoldings, getIncome, getSummary, MetronApiError } from "@/lib/api";
-import { money, quantity, signClass, signedMoney } from "@/lib/format";
+import { money, percent, quantity, signClass, signedMoney } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { ImportPanel } from "@/components/import-panel";
+import { RefreshPrices } from "@/components/refresh-prices";
 import { requireTenantId } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -27,6 +28,7 @@ export default async function PortfolioPage({ params }: { params: { id: string }
   }
 
   const ccy = summary.base_currency;
+  const priced = summary.market_value != null;
 
   return (
     <div>
@@ -40,7 +42,23 @@ export default async function PortfolioPage({ params }: { params: { id: string }
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Cost basis" value={money(summary.total_cost_basis, ccy)} hint={`${summary.n_holdings} holdings`} />
+        {priced ? (
+          <>
+            <StatCard
+              label="Market value"
+              value={money(summary.market_value as number, ccy)}
+              hint={`cost ${money(summary.total_cost_basis, ccy)}`}
+            />
+            <StatCard
+              label="Unrealized"
+              value={signedMoney(summary.unrealized_gain as number, ccy)}
+              valueClass={signClass(summary.unrealized_gain as number)}
+              hint="vs cost basis"
+            />
+          </>
+        ) : (
+          <StatCard label="Cost basis" value={money(summary.total_cost_basis, ccy)} hint={`${summary.n_holdings} holdings`} />
+        )}
         <StatCard
           label="Realized gains"
           value={signedMoney(summary.realized_total, ccy)}
@@ -55,17 +73,48 @@ export default async function PortfolioPage({ params }: { params: { id: string }
         <ImportPanel portfolioId={id} />
       </Section>
 
-      <Section title="Holdings" note="cost basis (market value pending a price feed)">
+      <Section title="Holdings" note={priced ? "market value from last EOD close" : "cost basis — refresh for market value"}>
+        <div className="mb-3">
+          <RefreshPrices portfolioId={id} />
+        </div>
         {holdings.length === 0 ? (
           <Empty>No open positions.</Empty>
         ) : (
-          <Table head={["Ticker", "Quantity", "Avg cost", "Cost basis"]}>
+          <Table
+            head={
+              priced
+                ? ["Ticker", "Quantity", "Avg cost", "Cost basis", "Last", "Market value", "Unrealized"]
+                : ["Ticker", "Quantity", "Avg cost", "Cost basis"]
+            }
+          >
             {holdings.map((h) => (
               <tr key={h.ticker} className="border-b border-line last:border-0">
                 <td className="px-4 py-2 font-medium">{h.ticker}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{quantity(h.quantity)}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{money(h.avg_cost, ccy)}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{money(h.cost_basis, ccy)}</td>
+                {priced ? (
+                  <>
+                    <td className="px-4 py-2 text-right tabular-nums text-muted">
+                      {h.last_price != null ? money(h.last_price, ccy) : "—"}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums">
+                      {h.market_value != null ? money(h.market_value, ccy) : "—"}
+                    </td>
+                    <td className={`px-4 py-2 text-right tabular-nums ${signClass(h.unrealized_gain ?? 0)}`}>
+                      {h.unrealized_gain != null ? (
+                        <>
+                          {signedMoney(h.unrealized_gain, ccy)}
+                          {h.unrealized_pct != null ? (
+                            <span className="ml-1 text-xs">({percent(h.unrealized_pct)})</span>
+                          ) : null}
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </>
+                ) : null}
               </tr>
             ))}
           </Table>

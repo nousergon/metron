@@ -27,6 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api.db import models
+from api.services import prices as price_service
 from portfolio_analytics.domain.ledger import Transaction, TxnType, build_ledger
 from portfolio_analytics.domain.realized import YearlyIncome, summarize_income_by_year
 
@@ -37,6 +38,13 @@ class Holding:
     quantity: float
     avg_cost: float
     cost_basis: float
+    # Valuation — populated only when a cached price exists (see valued_holdings).
+    # All None on the price-free path, so cost-basis views never fabricate a value.
+    last_price: float | None = None
+    last_price_date: date | None = None
+    market_value: float | None = None
+    unrealized_gain: float | None = None
+    unrealized_pct: float | None = None
 
 
 @dataclass
@@ -163,6 +171,31 @@ def holdings(
     ]
 
 
+def valued_holdings(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_id: uuid.UUID | None = None
+) -> list[Holding]:
+    """Holdings enriched with market value from the latest cached close.
+
+    A holding whose ticker has a cached price gains last_price / market_value /
+    unrealized_gain / unrealized_pct; one without keeps them None (cost-basis only).
+    Never fabricates — an unpriced holding is shown at cost, not at a guessed value.
+    Composes with account_id, so per-account views value cleanly too."""
+    held = holdings(session, tenant_id, portfolio_id, account_id)
+    if not held:
+        return held
+    prices = price_service.latest_close_by_symbol(session, [h.ticker for h in held])
+    for h in held:
+        point = prices.get(h.ticker)
+        if point is None:
+            continue
+        h.last_price = point.close
+        h.last_price_date = point.bar_date
+        h.market_value = point.close * h.quantity
+        h.unrealized_gain = h.market_value - h.cost_basis
+        h.unrealized_pct = (h.unrealized_gain / h.cost_basis) if h.cost_basis else None
+    return held
+
+
 def realized(
     session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_id: uuid.UUID | None = None
 ) -> list[RealizedLot]:
@@ -221,6 +254,10 @@ class PortfolioSummary:
     realized_lt: float
     dividends: float
     interest: float
+    # Valuation — None when no holding has a cached price (price-free path); otherwise
+    # the sum over priced holdings (an unpriced holding contributes only its cost basis).
+    market_value: float | None = None
+    unrealized_gain: float | None = None
 
     @property
     def realized_total(self) -> float:
@@ -263,11 +300,11 @@ def accounts(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) ->
 
 
 def summary(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> PortfolioSummary:
-    """Portfolio-level totals for the home view — all price-free (cost basis, realized,
-    income). Market value / unrealized P&L are intentionally absent until a licensed
-    price feed lands (no fabricated valuations)."""
+    """Portfolio-level totals for the home view — cost basis, realized, income, plus
+    market value / unrealized P&L when prices are cached (None otherwise, never
+    fabricated)."""
     portfolio = session.get(models.Portfolio, portfolio_id)
-    held = holdings(session, tenant_id, portfolio_id)
+    held = valued_holdings(session, tenant_id, portfolio_id)
     closed = realized(session, tenant_id, portfolio_id)
     yearly = income(session, tenant_id, portfolio_id)
     n_accounts = session.scalar(
@@ -275,6 +312,9 @@ def summary(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> 
         .select_from(models.Account)
         .where(models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
     )
+    priced = [h for h in held if h.market_value is not None]
+    market_value = sum(h.market_value for h in priced) if priced else None
+    unrealized_gain = sum(h.unrealized_gain for h in priced) if priced else None
     return PortfolioSummary(
         base_currency=portfolio.base_currency if portfolio else "USD",
         n_accounts=int(n_accounts or 0),
@@ -284,4 +324,6 @@ def summary(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> 
         realized_lt=sum(r.gain for r in closed if r.long_term),
         dividends=sum(i.dividends for i in yearly),
         interest=sum(i.interest for i in yearly),
+        market_value=market_value,
+        unrealized_gain=unrealized_gain,
     )

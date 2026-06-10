@@ -40,6 +40,10 @@ dependencies = [
     "snaptrade-python-sdk>=11.0.198",
     # OFX/QFX parsing (spec-strict) for the free-tier OFX import path.
     "ofxtools>=0.9.5",
+    # EOD price source for market value / performance. Free, no signup — fine for the
+    # PERSONAL (non-commercial) tier. The public multi-tenant tier swaps in a licensed
+    # feed (Marketstack/Databento) before any public price *display* (redistribution).
+    "yfinance>=0.2.40",
 ]
 
 [project.optional-dependencies]

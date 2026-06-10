@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from api.db import models
 from api.db.session import get_session
 from api.services import analytics, persistence
+from api.services import prices as price_service
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult
 from portfolio_analytics.broker_io.ofx_import import parse_ofx
@@ -55,6 +56,12 @@ class HoldingOut(BaseModel):
     quantity: float
     avg_cost: float
     cost_basis: float
+    # Null on the price-free path; populated from the cached close (see prices/refresh).
+    last_price: float | None = None
+    last_price_date: date | None = None
+    market_value: float | None = None
+    unrealized_gain: float | None = None
+    unrealized_pct: float | None = None
 
 
 class RealizedOut(BaseModel):
@@ -118,6 +125,8 @@ class SummaryOut(BaseModel):
     dividends: float
     interest: float
     taxable_income: float
+    market_value: float | None = None
+    unrealized_gain: float | None = None
 
 
 class AccountDetailOut(BaseModel):
@@ -131,6 +140,13 @@ class AccountDetailOut(BaseModel):
     holdings: list[HoldingOut]
     realized: list[RealizedOut]
     transactions: list[TransactionOut]
+
+
+class PriceRefreshOut(BaseModel):
+    """Result of refreshing the EOD price cache for a portfolio's held tickers."""
+
+    symbols_requested: int
+    prices_updated: int
 
 
 class SkipOut(BaseModel):
@@ -327,12 +343,30 @@ def import_flex(
     return _summarize(snapshot, persisted, parsed=len(snapshot.activities), skipped=0, errors=[])
 
 
+@router.post("/{portfolio_id}/prices/refresh", response_model=PriceRefreshOut)
+def refresh_prices(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> PriceRefreshOut:
+    """Refresh the EOD price cache for this portfolio's currently-held tickers.
+
+    Fetches the latest close per held ticker (yfinance, personal tier) into the global
+    ``price_bars`` cache, after which holdings/summary report market value + unrealized
+    P&L. Idempotent — re-running updates the same session's bar. Tickers the source
+    can't price are skipped (they stay cost-basis-only)."""
+    held = analytics.holdings(session, portfolio.tenant_id, portfolio.id)
+    symbols = [h.ticker for h in held if h.ticker]
+    updated = price_service.refresh_latest_prices(session, symbols)
+    return PriceRefreshOut(symbols_requested=len(symbols), prices_updated=updated)
+
+
 @router.get("/{portfolio_id}/holdings", response_model=list[HoldingOut])
 def get_holdings(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     session: Session = Depends(get_session),
 ) -> list[analytics.Holding]:
-    return analytics.holdings(session, portfolio.tenant_id, portfolio.id)
+    # Valued when a cached close exists for the ticker; cost-basis-only otherwise.
+    return analytics.valued_holdings(session, portfolio.tenant_id, portfolio.id)
 
 
 @router.get("/{portfolio_id}/transactions", response_model=list[TransactionOut])
@@ -375,8 +409,8 @@ def get_account_detail(
 ) -> AccountDetailOut:
     """One account's holdings + realized lots + transactions, all scoped to that account.
 
-    The per-account drill-down for a multi-account portfolio. Price-free (cost basis,
-    realized, ledger) — no market value until a licensed price feed lands."""
+    The per-account drill-down for a multi-account portfolio. Holdings are valued from
+    the cached close when available (cost-basis-only otherwise — never fabricated)."""
     return AccountDetailOut(
         account=AccountOut(
             account_id=account.id,
@@ -385,7 +419,7 @@ def get_account_detail(
             name=account.name or "",
             currency=account.currency,
         ),
-        holdings=analytics.holdings(session, account.tenant_id, account.portfolio_id, account.id),
+        holdings=analytics.valued_holdings(session, account.tenant_id, account.portfolio_id, account.id),
         realized=analytics.realized(session, account.tenant_id, account.portfolio_id, account.id),
         transactions=analytics.transactions(session, account.tenant_id, account.portfolio_id, account.id),
     )

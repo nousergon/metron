@@ -21,6 +21,13 @@ export function quantity(value: number): string {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value);
 }
 
+/** Signed percentage from a decimal ratio (0.5 → "+50.0%"). */
+export function percent(ratio: number): string {
+  const pct = ratio * 100;
+  const sign = pct > 0 ? "+" : pct < 0 ? "−" : "";
+  return `${sign}${Math.abs(pct).toFixed(1)}%`;
+}
+
 /** Format a date-only ISO string (YYYY-MM-DD) without Date parsing, to avoid a
  * timezone day-shift (`new Date("2024-03-15")` is UTC midnight). */
 export function isoDate(value: string): string {

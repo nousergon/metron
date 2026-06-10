@@ -5,7 +5,7 @@
 // through the typed client and revalidate the page so the new data shows immediately.
 
 import { revalidatePath } from "next/cache";
-import { importFile, MetronApiError, syncFlex, type ImportResult } from "@/lib/api";
+import { importFile, MetronApiError, refreshPrices, syncFlex, type ImportResult } from "@/lib/api";
 import { requireTenantId } from "@/lib/session";
 
 export type ActionResult = { ok: boolean; message: string; result?: ImportResult };
@@ -46,6 +46,21 @@ export async function importCsvAction(portfolioId: string, formData: FormData): 
 
 export async function importOfxAction(portfolioId: string, formData: FormData): Promise<ActionResult> {
   return runFileImport(portfolioId, "ofx", formData);
+}
+
+export async function refreshPricesAction(portfolioId: string): Promise<ActionResult> {
+  try {
+    const tenantId = await requireTenantId();
+    const r = await refreshPrices(tenantId, portfolioId);
+    revalidatePath(`/portfolios/${portfolioId}`);
+    const msg =
+      r.prices_updated > 0
+        ? `Priced ${r.prices_updated} of ${r.symbols_requested} holdings.`
+        : "No prices found for current holdings.";
+    return { ok: true, message: msg };
+  } catch (e) {
+    return { ok: false, message: e instanceof MetronApiError ? e.message : "Price refresh failed — backend reachable?" };
+  }
 }
 
 export async function syncFlexAction(portfolioId: string, formData: FormData): Promise<ActionResult> {

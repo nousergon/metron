@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getAccountDetail, MetronApiError } from "@/lib/api";
-import { isoDate, money, quantity, signClass, signedMoney } from "@/lib/format";
+import { isoDate, money, percent, quantity, signClass, signedMoney } from "@/lib/format";
 import { Empty, Section, Table } from "@/components/ui";
 import { requireTenantId } from "@/lib/session";
 
@@ -22,6 +22,7 @@ export default async function AccountPage({ params }: { params: { id: string; ac
 
   const { account, holdings, realized, transactions } = detail;
   const ccy = account.currency;
+  const priced = holdings.some((h) => h.market_value != null);
   // Backend returns both oldest-first; a history reads best newest-first.
   const txns = [...transactions].reverse();
   const lots = [...realized].reverse();
@@ -37,17 +38,45 @@ export default async function AccountPage({ params }: { params: { id: string; ac
         {account.broker} · {account.external_id} · {account.currency}
       </p>
 
-      <Section title="Holdings" note="cost basis (market value pending a price feed)">
+      <Section title="Holdings" note={priced ? "market value from last EOD close" : "cost basis (refresh prices on the portfolio)"}>
         {holdings.length === 0 ? (
           <Empty>No open positions in this account.</Empty>
         ) : (
-          <Table head={["Ticker", "Quantity", "Avg cost", "Cost basis"]}>
+          <Table
+            head={
+              priced
+                ? ["Ticker", "Quantity", "Avg cost", "Cost basis", "Last", "Market value", "Unrealized"]
+                : ["Ticker", "Quantity", "Avg cost", "Cost basis"]
+            }
+          >
             {holdings.map((h) => (
               <tr key={h.ticker} className="border-b border-line last:border-0">
                 <td className="px-4 py-2 font-medium">{h.ticker}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{quantity(h.quantity)}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{money(h.avg_cost, ccy)}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{money(h.cost_basis, ccy)}</td>
+                {priced ? (
+                  <>
+                    <td className="px-4 py-2 text-right tabular-nums text-muted">
+                      {h.last_price != null ? money(h.last_price, ccy) : "—"}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums">
+                      {h.market_value != null ? money(h.market_value, ccy) : "—"}
+                    </td>
+                    <td className={`px-4 py-2 text-right tabular-nums ${signClass(h.unrealized_gain ?? 0)}`}>
+                      {h.unrealized_gain != null ? (
+                        <>
+                          {signedMoney(h.unrealized_gain, ccy)}
+                          {h.unrealized_pct != null ? (
+                            <span className="ml-1 text-xs">({percent(h.unrealized_pct)})</span>
+                          ) : null}
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </>
+                ) : null}
               </tr>
             ))}
           </Table>

@@ -14,6 +14,12 @@ export type Holding = {
   quantity: number;
   avg_cost: number;
   cost_basis: number;
+  // Null until prices are refreshed; populated from the cached EOD close.
+  last_price: number | null;
+  last_price_date: string | null;
+  market_value: number | null;
+  unrealized_gain: number | null;
+  unrealized_pct: number | null;
 };
 
 export type IncomeYear = {
@@ -74,6 +80,13 @@ export type Summary = {
   dividends: number;
   interest: number;
   taxable_income: number;
+  market_value: number | null;
+  unrealized_gain: number | null;
+};
+
+export type PriceRefreshResult = {
+  symbols_requested: number;
+  prices_updated: number;
 };
 
 export class MetronApiError extends Error {
@@ -179,4 +192,17 @@ export async function syncFlex(tenantId: string, id: string, token: string, quer
     cache: "no-store",
   });
   return readResult(res, "IBKR Flex sync");
+}
+
+/** Refresh the EOD price cache for a portfolio's held tickers (market value follows). */
+export async function refreshPrices(tenantId: string, id: string): Promise<PriceRefreshResult> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/prices/refresh`, {
+    method: "POST",
+    headers: { "X-Tenant-Id": tenantId },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new MetronApiError(res.status, `price refresh → ${res.status}`);
+  }
+  return res.json() as Promise<PriceRefreshResult>;
 }
