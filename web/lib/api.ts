@@ -512,3 +512,38 @@ export async function putAdvisorProfile(
   }
   return res.json() as Promise<AdvisorProfile>;
 }
+
+// --- Alpha Engine overlay (metron-ops, personal-tier) ---
+
+export type AlphaHolding = {
+  ticker: string;
+  quantity: number;
+  market_value: number | null;
+  tracked: boolean;
+  signal: string | null;
+  rating: string | null;
+  score: number | null;
+  conviction: string | null;
+  thesis_summary: string | null;
+  predicted_direction: string | null;
+  prediction_confidence: number | null;
+  predicted_alpha: number | null;
+  momentum_veto: boolean | null;
+};
+
+export type AlphaCoverage = { n_holdings: number; n_tracked: number; n_exit: number; n_veto: number };
+
+export type AlphaBuyCandidate = { ticker: string; score?: number; [k: string]: unknown };
+
+export type AlphaEngineView = {
+  available: boolean;
+  reason: string | null;
+  holdings: AlphaHolding[];
+  coverage: AlphaCoverage;
+  buy_candidates: AlphaBuyCandidate[];
+  as_of: string | null;
+};
+
+/** The alpha-engine system view joined onto a portfolio's held tickers. */
+export const getAlphaEngine = (tenantId: string, id: string) =>
+  get<AlphaEngineView>(tenantId, `/ext/alpha-engine/${id}`);
