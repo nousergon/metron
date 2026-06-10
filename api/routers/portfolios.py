@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from api.db.session import get_session
-from api.services import analytics, performance, persistence
+from api.services import analytics, performance, persistence, risk
 from api.services import prices as price_service
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult
@@ -173,6 +173,25 @@ class PerformanceOut(BaseModel):
     twr: float | None
     annualized_twr: float | None
     points: list[PerfPointOut]
+
+
+class RiskOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    computable: bool
+    benchmark: str
+    reason: str | None
+    as_of: date | None
+    n_obs: int
+    n_modeled: int
+    excluded: list[str]
+    total_vol: float | None
+    factor_vol: float | None
+    idio_vol: float | None
+    idio_pct: float | None
+    tracking_error: float | None
+    factor_exposures: dict[str, float]
+    factor_pct_contrib: dict[str, float]
 
 
 class SkipOut(BaseModel):
@@ -454,6 +473,27 @@ def reconstruct_performance(
     now-populated performance summary."""
     performance.reconstruct_snapshots(session, portfolio.tenant_id, portfolio.id, today=date.today())
     return performance.performance(session, portfolio.tenant_id, portfolio.id)
+
+
+@router.get("/{portfolio_id}/risk", response_model=RiskOut)
+def get_risk(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> risk.RiskSummary:
+    """Factor risk decomposition + tracking error vs SPY, from already-cached price
+    history. Marked not-computable (with a reason) when the cache lacks enough
+    history — POST .../risk/compute to backfill it."""
+    return risk.compute_risk(session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=False)
+
+
+@router.post("/{portfolio_id}/risk/compute", response_model=RiskOut)
+def compute_risk(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> risk.RiskSummary:
+    """Backfill the held + factor-ETF price history over the risk window, then compute
+    the factor risk decomposition. The heavier (network) path behind the GET."""
+    return risk.compute_risk(session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=True)
 
 
 @router.get("/{portfolio_id}/accounts/{account_id}", response_model=AccountDetailOut)
