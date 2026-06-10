@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from api.db.session import get_session
-from api.services import analytics, attribution, performance, persistence, risk, tax
+from api.services import analytics, attribution, calendar, performance, persistence, risk, tax
 from api.services import prices as price_service
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult
@@ -172,6 +172,12 @@ class PerformanceOut(BaseModel):
     cumulative_return: float | None
     twr: float | None
     annualized_twr: float | None
+    volatility: float | None
+    sharpe: float | None
+    sortino: float | None
+    max_drawdown: float | None
+    spy_return: float | None
+    alpha: float | None
     points: list[PerfPointOut]
 
 
@@ -252,6 +258,24 @@ class AttributionOut(BaseModel):
     selection: float | None
     interaction: float | None
     sectors: list[SectorEffectOut]
+
+
+class CalendarEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    event_date: date
+    kind: str
+    ticker: str
+    label: str
+
+
+class CalendarOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    as_of: date
+    horizon_days: int
+    n_events: int
+    events: list[CalendarEventOut]
 
 
 class SkipOut(BaseModel):
@@ -586,6 +610,28 @@ def compute_attribution(
     """Resolve holding sectors + backfill held and SPDR-ETF history over the window,
     then run the attribution. The heavier (network) path behind the GET."""
     return attribution.compute_attribution(session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=True)
+
+
+@router.get("/{portfolio_id}/calendar", response_model=CalendarOut)
+def get_calendar(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> calendar.CalendarSummary:
+    """Upcoming held-ticker earnings within the horizon, from cached dates. POST
+    .../calendar/refresh to populate/refresh the cache (the network path)."""
+    return calendar.upcoming_events(session, portfolio.tenant_id, portfolio.id, today=date.today())
+
+
+@router.post("/{portfolio_id}/calendar/refresh", response_model=CalendarOut)
+def refresh_calendar(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> calendar.CalendarSummary:
+    """Refresh each held ticker's next earnings date (yfinance), then return the
+    upcoming-events calendar. The heavier (network) path behind the GET."""
+    tickers = [h.ticker for h in analytics.holdings(session, portfolio.tenant_id, portfolio.id)]
+    calendar.refresh_earnings(session, tickers)
+    return calendar.upcoming_events(session, portfolio.tenant_id, portfolio.id, today=date.today())
 
 
 @router.get("/{portfolio_id}/accounts/{account_id}", response_model=AccountDetailOut)

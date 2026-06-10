@@ -117,6 +117,41 @@ class TestPerformanceMetrics:
         assert p["net_contributions"] == pytest.approx(500.0)
 
 
+class TestRiskAndAlpha:
+    def test_alpha_and_risk_metrics(self, client, db_session, tenant):
+        pid = _seed(client, tenant)
+        _insert_snapshot(db_session, tenant, pid, date(2024, 1, 1), nav=1000.0, spy_close=400.0)
+        _insert_snapshot(db_session, tenant, pid, date(2024, 2, 1), nav=1100.0, spy_close=420.0)
+        _insert_snapshot(db_session, tenant, pid, date(2024, 3, 1), nav=1050.0, spy_close=410.0)  # a dip → variance + dd
+        _insert_snapshot(db_session, tenant, pid, date(2024, 4, 1), nav=1200.0, spy_close=440.0)
+        p = client.get(f"/portfolios/{pid}/performance", headers=_hdr(tenant)).json()
+        assert p["spy_return"] == pytest.approx(440 / 400 - 1)
+        assert p["twr"] == pytest.approx(0.20)  # (1.1)(1050/1100)(1200/1050) − 1
+        assert p["alpha"] == pytest.approx(p["twr"] - p["spy_return"])
+        assert p["max_drawdown"] == pytest.approx(1050 / 1100 - 1)  # peak 1.10 → trough 1.05
+        assert p["volatility"] is not None and p["volatility"] > 0
+        assert p["sharpe"] is not None and p["sortino"] is not None
+
+    def test_alpha_without_enough_history_for_risk(self, client, db_session, tenant):
+        pid = _seed(client, tenant)
+        _insert_snapshot(db_session, tenant, pid, date(2024, 1, 1), nav=1000.0, spy_close=400.0)
+        _insert_snapshot(db_session, tenant, pid, date(2024, 2, 1), nav=1100.0, spy_close=440.0)
+        p = client.get(f"/portfolios/{pid}/performance", headers=_hdr(tenant)).json()
+        # 2 snapshots → alpha computable, but vol/Sharpe need ≥2 returns (≥3 snapshots).
+        assert p["alpha"] == pytest.approx(p["twr"] - p["spy_return"])
+        assert p["volatility"] is None and p["sharpe"] is None
+
+    def test_drawdown_is_flow_neutralized(self, client, db_session, tenant):
+        pid = _seed(client, tenant)
+        _insert_snapshot(db_session, tenant, pid, date(2024, 1, 1), nav=1000.0)
+        _insert_snapshot(db_session, tenant, pid, date(2024, 2, 1), nav=1100.0)
+        # Withdrew 500 with no investment loss: NAV 1100 → 600, external_flow −500.
+        _insert_snapshot(db_session, tenant, pid, date(2024, 3, 1), nav=600.0, external_flow=-500.0)
+        p = client.get(f"/portfolios/{pid}/performance", headers=_hdr(tenant)).json()
+        # Flow-neutralized d3 return = (600 − (−500))/1100 − 1 = 0 → NOT a 45% drawdown.
+        assert p["max_drawdown"] == pytest.approx(0.0)
+
+
 # --- helpers ---------------------------------------------------------------
 
 

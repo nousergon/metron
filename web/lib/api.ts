@@ -108,6 +108,12 @@ export type Performance = {
   cumulative_return: number | null;
   twr: number | null;
   annualized_twr: number | null;
+  volatility: number | null;
+  sharpe: number | null;
+  sortino: number | null;
+  max_drawdown: number | null;
+  spy_return: number | null;
+  alpha: number | null;
   points: PerfPoint[];
 };
 
@@ -220,6 +226,55 @@ export type Attribution = {
 
 export const getAttribution = (tenantId: string, id: string) =>
   get<Attribution>(tenantId, `/portfolios/${id}/attribution`);
+
+export type MacroPoint = { obs_date: string; value: number };
+
+export type MacroIndicator = {
+  key: string;
+  label: string;
+  units: string;
+  latest_value: number;
+  latest_date: string;
+  prior_value: number | null;
+  change: number | null;
+  history: MacroPoint[];
+};
+
+export type Macro = {
+  available: boolean;
+  reason: string | null;
+  as_of: string | null;
+  indicators: MacroIndicator[];
+};
+
+// Macro is global market data; the tenant header is sent for client consistency but
+// the endpoint ignores it.
+export const getMacro = (tenantId: string) => get<Macro>(tenantId, `/macro`);
+
+export type CalendarEvent = { event_date: string; kind: string; ticker: string; label: string };
+
+export type Calendar = {
+  as_of: string;
+  horizon_days: number;
+  n_events: number;
+  events: CalendarEvent[];
+};
+
+export const getCalendar = (tenantId: string, id: string) =>
+  get<Calendar>(tenantId, `/portfolios/${id}/calendar`);
+
+/** Refresh held-ticker earnings dates (yfinance), then return the calendar (heavier POST). */
+export async function refreshCalendar(tenantId: string, id: string): Promise<Calendar> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/calendar/refresh`, {
+    method: "POST",
+    headers: { "X-Tenant-Id": tenantId },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new MetronApiError(res.status, `refresh calendar → ${res.status}`);
+  }
+  return res.json() as Promise<Calendar>;
+}
 
 /** Resolve sectors + backfill history, then run Brinson attribution (heavier POST). */
 export async function computeAttribution(tenantId: string, id: string): Promise<Attribution> {

@@ -105,6 +105,7 @@ class Security(Base):
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     asset_class: Mapped[str | None] = mapped_column(String(40), nullable=True)  # equity | etf | cash | …
     sector: Mapped[str | None] = mapped_column(String(60), nullable=True)  # canonical GICS label; resolved lazily
+    next_earnings_date: Mapped[date | None] = mapped_column(nullable=True)  # cached next earnings; refreshed on demand
 
 
 class Transaction(Base):

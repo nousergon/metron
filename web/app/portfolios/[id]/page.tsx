@@ -46,6 +46,12 @@ export default async function PortfolioPage({ params }: { params: { id: string }
           <Link href={`/portfolios/${id}/attribution`} className="text-sm text-muted hover:text-ink">
             Attribution →
           </Link>
+          <Link href={`/portfolios/${id}/macro`} className="text-sm text-muted hover:text-ink">
+            Macro →
+          </Link>
+          <Link href={`/portfolios/${id}/calendar`} className="text-sm text-muted hover:text-ink">
+            Calendar →
+          </Link>
           <Link href={`/portfolios/${id}/tax`} className="text-sm text-muted hover:text-ink">
             Tax →
           </Link>

@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.config import settings
 from api.db.session import create_all
-from api.routers import meta, portfolios
+from api.routers import macro, meta, portfolios
 
 
 @asynccontextmanager
@@ -48,3 +48,4 @@ def health() -> dict:
 
 app.include_router(meta.router)
 app.include_router(portfolios.router)
+app.include_router(macro.router)
