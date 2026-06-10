@@ -84,3 +84,19 @@ def test_cross_tenant_is_404(client, personal_on, monkeypatch):
     pid = _new_portfolio(client, t)
     r = client.post(f"/portfolios/{pid}/import/snaptrade", headers=_hdr(str(uuid.uuid4())))
     assert r.status_code == 404
+
+
+def test_institution_allowlist_keeps_only_matching(client, personal_on, monkeypatch):
+    # Fixture accounts are all "Interactive Brokers" → allowlisting Fidelity keeps none
+    # (the no-double-count-with-Flex guard), while allowlisting IBKR keeps all 3 positions.
+    _patch_from_env(monkeypatch, _FakeReader)
+    t = str(uuid.uuid4())
+
+    monkeypatch.setattr("api.routers.portfolios.settings.snaptrade_institutions", "Fidelity")
+    pid = _new_portfolio(client, t)
+    assert client.post(f"/portfolios/{pid}/import/snaptrade", headers=_hdr(t)).json()["positions_imported"] == 0
+    assert client.get(f"/portfolios/{pid}/holdings", headers=_hdr(t)).json() == []
+
+    monkeypatch.setattr("api.routers.portfolios.settings.snaptrade_institutions", "Interactive Brokers")
+    pid2 = _new_portfolio(client, t)
+    assert client.post(f"/portfolios/{pid2}/import/snaptrade", headers=_hdr(t)).json()["positions_imported"] == 3

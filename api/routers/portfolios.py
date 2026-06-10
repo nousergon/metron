@@ -527,10 +527,28 @@ def import_snaptrade(
     snapshot = SnapTradeConnector(reader).sync()
     if snapshot.error:
         raise HTTPException(status_code=502, detail=f"SnapTrade sync failed: {snapshot.error}")
+    _filter_snapshot_institutions(snapshot, settings.snaptrade_institution_list)
     persisted = persistence.persist_snapshot(
         session, tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id, snapshot=snapshot
     )
     return _summarize(snapshot, persisted, parsed=len(snapshot.activities), skipped=0, errors=[])
+
+
+def _filter_snapshot_institutions(snapshot, institutions: list[str]) -> None:
+    """Drop accounts (and their holdings/activities) not at an allowlisted institution.
+
+    No-op when the allowlist is empty. Matches case-insensitively by substring so
+    "Fidelity" keeps "Fidelity"/"Fidelity Investments". Lets the personal SnapTrade sync
+    import only e.g. Fidelity while IBKR is sourced from Flex — no double-count."""
+    if not institutions:
+        return
+    allow = [s.lower() for s in institutions]
+    keep = {
+        a.number for a in snapshot.accounts if any(s in (a.institution or "").lower() for s in allow)
+    }
+    snapshot.accounts = [a for a in snapshot.accounts if a.number in keep]
+    snapshot.holdings = [h for h in snapshot.holdings if h.account_number in keep]
+    snapshot.activities = [a for a in snapshot.activities if a.account_number in keep]
 
 
 @router.post("/{portfolio_id}/prices/refresh", response_model=PriceRefreshOut)
