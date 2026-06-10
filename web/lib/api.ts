@@ -409,6 +409,17 @@ export async function syncFlex(tenantId: string, id: string, token: string, quer
   return readResult(res, "IBKR Flex sync");
 }
 
+/** Sync the operator's server-side SnapTrade connection (e.g. Fidelity) into a portfolio.
+ * Personal/single-operator only — 404 when the deployment hasn't enabled it. */
+export async function syncSnapTrade(tenantId: string, id: string): Promise<ImportResult> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/import/snaptrade`, {
+    method: "POST",
+    headers: { "X-Tenant-Id": tenantId },
+    cache: "no-store",
+  });
+  return readResult(res, "SnapTrade sync");
+}
+
 /** Refresh the EOD price cache for a portfolio's held tickers (market value follows). */
 export async function refreshPrices(tenantId: string, id: string): Promise<PriceRefreshResult> {
   const res = await fetch(`${API_URL}/portfolios/${id}/prices/refresh`, {

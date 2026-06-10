@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from api.config import settings
 from api.db import models
 from api.db.session import get_session
 from api.services import analytics, attribution, calendar, performance, persistence, risk, tax
@@ -29,7 +30,9 @@ from api.services import prices as price_service
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult
 from portfolio_analytics.broker_io.ofx_import import parse_ofx
+from portfolio_analytics.broker_io.snaptrade_reader import SnapTradeReader
 from portfolio_analytics.ingestion.ibkr_flex_connector import IbkrFlexConnector
+from portfolio_analytics.ingestion.snaptrade import SnapTradeConnector
 
 router = APIRouter(prefix="/portfolios", tags=["portfolios"])
 
@@ -492,6 +495,38 @@ def import_flex(
     snapshot = connector.sync()
     if snapshot.error:
         raise HTTPException(status_code=502, detail=f"IBKR Flex fetch failed: {snapshot.error}")
+    persisted = persistence.persist_snapshot(
+        session, tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id, snapshot=snapshot
+    )
+    return _summarize(snapshot, persisted, parsed=len(snapshot.activities), skipped=0, errors=[])
+
+
+@router.post("/{portfolio_id}/import/snaptrade", response_model=ImportOut)
+def import_snaptrade(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> ImportOut:
+    """Sync the operator's linked SnapTrade connection (e.g. Fidelity) into this portfolio.
+
+    Unlike the BYO-token Flex path, the SnapTrade connection is **server-side** — one
+    operator SnapTrade user + linked brokerages from the ``SNAPTRADE_*`` env. Because that
+    credential is shared by the whole process, this endpoint is gated behind
+    ``snaptrade_personal`` (single-operator mode) and 404s when off, so a multi-tenant
+    deploy can never let one tenant pull another's brokerage data. M2's per-user
+    connection-portal flow is the multi-tenant replacement, not this.
+
+    503 when SnapTrade isn't configured (missing env); 502 on a SnapTrade/network failure —
+    both with a reason, never a silent blank.
+    """
+    if not settings.snaptrade_personal:
+        raise HTTPException(status_code=404, detail="SnapTrade sync is not enabled on this deployment.")
+    try:
+        reader = SnapTradeReader.from_env()
+    except KeyError as e:
+        raise HTTPException(status_code=503, detail=f"SnapTrade not configured — missing {e}.") from e
+    snapshot = SnapTradeConnector(reader).sync()
+    if snapshot.error:
+        raise HTTPException(status_code=502, detail=f"SnapTrade sync failed: {snapshot.error}")
     persisted = persistence.persist_snapshot(
         session, tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id, snapshot=snapshot
     )

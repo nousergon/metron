@@ -5,7 +5,15 @@
 // through the typed client and revalidate the page so the new data shows immediately.
 
 import { revalidatePath } from "next/cache";
-import { importFile, MetronApiError, refreshPrices, renamePortfolio, syncFlex, type ImportResult } from "@/lib/api";
+import {
+  importFile,
+  MetronApiError,
+  refreshPrices,
+  renamePortfolio,
+  syncFlex,
+  syncSnapTrade,
+  type ImportResult,
+} from "@/lib/api";
 import { requireTenantId } from "@/lib/session";
 
 export type ActionResult = { ok: boolean; message: string; result?: ImportResult };
@@ -74,6 +82,17 @@ export async function refreshPricesAction(portfolioId: string): Promise<ActionRe
     return { ok: true, message: msg };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Price refresh failed — backend reachable?" };
+  }
+}
+
+export async function syncSnapTradeAction(portfolioId: string): Promise<ActionResult> {
+  try {
+    const tenantId = await requireTenantId();
+    const result = await syncSnapTrade(tenantId, portfolioId);
+    revalidatePath(`/portfolios/${portfolioId}`);
+    return { ok: true, message: summarize(result), result };
+  } catch (e) {
+    return { ok: false, message: errorMessage(e) };
   }
 }
 

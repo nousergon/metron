@@ -5,7 +5,13 @@
 // shows the result; revalidation refreshes the holdings/income tables on success.
 
 import { useState, useTransition } from "react";
-import { importCsvAction, importOfxAction, syncFlexAction, type ActionResult } from "@/app/portfolios/[id]/actions";
+import {
+  importCsvAction,
+  importOfxAction,
+  syncFlexAction,
+  syncSnapTradeAction,
+  type ActionResult,
+} from "@/app/portfolios/[id]/actions";
 
 type ActionFn = (portfolioId: string, formData: FormData) => Promise<ActionResult>;
 
@@ -117,9 +123,30 @@ function FlexImport({ portfolioId }: { portfolioId: string }) {
   );
 }
 
+function SnapTradeSync({ portfolioId }: { portfolioId: string }) {
+  const [pending, start] = useTransition();
+  const [result, setResult] = useState<ActionResult | null>(null);
+
+  return (
+    <div className="rounded-lg border border-line p-4">
+      <div className="text-sm font-medium">SnapTrade sync</div>
+      <p className="mt-1 text-xs text-muted">Pulls your linked SnapTrade connection (e.g. Fidelity). No file needed.</p>
+      <button
+        type="button"
+        disabled={pending}
+        onClick={() => start(async () => setResult(await syncSnapTradeAction(portfolioId)))}
+        className="mt-2 rounded bg-ink px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+      >
+        {pending ? "Syncing…" : "Sync SnapTrade"}
+      </button>
+      <Result result={result} />
+    </div>
+  );
+}
+
 export function ImportPanel({ portfolioId }: { portfolioId: string }) {
   return (
-    <div className="grid gap-3 md:grid-cols-3">
+    <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
       <FileImport portfolioId={portfolioId} action={importCsvAction} label="Import CSV" accept=".csv,text/csv" />
       <FileImport
         portfolioId={portfolioId}
@@ -128,6 +155,7 @@ export function ImportPanel({ portfolioId }: { portfolioId: string }) {
         accept=".ofx,.qfx,application/x-ofx"
       />
       <FlexImport portfolioId={portfolioId} />
+      <SnapTradeSync portfolioId={portfolioId} />
     </div>
   );
 }
