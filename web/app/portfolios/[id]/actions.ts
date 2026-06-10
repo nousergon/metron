@@ -5,10 +5,24 @@
 // through the typed client and revalidate the page so the new data shows immediately.
 
 import { revalidatePath } from "next/cache";
-import { importFile, MetronApiError, refreshPrices, syncFlex, type ImportResult } from "@/lib/api";
+import { importFile, MetronApiError, refreshPrices, renamePortfolio, syncFlex, type ImportResult } from "@/lib/api";
 import { requireTenantId } from "@/lib/session";
 
 export type ActionResult = { ok: boolean; message: string; result?: ImportResult };
+
+export async function renamePortfolioAction(portfolioId: string, name: string): Promise<ActionResult> {
+  const trimmed = name.trim();
+  if (!trimmed) return { ok: false, message: "Name can't be empty." };
+  try {
+    const tenantId = await requireTenantId();
+    await renamePortfolio(tenantId, portfolioId, trimmed);
+    revalidatePath(`/portfolios/${portfolioId}`);
+    revalidatePath("/");
+    return { ok: true, message: "Renamed." };
+  } catch (e) {
+    return { ok: false, message: e instanceof MetronApiError ? e.message : "Rename failed — backend reachable?" };
+  }
+}
 
 function summarize(r: ImportResult): string {
   const parts: string[] = [];

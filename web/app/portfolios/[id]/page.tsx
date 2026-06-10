@@ -1,9 +1,10 @@
 import Link from "next/link";
-import { getAccounts, getHoldings, getIncome, getPlugins, getSummary, MetronApiError, type PluginNav } from "@/lib/api";
+import { getAccounts, getHoldings, getIncome, getPlugins, getPortfolio, getSummary, MetronApiError, type Portfolio, type PluginNav } from "@/lib/api";
 import { money, percent, quantity, signClass, signedMoney } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { ImportPanel } from "@/components/import-panel";
 import { RefreshPrices } from "@/components/refresh-prices";
+import { RenamePortfolio } from "@/components/rename-portfolio";
 import { requireTenantId } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -12,9 +13,10 @@ export default async function PortfolioPage({ params }: { params: { id: string }
   const { id } = params;
   const tenantId = await requireTenantId();
 
-  let summary, holdings, income, accounts;
+  let portfolio: Portfolio, summary, holdings, income, accounts;
   try {
-    [summary, holdings, income, accounts] = await Promise.all([
+    [portfolio, summary, holdings, income, accounts] = await Promise.all([
+      getPortfolio(tenantId, id),
       getSummary(tenantId, id),
       getHoldings(tenantId, id),
       getIncome(tenantId, id),
@@ -77,6 +79,10 @@ export default async function PortfolioPage({ params }: { params: { id: string }
             </Link>
           ))}
         </div>
+      </div>
+
+      <div className="mt-3">
+        <RenamePortfolio portfolioId={id} name={portfolio.name} />
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">

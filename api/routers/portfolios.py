@@ -49,6 +49,10 @@ class PortfolioOut(BaseModel):
     base_currency: str
 
 
+class PortfolioRename(BaseModel):
+    name: str
+
+
 class HoldingOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -352,6 +356,28 @@ def _owned_portfolio(
     ).first()
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
+    return portfolio
+
+
+@router.get("/{portfolio_id}", response_model=PortfolioOut)
+def get_portfolio(portfolio: models.Portfolio = Depends(_owned_portfolio)) -> models.Portfolio:
+    """Fetch one portfolio the caller's tenant owns (404 otherwise)."""
+    return portfolio
+
+
+@router.patch("/{portfolio_id}", response_model=PortfolioOut)
+def rename_portfolio(
+    body: PortfolioRename,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> models.Portfolio:
+    """Rename a portfolio. Trims surrounding whitespace; an empty name is rejected (422)."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Portfolio name cannot be empty")
+    portfolio.name = name
+    session.commit()
+    session.refresh(portfolio)
     return portfolio
 
 

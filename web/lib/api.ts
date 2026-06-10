@@ -138,6 +138,27 @@ async function get<T>(tenantId: string, path: string): Promise<T> {
 }
 
 export const getPortfolios = (tenantId: string) => get<Portfolio[]>(tenantId, "/portfolios");
+export const getPortfolio = (tenantId: string, id: string) => get<Portfolio>(tenantId, `/portfolios/${id}`);
+
+/** Rename a portfolio (PATCH). Empty names are rejected by the backend (422). */
+export async function renamePortfolio(tenantId: string, id: string, name: string): Promise<Portfolio> {
+  const res = await fetch(`${API_URL}/portfolios/${id}`, {
+    method: "PATCH",
+    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail ?? detail;
+    } catch {
+      // keep the status
+    }
+    throw new MetronApiError(res.status, detail);
+  }
+  return res.json() as Promise<Portfolio>;
+}
 export const getSummary = (tenantId: string, id: string) => get<Summary>(tenantId, `/portfolios/${id}/summary`);
 export const getHoldings = (tenantId: string, id: string) => get<Holding[]>(tenantId, `/portfolios/${id}/holdings`);
 export const getIncome = (tenantId: string, id: string) => get<IncomeYear[]>(tenantId, `/portfolios/${id}/income`);
