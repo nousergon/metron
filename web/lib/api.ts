@@ -145,6 +145,38 @@ export const getAccountDetail = (tenantId: string, id: string, accountId: string
 export const getPerformance = (tenantId: string, id: string) =>
   get<Performance>(tenantId, `/portfolios/${id}/performance`);
 
+export type Risk = {
+  computable: boolean;
+  benchmark: string;
+  reason: string | null;
+  as_of: string | null;
+  n_obs: number;
+  n_modeled: number;
+  excluded: string[];
+  total_vol: number | null;
+  factor_vol: number | null;
+  idio_vol: number | null;
+  idio_pct: number | null;
+  tracking_error: number | null;
+  factor_exposures: Record<string, number>;
+  factor_pct_contrib: Record<string, number>;
+};
+
+export const getRisk = (tenantId: string, id: string) => get<Risk>(tenantId, `/portfolios/${id}/risk`);
+
+/** Backfill history + compute factor risk (the heavier POST path). */
+export async function computeRisk(tenantId: string, id: string): Promise<Risk> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/risk/compute`, {
+    method: "POST",
+    headers: { "X-Tenant-Id": tenantId },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new MetronApiError(res.status, `compute risk → ${res.status}`);
+  }
+  return res.json() as Promise<Risk>;
+}
+
 /** Seed NAV history from past prices (reconstruction). Returns the populated summary. */
 export async function reconstructPerformance(tenantId: string, id: string): Promise<Performance> {
   const res = await fetch(`${API_URL}/portfolios/${id}/performance/reconstruct`, {

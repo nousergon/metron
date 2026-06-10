@@ -128,15 +128,17 @@ def backfill_prices(
     if not sec_by_symbol:
         return 0
     # Preload the (security, day) bars already cached for these securities so the
-    # backfill is one query + plain inserts, not a select-per-day.
+    # backfill is one query + plain inserts, not a select-per-day. Preload ALL dates
+    # for the securities (not just [start, end]): a source may return points outside
+    # the requested window, or a prior refresh may have written a bar the window
+    # doesn't cover — a window-filtered preload would miss those and the insert would
+    # then hit the (security, day) unique constraint.
     sec_ids = list(sec_by_symbol.values())
     existing = {
         (sid, bd)
         for sid, bd in session.execute(
             select(models.PriceBar.security_id, models.PriceBar.bar_date).where(
                 models.PriceBar.security_id.in_(sec_ids),
-                models.PriceBar.bar_date >= start,
-                models.PriceBar.bar_date <= end,
             )
         ).all()
     }
