@@ -6,6 +6,7 @@
 
 import { revalidatePath } from "next/cache";
 import { importFile, MetronApiError, syncFlex, type ImportResult } from "@/lib/api";
+import { requireTenantId } from "@/lib/session";
 
 export type ActionResult = { ok: boolean; message: string; result?: ImportResult };
 
@@ -30,7 +31,8 @@ async function runFileImport(portfolioId: string, kind: "csv" | "ofx", formData:
     return { ok: false, message: `Choose a ${kind.toUpperCase()} file first.` };
   }
   try {
-    const result = await importFile(portfolioId, kind, file);
+    const tenantId = await requireTenantId();
+    const result = await importFile(tenantId, portfolioId, kind, file);
     revalidatePath(`/portfolios/${portfolioId}`);
     return { ok: true, message: summarize(result), result };
   } catch (e) {
@@ -53,7 +55,8 @@ export async function syncFlexAction(portfolioId: string, formData: FormData): P
     return { ok: false, message: "Both a Flex token and a query id are required." };
   }
   try {
-    const result = await syncFlex(portfolioId, token, queryId);
+    const tenantId = await requireTenantId();
+    const result = await syncFlex(tenantId, portfolioId, token, queryId);
     revalidatePath(`/portfolios/${portfolioId}`);
     return { ok: true, message: summarize(result), result };
   } catch (e) {

@@ -7,3 +7,6 @@ next-env.d.ts
 .env
 .env.local
 .DS_Store
+# Local auth database (Better Auth dev SQLite).
+*.sqlite
+*.sqlite3

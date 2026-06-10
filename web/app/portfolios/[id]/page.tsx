@@ -3,19 +3,21 @@ import { getAccounts, getHoldings, getIncome, getSummary, MetronApiError } from 
 import { money, quantity, signClass, signedMoney } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { ImportPanel } from "@/components/import-panel";
+import { requireTenantId } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
 export default async function PortfolioPage({ params }: { params: { id: string } }) {
   const { id } = params;
+  const tenantId = await requireTenantId();
 
   let summary, holdings, income, accounts;
   try {
     [summary, holdings, income, accounts] = await Promise.all([
-      getSummary(id),
-      getHoldings(id),
-      getIncome(id),
-      getAccounts(id),
+      getSummary(tenantId, id),
+      getHoldings(tenantId, id),
+      getIncome(tenantId, id),
+      getAccounts(tenantId, id),
     ]);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {

@@ -1,11 +1,11 @@
 // Typed server-side client for the Metron FastAPI backend.
 //
 // Types mirror the pydantic response models in api/routers/portfolios.py. Calls run
-// in Server Components (never the browser), so the placeholder tenant header stays
-// server-side until real auth lands (PH4).
+// in Server Components / Server Actions (never the browser); the caller resolves the
+// tenant id from the auth session and passes it in, so the X-Tenant-Id header is
+// always server-side and scoped to the signed-in user's workspace.
 
 const API_URL = process.env.METRON_API_URL ?? "http://localhost:8000";
-const DEV_TENANT_ID = process.env.METRON_DEV_TENANT_ID ?? "";
 
 export type Portfolio = { id: string; name: string; base_currency: string };
 
@@ -55,26 +55,36 @@ export class MetronApiError extends Error {
   }
 }
 
-/** True when no dev tenant is configured — pages render a setup hint instead of erroring. */
-export function tenantConfigured(): boolean {
-  return DEV_TENANT_ID.length > 0;
-}
-
-async function get<T>(path: string): Promise<T> {
-  const headers: Record<string, string> = {};
-  if (DEV_TENANT_ID) headers["X-Tenant-Id"] = DEV_TENANT_ID;
-  const res = await fetch(`${API_URL}${path}`, { headers, cache: "no-store" });
+async function get<T>(tenantId: string, path: string): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: { "X-Tenant-Id": tenantId },
+    cache: "no-store",
+  });
   if (!res.ok) {
     throw new MetronApiError(res.status, `GET ${path} → ${res.status}`);
   }
   return res.json() as Promise<T>;
 }
 
-export const getPortfolios = () => get<Portfolio[]>("/portfolios");
-export const getSummary = (id: string) => get<Summary>(`/portfolios/${id}/summary`);
-export const getHoldings = (id: string) => get<Holding[]>(`/portfolios/${id}/holdings`);
-export const getIncome = (id: string) => get<IncomeYear[]>(`/portfolios/${id}/income`);
-export const getAccounts = (id: string) => get<Account[]>(`/portfolios/${id}/accounts`);
+export const getPortfolios = (tenantId: string) => get<Portfolio[]>(tenantId, "/portfolios");
+export const getSummary = (tenantId: string, id: string) => get<Summary>(tenantId, `/portfolios/${id}/summary`);
+export const getHoldings = (tenantId: string, id: string) => get<Holding[]>(tenantId, `/portfolios/${id}/holdings`);
+export const getIncome = (tenantId: string, id: string) => get<IncomeYear[]>(tenantId, `/portfolios/${id}/income`);
+export const getAccounts = (tenantId: string, id: string) => get<Account[]>(tenantId, `/portfolios/${id}/accounts`);
+
+/** Create a portfolio in the user's workspace (auto-provisions the tenant on the backend). */
+export async function createPortfolio(tenantId: string, name: string): Promise<Portfolio> {
+  const res = await fetch(`${API_URL}/portfolios`, {
+    method: "POST",
+    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new MetronApiError(res.status, `create portfolio → ${res.status}`);
+  }
+  return res.json() as Promise<Portfolio>;
+}
 
 // --- imports (write) -------------------------------------------------------
 
@@ -92,10 +102,6 @@ export type ImportResult = {
   errors: SkipRecord[];
 };
 
-function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-  return DEV_TENANT_ID ? { "X-Tenant-Id": DEV_TENANT_ID, ...extra } : extra;
-}
-
 async function readResult(res: Response, label: string): Promise<ImportResult> {
   if (!res.ok) {
     // Surface the backend's detail (e.g. 422 "missing date column", 502 Flex error).
@@ -112,22 +118,27 @@ async function readResult(res: Response, label: string): Promise<ImportResult> {
 }
 
 /** Upload a CSV or OFX file to an import endpoint. ``kind`` selects the route. */
-export async function importFile(id: string, kind: "csv" | "ofx", file: File): Promise<ImportResult> {
+export async function importFile(
+  tenantId: string,
+  id: string,
+  kind: "csv" | "ofx",
+  file: File,
+): Promise<ImportResult> {
   const form = new FormData();
   form.append("file", file, file.name);
   const res = await fetch(`${API_URL}/portfolios/${id}/import/${kind}`, {
     method: "POST",
-    headers: authHeaders(),
+    headers: { "X-Tenant-Id": tenantId },
     body: form,
     cache: "no-store",
   });
   return readResult(res, `${kind.toUpperCase()} import`);
 }
 
-export async function syncFlex(id: string, token: string, queryId: string): Promise<ImportResult> {
+export async function syncFlex(tenantId: string, id: string, token: string, queryId: string): Promise<ImportResult> {
   const res = await fetch(`${API_URL}/portfolios/${id}/import/flex`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
     body: JSON.stringify({ token, query_id: queryId }),
     cache: "no-store",
   });
