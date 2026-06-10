@@ -17,7 +17,6 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { betterAuth } from "better-auth";
 import { magicLink } from "better-auth/plugins";
-import { sendEmail } from "@/lib/email";
 
 // Dev/personal: a local SQLite file. M2: point AUTH_DATABASE_URL at Postgres + swap the
 // dialect (deferred — the beta runs on SQLite).
@@ -59,6 +58,9 @@ export const auth = betterAuth({
       // isn't configured, so a sign-in request surfaces the reason instead of a link
       // that never arrives.
       sendMagicLink: async ({ email, url }) => {
+        // Imported lazily so the static auth-config graph doesn't pull in `server-only`
+        // (which the better-auth CLI can't resolve when generating/migrating schema).
+        const { sendEmail } = await import("@/lib/email");
         await sendEmail({
           to: email,
           subject: "Sign in to Metron",
