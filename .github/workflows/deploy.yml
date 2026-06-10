@@ -1,0 +1,81 @@
+name: Deploy Metron via SSM
+
+# Push to main (or manual) → assume the shared OIDC role → SSM to the dashboard EC2 →
+# pull both repos + rebuild + restart the Metron services + health-check. ~30s push-to-live,
+# replacing the manual pull/rebuild/restart. metron-ops has a sibling workflow that runs the
+# same box deploy script, so a merge to either repo refreshes the live personal Metron.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: metron-deploy
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Metron via SSM
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # The dashboard EC2 (shared box) — set per repo: gh variable set METRON_INSTANCE_ID.
+      # Non-secret identifier, a variable not a secret.
+      METRON_INSTANCE_ID: ${{ vars.METRON_INSTANCE_ID }}
+
+    steps:
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::711398986525:role/github-actions-lambda-deploy
+          aws-region: us-east-1
+
+      - name: Send SSM deploy command
+        id: send
+        run: |
+          set -euo pipefail
+          # Pull metron to THIS commit (race-safe), metron-ops to latest main, then run the
+          # box deploy script as ec2-user (it owns the venv/node_modules; sudo only for restart).
+          CMD_BODY="set -e; sudo -u ec2-user git -C /home/ec2-user/metron fetch origin --quiet && sudo -u ec2-user git -C /home/ec2-user/metron reset --hard ${GITHUB_SHA} --quiet && sudo -u ec2-user git -C /home/ec2-user/metron-ops fetch origin --quiet && sudo -u ec2-user git -C /home/ec2-user/metron-ops reset --hard origin/main --quiet && sudo -u ec2-user bash /home/ec2-user/metron/infrastructure/deploy-on-merge.sh"
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${METRON_INSTANCE_ID}" \
+            --document-name AWS-RunShellScript \
+            --comment "metron deploy ${GITHUB_SHA}" \
+            --parameters "commands=[\"${CMD_BODY}\"]" \
+            --query 'Command.CommandId' \
+            --output text)
+          echo "command_id=${CMD_ID}" >> "$GITHUB_OUTPUT"
+          echo "Sent SSM command: ${CMD_ID}"
+
+      - name: Wait for SSM command to finish
+        run: |
+          aws ssm wait command-executed \
+            --instance-id "${METRON_INSTANCE_ID}" \
+            --command-id "${{ steps.send.outputs.command_id }}" || true
+
+      - name: Fetch deploy output
+        if: always()
+        run: |
+          set +e
+          STATUS=$(aws ssm get-command-invocation \
+            --instance-id "${METRON_INSTANCE_ID}" \
+            --command-id "${{ steps.send.outputs.command_id }}" \
+            --query '[Status,ResponseCode]' --output text)
+          echo "Status: ${STATUS}"
+          echo "── stdout ──"
+          aws ssm get-command-invocation \
+            --instance-id "${METRON_INSTANCE_ID}" \
+            --command-id "${{ steps.send.outputs.command_id }}" \
+            --query 'StandardOutputContent' --output text
+          echo "── stderr ──"
+          aws ssm get-command-invocation \
+            --instance-id "${METRON_INSTANCE_ID}" \
+            --command-id "${{ steps.send.outputs.command_id }}" \
+            --query 'StandardErrorContent' --output text
+          # Mark the GHA job failed if the box command failed.
+          echo "${STATUS}" | grep -q "^Success" || exit 1
