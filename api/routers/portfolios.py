@@ -98,6 +98,7 @@ class IncomeOut(BaseModel):
 class AccountOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    account_id: uuid.UUID
     broker: str
     external_id: str
     name: str
@@ -117,6 +118,19 @@ class SummaryOut(BaseModel):
     dividends: float
     interest: float
     taxable_income: float
+
+
+class AccountDetailOut(BaseModel):
+    """One account's holdings + activity — the per-account drill-down, in one call.
+
+    Every figure is scoped to this single account (its own ledger + broker-reported
+    positions), so a multi-account portfolio breaks down cleanly. Price-free, like the
+    portfolio-level views."""
+
+    account: AccountOut
+    holdings: list[HoldingOut]
+    realized: list[RealizedOut]
+    transactions: list[TransactionOut]
 
 
 class SkipOut(BaseModel):
@@ -194,6 +208,26 @@ def _owned_portfolio(
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return portfolio
+
+
+def _owned_account(
+    account_id: uuid.UUID,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> models.Account:
+    """Resolve an account within a portfolio the caller's tenant owns, or 404.
+
+    Layers on ``_owned_portfolio`` so a cross-tenant or cross-portfolio account id is
+    indistinguishable from a missing one (never leak existence)."""
+    account = session.scalars(
+        select(models.Account).where(
+            models.Account.id == account_id,
+            models.Account.portfolio_id == portfolio.id,
+        )
+    ).first()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return account
 
 
 def _summarize(snapshot, persisted: persistence.PersistResult, *, parsed: int, skipped: int, errors) -> ImportOut:
@@ -332,6 +366,29 @@ def get_accounts(
     session: Session = Depends(get_session),
 ) -> list[analytics.AccountInfo]:
     return analytics.accounts(session, portfolio.tenant_id, portfolio.id)
+
+
+@router.get("/{portfolio_id}/accounts/{account_id}", response_model=AccountDetailOut)
+def get_account_detail(
+    account: models.Account = Depends(_owned_account),
+    session: Session = Depends(get_session),
+) -> AccountDetailOut:
+    """One account's holdings + realized lots + transactions, all scoped to that account.
+
+    The per-account drill-down for a multi-account portfolio. Price-free (cost basis,
+    realized, ledger) — no market value until a licensed price feed lands."""
+    return AccountDetailOut(
+        account=AccountOut(
+            account_id=account.id,
+            broker=account.broker,
+            external_id=account.external_id,
+            name=account.name or "",
+            currency=account.currency,
+        ),
+        holdings=analytics.holdings(session, account.tenant_id, account.portfolio_id, account.id),
+        realized=analytics.realized(session, account.tenant_id, account.portfolio_id, account.id),
+        transactions=analytics.transactions(session, account.tenant_id, account.portfolio_id, account.id),
+    )
 
 
 @router.get("/{portfolio_id}/summary", response_model=SummaryOut)

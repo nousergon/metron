@@ -101,8 +101,12 @@ export default async function PortfolioPage({ params }: { params: { id: string }
         ) : (
           <Table head={["Account", "Broker", "Currency"]}>
             {accounts.map((a) => (
-              <tr key={`${a.broker}:${a.external_id}`} className="border-b border-line last:border-0">
-                <td className="px-4 py-2 font-medium">{a.name || a.external_id}</td>
+              <tr key={a.account_id} className="border-b border-line last:border-0 hover:bg-slate-50">
+                <td className="px-4 py-2 font-medium">
+                  <Link href={`/portfolios/${id}/accounts/${a.account_id}`} className="hover:text-ink">
+                    {a.name || a.external_id} <span aria-hidden className="text-muted">→</span>
+                  </Link>
+                </td>
                 <td className="px-4 py-2 text-right text-muted">{a.broker}</td>
                 <td className="px-4 py-2 text-right text-muted">{a.currency}</td>
               </tr>

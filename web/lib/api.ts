@@ -27,10 +27,18 @@ export type IncomeYear = {
 };
 
 export type Account = {
+  account_id: string;
   broker: string;
   external_id: string;
   name: string;
   currency: string;
+};
+
+export type AccountDetail = {
+  account: Account;
+  holdings: Holding[];
+  realized: RealizedLot[];
+  transactions: Transaction[];
 };
 
 export type Transaction = {
@@ -97,6 +105,8 @@ export const getTransactions = (tenantId: string, id: string) =>
   get<Transaction[]>(tenantId, `/portfolios/${id}/transactions`);
 export const getRealized = (tenantId: string, id: string) =>
   get<RealizedLot[]>(tenantId, `/portfolios/${id}/realized`);
+export const getAccountDetail = (tenantId: string, id: string, accountId: string) =>
+  get<AccountDetail>(tenantId, `/portfolios/${id}/accounts/${accountId}`);
 
 /** Create a portfolio in the user's workspace (auto-provisions the tenant on the backend). */
 export async function createPortfolio(tenantId: string, name: string): Promise<Portfolio> {

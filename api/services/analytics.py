@@ -63,8 +63,14 @@ class TransactionRow:
     currency: str
 
 
-def _portfolio_rows(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID):
-    """Fetch ``(Transaction, ticker)`` for one portfolio, tenant-scoped, oldest first."""
+def _portfolio_rows(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_id: uuid.UUID | None = None
+):
+    """Fetch ``(Transaction, ticker)`` for one portfolio, tenant-scoped, oldest first.
+
+    When ``account_id`` is given the result is narrowed to that single account (the
+    per-account drill-down); the caller is responsible for verifying the account
+    belongs to the portfolio."""
     stmt = (
         select(models.Transaction, models.Security.symbol)
         .join(models.Account, models.Transaction.account_id == models.Account.id)
@@ -75,6 +81,8 @@ def _portfolio_rows(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.U
         )
         .order_by(models.Transaction.trade_date, models.Transaction.created_at)
     )
+    if account_id is not None:
+        stmt = stmt.where(models.Transaction.account_id == account_id)
     return session.execute(stmt).all()
 
 
@@ -92,25 +100,36 @@ def _to_engine_txn(row: models.Transaction, ticker: str | None) -> Transaction:
     )
 
 
-def load_ledger(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID):
-    """Build the FIFO ledger for a portfolio from its stored transactions."""
-    txns = [_to_engine_txn(row, ticker) for row, ticker in _portfolio_rows(session, tenant_id, portfolio_id)]
+def load_ledger(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_id: uuid.UUID | None = None
+):
+    """Build the FIFO ledger for a portfolio (or a single account) from its transactions."""
+    txns = [
+        _to_engine_txn(row, ticker)
+        for row, ticker in _portfolio_rows(session, tenant_id, portfolio_id, account_id)
+    ]
     return build_ledger(txns)
 
 
-def _position_rows(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID):
+def _position_rows(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_id: uuid.UUID | None = None
+):
     """Fetch ``(quantity, avg_cost, ticker)`` for broker-reported positions in a
-    portfolio (snapshot-sourced accounts: Flex/SnapTrade)."""
+    portfolio (snapshot-sourced accounts: Flex/SnapTrade), optionally one account."""
     stmt = (
         select(models.Position.quantity, models.Position.avg_cost, models.Security.symbol)
         .join(models.Account, models.Position.account_id == models.Account.id)
         .join(models.Security, models.Position.security_id == models.Security.id)
         .where(models.Position.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
     )
+    if account_id is not None:
+        stmt = stmt.where(models.Position.account_id == account_id)
     return session.execute(stmt).all()
 
 
-def holdings(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[Holding]:
+def holdings(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_id: uuid.UUID | None = None
+) -> list[Holding]:
     """Current open positions with share-weighted average cost + total cost basis.
 
     Unions the two ingestion models, aggregated by ticker: positions **derived from
@@ -118,11 +137,11 @@ def holdings(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) ->
     the broker** (Flex/SnapTrade → the ``positions`` table). Per-account ownership
     guarantees a single account is only one source, so the two sets never double-count
     the same holding; a ticker held in both a CSV account and a Flex account correctly
-    sums across accounts."""
+    sums across accounts. With ``account_id`` the union is scoped to that one account."""
     # ticker → [total_shares, total_cost_basis]
     agg: dict[str, list[float]] = {}
 
-    ledger = load_ledger(session, tenant_id, portfolio_id)
+    ledger = load_ledger(session, tenant_id, portfolio_id, account_id)
     for ticker in ledger.open_lots:
         shares, avg_cost = ledger.position(ticker)
         if shares > 0:
@@ -130,7 +149,7 @@ def holdings(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) ->
             agg[ticker][0] += shares
             agg[ticker][1] += shares * avg_cost
 
-    for quantity, avg_cost, ticker in _position_rows(session, tenant_id, portfolio_id):
+    for quantity, avg_cost, ticker in _position_rows(session, tenant_id, portfolio_id, account_id):
         qty = float(quantity)
         if qty <= 0:
             continue
@@ -144,9 +163,11 @@ def holdings(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) ->
     ]
 
 
-def realized(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[RealizedLot]:
+def realized(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_id: uuid.UUID | None = None
+) -> list[RealizedLot]:
     """Closed lots with proceeds, basis, gain, and holding-period classification."""
-    ledger = load_ledger(session, tenant_id, portfolio_id)
+    ledger = load_ledger(session, tenant_id, portfolio_id, account_id)
     return [
         RealizedLot(
             ticker=r.ticker,
@@ -162,8 +183,10 @@ def realized(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) ->
     ]
 
 
-def transactions(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[TransactionRow]:
-    """The portfolio's stored transactions, oldest first."""
+def transactions(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_id: uuid.UUID | None = None
+) -> list[TransactionRow]:
+    """The portfolio's stored transactions, oldest first (optionally one account)."""
     return [
         TransactionRow(
             trade_date=row.trade_date,
@@ -175,12 +198,13 @@ def transactions(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID
             fees=float(row.fees),
             currency=row.currency,
         )
-        for row, ticker in _portfolio_rows(session, tenant_id, portfolio_id)
+        for row, ticker in _portfolio_rows(session, tenant_id, portfolio_id, account_id)
     ]
 
 
 @dataclass
 class AccountInfo:
+    account_id: uuid.UUID
     broker: str
     external_id: str
     name: str
@@ -232,7 +256,10 @@ def accounts(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) ->
         .where(models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
         .order_by(models.Account.broker, models.Account.external_id)
     ).all()
-    return [AccountInfo(broker=a.broker, external_id=a.external_id, name=a.name or "", currency=a.currency) for a in rows]
+    return [
+        AccountInfo(account_id=a.id, broker=a.broker, external_id=a.external_id, name=a.name or "", currency=a.currency)
+        for a in rows
+    ]
 
 
 def summary(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> PortfolioSummary:
