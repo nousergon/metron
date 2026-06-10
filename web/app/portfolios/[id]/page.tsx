@@ -43,6 +43,9 @@ export default async function PortfolioPage({ params }: { params: { id: string }
           <Link href={`/portfolios/${id}/risk`} className="text-sm text-muted hover:text-ink">
             Risk →
           </Link>
+          <Link href={`/portfolios/${id}/tax`} className="text-sm text-muted hover:text-ink">
+            Tax →
+          </Link>
           <Link href={`/portfolios/${id}/transactions`} className="text-sm text-muted hover:text-ink">
             Transactions &amp; realized →
           </Link>

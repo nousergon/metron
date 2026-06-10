@@ -164,6 +164,30 @@ export type Risk = {
 
 export const getRisk = (tenantId: string, id: string) => get<Risk>(tenantId, `/portfolios/${id}/risk`);
 
+export type TaxLot = {
+  ticker: string;
+  open_date: string;
+  quantity: number;
+  cost_basis: number;
+  term: string;
+  market_value: number | null;
+  unrealized_gain: number | null;
+  harvestable_loss: number;
+};
+
+export type Tax = {
+  as_of: string;
+  n_lots: number;
+  n_priced: number;
+  unrealized_st: number | null;
+  unrealized_lt: number | null;
+  unrealized_total: number | null;
+  harvestable_loss: number;
+  lots: TaxLot[];
+};
+
+export const getTax = (tenantId: string, id: string) => get<Tax>(tenantId, `/portfolios/${id}/tax`);
+
 /** Backfill history + compute factor risk (the heavier POST path). */
 export async function computeRisk(tenantId: string, id: string): Promise<Risk> {
   const res = await fetch(`${API_URL}/portfolios/${id}/risk/compute`, {

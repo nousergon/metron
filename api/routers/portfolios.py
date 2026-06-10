@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from api.db.session import get_session
-from api.services import analytics, performance, persistence, risk
+from api.services import analytics, performance, persistence, risk, tax
 from api.services import prices as price_service
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult
@@ -173,6 +173,32 @@ class PerformanceOut(BaseModel):
     twr: float | None
     annualized_twr: float | None
     points: list[PerfPointOut]
+
+
+class TaxLotOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    open_date: date
+    quantity: float
+    cost_basis: float
+    term: str
+    market_value: float | None
+    unrealized_gain: float | None
+    harvestable_loss: float
+
+
+class TaxOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    as_of: date
+    n_lots: int
+    n_priced: int
+    unrealized_st: float | None
+    unrealized_lt: float | None
+    unrealized_total: float | None
+    harvestable_loss: float
+    lots: list[TaxLotOut]
 
 
 class RiskOut(BaseModel):
@@ -473,6 +499,17 @@ def reconstruct_performance(
     now-populated performance summary."""
     performance.reconstruct_snapshots(session, portfolio.tenant_id, portfolio.id, today=date.today())
     return performance.performance(session, portfolio.tenant_id, portfolio.id)
+
+
+@router.get("/{portfolio_id}/tax", response_model=TaxOut)
+def get_tax(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> tax.TaxSummary:
+    """Per-lot tax view — holding-period term, unrealized P&L at the latest cached
+    close, and harvestable losses. Unrealized totals are null until prices are cached
+    (refresh prices first); cost basis + term show regardless."""
+    return tax.tax_lots(session, portfolio.tenant_id, portfolio.id, today=date.today())
 
 
 @router.get("/{portfolio_id}/risk", response_model=RiskOut)
