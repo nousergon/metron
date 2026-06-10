@@ -188,6 +188,52 @@ export type Tax = {
 
 export const getTax = (tenantId: string, id: string) => get<Tax>(tenantId, `/portfolios/${id}/tax`);
 
+export type SectorEffect = {
+  sector: string;
+  port_weight: number;
+  bench_weight: number;
+  port_return: number | null;
+  bench_return: number | null;
+  allocation: number;
+  selection: number;
+  interaction: number;
+  total: number;
+};
+
+export type Attribution = {
+  computable: boolean;
+  benchmark: string;
+  reason: string | null;
+  as_of: string | null;
+  start_date: string | null;
+  lookback_days: number;
+  coverage: number;
+  n_sectors: number;
+  portfolio_return: number | null;
+  benchmark_return: number | null;
+  active_return: number | null;
+  allocation: number | null;
+  selection: number | null;
+  interaction: number | null;
+  sectors: SectorEffect[];
+};
+
+export const getAttribution = (tenantId: string, id: string) =>
+  get<Attribution>(tenantId, `/portfolios/${id}/attribution`);
+
+/** Resolve sectors + backfill history, then run Brinson attribution (heavier POST). */
+export async function computeAttribution(tenantId: string, id: string): Promise<Attribution> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/attribution/compute`, {
+    method: "POST",
+    headers: { "X-Tenant-Id": tenantId },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new MetronApiError(res.status, `compute attribution → ${res.status}`);
+  }
+  return res.json() as Promise<Attribution>;
+}
+
 /** Backfill history + compute factor risk (the heavier POST path). */
 export async function computeRisk(tenantId: string, id: string): Promise<Risk> {
   const res = await fetch(`${API_URL}/portfolios/${id}/risk/compute`, {

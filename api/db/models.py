@@ -104,6 +104,7 @@ class Security(Base):
     name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     asset_class: Mapped[str | None] = mapped_column(String(40), nullable=True)  # equity | etf | cash | …
+    sector: Mapped[str | None] = mapped_column(String(60), nullable=True)  # canonical GICS label; resolved lazily
 
 
 class Transaction(Base):

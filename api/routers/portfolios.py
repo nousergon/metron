@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from api.db.session import get_session
-from api.services import analytics, performance, persistence, risk, tax
+from api.services import analytics, attribution, performance, persistence, risk, tax
 from api.services import prices as price_service
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult
@@ -218,6 +218,40 @@ class RiskOut(BaseModel):
     tracking_error: float | None
     factor_exposures: dict[str, float]
     factor_pct_contrib: dict[str, float]
+
+
+class SectorEffectOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    sector: str
+    port_weight: float
+    bench_weight: float
+    port_return: float | None
+    bench_return: float | None
+    allocation: float
+    selection: float
+    interaction: float
+    total: float
+
+
+class AttributionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    computable: bool
+    benchmark: str
+    reason: str | None
+    as_of: date | None
+    start_date: date | None
+    lookback_days: int
+    coverage: float
+    n_sectors: int
+    portfolio_return: float | None
+    benchmark_return: float | None
+    active_return: float | None
+    allocation: float | None
+    selection: float | None
+    interaction: float | None
+    sectors: list[SectorEffectOut]
 
 
 class SkipOut(BaseModel):
@@ -531,6 +565,27 @@ def compute_risk(
     """Backfill the held + factor-ETF price history over the risk window, then compute
     the factor risk decomposition. The heavier (network) path behind the GET."""
     return risk.compute_risk(session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=True)
+
+
+@router.get("/{portfolio_id}/attribution", response_model=AttributionOut)
+def get_attribution(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> attribution.AttributionSummary:
+    """Brinson-Fachler sector attribution vs SPY, from already-cached prices + sectors.
+    Marked not-computable (with a reason) when the cache lacks history or holding
+    sectors — POST .../attribution/compute to source them."""
+    return attribution.compute_attribution(session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=False)
+
+
+@router.post("/{portfolio_id}/attribution/compute", response_model=AttributionOut)
+def compute_attribution(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> attribution.AttributionSummary:
+    """Resolve holding sectors + backfill held and SPDR-ETF history over the window,
+    then run the attribution. The heavier (network) path behind the GET."""
+    return attribution.compute_attribution(session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=True)
 
 
 @router.get("/{portfolio_id}/accounts/{account_id}", response_model=AccountDetailOut)
