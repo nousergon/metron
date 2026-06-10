@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from alpha_engine_lib.quant.returns import ValuationPoint, annualize, cumulative_return, time_weighted_return
+from alpha_engine_lib.quant.riskstats import max_drawdown, sharpe_ratio, sortino_ratio, volatility
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -121,7 +122,57 @@ class PerformanceSummary:
     cumulative_return: float | None = None
     twr: float | None = None
     annualized_twr: float | None = None
+    # Risk metrics over the flow-neutralized return series (None until ≥3 snapshots) +
+    # the benchmark comparison (None until ≥2 snapshots carry an SPY close).
+    volatility: float | None = None
+    sharpe: float | None = None
+    sortino: float | None = None
+    max_drawdown: float | None = None
+    spy_return: float | None = None
+    alpha: float | None = None
     points: list[PerfPoint] = field(default_factory=list)
+
+
+def _flow_neutralized_returns(points: list[PerfPoint]) -> list[float]:
+    """Per-period flow-neutralized returns — the same neutralization the TWR uses:
+    a point's NAV is recorded end-of-day (post-flow), so ``(navₜ − flowₜ) / navₜ₋₁ − 1``
+    strips the day's external deposit/withdrawal, leaving pure investment return.
+    Skips a period whose prior NAV is non-positive."""
+    out: list[float] = []
+    for i in range(1, len(points)):
+        prev_nav = points[i - 1].nav
+        if prev_nav > 0:
+            out.append((points[i].nav - points[i].external_flow) / prev_nav - 1.0)
+    return out
+
+
+def _apply_risk_and_alpha(summary: PerformanceSummary, points: list[PerfPoint]) -> None:
+    """Fill risk metrics (flow-neutralized) + the SPY comparison on ``summary``.
+
+    Metron's transaction feed lets us neutralize flows properly (unlike a NAV-only
+    feed): risk metrics run on the flow-neutralized return series, and max drawdown on
+    its growth index — so a deposit reads as capital in, never as a return. Annualization
+    uses an **empirical** periods-per-year (return count over elapsed years), robust to
+    the irregular snapshot cadence rather than assuming 252 trading days."""
+    rets = _flow_neutralized_returns(points)
+    if rets:
+        # Growth index of the flow-neutralized returns → honest peak-to-trough drawdown.
+        index = [1.0]
+        for r in rets:
+            index.append(index[-1] * (1.0 + r))
+        summary.max_drawdown = max_drawdown(index)
+        years = summary.days / 365.25 if summary.days > 0 else 0.0
+        ppy = len(rets) / years if years > 0 else 252.0
+        summary.volatility = volatility(rets, periods_per_year=ppy)
+        summary.sharpe = sharpe_ratio(rets, periods_per_year=ppy)
+        summary.sortino = sortino_ratio(rets, periods_per_year=ppy)
+
+    spy = [p.spy_close for p in points if p.spy_close is not None]
+    if len(spy) >= 2 and spy[0] > 0:
+        summary.spy_return = spy[-1] / spy[0] - 1.0
+        port_return = summary.twr if summary.twr is not None else summary.cumulative_return
+        if port_return is not None:
+            summary.alpha = port_return - summary.spy_return
 
 
 def performance(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> PerformanceSummary:
@@ -165,6 +216,7 @@ def performance(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID)
     )
     if summary.twr is not None and summary.days > 0:
         summary.annualized_twr = annualize(summary.twr, summary.days)
+    _apply_risk_and_alpha(summary, points)
     return summary
 
 

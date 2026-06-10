@@ -108,6 +108,12 @@ export type Performance = {
   cumulative_return: number | null;
   twr: number | null;
   annualized_twr: number | null;
+  volatility: number | null;
+  sharpe: number | null;
+  sortino: number | null;
+  max_drawdown: number | null;
+  spy_return: number | null;
+  alpha: number | null;
   points: PerfPoint[];
 };
 

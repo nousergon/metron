@@ -75,6 +75,32 @@ export default async function PerformancePage({ params }: { params: { id: string
         </div>
       )}
 
+      {perf.alpha != null || perf.volatility != null ? (
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <StatCard
+            label="Alpha vs SPY"
+            value={perf.alpha != null ? percent(perf.alpha) : "—"}
+            valueClass={signClass(perf.alpha ?? 0)}
+            hint={perf.spy_return != null ? `SPY ${percent(perf.spy_return)}` : "TWR − SPY"}
+          />
+          <StatCard
+            label="Volatility (ann.)"
+            value={perf.volatility != null ? `${(perf.volatility * 100).toFixed(1)}%` : "—"}
+          />
+          <StatCard
+            label="Sharpe"
+            value={perf.sharpe != null ? perf.sharpe.toFixed(2) : "—"}
+            valueClass={signClass(perf.sharpe ?? 0)}
+            hint={perf.sortino != null ? `Sortino ${perf.sortino.toFixed(2)}` : undefined}
+          />
+          <StatCard
+            label="Max drawdown"
+            value={perf.max_drawdown != null ? percent(perf.max_drawdown) : "—"}
+            valueClass={signClass(perf.max_drawdown ?? 0)}
+          />
+        </div>
+      ) : null}
+
       <Section title="Recorded NAV" note={`${perf.n_snapshots} day${perf.n_snapshots === 1 ? "" : "s"}`}>
         {recent.length === 0 ? (
           <Empty>Nothing recorded yet.</Empty>

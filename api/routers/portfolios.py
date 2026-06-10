@@ -172,6 +172,12 @@ class PerformanceOut(BaseModel):
     cumulative_return: float | None
     twr: float | None
     annualized_twr: float | None
+    volatility: float | None
+    sharpe: float | None
+    sortino: float | None
+    max_drawdown: float | None
+    spy_return: float | None
+    alpha: float | None
     points: list[PerfPointOut]
 
 
