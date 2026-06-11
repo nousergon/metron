@@ -212,6 +212,38 @@ def _currency_by_symbol(session: Session, symbols: list[str]) -> dict[str, str]:
     return out
 
 
+def _scoped_account_ids(
+    session: Session,
+    portfolio_id: uuid.UUID,
+    account_id: uuid.UUID | None,
+    account_ids: Collection[uuid.UUID] | None,
+) -> set[uuid.UUID]:
+    """The account ids in scope — the portfolio's accounts, narrowed by ``account_id``
+    (one) or ``account_ids`` (a set, possibly empty)."""
+    stmt = select(models.Account.id).where(models.Account.portfolio_id == portfolio_id)
+    if account_id is not None:
+        stmt = stmt.where(models.Account.id == account_id)
+    if account_ids is not None:
+        stmt = stmt.where(models.Account.id.in_(account_ids))
+    return {row[0] for row in session.execute(stmt)}
+
+
+def _snapshot_sourced_account_ids(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """Accounts that carry a broker position snapshot (Flex/SnapTrade). Their CURRENT
+    holdings come from ``positions``; their transactions — which SnapTrade/Flex ALSO
+    populate, for realized-gain/dividend history — must NOT also feed the current-holdings
+    ledger, or shares + cost basis double-count."""
+    stmt = (
+        select(models.Position.account_id)
+        .join(models.Account, models.Position.account_id == models.Account.id)
+        .where(models.Position.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+        .distinct()
+    )
+    return {row[0] for row in session.execute(stmt)}
+
+
 def holdings(
     session: Session,
     tenant_id: uuid.UUID,
@@ -223,11 +255,17 @@ def holdings(
 
     Unions the two ingestion models, aggregated by ticker: positions **derived from
     the transaction ledger** (CSV/OFX accounts) and positions **reported directly by
-    the broker** (Flex/SnapTrade → the ``positions`` table). Per-account ownership
-    guarantees a single account is only one source, so the two sets never double-count
-    the same holding; a ticker held in both a CSV account and a Flex account correctly
-    sums across accounts. With ``account_id`` (one) or ``account_ids`` (a set) the union
-    is scoped — the SAME filter is applied to BOTH sources so the two never desync.
+    the broker** (Flex/SnapTrade → the ``positions`` table). The two are NOT mutually
+    exclusive on disk — SnapTrade/Flex populate BOTH ``transactions`` (activities, for
+    realized-gain/dividend history) AND ``positions`` for the same account — so a naive
+    union double-counts shares + cost basis (a phantom loss when the broker market value
+    isn't doubled too, e.g. funds with no cached price bar). To keep one account = one
+    current-holdings source, an account that has ANY position snapshot is treated as
+    snapshot-sourced and its transactions are EXCLUDED from the ledger side here; only
+    ledger-sourced accounts (CSV/OFX — no positions) contribute via the ledger. A ticker
+    held in both a CSV account and a Flex account still correctly sums across accounts.
+    With ``account_id`` (one) or ``account_ids`` (a set) the union is scoped — the SAME
+    filter is applied to BOTH sources so the two never desync.
 
     All monetary values here are in the instrument's NATIVE currency — FX conversion to
     the portfolio base happens in ``valued_holdings``."""
@@ -236,7 +274,12 @@ def holdings(
     broker_mv: dict[str, float] = {}
     broker_as_of: dict[str, date] = {}
 
-    ledger = load_ledger(session, tenant_id, portfolio_id, account_id, account_ids)
+    # Ledger side: only accounts in scope that have NO broker position snapshot. This is
+    # what prevents the SnapTrade/Flex "activities + positions" double-count.
+    ledger_ids = _scoped_account_ids(session, portfolio_id, account_id, account_ids) - (
+        _snapshot_sourced_account_ids(session, tenant_id, portfolio_id)
+    )
+    ledger = load_ledger(session, tenant_id, portfolio_id, account_ids=ledger_ids)
     for ticker in ledger.open_lots:
         shares, avg_cost = ledger.position(ticker)
         if shares > 0:
