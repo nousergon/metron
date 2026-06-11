@@ -123,10 +123,61 @@ class SnapTradeReader:
                     # the old ``brokerage_authorization.brokerage.name`` path
                     # never matched and left institution blank for every account.
                     "institution": acct.get("institution_name", "") or "",
+                    # Bare authorization UUID linking the account to its brokerage
+                    # connection (see ``get_connections``).
+                    "brokerage_authorization": str(acct.get("brokerage_authorization", "") or ""),
                 }
             )
         logger.info("Found %d linked accounts", len(accounts))
         return accounts
+
+    def get_connections(self) -> list[dict]:
+        """Return linked brokerage connections (authorizations): id, brokerage, disabled.
+
+        A disabled connection needs a reconnect through the connection portal
+        (``get_login_url``) — its accounts stop refreshing until repaired.
+        """
+        response = self._client.connections.list_brokerage_authorizations(
+            user_id=self._user_id,
+            user_secret=self._user_secret,
+        )
+        connections = []
+        for auth in response.body:
+            brokerage = auth.get("brokerage") or {}
+            name = ""
+            if isinstance(brokerage, dict):
+                name = brokerage.get("display_name") or brokerage.get("name") or ""
+            connections.append(
+                {
+                    "id": str(auth.get("id", "")),
+                    "brokerage": str(name or auth.get("name", "") or ""),
+                    "disabled": bool(auth.get("disabled") or False),
+                }
+            )
+        logger.info("Found %d brokerage connections", len(connections))
+        return connections
+
+    def get_login_url(self, broker: str | None = None) -> str:
+        """Return a short-lived SnapTrade connection-portal URL for this user.
+
+        The portal is where a NEW brokerage gets linked (E*TRADE, Schwab, …) or a
+        broken connection repaired — SnapTrade hosts the brokerage login itself.
+        ``connection_type="read"`` keeps every connection read-only: this module has
+        NO TRADING METHODS and the portal link must match that posture.
+        """
+        kwargs: dict = {
+            "user_id": self._user_id,
+            "user_secret": self._user_secret,
+            "connection_type": "read",
+        }
+        if broker:
+            kwargs["broker"] = broker
+        response = self._client.authentication.login_snap_trade_user(**kwargs)
+        body = response.body or {}
+        url = body.get("redirectURI") or body.get("loginRedirectURI") or ""
+        if not url:
+            raise RuntimeError("SnapTrade did not return a connection-portal URL")
+        return str(url)
 
     def get_holdings(self, account_id: str) -> list[dict]:
         """Get positions for a single account."""

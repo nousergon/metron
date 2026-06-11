@@ -151,6 +151,7 @@ export function PreferencesForm({ portfolioId, current }: { portfolioId: string;
   const [risk, setRisk] = useState(current.risk_tolerance ?? "");
   const [objective, setObjective] = useState(current.objective ?? "");
   const [notes, setNotes] = useState(current.notes ?? "");
+  const [snaptrade, setSnaptrade] = useState(current.snaptrade_institutions ?? "");
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -161,6 +162,7 @@ export function PreferencesForm({ portfolioId, current }: { portfolioId: string;
         risk_tolerance: risk || null,
         objective: objective || null,
         notes: notes.trim() || null,
+        snaptrade_institutions: snaptrade.trim() || null,
       });
       setMsg({ ok: r.ok, text: r.message });
     });
@@ -202,6 +204,19 @@ export function PreferencesForm({ portfolioId, current }: { portfolioId: string;
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
         />
+      </label>
+      <label className="block text-sm">
+        <span className="text-muted">SnapTrade sync institutions</span>
+        <input
+          className="mt-1 block w-full rounded border border-line px-2 py-1"
+          value={snaptrade}
+          placeholder="e.g. Fidelity, E*Trade — blank = deployment default"
+          onChange={(e) => setSnaptrade(e.target.value)}
+        />
+        <span className="mt-1 block text-xs text-muted">
+          Only accounts at these institutions import on SnapTrade sync — keeps brokers sourced elsewhere (e.g. IBKR
+          via Flex) from double-counting. Enter &quot;all&quot; to import every linked account.
+        </span>
       </label>
       <div className="flex items-center gap-2">
         <button

@@ -89,7 +89,7 @@ class TestPreferences:
     def test_get_defaults_then_put(self, client, tenant):
         pid = _seed(client, tenant)
         d = client.get(f"/portfolios/{pid}/preferences", headers={"X-Tenant-Id": tenant}).json()
-        assert d == {"risk_tolerance": None, "objective": None, "notes": None}
+        assert d == {"risk_tolerance": None, "objective": None, "notes": None, "snaptrade_institutions": None}
         r = client.put(
             f"/portfolios/{pid}/preferences",
             json={"risk_tolerance": "moderate", "objective": "growth", "notes": "buy and hold"},
