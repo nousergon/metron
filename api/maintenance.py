@@ -27,9 +27,10 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from api.config import settings
 from api.db import models
 from api.db.session import SessionLocal, create_all
-from api.services import analytics, attribution, fx, performance, risk
+from api.services import analytics, attribution, data_spine, fx, performance, risk
 from api.services import prices as price_service
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class RefreshResult:
     account_snapshots_recorded: int = 0  # per-account NAV snapshots written this run
     risk_computed: int = 0          # portfolios whose factor risk backfilled + fit
     attribution_computed: int = 0   # portfolios whose sector attribution backfilled + ran
+    universe_published: bool = False  # held-ticker universe published to the data spine
 
 
 def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResult:
@@ -125,6 +127,19 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
             risk_summary.computable if risk_summary is not None else False,
             attr_summary.computable if attr_summary is not None else False,
         )
+    # Publish the held-ticker universe to the data spine so `alpha-engine-data` knows
+    # which EOD closes + FX pairs to pull. Best-effort: a failure here WARNs and never
+    # costs the price refresh + NAV snapshots, which have already committed. Recording
+    # surface = this WARN (+ the data-spine freshness monitor once ARTIFACT_REGISTRY
+    # tracks it). Gated off by default so dev/tests never reach S3.
+    universe_published = False
+    if settings.market_data_sync_enabled:
+        try:
+            data_spine.publish_holdings_universe(session, today=today)
+            universe_published = True
+        except Exception as e:  # noqa: BLE001 - best-effort secondary path; never fatal
+            logger.warning("holdings-universe publish failed (non-fatal): %s", e)
+
     return RefreshResult(
         portfolios=len(portfolios),
         symbols=total_symbols,
@@ -135,6 +150,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         account_snapshots_recorded=total_acct_snaps,
         risk_computed=total_risk,
         attribution_computed=total_attr,
+        universe_published=universe_published,
     )
 
 
@@ -154,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
             session.close()
         logger.info(
             "daily-refresh done: %d portfolios, %d symbols, %d prices, %d snapshots, "
-            "%d account-snapshots, %d reconstructed, %d risk, %d attribution",
+            "%d account-snapshots, %d reconstructed, %d risk, %d attribution, universe_published=%s",
             r.portfolios,
             r.symbols,
             r.prices_updated,
@@ -163,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
             r.snapshots_reconstructed,
             r.risk_computed,
             r.attribution_computed,
+            r.universe_published,
         )
     return 0
 

@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     # SnapTrade connection that also exposes other brokers (e.g. IBKR) composes with a
     # better-quality Flex/native source for those without double-counting. Empty → all.
     snaptrade_institutions: str = ""
+    # Data-spine sync (metron ↔ alpha-engine-data). `alpha-engine-data` is the system's
+    # sole market-data producer; Metron publishes its held-ticker universe here and reads
+    # back EOD-close / FX artifacts (no direct market-data API calls). The bucket is the
+    # shared alpha-engine S3 store. OFF by default so dev/tests never reach S3; the prod
+    # deploy sets MARKET_DATA_SYNC_ENABLED=true (instance role grants the bucket).
+    market_data_bucket: str = "alpha-engine-research"
+    market_data_sync_enabled: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:
