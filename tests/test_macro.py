@@ -1,8 +1,8 @@
-"""Macro market context from FRED (C2-6d).
+"""Macro market context from the data spine (C2-6d → C2-6o-fu-macro).
 
 Injected source (never the network): a snapshot builds latest value + change-vs-prior
-+ recent history per indicator; with no API key it reports unavailable WITH a reason;
-an indicator the source omits is absent, never fabricated.
++ recent history per indicator; when the spine has no macro data it reports unavailable
+WITH a reason; an indicator the source omits is absent, never fabricated.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ def _source_first_two(indicators, api_key):
 
 class TestMacroSnapshot:
     def test_builds_indicators_with_change(self):
-        s = macro.macro_snapshot(api_key="test", source=_source_first_two)
+        s = macro.macro_snapshot(source=_source_first_two)
         assert s.available is True
         assert len(s.indicators) == 2  # only the two the source returned
         first = s.indicators[0]
@@ -40,25 +40,21 @@ class TestMacroSnapshot:
         # Labels/units come from the curated INDICATORS, in order.
         assert first.label == INDICATORS[0].label and first.units == INDICATORS[0].units
 
-    def test_unavailable_without_api_key(self):
-        s = macro.macro_snapshot(api_key="", source=_source_first_two)
-        assert s.available is False and "FRED" in s.reason
-
-    def test_unavailable_when_source_returns_nothing(self):
-        s = macro.macro_snapshot(api_key="test", source=lambda inds, key: {})
+    def test_unavailable_when_spine_has_no_macro(self):
+        s = macro.macro_snapshot(source=lambda inds, key="": {})
         assert s.available is False and s.reason
 
 
 class TestMacroEndpoint:
     def test_get_macro(self, client, monkeypatch):
-        monkeypatch.setattr("api.services.macro.settings.fred_api_key", "test")
-        monkeypatch.setattr("api.services.macro.fetch_macro_series", lambda inds, key, *, source=None: _source_first_two(inds, key))
+        monkeypatch.setattr("api.services.macro.fetch_macro_series",
+                            lambda inds, key="", *, source=None: _source_first_two(inds, key))
         body = client.get("/macro").json()
         assert body["available"] is True
         assert len(body["indicators"]) == 2
         assert body["indicators"][0]["change"] == 1.5
 
-    def test_get_macro_not_configured(self, client, monkeypatch):
-        monkeypatch.setattr("api.services.macro.settings.fred_api_key", None)
+    def test_get_macro_unavailable_when_spine_empty(self, client, monkeypatch):
+        monkeypatch.setattr("api.services.macro.fetch_macro_series", lambda inds, key="", *, source=None: {})
         body = client.get("/macro").json()
         assert body["available"] is False and body["reason"]

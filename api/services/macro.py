@@ -14,7 +14,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-from api.config import settings
 from portfolio_analytics.macro import INDICATORS, MacroSource, fetch_macro_series
 
 # Cap the history returned per indicator (most recent first) — enough for a sparkline,
@@ -48,15 +47,13 @@ class MacroSummary:
     indicators: list[MacroIndicator] = field(default_factory=list)
 
 
-def macro_snapshot(*, api_key: str | None = None, source: MacroSource | None = None) -> MacroSummary:
-    """Latest macro indicator readings from FRED. ``api_key`` defaults to the configured
-    ``FRED_API_KEY``; ``source`` is injectable for tests. Unavailable (with a reason)
-    when no key is set or FRED returns nothing."""
-    api_key = api_key if api_key is not None else settings.fred_api_key
-    if not api_key:
-        return MacroSummary(False, reason="Macro data needs a free FRED API key — set FRED_API_KEY to enable it.")
-
-    series_by_key = fetch_macro_series(INDICATORS, api_key, source=source)
+def macro_snapshot(*, source: MacroSource | None = None) -> MacroSummary:
+    """Latest macro indicator readings from the data spine (`alpha-engine-data`'s macro
+    artifact). ``source`` is injectable for tests. Unavailable (with a reason) when the
+    spine hasn't published macro indicators yet."""
+    series_by_key = fetch_macro_series(INDICATORS, source=source)
+    if not series_by_key:
+        return MacroSummary(False, reason="Macro data unavailable — the data spine has no macro indicators yet.")
     indicators: list[MacroIndicator] = []
     for ind in INDICATORS:
         series = series_by_key.get(ind.key)
