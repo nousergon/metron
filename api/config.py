@@ -12,9 +12,6 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./dev.sqlite"
     cors_origins: str = "http://localhost:3000"
     env: str = "dev"
-    # FRED API key for the Macro page (free, https://fred.stlouisfed.org/docs/api/api_key.html).
-    # Unset → the Macro page reports "not configured" rather than fabricating data.
-    fred_api_key: str | None = None
     # Personal/single-operator mode: enables the server-side SnapTrade sync, which uses
     # ONE operator SnapTrade connection (SNAPTRADE_* env) shared by the process. Safe only
     # on a single-tenant deploy — OFF by default so a multi-tenant deploy can never let one
