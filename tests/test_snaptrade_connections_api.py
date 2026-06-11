@@ -44,8 +44,16 @@ class _ConnReader:
             {"id": "3", "number": "X3", "institution": "E*TRADE", "brokerage_authorization": "auth-2"},
         ]
 
-    def get_login_url(self, broker=None):
+    def __init__(self):
+        self.removed = []
+        self.login_kwargs = None
+
+    def get_login_url(self, broker=None, reconnect=None):
+        self.login_kwargs = {"broker": broker, "reconnect": reconnect}
         return "https://app.snaptrade.com/connect?token=abc"
+
+    def remove_connection(self, authorization_id):
+        self.removed.append(authorization_id)
 
 
 def test_connections_disabled_by_default_returns_404(client):
@@ -112,7 +120,7 @@ def test_connect_returns_portal_url(client, personal_on, monkeypatch):
 
 def test_connect_upstream_failure_returns_502_with_reason(client, personal_on, monkeypatch):
     class _Boom:
-        def get_login_url(self, broker=None):
+        def get_login_url(self, broker=None, reconnect=None):
             raise RuntimeError("portal unavailable")
 
     _patch_from_env(monkeypatch, _Boom)
@@ -143,3 +151,51 @@ def test_connections_cross_tenant_is_404(client, personal_on, monkeypatch):
         client.get(f"/portfolios/{pid}/snaptrade/connections", headers=_hdr(str(uuid.uuid4()))).status_code
         == 404
     )
+
+
+def test_connect_reconnect_passes_authorization_id(client, personal_on, monkeypatch):
+    reader = _ConnReader()
+    _patch_from_env(monkeypatch, lambda: reader)
+    t = str(uuid.uuid4())
+    pid = _new_portfolio(client, t)
+    r = client.post(f"/portfolios/{pid}/snaptrade/connect", json={"reconnect": "auth-2"}, headers=_hdr(t))
+    assert r.status_code == 200
+    assert reader.login_kwargs == {"broker": None, "reconnect": "auth-2"}
+
+
+def test_remove_connection_deletes_at_snaptrade(client, personal_on, monkeypatch):
+    reader = _ConnReader()
+    _patch_from_env(monkeypatch, lambda: reader)
+    t = str(uuid.uuid4())
+    pid = _new_portfolio(client, t)
+    r = client.delete(f"/portfolios/{pid}/snaptrade/connections/auth-2", headers=_hdr(t))
+    assert r.status_code == 200
+    assert r.json() == {"removed": "auth-2"}
+    assert reader.removed == ["auth-2"]
+
+
+def test_remove_connection_disabled_by_default_404(client):
+    t = str(uuid.uuid4())
+    pid = _new_portfolio(client, t)
+    assert client.delete(f"/portfolios/{pid}/snaptrade/connections/auth-1", headers=_hdr(t)).status_code == 404
+
+
+def test_remove_connection_upstream_failure_502_with_reason(client, personal_on, monkeypatch):
+    class _Boom:
+        def remove_connection(self, authorization_id):
+            raise RuntimeError("authorization not found")
+
+    _patch_from_env(monkeypatch, _Boom)
+    t = str(uuid.uuid4())
+    pid = _new_portfolio(client, t)
+    r = client.delete(f"/portfolios/{pid}/snaptrade/connections/auth-9", headers=_hdr(t))
+    assert r.status_code == 502
+    assert "authorization not found" in r.json()["detail"]
+
+
+def test_remove_connection_cross_tenant_404(client, personal_on, monkeypatch):
+    _patch_from_env(monkeypatch, _ConnReader)
+    t = str(uuid.uuid4())
+    pid = _new_portfolio(client, t)
+    r = client.delete(f"/portfolios/{pid}/snaptrade/connections/auth-1", headers=_hdr(str(uuid.uuid4())))
+    assert r.status_code == 404

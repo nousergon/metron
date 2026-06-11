@@ -14,6 +14,7 @@ import {
   type Preferences,
   putPreferences,
   refreshPrices,
+  removeSnapTradeConnection,
   renamePortfolio,
   type SnapTradeConnections,
   syncFlex,
@@ -121,11 +122,25 @@ export async function listSnapTradeConnectionsAction(
 
 export async function snapTradeConnectUrlAction(
   portfolioId: string,
+  reconnectId?: string,
 ): Promise<{ ok: boolean; message: string; url?: string }> {
   try {
     const tenantId = await requireTenantId();
-    const url = await createSnapTradeConnectUrl(tenantId, portfolioId);
+    const url = await createSnapTradeConnectUrl(tenantId, portfolioId, reconnectId);
     return { ok: true, message: "", url };
+  } catch (e) {
+    return { ok: false, message: errorMessage(e) };
+  }
+}
+
+export async function removeSnapTradeConnectionAction(
+  portfolioId: string,
+  authorizationId: string,
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const tenantId = await requireTenantId();
+    await removeSnapTradeConnection(tenantId, portfolioId, authorizationId);
+    return { ok: true, message: "Connection removed — the SnapTrade slot is free." };
   } catch (e) {
     return { ok: false, message: errorMessage(e) };
   }

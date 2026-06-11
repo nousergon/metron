@@ -157,11 +157,13 @@ class SnapTradeReader:
         logger.info("Found %d brokerage connections", len(connections))
         return connections
 
-    def get_login_url(self, broker: str | None = None) -> str:
+    def get_login_url(self, broker: str | None = None, reconnect: str | None = None) -> str:
         """Return a short-lived SnapTrade connection-portal URL for this user.
 
         The portal is where a NEW brokerage gets linked (E*TRADE, Schwab, …) or a
         broken connection repaired — SnapTrade hosts the brokerage login itself.
+        ``reconnect`` takes an existing authorization id and opens the portal
+        straight into re-authenticating that connection (no new slot consumed).
         ``connection_type="read"`` keeps every connection read-only: this module has
         NO TRADING METHODS and the portal link must match that posture.
         """
@@ -172,12 +174,29 @@ class SnapTradeReader:
         }
         if broker:
             kwargs["broker"] = broker
+        if reconnect:
+            kwargs["reconnect"] = reconnect
         response = self._client.authentication.login_snap_trade_user(**kwargs)
         body = response.body or {}
         url = body.get("redirectURI") or body.get("loginRedirectURI") or ""
         if not url:
             raise RuntimeError("SnapTrade did not return a connection-portal URL")
         return str(url)
+
+    def remove_connection(self, authorization_id: str) -> None:
+        """Permanently delete a brokerage connection (authorization) at SnapTrade.
+
+        Frees a connection slot on the SnapTrade plan. SnapTrade-side data for the
+        connection's accounts is deleted; data already persisted in Metron's DB is
+        untouched (it just stops refreshing). Irreversible — re-linking later goes
+        through the connection portal as a brand-new connection.
+        """
+        self._client.connections.remove_brokerage_authorization(
+            authorization_id=authorization_id,
+            user_id=self._user_id,
+            user_secret=self._user_secret,
+        )
+        logger.info("Removed brokerage connection %s", authorization_id)
 
     def get_holdings(self, account_id: str) -> list[dict]:
         """Get positions for a single account."""

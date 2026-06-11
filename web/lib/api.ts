@@ -487,28 +487,54 @@ export type SnapTradeConnections = {
 export const getSnapTradeConnections = (tenantId: string, id: string) =>
   get<SnapTradeConnections>(tenantId, `/portfolios/${id}/snaptrade/connections`);
 
+async function readDetailError(res: Response, label: string): Promise<MetronApiError> {
+  let detail = `${res.status}`;
+  try {
+    const body = (await res.json()) as { detail?: string };
+    if (body.detail) detail = body.detail;
+  } catch {
+    /* non-JSON error body — keep the status */
+  }
+  return new MetronApiError(res.status, `${label}: ${detail}`);
+}
+
 /** A short-lived SnapTrade connection-portal URL — opening it links a NEW brokerage
- * (E*TRADE, Schwab, …) or repairs a disabled connection. The portal hosts the
- * brokerage login; no credentials touch Metron. */
-export async function createSnapTradeConnectUrl(tenantId: string, id: string): Promise<string> {
+ * (E*TRADE, Schwab, …) or, with `reconnectId`, repairs an existing connection in
+ * place (no new plan slot). The portal hosts the brokerage login; no credentials
+ * touch Metron. */
+export async function createSnapTradeConnectUrl(
+  tenantId: string,
+  id: string,
+  reconnectId?: string,
+): Promise<string> {
   const res = await fetch(`${API_URL}/portfolios/${id}/snaptrade/connect`, {
     method: "POST",
     headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
-    body: JSON.stringify({}),
+    body: JSON.stringify(reconnectId ? { reconnect: reconnectId } : {}),
     cache: "no-store",
   });
-  if (!res.ok) {
-    let detail = `${res.status}`;
-    try {
-      const body = (await res.json()) as { detail?: string };
-      if (body.detail) detail = body.detail;
-    } catch {
-      /* non-JSON error body — keep the status */
-    }
-    throw new MetronApiError(res.status, `SnapTrade connect: ${detail}`);
-  }
+  if (!res.ok) throw await readDetailError(res, "SnapTrade connect");
   const body = (await res.json()) as { redirect_uri: string };
   return body.redirect_uri;
+}
+
+/** Permanently delete a brokerage connection at SnapTrade (frees a plan slot).
+ * Irreversible — re-linking later creates a brand-new connection. Metron's stored
+ * data is untouched; the connection's accounts just stop refreshing. */
+export async function removeSnapTradeConnection(
+  tenantId: string,
+  id: string,
+  authorizationId: string,
+): Promise<void> {
+  const res = await fetch(
+    `${API_URL}/portfolios/${id}/snaptrade/connections/${encodeURIComponent(authorizationId)}`,
+    {
+      method: "DELETE",
+      headers: { "X-Tenant-Id": tenantId },
+      cache: "no-store",
+    },
+  );
+  if (!res.ok) throw await readDetailError(res, "SnapTrade remove");
 }
 
 /** Refresh the EOD price cache for a portfolio's held tickers (market value follows). */

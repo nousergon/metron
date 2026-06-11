@@ -9,6 +9,7 @@ import {
   importCsvAction,
   importOfxAction,
   listSnapTradeConnectionsAction,
+  removeSnapTradeConnectionAction,
   snapTradeConnectUrlAction,
   syncFlexAction,
   syncSnapTradeAction,
@@ -150,14 +151,35 @@ function SnapTradeCard({ portfolioId }: { portfolioId: string }) {
     refresh();
   }, [refresh]);
 
-  function link() {
+  function link(reconnectId?: string) {
     startBusy(async () => {
-      const r = await snapTradeConnectUrlAction(portfolioId);
+      const r = await snapTradeConnectUrlAction(portfolioId, reconnectId);
       if (r.ok && r.url) {
         window.open(r.url, "_blank", "noopener");
-        setConnMsg("Finish linking in the SnapTrade tab, then Refresh and Sync.");
+        setConnMsg(
+          reconnectId
+            ? "Finish re-authenticating in the SnapTrade tab, then Refresh."
+            : "Finish linking in the SnapTrade tab, then Refresh and Sync.",
+        );
       } else {
         setConnMsg(r.message);
+      }
+    });
+  }
+
+  function remove(c: SnapTradeConnections["connections"][number]) {
+    const ok = window.confirm(
+      `Remove the ${c.brokerage || "(unnamed)"} connection from SnapTrade?\n\n` +
+        "This frees a SnapTrade plan slot but is irreversible — re-linking later starts a " +
+        "brand-new connection. Data already imported into Metron is kept; it just stops refreshing.",
+    );
+    if (!ok) return;
+    startBusy(async () => {
+      const r = await removeSnapTradeConnectionAction(portfolioId, c.id);
+      setConnMsg(r.message);
+      if (r.ok) {
+        const next = await listSnapTradeConnectionsAction(portfolioId);
+        if (next.ok && next.data) setConns(next.data);
       }
     });
   }
@@ -176,10 +198,32 @@ function SnapTradeCard({ portfolioId }: { portfolioId: string }) {
             conns.connections.map((c) => (
               <li key={c.id} className="flex items-center justify-between gap-2">
                 <span className="font-medium">{c.brokerage || "(unnamed)"}</span>
-                <span className={c.disabled ? "text-negative" : "text-muted"}>
-                  {c.n_accounts} acct{c.n_accounts === 1 ? "" : "s"}
-                  {c.disabled ? " · reconnect needed" : ""}
-                  {!c.allowed ? " · filtered out" : ""}
+                <span className="flex items-center gap-2">
+                  <span className={c.disabled ? "text-negative" : "text-muted"}>
+                    {c.n_accounts} acct{c.n_accounts === 1 ? "" : "s"}
+                    {c.disabled ? " · reconnect needed" : ""}
+                    {!c.allowed ? " · filtered out" : ""}
+                  </span>
+                  {c.disabled ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => link(c.id)}
+                      className="text-xs underline hover:text-ink disabled:opacity-50"
+                      title="Re-authenticate this connection in the SnapTrade portal (keeps its slot)"
+                    >
+                      Reconnect
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => remove(c)}
+                    className="text-xs text-negative underline disabled:opacity-50"
+                    title="Permanently delete this connection at SnapTrade (frees a plan slot; imported data is kept)"
+                  >
+                    Remove
+                  </button>
                 </span>
               </li>
             ))
@@ -199,7 +243,7 @@ function SnapTradeCard({ portfolioId }: { portfolioId: string }) {
         <button
           type="button"
           disabled={busy}
-          onClick={link}
+          onClick={() => link()}
           className="rounded border border-line px-3 py-1.5 text-sm font-medium disabled:opacity-50"
           title="Opens the SnapTrade connection portal to link a new brokerage (e.g. E*TRADE) or repair one"
         >

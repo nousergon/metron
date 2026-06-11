@@ -780,6 +780,9 @@ class SnapTradeConnectIn(BaseModel):
     # Optional SnapTrade broker slug to deep-link the portal straight to one
     # brokerage's login (e.g. "ETRADE"); omitted = the portal's brokerage picker.
     broker: str | None = None
+    # Optional existing authorization id: opens the portal straight into
+    # re-authenticating that connection (repairs a disabled one, no new slot).
+    reconnect: str | None = None
 
 
 class SnapTradeConnectUrlOut(BaseModel):
@@ -831,15 +834,43 @@ def snaptrade_connect_url(
     """A short-lived SnapTrade connection-portal URL for the operator user.
 
     Opening it is how a NEW brokerage (E*TRADE, Schwab, …) gets linked or a broken
-    connection repaired — SnapTrade hosts the brokerage login; no credentials touch
-    Metron. Connections are created read-only. Same gating/error contract as the
-    sync (404 flag-off / 503 unconfigured / 502 upstream failure with a reason)."""
+    connection repaired (``reconnect`` = authorization id) — SnapTrade hosts the
+    brokerage login; no credentials touch Metron. Connections are created read-only.
+    Same gating/error contract as the sync (404 flag-off / 503 unconfigured / 502
+    upstream failure with a reason)."""
     reader = _snaptrade_reader_or_error()
     try:
-        url = reader.get_login_url(broker=(body.broker if body else None))
+        url = reader.get_login_url(
+            broker=(body.broker if body else None),
+            reconnect=(body.reconnect if body else None),
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"SnapTrade connect-link failed: {e}") from e
     return SnapTradeConnectUrlOut(redirect_uri=url)
+
+
+class SnapTradeRemoveOut(BaseModel):
+    removed: str
+
+
+@router.delete("/{portfolio_id}/snaptrade/connections/{authorization_id}", response_model=SnapTradeRemoveOut)
+def remove_snaptrade_connection(
+    authorization_id: str,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+) -> SnapTradeRemoveOut:
+    """Permanently delete a brokerage connection at SnapTrade (frees a plan slot).
+
+    Irreversible at SnapTrade's side — the connection's accounts stop refreshing and
+    re-linking later creates a brand-new connection through the portal. Data already
+    persisted in Metron's DB is untouched. The UI confirms before calling this.
+    Same gating/error contract as the sync (404 flag-off / 503 unconfigured / 502
+    upstream failure with a reason)."""
+    reader = _snaptrade_reader_or_error()
+    try:
+        reader.remove_connection(authorization_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"SnapTrade connection removal failed: {e}") from e
+    return SnapTradeRemoveOut(removed=authorization_id)
 
 
 def _filter_snapshot_institutions(snapshot, institutions: list[str]) -> None:
