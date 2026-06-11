@@ -7,12 +7,15 @@
 import { revalidatePath } from "next/cache";
 import {
   type AccountTagPatch,
+  createSnapTradeConnectUrl,
+  getSnapTradeConnections,
   importFile,
   MetronApiError,
   type Preferences,
   putPreferences,
   refreshPrices,
   renamePortfolio,
+  type SnapTradeConnections,
   syncFlex,
   syncSnapTrade,
   updateAccountTags,
@@ -96,6 +99,33 @@ export async function syncSnapTradeAction(portfolioId: string): Promise<ActionRe
     const result = await syncSnapTrade(tenantId, portfolioId);
     revalidatePath(`/portfolios/${portfolioId}`);
     return { ok: true, message: summarize(result), result };
+  } catch (e) {
+    return { ok: false, message: errorMessage(e) };
+  }
+}
+
+export async function listSnapTradeConnectionsAction(
+  portfolioId: string,
+): Promise<{ ok: boolean; message: string; data?: SnapTradeConnections }> {
+  try {
+    const tenantId = await requireTenantId();
+    const data = await getSnapTradeConnections(tenantId, portfolioId);
+    return { ok: true, message: "", data };
+  } catch (e) {
+    if (e instanceof MetronApiError && e.status === 404) {
+      return { ok: false, message: "SnapTrade isn't enabled on this deployment." };
+    }
+    return { ok: false, message: errorMessage(e) };
+  }
+}
+
+export async function snapTradeConnectUrlAction(
+  portfolioId: string,
+): Promise<{ ok: boolean; message: string; url?: string }> {
+  try {
+    const tenantId = await requireTenantId();
+    const url = await createSnapTradeConnectUrl(tenantId, portfolioId);
+    return { ok: true, message: "", url };
   } catch (e) {
     return { ok: false, message: errorMessage(e) };
   }

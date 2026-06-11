@@ -100,3 +100,29 @@ def test_institution_allowlist_keeps_only_matching(client, personal_on, monkeypa
     monkeypatch.setattr("api.routers.portfolios.settings.snaptrade_institutions", "Interactive Brokers")
     pid2 = _new_portfolio(client, t)
     assert client.post(f"/portfolios/{pid2}/import/snaptrade", headers=_hdr(t)).json()["positions_imported"] == 3
+
+
+def test_preference_allowlist_overrides_env(client, personal_on, monkeypatch):
+    # The portfolio's saved Settings allowlist wins over the deployment env default;
+    # "all" disables filtering entirely. Fixture accounts are "Interactive Brokers".
+    _patch_from_env(monkeypatch, _FakeReader)
+    monkeypatch.setattr("api.routers.portfolios.settings.snaptrade_institutions", "Fidelity")
+    t = str(uuid.uuid4())
+
+    # Env-only: the Fidelity default drops every IBKR fixture account.
+    pid = _new_portfolio(client, t)
+    assert client.post(f"/portfolios/{pid}/import/snaptrade", headers=_hdr(t)).json()["positions_imported"] == 0
+
+    # Saved preference overrides the env default.
+    pid2 = _new_portfolio(client, t)
+    client.put(
+        f"/portfolios/{pid2}/preferences",
+        json={"snaptrade_institutions": "Interactive Brokers"},
+        headers=_hdr(t),
+    )
+    assert client.post(f"/portfolios/{pid2}/import/snaptrade", headers=_hdr(t)).json()["positions_imported"] == 3
+
+    # "all" = import every linked account regardless of the env default.
+    pid3 = _new_portfolio(client, t)
+    client.put(f"/portfolios/{pid3}/preferences", json={"snaptrade_institutions": "all"}, headers=_hdr(t))
+    assert client.post(f"/portfolios/{pid3}/import/snaptrade", headers=_hdr(t)).json()["positions_imported"] == 3

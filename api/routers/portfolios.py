@@ -83,6 +83,9 @@ class PreferencesIn(BaseModel):
     risk_tolerance: str | None = None
     objective: str | None = None
     notes: str | None = None
+    # Comma-separated institution allowlist for SnapTrade sync ("all" = import every
+    # linked account). Null/blank = deployment default (SNAPTRADE_INSTITUTIONS env).
+    snaptrade_institutions: str | None = None
 
 
 class PreferencesOut(BaseModel):
@@ -91,6 +94,7 @@ class PreferencesOut(BaseModel):
     risk_tolerance: str | None = None
     objective: str | None = None
     notes: str | None = None
+    snaptrade_institutions: str | None = None
 
 
 class HoldingOut(BaseModel):
@@ -489,6 +493,7 @@ def put_preferences(
     pref.risk_tolerance = (body.risk_tolerance or "").strip() or None
     pref.objective = (body.objective or "").strip() or None
     pref.notes = (body.notes or "").strip() or None
+    pref.snaptrade_institutions = (body.snaptrade_institutions or "").strip() or None
     session.commit()
     session.refresh(pref)
     return pref
@@ -690,37 +695,151 @@ def import_flex(
     return _summarize(snapshot, persisted, parsed=len(snapshot.activities), skipped=0, errors=[])
 
 
+def _snaptrade_reader_or_error() -> SnapTradeReader:
+    """Gate + construct the personal SnapTrade reader, shared by every SnapTrade route.
+
+    The SnapTrade connection is **server-side** — one operator SnapTrade user + linked
+    brokerages from the ``SNAPTRADE_*`` env. Because that credential is shared by the
+    whole process, every SnapTrade surface is gated behind ``snaptrade_personal``
+    (single-operator mode) and 404s when off, so a multi-tenant deploy can never let
+    one tenant reach another's brokerage data. M2's per-user connection-portal flow is
+    the multi-tenant replacement, not this. 503 when env creds are missing."""
+    if not settings.snaptrade_personal:
+        raise HTTPException(status_code=404, detail="SnapTrade sync is not enabled on this deployment.")
+    try:
+        return SnapTradeReader.from_env()
+    except KeyError as e:
+        raise HTTPException(status_code=503, detail=f"SnapTrade not configured — missing {e}.") from e
+
+
+def _effective_snaptrade_institutions(session: Session, portfolio: models.Portfolio) -> list[str]:
+    """The institution allowlist a SnapTrade sync applies for this portfolio.
+
+    The portfolio's saved Settings value wins when present — ``"all"`` means no
+    filter (import every linked account); otherwise the deployment default
+    (``SNAPTRADE_INSTITUTIONS`` env). Matching is case-insensitive substring either
+    way (see ``_filter_snapshot_institutions``)."""
+    pref = session.scalars(
+        select(models.InvestorPreferences).where(
+            models.InvestorPreferences.tenant_id == portfolio.tenant_id,
+            models.InvestorPreferences.portfolio_id == portfolio.id,
+        )
+    ).first()
+    raw = pref.snaptrade_institutions if pref is not None else None
+    if raw is None or not raw.strip():
+        return settings.snaptrade_institution_list
+    if raw.strip().lower() == "all":
+        return []
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 @router.post("/{portfolio_id}/import/snaptrade", response_model=ImportOut)
 def import_snaptrade(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     session: Session = Depends(get_session),
 ) -> ImportOut:
-    """Sync the operator's linked SnapTrade connection (e.g. Fidelity) into this portfolio.
+    """Sync the operator's linked SnapTrade brokerages into this portfolio.
 
-    Unlike the BYO-token Flex path, the SnapTrade connection is **server-side** — one
-    operator SnapTrade user + linked brokerages from the ``SNAPTRADE_*`` env. Because that
-    credential is shared by the whole process, this endpoint is gated behind
-    ``snaptrade_personal`` (single-operator mode) and 404s when off, so a multi-tenant
-    deploy can never let one tenant pull another's brokerage data. M2's per-user
-    connection-portal flow is the multi-tenant replacement, not this.
+    Pulls every account linked to the operator SnapTrade user, filtered to the
+    portfolio's institution allowlist (Settings; deployment env as default) so a
+    broker sourced elsewhere (e.g. IBKR via Flex) doesn't double-count.
 
-    503 when SnapTrade isn't configured (missing env); 502 on a SnapTrade/network failure —
-    both with a reason, never a silent blank.
+    404 when personal mode is off / 503 unconfigured (see
+    ``_snaptrade_reader_or_error``); 502 on a SnapTrade/network failure — always
+    with a reason, never a silent blank.
     """
-    if not settings.snaptrade_personal:
-        raise HTTPException(status_code=404, detail="SnapTrade sync is not enabled on this deployment.")
-    try:
-        reader = SnapTradeReader.from_env()
-    except KeyError as e:
-        raise HTTPException(status_code=503, detail=f"SnapTrade not configured — missing {e}.") from e
+    reader = _snaptrade_reader_or_error()
     snapshot = SnapTradeConnector(reader).sync()
     if snapshot.error:
         raise HTTPException(status_code=502, detail=f"SnapTrade sync failed: {snapshot.error}")
-    _filter_snapshot_institutions(snapshot, settings.snaptrade_institution_list)
+    _filter_snapshot_institutions(snapshot, _effective_snaptrade_institutions(session, portfolio))
     persisted = persistence.persist_snapshot(
         session, tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id, snapshot=snapshot
     )
     return _summarize(snapshot, persisted, parsed=len(snapshot.activities), skipped=0, errors=[])
+
+
+class SnapTradeConnectionOut(BaseModel):
+    id: str
+    brokerage: str
+    disabled: bool = False
+    n_accounts: int = 0
+    # Would this connection's accounts survive the sync's institution allowlist?
+    allowed: bool = True
+
+
+class SnapTradeConnectionsOut(BaseModel):
+    connections: list[SnapTradeConnectionOut]
+    # Effective allowlist the sync applies for this portfolio ([] = all linked accounts).
+    allowlist: list[str]
+
+
+class SnapTradeConnectIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Optional SnapTrade broker slug to deep-link the portal straight to one
+    # brokerage's login (e.g. "ETRADE"); omitted = the portal's brokerage picker.
+    broker: str | None = None
+
+
+class SnapTradeConnectUrlOut(BaseModel):
+    redirect_uri: str
+
+
+@router.get("/{portfolio_id}/snaptrade/connections", response_model=SnapTradeConnectionsOut)
+def list_snaptrade_connections(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> SnapTradeConnectionsOut:
+    """The operator's linked SnapTrade brokerage connections, with account counts and
+    whether each clears the institution allowlist this portfolio applies on sync.
+
+    Same gating/error contract as the sync (404 flag-off / 503 unconfigured / 502
+    upstream failure with a reason)."""
+    reader = _snaptrade_reader_or_error()
+    try:
+        connections = reader.get_connections()
+        accounts = reader.get_accounts()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"SnapTrade connections fetch failed: {e}") from e
+    allowlist = _effective_snaptrade_institutions(session, portfolio)
+    allow = [s.lower() for s in allowlist]
+    out = []
+    for c in connections:
+        accts = [a for a in accounts if a.get("brokerage_authorization") == c["id"]]
+        # Allowlist matching mirrors the sync filter (account institution names);
+        # a connection with no synced accounts yet falls back to its brokerage name.
+        names = [a.get("institution") or "" for a in accts] or [c["brokerage"]]
+        allowed = not allow or any(any(s in n.lower() for s in allow) for n in names)
+        out.append(
+            SnapTradeConnectionOut(
+                id=c["id"],
+                brokerage=c["brokerage"],
+                disabled=c["disabled"],
+                n_accounts=len(accts),
+                allowed=allowed,
+            )
+        )
+    return SnapTradeConnectionsOut(connections=out, allowlist=allowlist)
+
+
+@router.post("/{portfolio_id}/snaptrade/connect", response_model=SnapTradeConnectUrlOut)
+def snaptrade_connect_url(
+    body: SnapTradeConnectIn | None = None,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+) -> SnapTradeConnectUrlOut:
+    """A short-lived SnapTrade connection-portal URL for the operator user.
+
+    Opening it is how a NEW brokerage (E*TRADE, Schwab, …) gets linked or a broken
+    connection repaired — SnapTrade hosts the brokerage login; no credentials touch
+    Metron. Connections are created read-only. Same gating/error contract as the
+    sync (404 flag-off / 503 unconfigured / 502 upstream failure with a reason)."""
+    reader = _snaptrade_reader_or_error()
+    try:
+        url = reader.get_login_url(broker=(body.broker if body else None))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"SnapTrade connect-link failed: {e}") from e
+    return SnapTradeConnectUrlOut(redirect_uri=url)
 
 
 def _filter_snapshot_institutions(snapshot, institutions: list[str]) -> None:

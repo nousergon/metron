@@ -457,8 +457,9 @@ export async function syncFlex(tenantId: string, id: string, token: string, quer
   return readResult(res, "IBKR Flex sync");
 }
 
-/** Sync the operator's server-side SnapTrade connection (e.g. Fidelity) into a portfolio.
- * Personal/single-operator only — 404 when the deployment hasn't enabled it. */
+/** Sync the operator's linked SnapTrade brokerages into a portfolio (filtered to the
+ * portfolio's Settings institution allowlist). Personal/single-operator only — 404
+ * when the deployment hasn't enabled it. */
 export async function syncSnapTrade(tenantId: string, id: string): Promise<ImportResult> {
   const res = await fetch(`${API_URL}/portfolios/${id}/import/snaptrade`, {
     method: "POST",
@@ -466,6 +467,48 @@ export async function syncSnapTrade(tenantId: string, id: string): Promise<Impor
     cache: "no-store",
   });
   return readResult(res, "SnapTrade sync");
+}
+
+// --- SnapTrade connections (personal/single-operator) -----------------------
+
+export type SnapTradeConnection = {
+  id: string;
+  brokerage: string;
+  disabled: boolean; // needs a reconnect through the portal
+  n_accounts: number;
+  allowed: boolean; // clears the institution allowlist the sync applies
+};
+
+export type SnapTradeConnections = {
+  connections: SnapTradeConnection[];
+  allowlist: string[]; // effective allowlist ([] = all linked accounts import)
+};
+
+export const getSnapTradeConnections = (tenantId: string, id: string) =>
+  get<SnapTradeConnections>(tenantId, `/portfolios/${id}/snaptrade/connections`);
+
+/** A short-lived SnapTrade connection-portal URL — opening it links a NEW brokerage
+ * (E*TRADE, Schwab, …) or repairs a disabled connection. The portal hosts the
+ * brokerage login; no credentials touch Metron. */
+export async function createSnapTradeConnectUrl(tenantId: string, id: string): Promise<string> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/snaptrade/connect`, {
+    method: "POST",
+    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      /* non-JSON error body — keep the status */
+    }
+    throw new MetronApiError(res.status, `SnapTrade connect: ${detail}`);
+  }
+  const body = (await res.json()) as { redirect_uri: string };
+  return body.redirect_uri;
 }
 
 /** Refresh the EOD price cache for a portfolio's held tickers (market value follows). */
@@ -516,6 +559,9 @@ export type Preferences = {
   risk_tolerance: string | null;
   objective: string | null;
   notes: string | null;
+  // Comma-separated SnapTrade sync institution allowlist ("all" = every linked
+  // account). Null = deployment default.
+  snaptrade_institutions: string | null;
 };
 
 export const getPreferences = (tenantId: string, id: string) =>
