@@ -40,13 +40,11 @@ dependencies = [
     "snaptrade-python-sdk>=11.0.198",
     # OFX/QFX parsing (spec-strict) for the free-tier OFX import path.
     "ofxtools>=0.9.5",
-    # EOD price source for market value / performance. Free, no signup — fine for the
-    # PERSONAL (non-commercial) tier. The public multi-tenant tier swaps in a licensed
-    # feed (Marketstack/Databento) before any public price *display* (redistribution).
-    "yfinance>=0.2.40",
-    # S3 client for the data-spine sync: publish the held-ticker universe to
-    # alpha-engine-data and (next) read its EOD-close / FX artifacts. The market-data
-    # ground truth is the `data` module — Metron is a pure consumer of its S3 artifacts.
+    # S3 client for the data spine. `alpha-engine-data` is the single market/reference-
+    # data ground truth for the Nous Ergon system; Metron publishes its held-ticker
+    # universe and reads EOD closes / FX / sectors / earnings from its S3 artifacts —
+    # it makes NO direct market-data API calls (no yfinance). Remaining external fetch:
+    # FRED (Macro page) — a separate spine cutover (the producer already emits macro).
     "boto3>=1.34",
 ]
 

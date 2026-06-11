@@ -52,13 +52,18 @@ def refresh_earnings(session: Session, symbols: list[str], *, source: EarningsSo
     symbols = [s for s in dict.fromkeys(symbols) if s]
     if not symbols:
         return 0
-    dates = fetch_earnings_dates(symbols, source=source)
+    # The spine keys earnings by yf_symbol, so fetch the Security rows first, query by
+    # their yf_symbols, and map the result back per row.
+    rows = session.scalars(select(models.Security).where(models.Security.symbol.in_(symbols))).all()
+    if not rows:
+        return 0
+    yf_by_row = {row: (row.yf_symbol or row.symbol) for row in rows}
+    dates = fetch_earnings_dates(sorted(set(yf_by_row.values())), source=source)
     if not dates:
         return 0
-    rows = session.scalars(select(models.Security).where(models.Security.symbol.in_(list(dates)))).all()
     updated = 0
     for row in rows:
-        d = dates.get(row.symbol)
+        d = dates.get(yf_by_row[row])
         if d is not None:
             row.next_earnings_date = d
             updated += 1

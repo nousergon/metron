@@ -13,7 +13,7 @@ in a licensed classification feed by passing a different ``source`` — never by
 editing callers — exactly like the price source seam.
 """
 
-from portfolio_analytics.sectors.yfinance_source import (
+from portfolio_analytics.sectors.source import (
     FUNDS_SECTOR_KEY,
     SECTOR_ETF,
     BenchmarkSource,

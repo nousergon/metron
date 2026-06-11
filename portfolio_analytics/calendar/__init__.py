@@ -6,6 +6,6 @@ macro-release rows are deferred (robodashboard sourced them from alpha-engine's 
 S3, which doesn't belong in the free tier).
 """
 
-from portfolio_analytics.calendar.yfinance_source import EarningsSource, fetch_earnings_dates
+from portfolio_analytics.calendar.source import EarningsSource, fetch_earnings_dates
 
 __all__ = ["EarningsSource", "fetch_earnings_dates"]

@@ -49,12 +49,15 @@ def ensure_sectors(session: Session, symbols: list[str], *, source: SectorSource
     ).all()
     if not rows:
         return 0
-    resolved = fetch_sectors([r.symbol for r in rows], source=source)
+    # The spine keys sectors by yf_symbol (foreign listings exchange-suffixed), so resolve
+    # symbol→yf_symbol before querying and map the result back per row.
+    yf_by_row = {row: (row.yf_symbol or row.symbol) for row in rows}
+    resolved = fetch_sectors(sorted(set(yf_by_row.values())), source=source)
     if not resolved:
         return 0
     updated = 0
     for row in rows:
-        sector = resolved.get(row.symbol)
+        sector = resolved.get(yf_by_row[row])
         if sector:
             row.sector = sector
             updated += 1
