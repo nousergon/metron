@@ -58,6 +58,11 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         base = p.base_currency or "USD"
         currencies = sorted({h.currency for h in held if h.currency and h.currency != base})
         fx_updated = fx.refresh_fx_rates(session, currencies, base=base) if currencies else 0
+        # Backfill FX history over the foreign-transaction span so realized/dividend income
+        # converts at its as-of-date rate.
+        txn_ccys, earliest = analytics.foreign_transaction_currencies(session, p.tenant_id, p.id, base=base)
+        if txn_ccys and earliest is not None:
+            fx_updated += fx.backfill_fx_rates(session, txn_ccys, earliest, today, base=base)
         snap = performance.record_snapshot(session, p.tenant_id, p.id, today=today)
         total_symbols += len(symbols)
         total_updated += updated

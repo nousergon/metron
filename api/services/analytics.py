@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from api.db import models
 from api.services import fx as fx_service
 from api.services import prices as price_service
-from portfolio_analytics.domain.ledger import Transaction, TxnType, build_ledger
+from portfolio_analytics.domain.ledger import RealizedGain, Transaction, TxnType, build_ledger
 from portfolio_analytics.domain.realized import YearlyIncome, summarize_income_by_year
 
 
@@ -65,10 +65,17 @@ class RealizedLot:
     open_date: date
     close_date: date
     quantity: float
-    proceeds: float
-    cost_basis: float
-    gain: float
+    proceeds: float       # native
+    cost_basis: float     # native
+    gain: float           # native
     long_term: bool
+    currency: str = "USD"
+    fx_rate: float | None = None     # base per 1 unit of `currency` as of close_date (1.0 for USD)
+    # Base-currency conversion at the close-date rate; None when that rate isn't cached
+    # (no fabrication — the native gain is still shown).
+    gain_base: float | None = None
+    proceeds_base: float | None = None
+    cost_basis_base: float | None = None
 
 
 @dataclass
@@ -313,21 +320,37 @@ def _base_currency(session: Session, portfolio_id: uuid.UUID) -> str:
 def realized(
     session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_id: uuid.UUID | None = None
 ) -> list[RealizedLot]:
-    """Closed lots with proceeds, basis, gain, and holding-period classification."""
+    """Closed lots with proceeds, basis, gain, and holding-period classification.
+
+    Native amounts are converted to the portfolio base currency at the FX rate **as of
+    the close date** (the rate when the gain was realized). A lot whose currency has no
+    cached as-of rate keeps its base fields None (native still shown)."""
+    base = _base_currency(session, portfolio_id)
     ledger = load_ledger(session, tenant_id, portfolio_id, account_id)
-    return [
-        RealizedLot(
-            ticker=r.ticker,
-            open_date=r.open_date,
-            close_date=r.close_date,
-            quantity=r.quantity,
-            proceeds=r.proceeds,
-            cost_basis=r.cost_basis,
-            gain=r.gain,
-            long_term=r.long_term,
+    closed = sorted(ledger.realized, key=lambda r: r.close_date)
+    ccy_by_ticker = _currency_by_symbol(session, [r.ticker for r in closed])
+    out: list[RealizedLot] = []
+    for r in closed:
+        currency = ccy_by_ticker.get(r.ticker, base)
+        rate = fx_service.rate_as_of(session, currency, r.close_date, base=base)
+        out.append(
+            RealizedLot(
+                ticker=r.ticker,
+                open_date=r.open_date,
+                close_date=r.close_date,
+                quantity=r.quantity,
+                proceeds=r.proceeds,
+                cost_basis=r.cost_basis,
+                gain=r.gain,
+                long_term=r.long_term,
+                currency=currency,
+                fx_rate=rate,
+                gain_base=(r.gain * rate) if rate is not None else None,
+                proceeds_base=(r.proceeds * rate) if rate is not None else None,
+                cost_basis_base=(r.cost_basis * rate) if rate is not None else None,
+            )
         )
-        for r in sorted(ledger.realized, key=lambda r: r.close_date)
-    ]
+    return out
 
 
 def transactions(
@@ -401,20 +424,48 @@ def income(
     """Per-year realized taxable income — realized ST/LT gains + dividends + interest.
 
     Realized gains come from the FIFO ledger; dividends/interest are summed directly
-    from the cash transactions (they never enter the lot ledger). Price-free — fully
-    determined by the transaction history. Newest year first. ``account_ids`` restricts
-    to a set of accounts (e.g. the taxable subset, so an IRA's dividends don't inflate
-    a taxable-income figure)."""
+    from the cash transactions (they never enter the lot ledger). Every native amount is
+    converted to the portfolio base currency at the FX rate **as of its event date**
+    (close date for a realized lot, trade date for a dividend/interest) — so a HKD
+    dividend lands in the USD income total at the rate it was actually worth, not today's.
+    A row whose currency has no cached as-of rate is excluded (never summed at face
+    value). Newest year first. ``account_ids`` restricts to a set of accounts (e.g. the
+    taxable subset, so an IRA's dividends don't inflate a taxable-income figure)."""
+    base = _base_currency(session, portfolio_id)
     rows = _portfolio_rows(session, tenant_id, portfolio_id, account_ids=account_ids)
     ledger = build_ledger([_to_engine_txn(row, ticker) for row, ticker in rows])
+
+    # Realized gains → base at the close-date rate (rebuild each lot with base proceeds /
+    # cost so its derived gain is in base; drop a lot we can't convert).
+    ccy_by_ticker = _currency_by_symbol(session, [r.ticker for r in ledger.realized])
+    realized_base: list[RealizedGain] = []
+    for r in ledger.realized:
+        rate = fx_service.rate_as_of(session, ccy_by_ticker.get(r.ticker, base), r.close_date, base=base)
+        if rate is None:
+            continue
+        realized_base.append(
+            RealizedGain(
+                ticker=r.ticker,
+                open_date=r.open_date,
+                close_date=r.close_date,
+                quantity=r.quantity,
+                proceeds=r.proceeds * rate,
+                cost_basis=r.cost_basis * rate,
+            )
+        )
+
     dividends: dict[int, float] = defaultdict(float)
     interest: dict[int, float] = defaultdict(float)
     for row, _ticker in rows:
-        if row.txn_type == TxnType.DIVIDEND.value:
-            dividends[row.trade_date.year] += float(row.amount)
-        elif row.txn_type == TxnType.INTEREST.value:
-            interest[row.trade_date.year] += float(row.amount)
-    return summarize_income_by_year(ledger.realized, dict(dividends), dict(interest))
+        if row.txn_type not in (TxnType.DIVIDEND.value, TxnType.INTEREST.value):
+            continue
+        rate = fx_service.rate_as_of(session, row.currency, row.trade_date, base=base)
+        if rate is None:
+            continue
+        amount = float(row.amount) * rate
+        bucket = dividends if row.txn_type == TxnType.DIVIDEND.value else interest
+        bucket[row.trade_date.year] += amount
+    return summarize_income_by_year(realized_base, dict(dividends), dict(interest))
 
 
 def accounts(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[AccountInfo]:
@@ -441,6 +492,28 @@ def accounts(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) ->
         )
         for a in rows
     ]
+
+
+def foreign_transaction_currencies(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, base: str = "USD"
+) -> tuple[list[str], date | None]:
+    """The distinct non-base currencies that appear in a portfolio's transactions, plus
+    the earliest transaction date across them — the span over which FX history must be
+    backfilled so realized gains / dividends convert at their as-of-date rate."""
+    base = (base or "USD").strip().upper()
+    rows = session.execute(
+        select(models.Transaction.currency, func.min(models.Transaction.trade_date))
+        .join(models.Account, models.Transaction.account_id == models.Account.id)
+        .where(
+            models.Transaction.tenant_id == tenant_id,
+            models.Account.portfolio_id == portfolio_id,
+            func.upper(models.Transaction.currency) != base,
+        )
+        .group_by(models.Transaction.currency)
+    ).all()
+    currencies = [c for c, _ in rows if c]
+    earliest = min((d for _, d in rows if d is not None), default=None)
+    return currencies, earliest
 
 
 def summary(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> PortfolioSummary:
@@ -471,8 +544,10 @@ def summary(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> 
         n_accounts=int(n_accounts or 0),
         n_holdings=len(held),
         total_cost_basis=sum(h.cost_basis_base for h in convertible),
-        realized_st=sum(r.gain for r in closed if not r.long_term),
-        realized_lt=sum(r.gain for r in closed if r.long_term),
+        # Base-currency realized gains (close-date FX); a lot with no cached rate is
+        # excluded rather than mixed into the base total at native face value.
+        realized_st=sum(r.gain_base for r in closed if not r.long_term and r.gain_base is not None),
+        realized_lt=sum(r.gain_base for r in closed if r.long_term and r.gain_base is not None),
         dividends=sum(i.dividends for i in yearly),
         interest=sum(i.interest for i in yearly),
         market_value=market_value,

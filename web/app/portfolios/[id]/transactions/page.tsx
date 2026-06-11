@@ -37,21 +37,28 @@ export default async function TransactionsPage({ params }: { params: { id: strin
 
       <h1 className="mt-3 text-lg font-semibold">Activity</h1>
 
-      <Section title="Realized lots" note="closed positions — FIFO, short/long term (cost basis only)">
+      <Section title="Realized lots" note={`closed positions — FIFO; gain in ${ccy} at the close-date FX rate`}>
         {lots.length === 0 ? (
           <Empty>No closed lots yet.</Empty>
         ) : (
-          <Table head={["Ticker", "Opened", "Closed", "Quantity", "Proceeds", "Cost basis", "Gain", "Term"]}>
+          <Table head={["Ticker", "Ccy", "Opened", "Closed", "Quantity", "Proceeds", "Cost basis", "Gain", "Term"]}>
             {lots.map((r, i) => (
               <tr key={`${r.ticker}-${r.close_date}-${i}`} className="border-b border-line last:border-0">
                 <td className="px-4 py-2 font-medium">{r.ticker}</td>
+                <td className="px-4 py-2 text-muted">{r.currency}</td>
                 <td className="px-4 py-2 text-right text-muted">{isoDate(r.open_date)}</td>
                 <td className="px-4 py-2 text-right text-muted">{isoDate(r.close_date)}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{quantity(r.quantity)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(r.proceeds, ccy)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(r.cost_basis, ccy)}</td>
-                <td className={`px-4 py-2 text-right font-medium tabular-nums ${signClass(r.gain)}`}>
-                  {signedMoney(r.gain, ccy)}
+                <td className="px-4 py-2 text-right tabular-nums">{money(r.proceeds, r.currency)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{money(r.cost_basis, r.currency)}</td>
+                <td className={`px-4 py-2 text-right font-medium tabular-nums ${signClass(r.gain_base ?? r.gain)}`}>
+                  {r.gain_base != null ? (
+                    signedMoney(r.gain_base, ccy)
+                  ) : (
+                    <span className="text-muted" title={`No ${ccy} FX rate for ${isoDate(r.close_date)}`}>
+                      {signedMoney(r.gain, r.currency)}*
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-2 text-right text-muted">{r.long_term ? "Long" : "Short"}</td>
               </tr>
@@ -64,16 +71,17 @@ export default async function TransactionsPage({ params }: { params: { id: strin
         {txns.length === 0 ? (
           <Empty>No transactions imported yet.</Empty>
         ) : (
-          <Table head={["Date", "Type", "Ticker", "Quantity", "Price", "Amount", "Fees"]}>
+          <Table head={["Date", "Type", "Ticker", "Ccy", "Quantity", "Price", "Amount", "Fees"]}>
             {txns.map((t, i) => (
               <tr key={`${t.trade_date}-${t.txn_type}-${t.ticker}-${i}`} className="border-b border-line last:border-0">
                 <td className="px-4 py-2 font-medium tabular-nums">{isoDate(t.trade_date)}</td>
                 <td className="px-4 py-2 text-right text-muted">{t.txn_type}</td>
                 <td className="px-4 py-2 text-right">{t.ticker || "—"}</td>
+                <td className="px-4 py-2 text-right text-muted">{t.currency}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{t.quantity ? quantity(t.quantity) : "—"}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{t.price ? money(t.price, ccy) : "—"}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(t.amount, ccy)}</td>
-                <td className="px-4 py-2 text-right tabular-nums text-muted">{t.fees ? money(t.fees, ccy) : "—"}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{t.price ? money(t.price, t.currency) : "—"}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{money(t.amount, t.currency)}</td>
+                <td className="px-4 py-2 text-right tabular-nums text-muted">{t.fees ? money(t.fees, t.currency) : "—"}</td>
               </tr>
             ))}
           </Table>

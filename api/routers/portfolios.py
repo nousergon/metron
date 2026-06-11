@@ -116,10 +116,15 @@ class RealizedOut(BaseModel):
     open_date: date
     close_date: date
     quantity: float
-    proceeds: float
-    cost_basis: float
-    gain: float
+    proceeds: float          # native
+    cost_basis: float        # native
+    gain: float              # native
     long_term: bool
+    currency: str = "USD"
+    fx_rate: float | None = None       # close-date base-per-unit (1.0 for USD)
+    gain_base: float | None = None     # gain in the base currency at the close-date rate
+    proceeds_base: float | None = None
+    cost_basis_base: float | None = None
 
 
 class TransactionOut(BaseModel):
@@ -699,6 +704,11 @@ def refresh_prices(
     currencies = sorted({h.currency for h in held if h.currency and h.currency != base})
     if currencies:
         fx_service.refresh_fx_rates(session, currencies, base=base)
+    # Backfill FX *history* over the portfolio's foreign-transaction span so realized
+    # gains + dividends convert at their as-of-date rate (not today's).
+    txn_ccys, earliest = analytics.foreign_transaction_currencies(session, portfolio.tenant_id, portfolio.id, base=base)
+    if txn_ccys and earliest is not None:
+        fx_service.backfill_fx_rates(session, txn_ccys, earliest, date.today(), base=base)
     # Record today's NAV snapshot off the freshly-cached prices (the forward-recorded
     # performance series). None when nothing could be priced.
     snap = performance.record_snapshot(session, portfolio.tenant_id, portfolio.id, today=date.today())

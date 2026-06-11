@@ -72,10 +72,15 @@ export type RealizedLot = {
   open_date: string; // ISO date
   close_date: string; // ISO date
   quantity: number;
-  proceeds: number;
-  cost_basis: number;
-  gain: number;
+  proceeds: number; // native
+  cost_basis: number; // native
+  gain: number; // native
   long_term: boolean;
+  currency: string;
+  fx_rate: number | null; // close-date base-per-unit (1.0 for USD)
+  gain_base: number | null; // gain in base currency at the close-date rate
+  proceeds_base: number | null;
+  cost_basis_base: number | null;
 };
 
 export type Summary = {
