@@ -873,6 +873,72 @@ def remove_snaptrade_connection(
     return SnapTradeRemoveOut(removed=authorization_id)
 
 
+class SnapTradeIncludeOut(BaseModel):
+    # Institution strings appended to the allowlist ([] = nothing was missing).
+    added: list[str]
+    # The allowlist now in effect for this portfolio's sync ([] = all import).
+    allowlist: list[str]
+
+
+@router.post(
+    "/{portfolio_id}/snaptrade/connections/{authorization_id}/include",
+    response_model=SnapTradeIncludeOut,
+)
+def include_snaptrade_connection(
+    authorization_id: str,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> SnapTradeIncludeOut:
+    """Add a filtered-out connection's institutions to this portfolio's sync allowlist.
+
+    Uses the connection's accounts' ACTUAL ``institution_name`` strings, so the typed-
+    string mismatch trap can't happen (SnapTrade's account institution often differs
+    from the brokerage display name — e.g. accounts say "E-Trade" while the connection
+    says "E*Trade"). Persists to the portfolio's Settings preference; when no preference
+    exists yet, the deployment-default env allowlist is materialized first so existing
+    inclusions (e.g. Fidelity) are preserved. Idempotent — already-allowed institutions
+    are not re-added. Same gating/error contract as the sync."""
+    reader = _snaptrade_reader_or_error()
+    try:
+        accounts = reader.get_accounts()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"SnapTrade accounts fetch failed: {e}") from e
+    names = sorted(
+        {
+            (a.get("institution") or "").strip()
+            for a in accounts
+            if a.get("brokerage_authorization") == authorization_id
+        }
+        - {""}
+    )
+    if not names:
+        raise HTTPException(
+            status_code=404,
+            detail="No accounts found for this connection — SnapTrade may still be syncing it; retry shortly.",
+        )
+    current = _effective_snaptrade_institutions(session, portfolio)
+    if not current:
+        # Empty allowlist = everything already imports; nothing to add.
+        return SnapTradeIncludeOut(added=[], allowlist=[])
+    allow = [s.lower() for s in current]
+    added = [n for n in names if not any(s in n.lower() for s in allow)]
+    if not added:
+        return SnapTradeIncludeOut(added=[], allowlist=current)
+    pref = session.scalars(
+        select(models.InvestorPreferences).where(
+            models.InvestorPreferences.tenant_id == portfolio.tenant_id,
+            models.InvestorPreferences.portfolio_id == portfolio.id,
+        )
+    ).first()
+    if pref is None:
+        pref = models.InvestorPreferences(tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id)
+        session.add(pref)
+    new_list = current + added
+    pref.snaptrade_institutions = ", ".join(new_list)
+    session.commit()
+    return SnapTradeIncludeOut(added=added, allowlist=new_list)
+
+
 def _filter_snapshot_institutions(snapshot, institutions: list[str]) -> None:
     """Drop accounts (and their holdings/activities) not at an allowlisted institution.
 

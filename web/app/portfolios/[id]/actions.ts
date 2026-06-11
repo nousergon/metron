@@ -10,6 +10,7 @@ import {
   createSnapTradeConnectUrl,
   getSnapTradeConnections,
   importFile,
+  includeSnapTradeConnection,
   MetronApiError,
   type Preferences,
   putPreferences,
@@ -141,6 +142,23 @@ export async function removeSnapTradeConnectionAction(
     const tenantId = await requireTenantId();
     await removeSnapTradeConnection(tenantId, portfolioId, authorizationId);
     return { ok: true, message: "Connection removed — the SnapTrade slot is free." };
+  } catch (e) {
+    return { ok: false, message: errorMessage(e) };
+  }
+}
+
+export async function includeSnapTradeConnectionAction(
+  portfolioId: string,
+  authorizationId: string,
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const tenantId = await requireTenantId();
+    const r = await includeSnapTradeConnection(tenantId, portfolioId, authorizationId);
+    revalidatePath(`/portfolios/${portfolioId}/settings`);
+    const message = r.added.length
+      ? `Added ${r.added.join(", ")} to the sync institutions — now Sync.`
+      : "Already included in the sync institutions.";
+    return { ok: true, message };
   } catch (e) {
     return { ok: false, message: errorMessage(e) };
   }

@@ -199,3 +199,58 @@ def test_remove_connection_cross_tenant_404(client, personal_on, monkeypatch):
     pid = _new_portfolio(client, t)
     r = client.delete(f"/portfolios/{pid}/snaptrade/connections/auth-1", headers=_hdr(str(uuid.uuid4())))
     assert r.status_code == 404
+
+
+def test_include_appends_actual_institution_strings_over_env_default(client, personal_on, monkeypatch):
+    # The live trap this guards: accounts report "E-Trade" (hyphen) while the
+    # connection's brokerage displays "E*Trade" (asterisk) — include must persist
+    # the ACCOUNT string, materializing the env default into the preference first.
+    class _ETradeReader(_ConnReader):
+        def get_accounts(self):
+            return [
+                {"id": "1", "number": "X1", "institution": "Fidelity", "brokerage_authorization": "auth-1"},
+                {"id": "3", "number": "X3", "institution": "E-Trade", "brokerage_authorization": "auth-2"},
+            ]
+
+    _patch_from_env(monkeypatch, _ETradeReader)
+    monkeypatch.setattr("api.routers.portfolios.settings.snaptrade_institutions", "Fidelity")
+    t = str(uuid.uuid4())
+    pid = _new_portfolio(client, t)
+    r = client.post(f"/portfolios/{pid}/snaptrade/connections/auth-2/include", headers=_hdr(t))
+    assert r.status_code == 200
+    assert r.json() == {"added": ["E-Trade"], "allowlist": ["Fidelity", "E-Trade"]}
+    # Persisted to the Settings preference (env default materialized + appended).
+    prefs = client.get(f"/portfolios/{pid}/preferences", headers=_hdr(t)).json()
+    assert prefs["snaptrade_institutions"] == "Fidelity, E-Trade"
+    # The connection now clears the allowlist.
+    conns = client.get(f"/portfolios/{pid}/snaptrade/connections", headers=_hdr(t)).json()
+    assert all(c["allowed"] for c in conns["connections"])
+    # Idempotent — a second include adds nothing.
+    again = client.post(f"/portfolios/{pid}/snaptrade/connections/auth-2/include", headers=_hdr(t))
+    assert again.json() == {"added": [], "allowlist": ["Fidelity", "E-Trade"]}
+
+
+def test_include_noop_when_allowlist_empty(client, personal_on, monkeypatch):
+    # Empty effective allowlist = everything imports; include has nothing to add.
+    _patch_from_env(monkeypatch, _ConnReader)
+    monkeypatch.setattr("api.routers.portfolios.settings.snaptrade_institutions", "")
+    t = str(uuid.uuid4())
+    pid = _new_portfolio(client, t)
+    r = client.post(f"/portfolios/{pid}/snaptrade/connections/auth-2/include", headers=_hdr(t))
+    assert r.status_code == 200
+    assert r.json() == {"added": [], "allowlist": []}
+
+
+def test_include_unknown_connection_404_with_reason(client, personal_on, monkeypatch):
+    _patch_from_env(monkeypatch, _ConnReader)
+    t = str(uuid.uuid4())
+    pid = _new_portfolio(client, t)
+    r = client.post(f"/portfolios/{pid}/snaptrade/connections/auth-9/include", headers=_hdr(t))
+    assert r.status_code == 404
+    assert "No accounts found" in r.json()["detail"]
+
+
+def test_include_disabled_by_default_404(client):
+    t = str(uuid.uuid4())
+    pid = _new_portfolio(client, t)
+    assert client.post(f"/portfolios/{pid}/snaptrade/connections/auth-1/include", headers=_hdr(t)).status_code == 404

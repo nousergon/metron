@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState, useTransition } from "react";
 import {
   importCsvAction,
   importOfxAction,
+  includeSnapTradeConnectionAction,
   listSnapTradeConnectionsAction,
   removeSnapTradeConnectionAction,
   snapTradeConnectUrlAction,
@@ -167,6 +168,17 @@ function SnapTradeCard({ portfolioId }: { portfolioId: string }) {
     });
   }
 
+  function include(c: SnapTradeConnections["connections"][number]) {
+    startBusy(async () => {
+      const r = await includeSnapTradeConnectionAction(portfolioId, c.id);
+      setConnMsg(r.message);
+      if (r.ok) {
+        const next = await listSnapTradeConnectionsAction(portfolioId);
+        if (next.ok && next.data) setConns(next.data);
+      }
+    });
+  }
+
   function remove(c: SnapTradeConnections["connections"][number]) {
     const ok = window.confirm(
       `Remove the ${c.brokerage || "(unnamed)"} connection from SnapTrade?\n\n` +
@@ -204,6 +216,17 @@ function SnapTradeCard({ portfolioId }: { portfolioId: string }) {
                     {c.disabled ? " · reconnect needed" : ""}
                     {!c.allowed ? " · filtered out" : ""}
                   </span>
+                  {!c.allowed ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => include(c)}
+                      className="text-xs underline hover:text-ink disabled:opacity-50"
+                      title="Add this connection's institutions to the sync allowlist (uses the exact strings SnapTrade reports)"
+                    >
+                      Include in sync
+                    </button>
+                  ) : null}
                   {c.disabled ? (
                     <button
                       type="button"

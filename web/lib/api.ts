@@ -537,6 +537,31 @@ export async function removeSnapTradeConnection(
   if (!res.ok) throw await readDetailError(res, "SnapTrade remove");
 }
 
+export type SnapTradeIncludeResult = {
+  added: string[]; // institution strings appended ([] = nothing was missing)
+  allowlist: string[]; // allowlist now in effect ([] = all import)
+};
+
+/** Add a filtered-out connection's institutions to the portfolio's sync allowlist —
+ * server-side, from the accounts' actual institution strings, so a typed-string
+ * mismatch can't happen. Idempotent. */
+export async function includeSnapTradeConnection(
+  tenantId: string,
+  id: string,
+  authorizationId: string,
+): Promise<SnapTradeIncludeResult> {
+  const res = await fetch(
+    `${API_URL}/portfolios/${id}/snaptrade/connections/${encodeURIComponent(authorizationId)}/include`,
+    {
+      method: "POST",
+      headers: { "X-Tenant-Id": tenantId },
+      cache: "no-store",
+    },
+  );
+  if (!res.ok) throw await readDetailError(res, "SnapTrade include");
+  return res.json() as Promise<SnapTradeIncludeResult>;
+}
+
 /** Refresh the EOD price cache for a portfolio's held tickers (market value follows). */
 export async function refreshPrices(tenantId: string, id: string): Promise<PriceRefreshResult> {
   const res = await fetch(`${API_URL}/portfolios/${id}/prices/refresh`, {
