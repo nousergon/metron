@@ -48,7 +48,10 @@ export default async function AttributionPage({ params }: { params: { id: string
 
       {!attr.computable ? (
         <div className="mt-4">
-          <Empty>{attr.reason ?? "Not computable yet — compute attribution to source sectors + history."}</Empty>
+          <Empty>
+            {attr.reason ?? "Not computable yet."} The nightly refresh sources sectors + history automatically, or
+            click “Compute attribution” to do it now.
+          </Empty>
         </div>
       ) : (
         <>

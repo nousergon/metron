@@ -1,10 +1,15 @@
 """Operational maintenance jobs for a running Metron deploy.
 
-``daily-refresh`` keeps every portfolio current: re-fetch EOD prices for held tickers
-and record today's NAV snapshot (the forward-recorded performance series). Run it once
-daily from a scheduler (systemd timer / cron) so the personal setup stays a hands-off
-daily driver — no manual "refresh prices" click needed, and the NAV-vs-SPY history
-accrues on its own. Idempotent per day (re-running updates the same day's bars/snapshot).
+``daily-refresh`` keeps every portfolio current: re-fetch EOD prices for held tickers,
+record today's NAV snapshot, and pre-populate the derived analytics (Performance NAV
+history, factor Risk, sector Attribution) so those pages flow data without the user
+hunting for a "Compute" button. Run it once daily from a scheduler (systemd timer /
+cron) so the personal setup stays a hands-off daily driver — no manual click needed.
+Idempotent per day (re-running updates the same day's bars/snapshot/backfill).
+
+The derived backfills are **best-effort**: each is wrapped so a yfinance hiccup logs a
+WARN and the job moves on — it never costs the primary price refresh + NAV snapshot,
+which have already committed.
 
     python -m api.maintenance daily-refresh
 
@@ -24,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from api.db.session import SessionLocal, create_all
-from api.services import analytics, fx, performance
+from api.services import analytics, attribution, fx, performance, risk
 from api.services import prices as price_service
 
 logger = logging.getLogger(__name__)
@@ -37,6 +42,9 @@ class RefreshResult:
     prices_updated: int
     snapshots_recorded: int
     fx_rates_updated: int = 0
+    snapshots_reconstructed: int = 0
+    risk_computed: int = 0          # portfolios whose factor risk backfilled + fit
+    attribution_computed: int = 0   # portfolios whose sector attribution backfilled + ran
 
 
 def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResult:
@@ -47,8 +55,21 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     Returns aggregate counts for logging.
     """
     today = today or date.today()
+
+    def _best_effort(label: str, portfolio_id, fn):
+        """Run a derived backfill; on failure log a WARN and roll back its partial work
+        so the next portfolio (and the already-committed price refresh) is unaffected.
+        Returns the callable's result, or None if it raised."""
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001 — best-effort derived analytics, never fatal
+            logger.warning("portfolio %s: %s backfill failed (non-fatal): %s", portfolio_id, label, e)
+            session.rollback()
+            return None
+
     portfolios = session.scalars(select(models.Portfolio)).all()
     total_symbols = total_updated = total_snaps = total_fx = 0
+    total_recon = total_risk = total_attr = 0
     for p in portfolios:
         held = analytics.holdings(session, p.tenant_id, p.id)
         symbols = [h.ticker for h in held if h.ticker]
@@ -64,13 +85,37 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         if txn_ccys and earliest is not None:
             fx_updated += fx.backfill_fx_rates(session, txn_ccys, earliest, today, base=base)
         snap = performance.record_snapshot(session, p.tenant_id, p.id, today=today)
+
+        # Derived analytics — best-effort, so the pages self-populate overnight. Each is
+        # isolated: a yfinance failure on one never costs the price refresh / NAV snapshot.
+        # ``p=p`` binds the loop variable into each lambda (the helper calls it within the
+        # same iteration, so this is belt-and-suspenders against late-binding closures).
+        recon = _best_effort(
+            "performance", p.id,
+            lambda p=p: performance.reconstruct_snapshots(session, p.tenant_id, p.id, today=today),
+        )
+        risk_summary = _best_effort(
+            "risk", p.id,
+            lambda p=p: risk.compute_risk(session, p.tenant_id, p.id, today=today, do_backfill=True),
+        )
+        attr_summary = _best_effort(
+            "attribution", p.id,
+            lambda p=p: attribution.compute_attribution(session, p.tenant_id, p.id, today=today, do_backfill=True),
+        )
+
         total_symbols += len(symbols)
         total_updated += updated
         total_fx += fx_updated
         total_snaps += 1 if snap is not None else 0
+        total_recon += recon or 0
+        total_risk += 1 if (risk_summary is not None and risk_summary.computable) else 0
+        total_attr += 1 if (attr_summary is not None and attr_summary.computable) else 0
         logger.info(
-            "portfolio %s: %d symbols, %d prices updated, %d fx rates, snapshot=%s",
+            "portfolio %s: %d symbols, %d prices, %d fx, snapshot=%s, reconstructed=%s, risk=%s, attribution=%s",
             p.id, len(symbols), updated, fx_updated, snap is not None,
+            recon or 0,
+            risk_summary.computable if risk_summary is not None else False,
+            attr_summary.computable if attr_summary is not None else False,
         )
     return RefreshResult(
         portfolios=len(portfolios),
@@ -78,6 +123,9 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         prices_updated=total_updated,
         snapshots_recorded=total_snaps,
         fx_rates_updated=total_fx,
+        snapshots_reconstructed=total_recon,
+        risk_computed=total_risk,
+        attribution_computed=total_attr,
     )
 
 
@@ -96,11 +144,15 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             session.close()
         logger.info(
-            "daily-refresh done: %d portfolios, %d symbols, %d prices updated, %d snapshots recorded",
+            "daily-refresh done: %d portfolios, %d symbols, %d prices, %d snapshots, "
+            "%d reconstructed, %d risk, %d attribution",
             r.portfolios,
             r.symbols,
             r.prices_updated,
             r.snapshots_recorded,
+            r.snapshots_reconstructed,
+            r.risk_computed,
+            r.attribution_computed,
         )
     return 0
 

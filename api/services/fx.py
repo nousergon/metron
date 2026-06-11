@@ -22,7 +22,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.db import models
-from portfolio_analytics.prices import HistorySource, PriceSource, fetch_close_history, fetch_latest_closes, fx_pair_symbol
+from portfolio_analytics.prices import (
+    HistorySource,
+    PriceSource,
+    fetch_close_history,
+    fetch_latest_closes,
+    fx_pair_symbol,
+)
 
 
 def refresh_fx_rates(

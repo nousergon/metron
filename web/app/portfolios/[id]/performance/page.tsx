@@ -69,8 +69,8 @@ export default async function PerformancePage({ params }: { params: { id: string
         <div className="mt-4">
           <Empty>
             {perf.n_snapshots === 0
-              ? "No NAV recorded yet. Refresh prices on the portfolio page to record the first day."
-              : "One day recorded — refresh again on a later day and return metrics will appear."}
+              ? "No NAV recorded yet. The nightly refresh seeds history automatically — or click “Build history” now to backfill it from past prices."
+              : "One day recorded — the nightly refresh adds more, or “Build history” backfills the full series now."}
           </Empty>
         </div>
       )}

@@ -710,7 +710,10 @@ def refresh_prices(
     if txn_ccys and earliest is not None:
         fx_service.backfill_fx_rates(session, txn_ccys, earliest, date.today(), base=base)
     # Record today's NAV snapshot off the freshly-cached prices (the forward-recorded
-    # performance series). None when nothing could be priced.
+    # performance series). None when nothing could be priced. (The heavier NAV-history
+    # reconstruct + Risk/Attribution backfills run in the daily job and behind the
+    # Performance "Build history" / Risk+Attribution "Compute" buttons — kept off this
+    # interactive path so a refresh click stays fast.)
     snap = performance.record_snapshot(session, portfolio.tenant_id, portfolio.id, today=date.today())
     return PriceRefreshOut(symbols_requested=len(symbols), prices_updated=updated, snapshot_recorded=snap is not None)
 

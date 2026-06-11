@@ -45,7 +45,10 @@ export default async function RiskPage({ params }: { params: { id: string } }) {
 
       {!risk.computable ? (
         <div className="mt-4">
-          <Empty>{risk.reason ?? "Not computable yet — compute risk to backfill history."}</Empty>
+          <Empty>
+            {risk.reason ?? "Not computable yet."} The nightly refresh backfills this automatically, or click
+            “Compute risk” to do it now.
+          </Empty>
         </div>
       ) : (
         <>
