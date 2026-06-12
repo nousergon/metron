@@ -10,7 +10,7 @@ write at the pinned key, and the daily-refresh enable-gate (OFF → never touche
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date
 
 from api import maintenance
 from api.db import models
@@ -139,3 +139,53 @@ class TestDailyRefreshGate:
         result = maintenance.daily_refresh(db_session, today=date(2024, 6, 3))
         assert result.universe_published is False
         assert result.portfolios == 1  # the rest of the refresh still completed
+
+
+class TestUiHeartbeat:
+    """The intraday demand gate's producer-side signal (alpha-engine-data
+    collectors/metron_market_data.py::metron_app_active reads this key)."""
+
+    def _enable(self, monkeypatch):
+        import api.services.data_spine as ds
+        monkeypatch.setattr("api.services.data_spine.settings.market_data_sync_enabled", True)
+        monkeypatch.setattr(ds, "_last_heartbeat_monotonic", 0.0)
+        return ds
+
+    def test_writes_throttles_and_reports(self, monkeypatch):
+        from datetime import datetime
+        from unittest.mock import MagicMock
+
+        ds = self._enable(monkeypatch)
+        s3 = MagicMock()
+        now = datetime(2026, 6, 12, 15, 0, tzinfo=UTC)
+        assert ds.touch_ui_heartbeat(s3_client=s3, now=now) is True
+        kw = s3.put_object.call_args.kwargs
+        assert kw["Key"] == ds.UI_HEARTBEAT_KEY
+        import json as _json
+        body = _json.loads(kw["Body"].decode())
+        assert body == {"schema_version": ds.UI_HEARTBEAT_SCHEMA_VERSION, "ts": "2026-06-12T15:00:00Z"}
+        # Immediately again → throttled, no second write.
+        assert ds.touch_ui_heartbeat(s3_client=s3, now=now) is False
+        assert s3.put_object.call_count == 1
+
+    def test_flag_off_is_noop(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        import api.services.data_spine as ds
+
+        monkeypatch.setattr("api.services.data_spine.settings.market_data_sync_enabled", False)
+        monkeypatch.setattr(ds, "_last_heartbeat_monotonic", 0.0)
+        s3 = MagicMock()
+        assert ds.touch_ui_heartbeat(s3_client=s3) is False
+        assert not s3.put_object.called
+
+    def test_s3_failure_is_fail_soft(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        ds = self._enable(monkeypatch)
+        s3 = MagicMock()
+        s3.put_object.side_effect = Exception("AccessDenied")
+        # Never raises into the request path; reports False; next call may retry
+        # (monotonic stamp only advances on success).
+        assert ds.touch_ui_heartbeat(s3_client=s3) is False
+        assert ds._last_heartbeat_monotonic == 0.0

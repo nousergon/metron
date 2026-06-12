@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
+import time
+from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -39,6 +40,47 @@ HOLDINGS_UNIVERSE_KEY = "metron/holdings_universe.json"
 
 class DataSpineUnavailable(RuntimeError):
     """Raised when the data-spine S3 round-trip can't complete (boto3/creds/bucket/key)."""
+
+
+# UI-activity heartbeat — the intraday producer's demand gate. While Metron is being
+# actively used, authenticated portfolio requests touch this key (throttled); the
+# `alpha-engine-data` intraday producer fetches quotes ONLY while it is fresh
+# (collectors/metron_market_data.py::metron_app_active), so a closed app costs zero
+# upstream quote fetches. Key lives under metron/ like the holdings universe.
+UI_HEARTBEAT_KEY = "metron/ui_heartbeat.json"
+UI_HEARTBEAT_SCHEMA_VERSION = 1
+# Throttle: at most one S3 write per interval. Must stay comfortably below the
+# producer's HEARTBEAT_FRESH_SECONDS (600s) so an active session never reads stale.
+_HEARTBEAT_MIN_INTERVAL_S = 120.0
+_last_heartbeat_monotonic: float = 0.0
+
+
+def touch_ui_heartbeat(*, s3_client=None, now: datetime | None = None) -> bool:
+    """Record that the app is actively in use (throttled; fail-soft; flag-gated).
+
+    Returns True when a heartbeat was written this call, False when throttled,
+    disabled (``market_data_sync_enabled`` off), or the write failed. STRICTLY
+    best-effort by design: this is secondary observability hung off the request
+    path — a failure is WARN-logged (the recording surface) and must never break
+    a page render; the only consequence is the intraday feed staying paused.
+    """
+    global _last_heartbeat_monotonic
+    if not settings.market_data_sync_enabled:
+        return False
+    mono = time.monotonic()
+    if mono - _last_heartbeat_monotonic < _HEARTBEAT_MIN_INTERVAL_S:
+        return False
+    ts = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        _write_s3_json(
+            settings.market_data_bucket, UI_HEARTBEAT_KEY,
+            {"schema_version": UI_HEARTBEAT_SCHEMA_VERSION, "ts": ts}, s3_client=s3_client,
+        )
+    except DataSpineUnavailable as e:
+        logger.warning("UI heartbeat write failed (intraday feed stays paused): %s", e)
+        return False
+    _last_heartbeat_monotonic = mono
+    return True
 
 
 def _write_s3_json(bucket: str, key: str, obj: dict, s3_client=None) -> None:
