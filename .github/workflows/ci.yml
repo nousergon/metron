@@ -1,0 +1,57 @@
+# PR gate — the 406-test backend suite, lint, and the web typecheck/tests run on
+# every PR and push to main (metron-ops#25: deploy.yml alone meant the suite ran
+# only on developer discipline). Coverage floor pinned at 95% so the measured 97%
+# can't silently erode.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: pytest + ruff (api, portfolio_analytics)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" ruff
+      - name: Ruff
+        run: ruff check api portfolio_analytics tests
+      - name: Pytest (coverage floor 95%)
+        run: pytest tests/ -q --cov=api --cov=portfolio_analytics --cov-fail-under=95
+
+  web:
+    name: tsc + lint + vitest (web)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Lint
+        run: npx next lint
+      - name: Vitest
+        run: npm test
