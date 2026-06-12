@@ -154,13 +154,64 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     )
 
 
+def mark_unlisted(session: Session, symbol: str, *, unlisted: bool = True) -> int:
+    """Flag every Security row for ``symbol`` as having no public listing (or undo).
+
+    An unlisted instrument (e.g. a 401(k) plan-level CIT like PCKM) is priced from the
+    broker snapshot, never yfinance — flagging it drops it from the published holdings
+    universe so the data spine stops asking yfinance for it (config#1029). Matches on
+    ``symbol`` OR ``yf_symbol`` (case-insensitive), idempotent, returns rows updated.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        raise ValueError("symbol is required")
+    rows = session.scalars(
+        select(models.Security).where(
+            (models.Security.symbol == sym) | (models.Security.yf_symbol == sym)
+        )
+    ).all()
+    for row in rows:
+        row.yf_unlisted = unlisted
+    session.commit()
+    logger.info("mark_unlisted: %s → yf_unlisted=%s (%d security row(s))", sym, unlisted, len(rows))
+    return len(rows)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m api.maintenance", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("daily-refresh", help="refresh prices + record NAV snapshots for all portfolios")
+    p_unl = sub.add_parser(
+        "mark-unlisted",
+        help="flag a security as having no public listing (broker-snapshot-priced; "
+        "excluded from the published holdings universe) and republish the universe",
+    )
+    p_unl.add_argument("symbol", help="ticker as the broker reports it (or its yf_symbol)")
+    p_unl.add_argument("--undo", action="store_true", help="clear the flag instead of setting it")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    if args.cmd == "mark-unlisted":
+        create_all()  # additive auto-ALTER brings an existing SQLite DB up to the model
+        session = SessionLocal()
+        try:
+            n = mark_unlisted(session, args.symbol, unlisted=not args.undo)
+            if n == 0:
+                logger.warning("mark-unlisted: no security row matched %r — nothing changed", args.symbol)
+                return 1
+            # Take effect immediately rather than waiting for the next daily-refresh.
+            # Best-effort per the daily-refresh posture: the flag has already
+            # committed (the primary deliverable); a failed publish is recorded
+            # here as a WARN and the next daily-refresh republishes anyway.
+            if settings.market_data_sync_enabled:
+                try:
+                    data_spine.publish_holdings_universe(session)
+                except Exception as e:
+                    logger.warning("mark-unlisted: flag saved but universe republish failed (%s) — "
+                                   "next daily-refresh will republish", e)
+        finally:
+            session.close()
+        return 0
     if args.cmd == "daily-refresh":
         create_all()  # ensure the personal/dev SQLite schema exists before operating
         session = SessionLocal()

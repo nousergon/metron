@@ -126,6 +126,7 @@ def build_holdings_universe(session: Session, *, today: date | None = None) -> d
     appears once."""
     today = today or date.today()
     by_yf: dict[str, str] = {}  # yf_symbol → native currency
+    skipped_unlisted: set[str] = set()
     for p in session.scalars(select(models.Portfolio)).all():
         held = analytics.holdings(session, p.tenant_id, p.id)
         symbols = [h.ticker for h in held if h.ticker]
@@ -134,8 +135,19 @@ def build_holdings_universe(session: Session, *, today: date | None = None) -> d
             sec = secs.get(h.ticker)
             if sec is None:
                 continue
+            if sec.yf_unlisted:
+                # No public listing to price (e.g. a 401(k) plan-level CIT) — the
+                # broker snapshot is the price authority, so publishing it would only
+                # make the data spine's yfinance pull fail every run (config#1029).
+                skipped_unlisted.add(sec.symbol)
+                continue
             yf = sec.yf_symbol or sec.symbol
             by_yf.setdefault(yf, sec.currency or h.currency or "USD")
+    if skipped_unlisted:
+        logger.info(
+            "holdings universe: %d unlisted instrument(s) excluded (broker-snapshot-priced): %s",
+            len(skipped_unlisted), ", ".join(sorted(skipped_unlisted)),
+        )
     holdings = [{"yf_symbol": yf, "currency": ccy} for yf, ccy in sorted(by_yf.items())]
     currencies = sorted({ccy for ccy in by_yf.values() if ccy and ccy != "USD"})
     return {

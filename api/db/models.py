@@ -116,6 +116,12 @@ class Security(Base):
     # Symbol yfinance prices this under (foreign listings need an exchange suffix, e.g.
     # 1299 → 1299.HK). Resolved at ingestion via prices.symbology; overridable from Settings.
     yf_symbol: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # No public listing any market-data provider can price — e.g. a 401(k) plan-level
+    # CIT (PCKM, the TRP Retirement Blend trust): the broker snapshot is the price
+    # authority. Excluded from the published holdings universe so the data spine never
+    # asks yfinance for it (config#1029 Flow Doctor storm). Nullable so the column
+    # auto-ALTERs onto an existing SQLite DB; NULL/False both mean "listed".
+    yf_unlisted: Mapped[bool | None] = mapped_column(nullable=True, default=None)
     asset_class: Mapped[str | None] = mapped_column(String(40), nullable=True)  # equity | etf | cash | …
     sector: Mapped[str | None] = mapped_column(String(60), nullable=True)  # canonical GICS label; resolved lazily
     next_earnings_date: Mapped[date | None] = mapped_column(nullable=True)  # cached next earnings; refreshed on demand

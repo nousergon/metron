@@ -148,7 +148,12 @@ class TestUiHeartbeat:
     def _enable(self, monkeypatch):
         import api.services.data_spine as ds
         monkeypatch.setattr("api.services.data_spine.settings.market_data_sync_enabled", True)
-        monkeypatch.setattr(ds, "_last_heartbeat_monotonic", 0.0)
+        # NOT 0.0: time.monotonic() is seconds-since-boot, and a fresh CI runner VM
+        # can reach this test in < _HEARTBEAT_MIN_INTERVAL_S of uptime — with 0.0 the
+        # first call would be throttled and the test boot-races (flaked on metron#45
+        # CI at ~57s uptime). A sentinel below -interval admits the first call for
+        # ANY non-negative monotonic value.
+        monkeypatch.setattr(ds, "_last_heartbeat_monotonic", -2 * ds._HEARTBEAT_MIN_INTERVAL_S)
         return ds
 
     def test_writes_throttles_and_reports(self, monkeypatch):
@@ -187,5 +192,55 @@ class TestUiHeartbeat:
         s3.put_object.side_effect = Exception("AccessDenied")
         # Never raises into the request path; reports False; next call may retry
         # (monotonic stamp only advances on success).
+        before = ds._last_heartbeat_monotonic
         assert ds.touch_ui_heartbeat(s3_client=s3) is False
-        assert ds._last_heartbeat_monotonic == 0.0
+        assert ds._last_heartbeat_monotonic == before
+
+
+class TestUnlistedExclusion:
+    """yf_unlisted securities stay out of the published universe (config#1029).
+
+    The PCKM 401(k) CIT has no public listing — publishing it made the data
+    spine's yfinance pull fail 5-ways every EOD run. Broker snapshot remains
+    its price authority; the universe only advertises what yfinance can price.
+    """
+
+    def test_unlisted_security_is_excluded_from_universe(self, db_session):
+        _seed_holding(db_session, pf_name="P1", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        _seed_holding(db_session, pf_name="P1b", symbol="PCKM", currency="USD",
+                      yf_symbol="PCKM", external_id="A9")
+        sec = db_session.query(models.Security).filter_by(symbol="PCKM").one()
+        sec.yf_unlisted = True
+        db_session.commit()
+
+        payload = data_spine.build_holdings_universe(db_session, today=date(2024, 6, 3))
+
+        assert {h["yf_symbol"] for h in payload["holdings"]} == {"AAPL"}
+
+    def test_unflagged_security_still_published(self, db_session):
+        _seed_holding(db_session, pf_name="P1", symbol="PCKM", currency="USD", yf_symbol="PCKM")
+        payload = data_spine.build_holdings_universe(db_session, today=date(2024, 6, 3))
+        assert {h["yf_symbol"] for h in payload["holdings"]} == {"PCKM"}
+
+
+class TestMarkUnlistedCommand:
+    def test_marks_by_symbol_and_is_idempotent(self, db_session):
+        _seed_holding(db_session, pf_name="P1", symbol="PCKM", currency="USD", yf_symbol="PCKM")
+        assert maintenance.mark_unlisted(db_session, "pckm") == 1
+        assert maintenance.mark_unlisted(db_session, "PCKM") == 1  # re-run: same row, same result
+        sec = db_session.query(models.Security).filter_by(symbol="PCKM").one()
+        assert sec.yf_unlisted is True
+
+    def test_undo_clears_flag(self, db_session):
+        _seed_holding(db_session, pf_name="P1", symbol="PCKM", currency="USD", yf_symbol="PCKM")
+        maintenance.mark_unlisted(db_session, "PCKM")
+        assert maintenance.mark_unlisted(db_session, "PCKM", unlisted=False) == 1
+        sec = db_session.query(models.Security).filter_by(symbol="PCKM").one()
+        assert sec.yf_unlisted is False
+
+    def test_matches_on_yf_symbol_too(self, db_session):
+        _seed_holding(db_session, pf_name="P1", symbol="1299", currency="HKD", yf_symbol="1299.HK")
+        assert maintenance.mark_unlisted(db_session, "1299.HK") == 1
+
+    def test_unknown_symbol_updates_nothing(self, db_session):
+        assert maintenance.mark_unlisted(db_session, "NOPE") == 0
