@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from api.config import settings
 from api.db import models
 from api.db.session import get_session
-from api.services import account_meta, analytics, attribution, calendar, performance, persistence, risk, tax
+from api.services import account_meta, analytics, attribution, calendar, data_spine, performance, persistence, risk, tax
 from api.services import fx as fx_service
 from api.services import prices as price_service
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
@@ -422,6 +422,11 @@ def _owned_portfolio(
     ).first()
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
+    # The app is being actively used — touch the data-spine UI heartbeat (throttled,
+    # fail-soft, flag-gated) so the intraday quote producer runs only while someone
+    # is actually looking. Every authenticated portfolio request flows through this
+    # dependency, making it the one natural chokepoint for "Metron is open".
+    data_spine.touch_ui_heartbeat()
     return portfolio
 
 
