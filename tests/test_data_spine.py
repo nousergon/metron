@@ -148,7 +148,12 @@ class TestUiHeartbeat:
     def _enable(self, monkeypatch):
         import api.services.data_spine as ds
         monkeypatch.setattr("api.services.data_spine.settings.market_data_sync_enabled", True)
-        monkeypatch.setattr(ds, "_last_heartbeat_monotonic", 0.0)
+        # NOT 0.0: time.monotonic() is seconds-since-boot, and a fresh CI runner VM
+        # can reach this test in < _HEARTBEAT_MIN_INTERVAL_S of uptime — with 0.0 the
+        # first call would be throttled and the test boot-races (flaked on metron#45
+        # CI at ~57s uptime). A sentinel below -interval admits the first call for
+        # ANY non-negative monotonic value.
+        monkeypatch.setattr(ds, "_last_heartbeat_monotonic", -2 * ds._HEARTBEAT_MIN_INTERVAL_S)
         return ds
 
     def test_writes_throttles_and_reports(self, monkeypatch):
@@ -187,8 +192,9 @@ class TestUiHeartbeat:
         s3.put_object.side_effect = Exception("AccessDenied")
         # Never raises into the request path; reports False; next call may retry
         # (monotonic stamp only advances on success).
+        before = ds._last_heartbeat_monotonic
         assert ds.touch_ui_heartbeat(s3_client=s3) is False
-        assert ds._last_heartbeat_monotonic == 0.0
+        assert ds._last_heartbeat_monotonic == before
 
 
 class TestUnlistedExclusion:
