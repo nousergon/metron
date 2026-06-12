@@ -127,7 +127,7 @@ export function AccountPanel({
 
   return (
     <div className="overflow-hidden rounded-lg border border-line">
-      <div className="flex items-center justify-between border-b border-line bg-slate-50 px-4 py-2">
+      <div className="flex items-center justify-between border-b border-line bg-surface px-4 py-2">
         <span className="text-xs uppercase tracking-wide text-muted">
           Select accounts to filter the tables &amp; charts below
         </span>
@@ -142,7 +142,7 @@ export function AccountPanel({
         </label>
       </div>
       {deleteError ? (
-        <div className="border-b border-line bg-rose-50 px-4 py-2 text-xs text-rose-700">{deleteError}</div>
+        <div className="border-b border-line bg-rose-500/10 px-4 py-2 text-xs text-rose-300">{deleteError}</div>
       ) : null}
       <ul>
         {accounts.map((a) => {
@@ -166,7 +166,7 @@ export function AccountPanel({
                   </Link>
                   {a.institution ? <span className="text-xs text-muted">{a.institution}</span> : null}
                   <span className="text-xs text-muted">{a.currency}</span>
-                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">
+                  <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">
                     {typeLabel(a)}
                   </span>
                   {a.n_unconverted > 0 ? (
@@ -205,7 +205,7 @@ export function AccountPanel({
                 disabled={deleting}
                 aria-label={`Delete ${accountLabel(a)}`}
                 title="Delete this account and its data (future syncs skip it; restore from Settings)"
-                className="shrink-0 rounded p-1 text-muted hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
+                className="shrink-0 rounded p-1 text-muted hover:bg-rose-500/10 hover:text-rose-300 disabled:opacity-50"
               >
                 <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
                   <path

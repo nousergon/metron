@@ -19,7 +19,7 @@ export function ComputeRisk({ portfolioId }: { portfolioId: string }) {
         type="button"
         disabled={pending}
         onClick={() => start(async () => setResult(await computeRiskAction(portfolioId, accountIds)))}
-        className="shrink-0 rounded border border-line px-3 py-1.5 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+        className="shrink-0 rounded border border-line px-3 py-1.5 text-sm font-medium hover:bg-white/5 disabled:opacity-50"
       >
         {pending ? "Computing…" : "Compute risk"}
       </button>

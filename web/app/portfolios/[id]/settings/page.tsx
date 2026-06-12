@@ -1,8 +1,9 @@
-import Link from "next/link";
 import { getAccounts, getExcludedAccounts, getPortfolio, getPreferences, MetronApiError, type ExcludedAccount, type Preferences } from "@/lib/api";
 import { Empty, Section, Table } from "@/components/ui";
 import { AccountTagRow, BaseCurrencyForm, ExcludedAccountRow, PreferencesForm } from "@/components/settings-forms";
 import { requireTenantId } from "@/lib/session";
+import { ImportPanel } from "@/components/import-panel";
+import { PortfolioNav } from "@/components/portfolio-nav";
 
 export const dynamic = "force-dynamic";
 
@@ -27,12 +28,16 @@ export default async function SettingsPage({ params }: { params: { id: string } 
 
   return (
     <div>
-      <Link href={`/portfolios/${id}`} className="text-sm text-muted hover:text-ink">
-        ← Portfolio
-      </Link>
+      <PortfolioNav portfolioId={id} navQuery="" />
 
-      <h1 className="mt-3 text-lg font-semibold">Settings</h1>
-      <p className="text-sm text-muted">Reporting currency, account tags, and investor preferences for this portfolio.</p>
+      <h1 className="mt-3 text-lg font-semibold">Settings &amp; data</h1>
+      <p className="text-sm text-muted">
+        Imports &amp; broker connections, reporting currency, account tags, and investor preferences.
+      </p>
+
+      <Section title="Imports & connections" note="CSV / OFX / IBKR Flex / SnapTrade">
+        <ImportPanel portfolioId={id} />
+      </Section>
 
       <Section title="Base currency" note="reporting currency for all totals">
         <BaseCurrencyForm portfolioId={id} current={portfolio.base_currency} />

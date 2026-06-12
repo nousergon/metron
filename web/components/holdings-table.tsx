@@ -89,7 +89,7 @@ export function HoldingsTable({
     <div className="overflow-x-auto rounded-lg border border-line">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-line bg-slate-50 text-left text-xs uppercase tracking-wide text-muted">
+          <tr className="border-b border-line bg-surface text-left text-xs uppercase tracking-wide text-muted">
             {columns.map((col, i) => (
               <th key={col.key} className={`px-4 py-2 font-medium ${i === 0 ? "" : "text-right"}`}>
                 <button

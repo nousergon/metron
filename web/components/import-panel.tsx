@@ -67,12 +67,12 @@ function FileImport({
           name="file"
           accept={accept}
           required
-          className="block w-full text-sm file:mr-3 file:rounded file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm"
+          className="block w-full text-sm file:mr-3 file:rounded file:border-0 file:bg-white/10 file:px-3 file:py-1.5 file:text-sm"
         />
         <button
           type="submit"
           disabled={pending}
-          className="shrink-0 rounded bg-ink px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="shrink-0 rounded bg-ink px-3 py-1.5 text-sm font-medium text-paper hover:bg-white disabled:opacity-50"
         >
           {pending ? "Importing…" : "Import"}
         </button>
@@ -119,7 +119,7 @@ function FlexImport({ portfolioId }: { portfolioId: string }) {
       <button
         type="submit"
         disabled={pending}
-        className="mt-2 rounded bg-ink px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        className="mt-2 rounded bg-ink px-3 py-1.5 text-sm font-medium text-paper hover:bg-white disabled:opacity-50"
       >
         {pending ? "Syncing…" : "Sync Flex"}
       </button>
@@ -261,7 +261,7 @@ function SnapTradeCard({ portfolioId }: { portfolioId: string }) {
           type="button"
           disabled={syncPending}
           onClick={() => startSync(async () => setResult(await syncSnapTradeAction(portfolioId)))}
-          className="rounded bg-ink px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded bg-ink px-3 py-1.5 text-sm font-medium text-paper hover:bg-white disabled:opacity-50"
         >
           {syncPending ? "Syncing…" : "Sync"}
         </button>

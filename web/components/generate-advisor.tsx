@@ -16,7 +16,7 @@ export function GenerateAdvisor({ portfolioId, label }: { portfolioId: string; l
         type="button"
         disabled={pending}
         onClick={() => start(async () => setResult(await generateAdvisorAction(portfolioId)))}
-        className="shrink-0 rounded border border-line px-3 py-1.5 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+        className="shrink-0 rounded border border-line px-3 py-1.5 text-sm font-medium hover:bg-white/5 disabled:opacity-50"
       >
         {pending ? "Generating…" : label}
       </button>

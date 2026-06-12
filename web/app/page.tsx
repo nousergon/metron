@@ -34,7 +34,7 @@ export default async function HomePage() {
             <li key={p.id}>
               <Link
                 href={`/portfolios/${p.id}`}
-                className="flex items-center justify-between px-4 py-3 hover:bg-slate-50"
+                className="flex items-center justify-between px-4 py-3 hover:bg-white/5"
               >
                 <span className="font-medium">{p.name}</span>
                 <span className="text-sm text-muted">{p.base_currency}</span>

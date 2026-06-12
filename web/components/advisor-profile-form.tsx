@@ -106,7 +106,7 @@ export function AdvisorProfileForm({ portfolioId, initial }: { portfolioId: stri
           type="button"
           disabled={pending}
           onClick={submit}
-          className="rounded border border-line px-3 py-1.5 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+          className="rounded border border-line px-3 py-1.5 text-sm font-medium hover:bg-white/5 disabled:opacity-50"
         >
           {pending ? "Saving…" : "Save profile"}
         </button>

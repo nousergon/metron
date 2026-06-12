@@ -1,7 +1,7 @@
-import Link from "next/link";
 import { acctParams, getAttribution, MetronApiError } from "@/lib/api";
 import { percent, signClass } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
+import { PortfolioNav } from "@/components/portfolio-nav";
 import { ComputeAttribution } from "@/components/compute-attribution";
 import { requireTenantId } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
@@ -42,9 +42,7 @@ export default async function AttributionPage({
 
   return (
     <div>
-      <Link href={`/portfolios/${id}${navQuery}`} className="text-sm text-muted hover:text-ink">
-        ← Portfolio
-      </Link>
+      <PortfolioNav portfolioId={id} navQuery={navQuery} />
 
       <h1 className="mt-3 text-lg font-semibold">Sector attribution</h1>
       <p className="text-sm text-muted">

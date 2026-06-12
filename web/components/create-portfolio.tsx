@@ -31,7 +31,7 @@ export function CreatePortfolio() {
       <button
         type="submit"
         disabled={pending}
-        className="rounded bg-ink px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+        className="rounded bg-ink px-3 py-2 text-sm font-medium text-paper hover:bg-white disabled:opacity-50"
       >
         {pending ? "Creating…" : "Create portfolio"}
       </button>

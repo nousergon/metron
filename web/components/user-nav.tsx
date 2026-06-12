@@ -25,7 +25,7 @@ export function UserNav() {
       <button
         type="button"
         onClick={() => signOut().then(() => router.push("/login"))}
-        className="rounded border border-line px-2 py-1 text-xs hover:bg-slate-50"
+        className="rounded border border-line px-2 py-1 text-xs hover:bg-white/5"
       >
         Sign out
       </button>

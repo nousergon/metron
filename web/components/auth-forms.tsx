@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { signIn } from "@/lib/auth-client";
 
 const inputClass = "w-full rounded border border-line px-3 py-2 text-sm";
-const buttonClass = "w-full rounded bg-ink px-3 py-2 text-sm font-medium text-white disabled:opacity-50";
+const buttonClass = "w-full rounded bg-ink px-3 py-2 text-sm font-medium text-paper hover:bg-white disabled:opacity-50";
 
 function AuthShell({ title, children }: { title: string; children: React.ReactNode }) {
   return (

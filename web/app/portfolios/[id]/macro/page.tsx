@@ -1,7 +1,7 @@
-import Link from "next/link";
 import { getMacro, MetronApiError, type MacroIndicator } from "@/lib/api";
 import { isoDate, signClass } from "@/lib/format";
 import { Empty, Section, Table } from "@/components/ui";
+import { PortfolioNav } from "@/components/portfolio-nav";
 import { requireTenantId } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -33,9 +33,7 @@ export default async function MacroPage({ params }: { params: { id: string } }) 
 
   return (
     <div>
-      <Link href={`/portfolios/${id}`} className="text-sm text-muted hover:text-ink">
-        ← Portfolio
-      </Link>
+      <PortfolioNav portfolioId={id} navQuery="" />
 
       <h1 className="mt-3 text-lg font-semibold">Macro</h1>
       <p className="text-sm text-muted">

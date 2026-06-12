@@ -51,7 +51,7 @@ export function BaseCurrencyForm({ portfolioId, current }: { portfolioId: string
         type="button"
         disabled={pending || value === current}
         onClick={save}
-        className="rounded bg-ink px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
+        className="rounded bg-ink px-3 py-1 text-sm font-medium text-paper hover:bg-white disabled:opacity-50"
       >
         {pending ? "Saving…" : "Save"}
       </button>
@@ -138,7 +138,7 @@ export function AccountTagRow({ portfolioId, account }: { portfolioId: string; a
             type="button"
             disabled={pending}
             onClick={save}
-            className="rounded bg-ink px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
+            className="rounded bg-ink px-3 py-1 text-sm font-medium text-paper hover:bg-white disabled:opacity-50"
           >
             {pending ? "Saving…" : "Save"}
           </button>
@@ -210,7 +210,7 @@ export function PreferencesForm({ portfolioId, current }: { portfolioId: string;
           type="button"
           disabled={pending}
           onClick={save}
-          className="rounded bg-ink px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded bg-ink px-3 py-1 text-sm font-medium text-paper hover:bg-white disabled:opacity-50"
         >
           {pending ? "Saving…" : "Save preferences"}
         </button>
@@ -245,7 +245,7 @@ export function ExcludedAccountRow({ portfolioId, excluded }: { portfolioId: str
             type="button"
             disabled={pending}
             onClick={restore}
-            className="rounded border border-line px-2 py-0.5 text-xs hover:bg-slate-50 disabled:opacity-50"
+            className="rounded border border-line px-2 py-0.5 text-xs hover:bg-white/5 disabled:opacity-50"
           >
             {pending ? "Restoring…" : "Restore"}
           </button>

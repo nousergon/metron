@@ -1,7 +1,7 @@
-import Link from "next/link";
 import { acctParams, getPerformance, getSummary, MetronApiError } from "@/lib/api";
 import { isoDate, money, percent, signClass, signedMoney } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
+import { PortfolioNav } from "@/components/portfolio-nav";
 import { BuildHistory } from "@/components/build-history";
 import { requireTenantId } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
@@ -40,9 +40,7 @@ export default async function PerformancePage({
 
   return (
     <div>
-      <Link href={`/portfolios/${id}${navQuery}`} className="text-sm text-muted hover:text-ink">
-        ← Portfolio
-      </Link>
+      <PortfolioNav portfolioId={id} navQuery={navQuery} />
 
       <h1 className="mt-3 text-lg font-semibold">Performance</h1>
       <p className="text-sm text-muted">
@@ -50,7 +48,7 @@ export default async function PerformancePage({
       </p>
 
       {accountIds.length > 0 ? (
-        <p className="mt-2 rounded border border-line bg-slate-50 px-3 py-2 text-xs text-muted">
+        <p className="mt-2 rounded border border-line bg-surface px-3 py-2 text-xs text-muted">
           ⓘ Performance reflects the whole portfolio. Per-account history is still accruing — snapshot-sourced
           accounts (IBKR / SnapTrade) have no back-history to reconstruct, so a per-account NAV-vs-SPY series
           builds forward from today.

@@ -1,10 +1,9 @@
-import Link from "next/link";
 import { acctParams, getAccounts, getHoldings, getIncome, getPlugins, getPortfolio, getSummary, MetronApiError, type Portfolio, type PluginNav } from "@/lib/api";
 import { money, signClass, signedMoney } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
+import { PortfolioNav } from "@/components/portfolio-nav";
 import { HoldingsTable } from "@/components/holdings-table";
-import { ImportPanel } from "@/components/import-panel";
 import { RefreshPrices } from "@/components/refresh-prices";
 import { RenamePortfolio } from "@/components/rename-portfolio";
 import { requireTenantId } from "@/lib/session";
@@ -59,46 +58,7 @@ export default async function PortfolioPage({
 
   return (
     <div>
-      <div className="flex items-baseline justify-between">
-        <Link href="/" className="text-sm text-muted hover:text-ink">
-          ← Portfolios
-        </Link>
-        <div className="flex gap-4">
-          <Link href={`/portfolios/${id}/performance${navQuery}`} className="text-sm text-muted hover:text-ink">
-            Performance →
-          </Link>
-          <Link href={`/portfolios/${id}/risk${navQuery}`} className="text-sm text-muted hover:text-ink">
-            Risk →
-          </Link>
-          <Link href={`/portfolios/${id}/attribution${navQuery}`} className="text-sm text-muted hover:text-ink">
-            Attribution →
-          </Link>
-          <Link href={`/portfolios/${id}/macro`} className="text-sm text-muted hover:text-ink">
-            Macro →
-          </Link>
-          <Link href={`/portfolios/${id}/calendar`} className="text-sm text-muted hover:text-ink">
-            Calendar →
-          </Link>
-          <Link href={`/portfolios/${id}/tax${navQuery}`} className="text-sm text-muted hover:text-ink">
-            Tax →
-          </Link>
-          <Link href={`/portfolios/${id}/transactions${navQuery}`} className="text-sm text-muted hover:text-ink">
-            Transactions &amp; realized →
-          </Link>
-          <Link href={`/portfolios/${id}/settings`} className="text-sm text-muted hover:text-ink">
-            Settings →
-          </Link>
-          {plugins.map((p) => (
-            <Link
-              key={p.id}
-              href={`/portfolios/${id}/${p.href}`}
-              className="text-sm font-medium text-ink hover:underline"
-            >
-              {p.label} →
-            </Link>
-          ))}
-        </div>
-      </div>
+      <PortfolioNav portfolioId={id} name={portfolio.name} navQuery={navQuery} plugins={plugins} />
 
       <div className="mt-3">
         <RenamePortfolio portfolioId={id} name={portfolio.name} />
@@ -148,10 +108,6 @@ export default async function PortfolioPage({
           {ccy} totals — no FX rate cached yet. Refresh prices to fetch it.
         </p>
       ) : null}
-
-      <Section title="Import" note="CSV / OFX / IBKR Flex — $0, no aggregator">
-        <ImportPanel portfolioId={id} />
-      </Section>
 
       <Section title="Holdings" note={priced ? `all values in ${ccy} · market value from last EOD close` : "cost basis — refresh for market value"}>
         <div className="mb-3">

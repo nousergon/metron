@@ -1,7 +1,7 @@
-import Link from "next/link";
 import { acctParams, getRealized, getSummary, getTransactions, MetronApiError } from "@/lib/api";
 import { isoDate, money, quantity, signClass, signedMoney } from "@/lib/format";
 import { Empty, Section, Table } from "@/components/ui";
+import { PortfolioNav } from "@/components/portfolio-nav";
 import { requireTenantId } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
@@ -42,9 +42,7 @@ export default async function TransactionsPage({
 
   return (
     <div>
-      <Link href={`/portfolios/${id}${navQuery}`} className="text-sm text-muted hover:text-ink">
-        ← Portfolio
-      </Link>
+      <PortfolioNav portfolioId={id} navQuery={navQuery} />
 
       <h1 className="mt-3 text-lg font-semibold">Activity</h1>
 

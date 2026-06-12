@@ -15,13 +15,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <div className="mx-auto max-w-6xl px-6">
           <header className="flex items-center justify-between border-b border-line py-5">
-            <Link href="/" className="text-lg font-semibold tracking-tight">
-              Metron
+            <Link href="/" className="flex items-baseline gap-3">
+              <span className="text-base font-semibold uppercase tracking-[0.22em]">Metron</span>
+              <span className="hidden text-[11px] uppercase tracking-[0.18em] text-muted sm:inline">
+                portfolio analytics, measured
+              </span>
             </Link>
             <UserNav />
           </header>
           <main className="py-8">{children}</main>
-          <footer className="border-t border-line py-6 text-xs text-muted">
+          <footer className="border-t border-line py-6 text-[11px] uppercase tracking-[0.14em] text-muted">
             No AI · no ads or trackers · no advice · read-only. We compute; we never tell you what to trade.
           </footer>
         </div>

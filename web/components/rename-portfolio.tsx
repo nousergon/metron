@@ -57,7 +57,7 @@ export function RenamePortfolio({ portfolioId, name }: { portfolioId: string; na
         type="button"
         disabled={pending}
         onClick={save}
-        className="rounded bg-ink px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
+        className="rounded bg-ink px-3 py-1 text-sm font-medium text-paper hover:bg-white disabled:opacity-50"
       >
         {pending ? "Saving…" : "Save"}
       </button>
