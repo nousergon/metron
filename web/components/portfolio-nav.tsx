@@ -9,13 +9,18 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-export type NavPage = { label: string; href: string };
+export type NavPage = { label: string; href: string; feature?: string };
+export type NavFeatureState = { available: boolean; required_tier: string | null };
+
+// Short upsell labels for the lock badge (required_tier key → display).
+const TIER_LABEL: Record<string, string> = { pro: "Pro", agentic: "Research+", personal: "Base" };
 
 export function PortfolioNav({
   portfolioId,
   name,
   navQuery,
   plugins = [],
+  featureStates,
 }: {
   portfolioId: string;
   /** Portfolio display name — shown when the page has it fetched (the overview). */
@@ -24,6 +29,8 @@ export function PortfolioNav({
   navQuery: string;
   /** Premium plugin pages (metron-ops) appended to the menu; [] on the public tier. */
   plugins?: { id: string; label: string; href: string }[];
+  /** feature key → availability (GET /meta/entitlements). Undefined = ungated (all shown). */
+  featureStates?: Record<string, NavFeatureState>;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -49,13 +56,13 @@ export function PortfolioNav({
   const base = `/portfolios/${portfolioId}`;
   // Selection-scoped pages carry navQuery; whole-portfolio pages don't.
   const pages: NavPage[] = [
-    { label: "Overview", href: `${base}${navQuery}` },
-    { label: "Performance", href: `${base}/performance${navQuery}` },
-    { label: "Risk", href: `${base}/risk${navQuery}` },
-    { label: "Attribution", href: `${base}/attribution${navQuery}` },
-    { label: "Transactions & realized", href: `${base}/transactions${navQuery}` },
-    { label: "Tax", href: `${base}/tax${navQuery}` },
-    { label: "Macro", href: `${base}/macro` },
+    { label: "Overview", href: `${base}${navQuery}`, feature: "overview" },
+    { label: "Performance", href: `${base}/performance${navQuery}`, feature: "performance" },
+    { label: "Risk", href: `${base}/risk${navQuery}`, feature: "risk" },
+    { label: "Attribution", href: `${base}/attribution${navQuery}`, feature: "attribution" },
+    { label: "Transactions & realized", href: `${base}/transactions${navQuery}`, feature: "transactions" },
+    { label: "Tax", href: `${base}/tax${navQuery}`, feature: "tax" },
+    { label: "Macro", href: `${base}/macro`, feature: "macro" },
     { label: "Calendar", href: `${base}/calendar` },
     ...plugins.map((p) => ({ label: p.label, href: `${base}/${p.href}` })),
     { label: "Settings & data", href: `${base}/settings` },
@@ -96,6 +103,25 @@ export function PortfolioNav({
           >
             {pages.map((p) => {
               const active = p.href.split("?")[0] === pathname;
+              const state = p.feature ? featureStates?.[p.feature] : undefined;
+              if (state && !state.available) {
+                // Locked: not in the active tier (or needs the market-data feed).
+                // Rendered non-clickable with the upsell tier so the boundary is visible.
+                return (
+                  <div
+                    key={p.label}
+                    role="menuitem"
+                    aria-disabled="true"
+                    className="flex cursor-not-allowed items-center justify-between gap-2 px-4 py-2 text-sm text-muted/40"
+                  >
+                    <span>{p.label}</span>
+                    <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted/60">
+                      <span aria-hidden="true">🔒</span>
+                      {TIER_LABEL[state.required_tier ?? ""] ?? state.required_tier ?? ""}
+                    </span>
+                  </div>
+                );
+              }
               return (
                 <Link
                   key={p.label}
