@@ -58,3 +58,44 @@ export function Table({ head, children }: { head: string[]; children: ReactNode 
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="rounded-lg border border-dashed border-line p-6 text-sm text-muted">{children}</div>;
 }
+
+// Upsell labels for a required tier (matches PortfolioNav's lock badge).
+const TIER_LABEL: Record<string, string> = { pro: "Pro", agentic: "Research+", personal: "Base" };
+
+/** Full-page placeholder for a feature excluded by the active product tier / data feed.
+ * Renders when a gated route is navigated to directly (the nav already hides the link).
+ * `reason` is the entitlement reason from /meta/entitlements: "tier" → the plan doesn't
+ * include it; "feed"/"benchmark"/"etf_vendor" → it needs the licensed market-data feed. */
+export function Locked({
+  label,
+  reason,
+  requiredTier,
+}: {
+  label: string;
+  reason: string | null;
+  requiredTier: string | null;
+}) {
+  const tier = TIER_LABEL[requiredTier ?? ""] ?? requiredTier ?? "a higher";
+  const needsFeed = reason !== "tier"; // feed / benchmark / etf_vendor all mean "licensed data"
+  return (
+    <div className="mt-6 rounded-lg border border-dashed border-line p-8 text-center">
+      <div className="text-3xl" aria-hidden="true">
+        🔒
+      </div>
+      <h1 className="mt-3 text-lg font-semibold">{label}</h1>
+      <p className="mx-auto mt-2 max-w-md text-sm text-muted">
+        {needsFeed ? (
+          <>
+            {label} needs the licensed market-data feed, included with the{" "}
+            <span className="font-medium text-ink">{tier}</span> plan.
+          </>
+        ) : (
+          <>
+            {label} is part of the <span className="font-medium text-ink">{tier}</span> plan.
+          </>
+        )}
+      </p>
+      <p className="mt-4 text-[11px] uppercase tracking-[0.14em] text-muted/50">Available in {tier}</p>
+    </div>
+  );
+}

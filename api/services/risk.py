@@ -51,6 +51,9 @@ class RiskSummary:
     computable: bool
     benchmark: str = MARKET_ETF
     reason: str | None = None
+    # Set only when not computable because the product tier / data feed excludes the
+    # feature — the cheapest tier that would unlock it (drives the entitlement upsell).
+    required_tier: str | None = None
     as_of: date | None = None
     n_obs: int = 0
     n_modeled: int = 0

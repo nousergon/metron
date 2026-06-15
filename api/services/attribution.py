@@ -61,6 +61,9 @@ class AttributionSummary:
     computable: bool
     benchmark: str = BENCHMARK
     reason: str | None = None
+    # Set only when not computable because the product tier / data feed excludes the
+    # feature — the cheapest tier that would unlock it (drives the entitlement upsell).
+    required_tier: str | None = None
     as_of: date | None = None
     start_date: date | None = None
     lookback_days: int = 0

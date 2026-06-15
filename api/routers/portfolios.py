@@ -23,6 +23,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from api import entitlements as ent
 from api.config import settings
 from api.db import models
 from api.db.session import get_session
@@ -283,6 +284,7 @@ class RiskOut(BaseModel):
     computable: bool
     benchmark: str
     reason: str | None
+    required_tier: str | None = None
     as_of: date | None
     n_obs: int
     n_modeled: int
@@ -316,6 +318,7 @@ class AttributionOut(BaseModel):
     computable: bool
     benchmark: str
     reason: str | None
+    required_tier: str | None = None
     as_of: date | None
     start_date: date | None
     lookback_days: int
@@ -380,6 +383,38 @@ def _tenant_id(x_tenant_id: str | None = Header(default=None)) -> uuid.UUID:
         return uuid.UUID(x_tenant_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail="X-Tenant-Id must be a UUID") from e
+
+
+def _effective_entitlement(
+    feature_key: str,
+    x_preview_tier: str | None,
+    x_preview_feed: str | None,
+) -> dict:
+    """Resolve one feature's entitlement for the request's effective tier + feed.
+
+    The effective tier/feed is this deployment's (``default_tier`` +
+    ``market_data_sync_enabled``). When the **tier simulator** is on (owner-only,
+    never on the public product) the ``X-Preview-Tier`` / ``X-Preview-Feed`` headers
+    override them — mirroring ``GET /meta/entitlements`` so a feed toggle in the
+    simulator is honored server-side too. A bad preview tier falls back to the
+    deployment default rather than 500-ing the compute call.
+
+    Returns the per-feature dict from ``entitlements.resolve`` (``available`` /
+    ``reason`` / ``required_tier`` / …) so callers can short-circuit a feed-dependent
+    endpoint into an honest not-computable response when the tier excludes it.
+    """
+    tier = settings.default_tier
+    feed = settings.market_data_sync_enabled
+    if settings.tier_simulator:
+        if x_preview_tier is not None:
+            tier = x_preview_tier
+        if x_preview_feed is not None:
+            feed = x_preview_feed.strip().lower() == "true"
+    try:
+        resolved = ent.resolve(tier, feed_enabled=feed)
+    except ValueError:
+        resolved = ent.resolve(settings.default_tier, feed_enabled=settings.market_data_sync_enabled)
+    return next(f for f in resolved["features"] if f["key"] == feature_key)
 
 
 @router.get("", response_model=list[PortfolioOut])
@@ -1233,10 +1268,19 @@ def get_risk(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
     session: Session = Depends(get_session),
+    x_preview_tier: str | None = Header(default=None),
+    x_preview_feed: str | None = Header(default=None),
 ) -> risk.RiskSummary:
     """Factor risk decomposition + tracking error vs SPY, from already-cached price
     history. Marked not-computable (with a reason) when the cache lacks enough
-    history — POST .../risk/compute to backfill it. ``?account_id=`` scopes the holdings."""
+    history — POST .../risk/compute to backfill it. ``?account_id=`` scopes the holdings.
+
+    Feed-dependent: when the active tier / data feed excludes it the matrix is enforced
+    here — returns ``computable=false`` with the entitlement ``reason`` + ``required_tier``
+    instead of computing (Risk needs a licensed price feed)."""
+    feat = _effective_entitlement("risk", x_preview_tier, x_preview_feed)
+    if not feat["available"]:
+        return risk.RiskSummary(computable=False, reason=feat["reason"], required_tier=feat["required_tier"])
     return risk.compute_risk(
         session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=False, account_ids=account_ids
     )
@@ -1247,10 +1291,16 @@ def compute_risk(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
     session: Session = Depends(get_session),
+    x_preview_tier: str | None = Header(default=None),
+    x_preview_feed: str | None = Header(default=None),
 ) -> risk.RiskSummary:
     """Backfill the held + factor-ETF price history over the risk window, then compute
     the factor risk decomposition. The heavier (network) path behind the GET.
-    ``?account_id=`` scopes the holdings."""
+    ``?account_id=`` scopes the holdings. Feed-dependent — gated by the entitlement
+    matrix (see GET .../risk)."""
+    feat = _effective_entitlement("risk", x_preview_tier, x_preview_feed)
+    if not feat["available"]:
+        return risk.RiskSummary(computable=False, reason=feat["reason"], required_tier=feat["required_tier"])
     return risk.compute_risk(
         session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=True, account_ids=account_ids
     )
@@ -1261,11 +1311,19 @@ def get_attribution(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
     session: Session = Depends(get_session),
+    x_preview_tier: str | None = Header(default=None),
+    x_preview_feed: str | None = Header(default=None),
 ) -> attribution.AttributionSummary:
     """Brinson-Fachler sector attribution vs SPY, from already-cached prices + sectors.
     Marked not-computable (with a reason) when the cache lacks history or holding
     sectors — POST .../attribution/compute to source them. ``?account_id=`` scopes the
-    holdings."""
+    holdings. Feed-dependent — gated by the entitlement matrix (returns
+    ``computable=false`` + ``required_tier`` when the active tier / feed excludes it)."""
+    feat = _effective_entitlement("attribution", x_preview_tier, x_preview_feed)
+    if not feat["available"]:
+        return attribution.AttributionSummary(
+            computable=False, reason=feat["reason"], required_tier=feat["required_tier"]
+        )
     return attribution.compute_attribution(
         session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=False, account_ids=account_ids
     )
@@ -1276,10 +1334,18 @@ def compute_attribution(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
     session: Session = Depends(get_session),
+    x_preview_tier: str | None = Header(default=None),
+    x_preview_feed: str | None = Header(default=None),
 ) -> attribution.AttributionSummary:
     """Resolve holding sectors + backfill held and SPDR-ETF history over the window,
     then run the attribution. The heavier (network) path behind the GET. ``?account_id=``
-    scopes the holdings."""
+    scopes the holdings. Feed-dependent — gated by the entitlement matrix (see GET
+    .../attribution)."""
+    feat = _effective_entitlement("attribution", x_preview_tier, x_preview_feed)
+    if not feat["available"]:
+        return attribution.AttributionSummary(
+            computable=False, reason=feat["reason"], required_tier=feat["required_tier"]
+        )
     return attribution.compute_attribution(
         session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=True, account_ids=account_ids
     )

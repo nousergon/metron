@@ -1,5 +1,4 @@
-import { cookies } from "next/headers";
-import { acctParams, getAccounts, getEntitlements, getHoldings, getIncome, getPlugins, getPortfolio, getSummary, MetronApiError, type Entitlements, type Portfolio, type PluginNav } from "@/lib/api";
+import { acctParams, getAccounts, getHoldings, getIncome, getPlugins, getPortfolio, getSummary, MetronApiError, type Portfolio, type PluginNav } from "@/lib/api";
 import { money, signClass, signedMoney } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
@@ -8,6 +7,7 @@ import { TierSimulator } from "@/components/tier-simulator";
 import { HoldingsTable } from "@/components/holdings-table";
 import { RefreshPrices } from "@/components/refresh-prices";
 import { RenamePortfolio } from "@/components/rename-portfolio";
+import { loadEntitlements, toFeatureStates } from "@/lib/entitlements";
 import { requireTenantId } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
@@ -61,23 +61,8 @@ export default async function PortfolioPage({
   // Product-tier entitlements (drives the nav lock state + the owner-only tier
   // simulator). The preview cookies are honored server-side ONLY when the
   // simulator is enabled; on the public product they're ignored. Best-effort.
-  const jar = cookies();
-  const previewTier = jar.get("metron_preview_tier")?.value;
-  const previewFeedRaw = jar.get("metron_preview_feed")?.value;
-  let entitlements: Entitlements | null = null;
-  try {
-    entitlements = await getEntitlements(tenantId, {
-      tier: previewTier,
-      feed: previewFeedRaw === undefined ? undefined : previewFeedRaw === "true",
-    });
-  } catch {
-    entitlements = null;
-  }
-  const featureStates = entitlements
-    ? Object.fromEntries(
-        entitlements.features.map((f) => [f.key, { available: f.available, required_tier: f.required_tier }]),
-      )
-    : undefined;
+  const entitlements = await loadEntitlements(tenantId);
+  const featureStates = toFeatureStates(entitlements);
 
   return (
     <div>
