@@ -53,6 +53,33 @@ describe("PortfolioNav", () => {
     expect(screen.getByRole("menuitem", { name: "Advisor" })).toHaveAttribute("href", "/portfolios/p/advisor");
   });
 
+  it("locks a feature the active tier excludes — non-clickable, with the upsell tier", () => {
+    render(
+      <PortfolioNav
+        portfolioId="p"
+        navQuery=""
+        featureStates={{
+          overview: { available: true, required_tier: "beta" },
+          risk: { available: false, required_tier: "pro" },
+        }}
+      />,
+    );
+    open();
+    const risk = screen.getByRole("menuitem", { name: /Risk/ });
+    expect(risk).toHaveAttribute("aria-disabled", "true");
+    expect(risk).not.toHaveAttribute("href"); // not a link
+    expect(risk).toHaveTextContent("Pro"); // upsell badge
+    // Available + ungated pages stay clickable links.
+    expect(screen.getByRole("menuitem", { name: "Overview" })).toHaveAttribute("href");
+    expect(screen.getByRole("menuitem", { name: "Calendar" })).toHaveAttribute("href");
+  });
+
+  it("leaves all pages clickable when no featureStates given (ungated)", () => {
+    render(<PortfolioNav portfolioId="p" navQuery="" />);
+    open();
+    expect(screen.getByRole("menuitem", { name: "Risk" })).toHaveAttribute("href");
+  });
+
   it("closes on Escape", () => {
     render(<PortfolioNav portfolioId="p" navQuery="" />);
     open();

@@ -702,6 +702,47 @@ export type PluginNav = { id: string; label: string; href: string; tier: string 
 /** Active premium plugins for this deploy (empty on the public tier). */
 export const getPlugins = (tenantId: string) => get<PluginNav[]>(tenantId, "/meta/plugins");
 
+// ── Product-tier entitlements (GET /meta/entitlements) ───────────────────────
+// Drives the owner-only tier simulator + (later) real subscription gating. A
+// feature is `available` only when its tier includes it AND its data sources are
+// provisioned; `reason` ("tier" / "feed" / "benchmark" / "etf_vendor") and
+// `required_tier` let the UI render an honest locked state.
+
+/** One feature's availability under the active tier + feed state. */
+export type Entitlement = {
+  key: string;
+  label: string;
+  requires: string[];
+  available: boolean;
+  in_tier: boolean;
+  computable: boolean;
+  reason: string | null;
+  required_tier: string | null;
+};
+
+/** Resolved entitlements for the active (or previewed) tier. */
+export type Entitlements = {
+  tier: string;
+  feed_enabled: boolean;
+  provisioned_sources: string[];
+  features: Entitlement[];
+  tiers: { key: string; label: string }[];
+  simulator: boolean;
+};
+
+/** Resolve entitlements; `preview` overrides are honored server-side ONLY when the
+ * tier simulator is enabled (owner-only — ignored on the public product). */
+export const getEntitlements = (
+  tenantId: string,
+  preview?: { tier?: string; feed?: boolean },
+) => {
+  const params = new URLSearchParams();
+  if (preview?.tier) params.set("preview_tier", preview.tier);
+  if (preview?.feed !== undefined) params.set("preview_feed", String(preview.feed));
+  const qs = params.toString();
+  return get<Entitlements>(tenantId, `/meta/entitlements${qs ? `?${qs}` : ""}`);
+};
+
 export type AdvisorSectorWeight = { sector: string; weight_pct: number; flag: string };
 export type AdvisorConcentration = { ticker: string; weight_pct: number; limit_pct: number };
 export type AdvisorGeo = {
