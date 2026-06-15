@@ -1,8 +1,10 @@
 import { acctParams, getAttribution, MetronApiError } from "@/lib/api";
 import { percent, signClass } from "@/lib/format";
-import { Empty, Section, StatCard, Table } from "@/components/ui";
+import { Empty, Locked, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
+import { TierSimulator } from "@/components/tier-simulator";
 import { ComputeAttribution } from "@/components/compute-attribution";
+import { featureEntitlement, loadEntitlements, toFeatureStates } from "@/lib/entitlements";
 import { requireTenantId } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
@@ -30,6 +32,22 @@ export default async function AttributionPage({
   const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}/attribution`, searchParams.account_id);
   const navQuery = acctParams(accountIds);
 
+  // Entitlement gate: Attribution is feed-dependent. The nav hides the link when
+  // excluded, but a direct navigation reaches here — render a full-page Locked instead
+  // of the page (and skip the data fetch). Owner-simulator preview honored via cookies.
+  const entitlements = await loadEntitlements(tenantId);
+  const featureStates = toFeatureStates(entitlements);
+  const attrEnt = featureEntitlement(entitlements, "attribution");
+  if (attrEnt && !attrEnt.available) {
+    return (
+      <div>
+        <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
+        {entitlements ? <TierSimulator entitlements={entitlements} /> : null}
+        <Locked label="Sector attribution" reason={attrEnt.reason} requiredTier={attrEnt.required_tier} />
+      </div>
+    );
+  }
+
   let attr;
   try {
     attr = await getAttribution(tenantId, id, accountIds);
@@ -42,7 +60,8 @@ export default async function AttributionPage({
 
   return (
     <div>
-      <PortfolioNav portfolioId={id} navQuery={navQuery} />
+      <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
+      {entitlements ? <TierSimulator entitlements={entitlements} /> : null}
 
       <h1 className="mt-3 text-lg font-semibold">Sector attribution</h1>
       <p className="text-sm text-muted">

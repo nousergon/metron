@@ -1,8 +1,10 @@
 import { acctParams, getRisk, MetronApiError } from "@/lib/api";
 import { percent } from "@/lib/format";
-import { Empty, Section, StatCard, Table } from "@/components/ui";
+import { Empty, Locked, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
+import { TierSimulator } from "@/components/tier-simulator";
 import { ComputeRisk } from "@/components/compute-risk";
+import { featureEntitlement, loadEntitlements, toFeatureStates } from "@/lib/entitlements";
 import { requireTenantId } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
@@ -26,6 +28,22 @@ export default async function RiskPage({
   const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}/risk`, searchParams.account_id);
   const navQuery = acctParams(accountIds);
 
+  // Entitlement gate: Risk is feed-dependent. The nav hides the link when excluded,
+  // but a direct navigation reaches here — render a full-page Locked instead of the
+  // page (and skip the data fetch). The owner-simulator preview is honored via cookies.
+  const entitlements = await loadEntitlements(tenantId);
+  const featureStates = toFeatureStates(entitlements);
+  const riskEnt = featureEntitlement(entitlements, "risk");
+  if (riskEnt && !riskEnt.available) {
+    return (
+      <div>
+        <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
+        {entitlements ? <TierSimulator entitlements={entitlements} /> : null}
+        <Locked label="Factor risk" reason={riskEnt.reason} requiredTier={riskEnt.required_tier} />
+      </div>
+    );
+  }
+
   let risk;
   try {
     risk = await getRisk(tenantId, id, accountIds);
@@ -40,7 +58,8 @@ export default async function RiskPage({
 
   return (
     <div>
-      <PortfolioNav portfolioId={id} navQuery={navQuery} />
+      <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
+      {entitlements ? <TierSimulator entitlements={entitlements} /> : null}
 
       <h1 className="mt-3 text-lg font-semibold">Factor risk</h1>
       <p className="text-sm text-muted">

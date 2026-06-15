@@ -17,6 +17,7 @@ from datetime import date, timedelta
 
 import pytest
 
+from api.config import settings
 from api.services import attribution
 from portfolio_analytics.prices import ClosePoint
 
@@ -141,6 +142,10 @@ class TestComputeAttribution:
 
 class TestAttributionEndpoints:
     def test_compute_then_get(self, client, tenant, monkeypatch):
+        # Attribution is feed-dependent; the endpoint enforces the entitlement matrix,
+        # so this models a feed-provisioned (entitled) deployment (see test_risk's
+        # test_compute_then_get + test_entitlements_enforcement.py).
+        monkeypatch.setattr(settings, "market_data_sync_enabled", True)
         pid = _seed(client, tenant)
         _refresh(client, tenant, pid, monkeypatch)
         monkeypatch.setattr("api.services.prices.fetch_close_history", _full_hist)
