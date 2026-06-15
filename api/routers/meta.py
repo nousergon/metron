@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import importlib.metadata
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 import portfolio_analytics
+from api import entitlements
+from api.config import settings
 from api.plugins import active_plugins
 
 router = APIRouter(prefix="/meta", tags=["system"])
@@ -58,3 +60,33 @@ def plugins() -> list[dict]:
         {"id": p.nav.id, "label": p.nav.label, "href": p.nav.href, "tier": p.nav.tier}
         for p in active_plugins()
     ]
+
+
+@router.get("/entitlements")
+def entitlements_endpoint(
+    preview_tier: str | None = None,
+    preview_feed: bool | None = None,
+) -> dict:
+    """Resolve the active tier's per-feature availability.
+
+    Effective tier = this deployment's ``default_tier`` and ``feed`` = whether the
+    licensed market-data feed is provisioned (``market_data_sync_enabled``). When
+    the **tier simulator** is on (``tier_simulator`` — owner-only, never on the
+    public product), ``?preview_tier=`` / ``?preview_feed=`` override them so the
+    personal build can render any product level (Beta / Pro / Research+ / Base) and
+    toggle the feed to see exactly what each level excludes. Simulator off → the
+    preview params are ignored (a public caller can't re-scope its entitlements).
+    """
+    tier = settings.default_tier
+    feed = settings.market_data_sync_enabled
+    if settings.tier_simulator:
+        if preview_tier is not None:
+            tier = preview_tier
+        if preview_feed is not None:
+            feed = preview_feed
+    try:
+        result = entitlements.resolve(tier, feed_enabled=feed)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    result["simulator"] = settings.tier_simulator
+    return result

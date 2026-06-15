@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     # deploy sets MARKET_DATA_SYNC_ENABLED=true (instance role grants the bucket).
     market_data_bucket: str = "alpha-engine-research"
     market_data_sync_enabled: bool = False
+    # Product tier this deployment serves. The personal build runs the full
+    # "personal" superset; real per-tenant subscription gating supersedes this in M2.
+    default_tier: str = "personal"
+    # Tier simulator — owner-only preview of Beta / Pro / Research+ / Base product
+    # levels in the personal build, via GET /meta/entitlements?preview_tier=&preview_feed=.
+    # NEVER enabled on the public multi-tenant product (it would let any caller
+    # re-scope their own entitlements). See metron-ops#37.
+    tier_simulator: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:
