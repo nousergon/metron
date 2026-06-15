@@ -154,7 +154,7 @@ def _validate() -> None:
         if unknown:
             raise ValueError(f"tier {t.key!r} references unknown feature(s): {sorted(unknown)}")
     # Tiers must nest cheapest → richest (each a superset of the prior).
-    for prev, cur in zip(TIERS, TIERS[1:]):
+    for prev, cur in zip(TIERS, TIERS[1:], strict=False):
         if not prev.features <= cur.features:
             raise ValueError(f"tier {cur.key!r} is not a superset of {prev.key!r}")
     for f in FEATURES:

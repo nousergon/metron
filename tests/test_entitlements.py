@@ -12,7 +12,6 @@ import pytest
 from api import entitlements as ent
 from api.config import settings
 
-
 # ── model: catalog integrity ─────────────────────────────────────────────────
 
 def test_catalog_validates_at_import():
@@ -22,7 +21,7 @@ def test_catalog_validates_at_import():
 
 def test_tiers_nest_cheapest_to_richest():
     keys = [t.features for t in ent.TIERS]
-    for prev, cur in zip(keys, keys[1:]):
+    for prev, cur in zip(keys, keys[1:], strict=False):
         assert prev <= cur
 
 
