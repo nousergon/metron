@@ -125,7 +125,7 @@ export default async function PortfolioPage({
         {holdings.length === 0 ? (
           <Empty>No open positions.</Empty>
         ) : (
-          <GroupedHoldings holdings={holdings} baseCurrency={ccy} priced={priced} />
+          <GroupedHoldings holdings={holdings} baseCurrency={ccy} priced={priced} portfolioId={id} />
         )}
       </Section>
 

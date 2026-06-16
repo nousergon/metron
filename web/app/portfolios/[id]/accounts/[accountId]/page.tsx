@@ -43,7 +43,7 @@ export default async function AccountPage({ params }: { params: { id: string; ac
         {holdings.length === 0 ? (
           <Empty>No open positions in this account.</Empty>
         ) : (
-          <GroupedHoldings holdings={holdings} baseCurrency={ccy} priced={priced} />
+          <GroupedHoldings holdings={holdings} baseCurrency={ccy} priced={priced} portfolioId={id} />
         )}
       </Section>
 

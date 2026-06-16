@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from api.services import fx as fx_service
+from api.services import labels
 from api.services import prices as price_service
 from portfolio_analytics.domain.ledger import Ledger, RealizedGain, Transaction, TxnType, build_ledger
 from portfolio_analytics.domain.realized import YearlyIncome, summarize_income_by_year
@@ -64,6 +65,8 @@ class Holding:
     # Asset class for grouping (cash / bond / equity / etf / fund / option / other),
     # from the Security master's asset_class with a CUSIP/name fallback (metron-ops#47).
     security_type: str = "other"
+    # User-set display label/alias (so a numeric-CUSIP bond is legible). None when unset.
+    user_label: str | None = None
 
 
 @dataclass
@@ -527,10 +530,12 @@ def valued_holdings(
     prices = price_service.latest_close_by_symbol(session, [h.ticker for h in held])
     fx_rates = fx_service.rates_to_base(session, [h.currency for h in held], base=base)
     meta = _security_meta_by_symbol(session, [h.ticker for h in held])
+    user_labels = labels.labels_by_symbol(session, tenant_id, [h.ticker for h in held])
     for h in held:
         _apply_valuation(h, prices, fx_rates)
         asset_class, name = meta.get(h.ticker, (None, None))
         h.security_type = classify_security_type(asset_class, h.ticker, name)
+        h.user_label = user_labels.get(h.ticker)
     return held
 
 

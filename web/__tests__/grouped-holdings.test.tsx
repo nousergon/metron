@@ -2,8 +2,14 @@
 // HoldingsTable with its own subtotal) + a portfolio grand-total bar; a single type
 // renders as the bare table (no headings), preserving the prior look.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+
+// GroupedHoldings → HoldingsTable (a client component) → next/navigation + the server
+// actions module (the inline alias editor). Stub both so the import chain works in jsdom.
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
+vi.mock("@/app/portfolios/[id]/actions", () => ({ setSecurityLabelAction: vi.fn() }));
+
 import { GroupedHoldings } from "@/components/grouped-holdings";
 import type { Holding } from "@/lib/api";
 

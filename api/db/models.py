@@ -302,3 +302,21 @@ class WatchlistItem(Base):
     symbol: Mapped[str] = mapped_column(String(40))
     note: Mapped[str | None] = mapped_column(String(200), nullable=True)  # optional user label/thesis
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class SecurityLabel(Base):
+    """A user-set display label/alias for a symbol (metron-ops#47).
+
+    Bonds / CDs surface as an opaque numeric CUSIP; this lets the user attach a readable
+    name so they can tell what a holding is. Tenant-scoped (keyed by symbol, matching how
+    holdings are addressed) so it never leaks across tenants and a re-import never
+    clobbers it. New table → auto-created on the personal SQLite (no migration)."""
+
+    __tablename__ = "security_labels"
+    __table_args__ = (UniqueConstraint("tenant_id", "symbol", name="uq_security_label_symbol"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(40))
+    label: Mapped[str] = mapped_column(String(120))
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

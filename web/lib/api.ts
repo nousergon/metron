@@ -27,6 +27,8 @@ export type Holding = {
   unrealized_pct: number | null;
   // Coarse asset class for grouping (cash / bond / equity / etf / fund / option / other).
   security_type: string;
+  // User-set display label/alias (so a numeric-CUSIP bond is legible). null when unset.
+  user_label: string | null;
 };
 
 export type IncomeYear = {
@@ -214,6 +216,31 @@ export async function removeWatchlist(tenantId: string, id: string, symbol: stri
     cache: "no-store",
   });
   if (!res.ok) throw new MetronApiError(res.status, `DELETE watchlist → ${res.status}`);
+}
+
+/** Set (or clear, with an empty label) a user alias for a symbol (metron-ops#47). */
+export async function setSecurityLabel(
+  tenantId: string,
+  id: string,
+  symbol: string,
+  label: string | null,
+): Promise<{ symbol: string; label: string | null }> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/securities/${encodeURIComponent(symbol)}/label`, {
+    method: "PUT",
+    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    body: JSON.stringify({ label }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail ?? detail;
+    } catch {
+      // keep the status
+    }
+    throw new MetronApiError(res.status, detail);
+  }
+  return res.json() as Promise<{ symbol: string; label: string | null }>;
 }
 
 /** Update a portfolio's name and/or base currency (PATCH). Empty/no-op rejected (422). */

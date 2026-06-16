@@ -6,9 +6,11 @@
 // conversion. When a foreign holding has no cached FX rate the native value is
 // shown muted with a `*` (never silently treated as base currency).
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, useTransition, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import type { Holding } from "@/lib/api";
 import { fxRate, money, moneyWhole, percent, quantity, signClass, signedMoneyWhole } from "@/lib/format";
+import { setSecurityLabelAction } from "@/app/portfolios/[id]/actions";
 
 type SortValue = string | number | null;
 
@@ -55,10 +57,13 @@ export function HoldingsTable({
   holdings,
   baseCurrency,
   priced,
+  portfolioId,
 }: {
   holdings: Holding[];
   baseCurrency: string;
   priced: boolean;
+  /** When set, the Ticker cell exposes an inline alias editor (metron-ops#47). */
+  portfolioId?: string;
 }) {
   const columns = priced ? COLUMNS : COLUMNS.filter((c) => !c.pricedOnly);
   const [sort, setSort] = useState<{ key: string; desc: boolean } | null>(null);
@@ -153,7 +158,9 @@ export function HoldingsTable({
             const lastBase = h.last_price != null && h.fx_rate != null ? h.last_price * h.fx_rate : null;
             return (
               <tr key={h.ticker} className="border-b border-line last:border-0">
-                <td className="px-4 py-2 font-medium">{h.ticker}</td>
+                <td className="px-4 py-2 font-medium">
+                  <TickerCell h={h} portfolioId={portfolioId} />
+                </td>
                 <td className="px-4 py-2 text-right text-muted">
                   {foreign ? `${h.currency} @ ${h.fx_rate != null ? fxRate(h.fx_rate) : "—"}` : h.currency}
                 </td>
@@ -209,5 +216,93 @@ export function HoldingsTable({
         ) : null}
       </table>
     </div>
+  );
+}
+
+/** The Ticker cell: shows a user alias (with the raw symbol beneath) when set, else the
+ *  symbol. With a portfolioId it exposes an inline editor so an opaque numeric-CUSIP bond
+ *  can be named (metron-ops#47). Read-only contexts (no portfolioId) just render. */
+function TickerCell({ h, portfolioId }: { h: Holding; portfolioId?: string }) {
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(h.user_label ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+
+  if (!portfolioId) {
+    // Read-only: alias (if any) over the symbol.
+    return h.user_label ? (
+      <span>
+        {h.user_label}
+        <span className="ml-1 text-xs font-normal text-muted">{h.ticker}</span>
+      </span>
+    ) : (
+      <span>{h.ticker}</span>
+    );
+  }
+
+  function save() {
+    setError(null);
+    start(async () => {
+      const r = await setSecurityLabelAction(portfolioId!, h.ticker, value);
+      if (!r.ok) {
+        setError(r.message);
+        return;
+      }
+      setEditing(false);
+      router.refresh();
+    });
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1">
+        <input
+          autoFocus
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+            if (e.key === "Escape") {
+              setValue(h.user_label ?? "");
+              setEditing(false);
+            }
+          }}
+          placeholder={h.ticker}
+          aria-label={`Label for ${h.ticker}`}
+          disabled={pending}
+          className="w-32 rounded border border-line bg-surface px-1.5 py-0.5 text-sm font-normal"
+        />
+        <button type="button" onClick={save} disabled={pending} className="text-xs text-accent hover:underline">
+          Save
+        </button>
+        {error ? <span className="text-xs text-negative">{error}</span> : null}
+      </span>
+    );
+  }
+
+  return (
+    <span className="group inline-flex items-baseline gap-1">
+      {h.user_label ? (
+        <>
+          <span>{h.user_label}</span>
+          <span className="text-xs font-normal text-muted">{h.ticker}</span>
+        </>
+      ) : (
+        <span>{h.ticker}</span>
+      )}
+      <button
+        type="button"
+        onClick={() => {
+          setValue(h.user_label ?? "");
+          setEditing(true);
+        }}
+        aria-label={`${h.user_label ? "Edit" : "Add"} label for ${h.ticker}`}
+        title={h.user_label ? "Edit label" : "Add a label/alias"}
+        className="text-xs font-normal text-muted opacity-0 transition hover:text-ink group-hover:opacity-100"
+      >
+        ✎
+      </button>
+    </span>
   );
 }

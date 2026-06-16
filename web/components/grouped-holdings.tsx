@@ -77,16 +77,21 @@ export function GroupedHoldings({
   holdings,
   baseCurrency,
   priced,
+  portfolioId,
 }: {
   holdings: Holding[];
   baseCurrency: string;
   priced: boolean;
+  /** Threaded to HoldingsTable for the inline ticker-alias editor (metron-ops#47). */
+  portfolioId?: string;
 }) {
   const groups = groupByType(holdings);
 
   // One group → the plain table (its totals row is the total); no headings needed.
   if (groups.length <= 1) {
-    return <HoldingsTable holdings={holdings} baseCurrency={baseCurrency} priced={priced} />;
+    return (
+      <HoldingsTable holdings={holdings} baseCurrency={baseCurrency} priced={priced} portfolioId={portfolioId} />
+    );
   }
 
   const grand = grandTotal(holdings);
@@ -125,7 +130,7 @@ export function GroupedHoldings({
               {hs.length} {hs.length === 1 ? "holding" : "holdings"}
             </span>
           </h3>
-          <HoldingsTable holdings={hs} baseCurrency={baseCurrency} priced={priced} />
+          <HoldingsTable holdings={hs} baseCurrency={baseCurrency} priced={priced} portfolioId={portfolioId} />
         </div>
       ))}
     </div>

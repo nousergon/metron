@@ -21,6 +21,7 @@ import {
   removeWatchlist,
   renamePortfolio,
   restoreExcludedAccount,
+  setSecurityLabel,
   setSnapTradeConnectionExcluded,
   type SnapTradeConnections,
   syncFlex,
@@ -280,5 +281,21 @@ export async function removeWatchlistAction(portfolioId: string, symbol: string)
     return { ok: true, message: `Removed ${symbol}.` };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t remove — backend reachable?" };
+  }
+}
+
+export async function setSecurityLabelAction(
+  portfolioId: string,
+  symbol: string,
+  label: string,
+): Promise<ActionResult> {
+  try {
+    const tenantId = await requireTenantId();
+    // Empty string clears the alias (reverts to the raw symbol).
+    await setSecurityLabel(tenantId, portfolioId, symbol, label.trim() || null);
+    revalidatePath(`/portfolios/${portfolioId}`);
+    return { ok: true, message: "Label saved." };
+  } catch (e) {
+    return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t save the label — backend reachable?" };
   }
 }

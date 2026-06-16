@@ -33,6 +33,7 @@ from api.services import (
     attribution,
     calendar,
     data_spine,
+    labels,
     performance,
     persistence,
     risk,
@@ -126,6 +127,8 @@ class HoldingOut(BaseModel):
     unrealized_pct: float | None = None
     # Coarse asset class for grouping (cash / bond / equity / etf / fund / option / other).
     security_type: str = "other"
+    # User-set display label/alias (so a numeric-CUSIP bond is legible). None when unset.
+    user_label: str | None = None
 
 
 class RealizedOut(BaseModel):
@@ -383,6 +386,16 @@ class WatchlistIn(BaseModel):
 class WatchlistDeleteOut(BaseModel):
     symbol: str
     removed: bool
+
+
+class SecurityLabelIn(BaseModel):
+    # An empty/blank label CLEARS the alias (reverts to showing the raw symbol).
+    label: str | None = None
+
+
+class SecurityLabelOut(BaseModel):
+    symbol: str
+    label: str | None = None
 
 
 class SkipOut(BaseModel):
@@ -1407,6 +1420,22 @@ def refresh_calendar(
     tickers = [h.ticker for h in analytics.holdings(session, portfolio.tenant_id, portfolio.id)]
     calendar.refresh_earnings(session, tickers)
     return calendar.upcoming_events(session, portfolio.tenant_id, portfolio.id, today=date.today())
+
+
+@router.put("/{portfolio_id}/securities/{symbol}/label", response_model=SecurityLabelOut)
+def set_security_label(
+    symbol: str,
+    body: SecurityLabelIn,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> SecurityLabelOut:
+    """Set (or clear, with an empty label) a user alias for a symbol so a numeric-CUSIP
+    bond is legible (metron-ops#47). Tenant-scoped; the alias survives re-imports."""
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        raise HTTPException(status_code=422, detail="symbol is required")
+    stored = labels.set_label(session, portfolio.tenant_id, sym, body.label)
+    return SecurityLabelOut(symbol=sym, label=stored)
 
 
 @router.get("/{portfolio_id}/watchlist", response_model=list[WatchlistEntryOut])
