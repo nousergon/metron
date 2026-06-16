@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from alpha_engine_lib.quant.returns import ValuationPoint, annualize, cumulative_return, time_weighted_return
+from alpha_engine_lib.quant.returns import ValuationPoint, annualize, time_weighted_return
 from alpha_engine_lib.quant.riskstats import max_drawdown, sharpe_ratio, sortino_ratio, volatility
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -37,44 +37,97 @@ from portfolio_analytics.prices import ClosePoint, HistorySource, fetch_latest_c
 _MIN_ANNUALIZE_DAYS = 30
 
 
-def _external_flow_on(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, when: date) -> float:
-    """Net external cash flow into the portfolio on ``when`` (deposits +, withdrawals −).
+def _purchase_flow(rows: list[tuple[str, float]]) -> float:
+    """Net purchases for a set of (txn_type, amount) rows: a BUY brings capital INTO the
+    holdings (+amount), a SELL takes it OUT (−amount)."""
+    flow = 0.0
+    for txn_type, amount in rows:
+        if txn_type == TxnType.BUY.value:
+            flow += float(amount)
+        elif txn_type == TxnType.SELL.value:
+            flow -= float(amount)
+    return flow
 
-    BUY/SELL/DIVIDEND/FEE are internal to the portfolio and are NOT external flows;
-    only DEPOSIT/WITHDRAWAL move capital across the portfolio boundary."""
+
+def _net_purchases(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    after: date | None,
+    through: date,
+) -> float:
+    """Net external capital into the portfolio over ``(after, through]`` — NET PURCHASES
+    (ΣBUY − ΣSELL).
+
+    Metron's NAV is the market value of HOLDINGS (no cash bucket). With no cash, a BUY is
+    the moment capital enters the valued portfolio and a SELL the moment it leaves; a cash
+    DEPOSIT/WITHDRAWAL doesn't move the holdings NAV (it only does once spent on a buy), and
+    a reinvested dividend is a buy. So the flow TWR must neutralize is net purchases — NOT
+    cash deposits. Counting only deposits (the old behavior) made a portfolio funded by
+    buys read its entire contribution-driven build-up as investment return (metron-ops#44)."""
+    conds = [
+        models.Transaction.tenant_id == tenant_id,
+        models.Account.portfolio_id == portfolio_id,
+        models.Transaction.trade_date <= through,
+        models.Transaction.txn_type.in_([TxnType.BUY.value, TxnType.SELL.value]),
+    ]
+    if after is not None:
+        conds.append(models.Transaction.trade_date > after)
     rows = session.execute(
         select(models.Transaction.txn_type, models.Transaction.amount)
         .join(models.Account, models.Transaction.account_id == models.Account.id)
-        .where(
-            models.Transaction.tenant_id == tenant_id,
-            models.Account.portfolio_id == portfolio_id,
-            models.Transaction.trade_date == when,
-            models.Transaction.txn_type.in_([TxnType.DEPOSIT.value, TxnType.WITHDRAWAL.value]),
-        )
+        .where(*conds)
     ).all()
-    flow = 0.0
-    for txn_type, amount in rows:
-        flow += float(amount) if txn_type == TxnType.DEPOSIT.value else -float(amount)
-    return flow
+    return _purchase_flow(rows)
 
 
-def _account_external_flow_on(
-    session: Session, tenant_id: uuid.UUID, account_id: uuid.UUID, when: date
+def _account_net_purchases(
+    session: Session, tenant_id: uuid.UUID, account_id: uuid.UUID, *, after: date | None, through: date
 ) -> float:
-    """Net external cash flow into a single ACCOUNT on ``when`` (deposits +, withdrawals −).
-    The per-account analogue of ``_external_flow_on`` for account-grain snapshots."""
+    """Per-ACCOUNT net purchases over ``(after, through]`` — the account-grain analogue."""
+    conds = [
+        models.Transaction.tenant_id == tenant_id,
+        models.Transaction.account_id == account_id,
+        models.Transaction.trade_date <= through,
+        models.Transaction.txn_type.in_([TxnType.BUY.value, TxnType.SELL.value]),
+    ]
+    if after is not None:
+        conds.append(models.Transaction.trade_date > after)
     rows = session.execute(
-        select(models.Transaction.txn_type, models.Transaction.amount).where(
-            models.Transaction.tenant_id == tenant_id,
-            models.Transaction.account_id == account_id,
-            models.Transaction.trade_date == when,
-            models.Transaction.txn_type.in_([TxnType.DEPOSIT.value, TxnType.WITHDRAWAL.value]),
-        )
+        select(models.Transaction.txn_type, models.Transaction.amount).where(*conds)
     ).all()
-    flow = 0.0
-    for txn_type, amount in rows:
-        flow += float(amount) if txn_type == TxnType.DEPOSIT.value else -float(amount)
-    return flow
+    return _purchase_flow(rows)
+
+
+def _last_snapshot_date(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, before: date
+) -> date | None:
+    """The most recent portfolio NAV-snapshot date strictly before ``before`` (so a new
+    snapshot's flow can span every purchase since the last one, robust to refresh gaps)."""
+    return session.scalars(
+        select(models.NavSnapshot.snap_date)
+        .where(
+            models.NavSnapshot.tenant_id == tenant_id,
+            models.NavSnapshot.portfolio_id == portfolio_id,
+            models.NavSnapshot.snap_date < before,
+        )
+        .order_by(models.NavSnapshot.snap_date.desc())
+    ).first()
+
+
+def _last_account_snapshot_date(
+    session: Session, tenant_id: uuid.UUID, account_id: uuid.UUID, before: date
+) -> date | None:
+    return session.scalars(
+        select(models.AccountNavSnapshot.snap_date)
+        .where(
+            models.AccountNavSnapshot.tenant_id == tenant_id,
+            models.AccountNavSnapshot.account_id == account_id,
+            models.AccountNavSnapshot.snap_date < before,
+        )
+        .order_by(models.AccountNavSnapshot.snap_date.desc())
+    ).first()
 
 
 def record_snapshot(
@@ -90,7 +143,10 @@ def record_snapshot(
     # Base-currency cost basis (matches the base-currency NAV); a holding with no cached
     # FX rate is excluded rather than summed at native face value.
     cost_basis = sum(h.cost_basis_base for h in held if h.cost_basis_base is not None)
-    flow = _external_flow_on(session, tenant_id, portfolio_id, today)
+    flow = _net_purchases(
+        session, tenant_id, portfolio_id,
+        after=_last_snapshot_date(session, tenant_id, portfolio_id, today), through=today,
+    )
     spy_point = fetch_latest_closes(["SPY"], source=source).get("SPY")
     row = _upsert_snapshot(
         session, tenant_id, portfolio_id, today,
@@ -155,7 +211,10 @@ def record_account_snapshots(
             continue  # can't snapshot a NAV we can't value — never fabricate one
         nav = sum(h.market_value for h in priced)
         cost_basis = sum(h.cost_basis_base for h in held if h.cost_basis_base is not None)
-        flow = _account_external_flow_on(session, tenant_id, account_id, today)
+        flow = _account_net_purchases(
+            session, tenant_id, account_id,
+            after=_last_account_snapshot_date(session, tenant_id, account_id, today), through=today,
+        )
         _upsert_account_snapshot(
             session, tenant_id, portfolio_id, account_id, today,
             nav=nav, cost_basis=cost_basis, flow=flow, spy_close=spy_close,
@@ -308,9 +367,14 @@ def performance(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID)
     summary.days = (points[-1].snap_date - points[0].snap_date).days
     # Contributions after the first snapshot inflate end NAV without being performance.
     summary.net_contributions = sum(p.external_flow for p in points[1:])
-    summary.cumulative_return = cumulative_return(
-        points[0].nav, points[-1].nav, net_contributions=summary.net_contributions
-    )
+    # Cumulative return = the flow-neutralized TOTAL (geometric link of the period returns).
+    # The naive (last − contributions)/first divides by the FIRST NAV, which explodes when
+    # the series starts from a tiny initial position later built up by contributions
+    # (metron-ops#44 — that produced the +4972% cumulative). This coincides with the TWR.
+    _cum = 1.0
+    for r in _flow_neutralized_returns(points):
+        _cum *= 1.0 + r
+    summary.cumulative_return = _cum - 1.0
     # The lib wants each point's value BEFORE its flow; a snapshot's NAV is recorded
     # end-of-day (post-flow), so subtract the day's net deposit to recover the pre-flow
     # value. Then chaining end.value / (begin.value + begin.flow) neutralizes the flow.
@@ -395,6 +459,7 @@ def reconstruct_snapshots(
 
     flow_dates = [t.when for t in txns if t.type in (TxnType.DEPOSIT, TxnType.WITHDRAWAL)]
     written = 0
+    prev: date | None = None
     for when in _valuation_dates(first, today, flow_dates):
         ledger, _incomplete = analytics.build_portfolio_ledger(
             [(aid, t) for aid, t in txns_by_account if t.when <= when], log=False
@@ -413,11 +478,15 @@ def reconstruct_snapshots(
                 valued_any = True
         if not valued_any:
             continue  # nothing priced as-of this date → no fabricated NAV
-        flow = _external_flow_on(session, tenant_id, portfolio_id, when)
+        # Net purchases since the prior valued snapshot — the contributions to neutralize.
+        # (Per-period, so every buy between snapshots is captured without needing each buy
+        # date as a valuation date.) (metron-ops#44)
+        flow = _net_purchases(session, tenant_id, portfolio_id, after=prev, through=when)
         _upsert_snapshot(
             session, tenant_id, portfolio_id, when,
             nav=nav, cost_basis=cost_basis, flow=flow, spy_close=_asof_close(spy_series, when),
         )
         written += 1
+        prev = when
     session.commit()
     return written
