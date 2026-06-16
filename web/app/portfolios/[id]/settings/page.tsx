@@ -4,6 +4,7 @@ import { AccountTagRow, BaseCurrencyForm, ExcludedAccountRow, PreferencesForm } 
 import { requireTenantId } from "@/lib/session";
 import { ImportPanel } from "@/components/import-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 export const dynamic = "force-dynamic";
 
@@ -70,6 +71,10 @@ export default async function SettingsPage({ params }: { params: { id: string } 
 
       <Section title="Investor preferences">
         <PreferencesForm portfolioId={id} current={preferences} />
+      </Section>
+
+      <Section title="Appearance" note="display theme (saved in this browser)">
+        <ThemeToggle />
       </Section>
     </div>
   );

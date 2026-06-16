@@ -2,8 +2,32 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Semantic color tokens as RGB channels (space-separated) so Tailwind's
+   `rgb(var(--c-x) / <alpha-value>)` tokens can switch theme at runtime. Dark is the
+   default (:root); `.light` on <html> re-points them. The no-flash script in
+   app/layout.tsx applies the saved theme class before first paint. (metron-ops#50) */
 :root {
+  --c-paper: 9 9 11; /* zinc-950 */
+  --c-surface: 19 19 22;
+  --c-ink: 244 244 245; /* zinc-100 */
+  --c-muted: 161 161 170; /* zinc-400 */
+  --c-line: 39 39 42; /* zinc-800 */
+  --c-positive: 52 211 153; /* emerald-400 */
+  --c-negative: 251 113 133; /* rose-400 */
+  --c-accent: 56 189 248; /* sky-400 */
   color-scheme: dark;
+}
+
+:root.light {
+  --c-paper: 255 255 255; /* white */
+  --c-surface: 244 244 245; /* zinc-100 */
+  --c-ink: 24 24 27; /* zinc-900 */
+  --c-muted: 82 82 91; /* zinc-600 */
+  --c-line: 228 228 231; /* zinc-200 */
+  --c-positive: 5 150 105; /* emerald-600 — darker for contrast on white */
+  --c-negative: 225 29 72; /* rose-600 */
+  --c-accent: 2 132 199; /* sky-600 */
+  color-scheme: light;
 }
 
 body {

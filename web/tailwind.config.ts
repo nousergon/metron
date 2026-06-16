@@ -5,17 +5,19 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Dark brand palette — matches the Nous Ergon site (black, zinc text,
-        // hairline borders, restrained accents). Components style through these
-        // semantic tokens; literal Tailwind colors stay out of components.
-        paper: "#09090b",    // page background (zinc-950)
-        surface: "#131316",  // raised surfaces: cards, table heads, inputs
-        ink: "#f4f4f5",      // primary text (zinc-100)
-        muted: "#a1a1aa",    // secondary text (zinc-400)
-        line: "#27272a",     // borders (zinc-800)
-        positive: "#34d399", // P&L green tuned for dark (emerald-400)
-        negative: "#fb7185", // P&L red tuned for dark (rose-400)
-        accent: "#38bdf8",   // links/highlights (sky-400, the site accent)
+        // Semantic brand tokens resolve through CSS variables (RGB channels) so the
+        // light/dark theme toggle can re-point them at runtime (globals.css holds the
+        // dark default + `.light` overrides). Components style through these tokens;
+        // literal Tailwind colors stay out of components. The `<alpha-value>` form keeps
+        // Tailwind's opacity modifiers (e.g. `bg-surface/50`) working.
+        paper: "rgb(var(--c-paper) / <alpha-value>)",       // page background
+        surface: "rgb(var(--c-surface) / <alpha-value>)",   // raised surfaces: cards, table heads, inputs
+        ink: "rgb(var(--c-ink) / <alpha-value>)",           // primary text
+        muted: "rgb(var(--c-muted) / <alpha-value>)",       // secondary text
+        line: "rgb(var(--c-line) / <alpha-value>)",         // borders
+        positive: "rgb(var(--c-positive) / <alpha-value>)", // P&L green
+        negative: "rgb(var(--c-negative) / <alpha-value>)", // P&L red
+        accent: "rgb(var(--c-accent) / <alpha-value>)",     // links/highlights
       },
     },
   },
