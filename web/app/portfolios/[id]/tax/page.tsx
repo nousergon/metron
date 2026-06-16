@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { acctParams, getIncome, getSummary, getTax, MetronApiError } from "@/lib/api";
 import { isoDate, money, moneyWhole, quantity, signClass, signedMoney, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
@@ -136,6 +137,11 @@ export default async function TaxPage({
             ))}
           </Table>
         )}
+        <p className="mt-2 text-xs text-muted">
+          <Link href={`/portfolios/${id}/transactions${navQuery}`} className="text-accent hover:underline">
+            View the underlying lots &amp; transactions →
+          </Link>
+        </p>
       </Section>
     </div>
   );

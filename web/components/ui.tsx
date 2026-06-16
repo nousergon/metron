@@ -2,6 +2,7 @@
 // dependency-free (plain Tailwind). Charting (Tremor) arrives with the Performance
 // page, which is gated on a licensed price feed.
 
+import Link from "next/link";
 import type { ReactNode } from "react";
 
 export function StatCard({
@@ -9,19 +10,36 @@ export function StatCard({
   value,
   hint,
   valueClass = "",
+  href,
 }: {
   label: string;
   value: string;
   hint?: string;
   valueClass?: string;
+  /** When set, the whole card links to the supporting detail (metron-ops#59). */
+  href?: string;
 }) {
-  return (
-    <div className="rounded-lg border border-line p-4">
-      <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
+  const body = (
+    <>
+      <div className="flex items-center justify-between gap-1 text-xs uppercase tracking-wide text-muted">
+        <span>{label}</span>
+        {href ? <span aria-hidden="true">→</span> : null}
+      </div>
       <div className={`mt-1 text-2xl font-semibold tabular-nums ${valueClass}`}>{value}</div>
       {hint ? <div className="mt-1 text-xs text-muted">{hint}</div> : null}
-    </div>
+    </>
   );
+  if (href) {
+    return (
+      <Link
+        href={href}
+        className="block rounded-lg border border-line p-4 transition hover:border-muted hover:bg-white/5"
+      >
+        {body}
+      </Link>
+    );
+  }
+  return <div className="rounded-lg border border-line p-4">{body}</div>;
 }
 
 export function Section({ title, children, note }: { title: string; children: ReactNode; note?: string }) {

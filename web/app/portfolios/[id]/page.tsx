@@ -95,8 +95,14 @@ export default async function PortfolioPage({
           value={signedMoneyWhole(summary.realized_total, ccy)}
           valueClass={signClass(summary.realized_total)}
           hint="short + long term"
+          href={`/portfolios/${id}/tax`}
         />
-        <StatCard label="Income" value={moneyWhole(summary.dividends + summary.interest, ccy)} hint="dividends + interest" />
+        <StatCard
+          label="Income"
+          value={moneyWhole(summary.dividends + summary.interest, ccy)}
+          hint="dividends + interest"
+          href={`/portfolios/${id}/tax`}
+        />
         <StatCard label="Accounts" value={String(summary.n_accounts)} />
       </div>
 
