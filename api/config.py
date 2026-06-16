@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # Product tier this deployment serves. The personal build runs the full
     # "personal" superset; real per-tenant subscription gating supersedes this in M2.
     default_tier: str = "personal"
+    # Demo/sample portfolio (metron-ops#42) — seed a canned, frozen, READ-ONLY fixture
+    # at startup so a prospect can explore the product with no signup/connection. On by
+    # default; a deploy that doesn't want the sample portfolio sets DEMO_ENABLED=false.
+    demo_enabled: bool = True
     # Tier simulator — owner-only preview of Beta / Pro / Research+ / Base product
     # levels in the personal build, via GET /meta/entitlements?preview_tier=&preview_feed=.
     # NEVER enabled on the public multi-tenant product (it would let any caller
