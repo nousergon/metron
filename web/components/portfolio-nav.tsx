@@ -64,6 +64,7 @@ export function PortfolioNav({
     { label: "Tax", href: `${base}/tax${navQuery}`, feature: "tax" },
     { label: "Macro", href: `${base}/macro`, feature: "macro" },
     { label: "Calendar", href: `${base}/calendar` },
+    { label: "Watchlist", href: `${base}/watchlist` },
     ...plugins.map((p) => ({ label: p.label, href: `${base}/${p.href}` })),
     { label: "Settings & data", href: `${base}/settings` },
   ];

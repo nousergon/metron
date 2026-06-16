@@ -167,6 +167,53 @@ export function acctParams(accountIds?: string[]): string {
 export const getPortfolios = (tenantId: string) => get<Portfolio[]>(tenantId, "/portfolios");
 export const getPortfolio = (tenantId: string, id: string) => get<Portfolio>(tenantId, `/portfolios/${id}`);
 
+// Watchlist — tracked tickers (held or not). Read-only/illustrative in the beta: no live
+// price (un-held tickers have no price source until the Pro feed). (metron-ops#42)
+export type WatchlistEntry = {
+  symbol: string;
+  name: string | null;
+  sector: string | null;
+  next_earnings_date: string | null;
+  held: boolean;
+  note: string | null;
+};
+
+export const getWatchlist = (tenantId: string, id: string) =>
+  get<WatchlistEntry[]>(tenantId, `/portfolios/${id}/watchlist`);
+
+export async function addWatchlist(
+  tenantId: string,
+  id: string,
+  symbol: string,
+  note?: string | null,
+): Promise<WatchlistEntry> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/watchlist`, {
+    method: "POST",
+    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    body: JSON.stringify({ symbol, note: note ?? null }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail ?? detail;
+    } catch {
+      // keep the status
+    }
+    throw new MetronApiError(res.status, detail);
+  }
+  return res.json() as Promise<WatchlistEntry>;
+}
+
+export async function removeWatchlist(tenantId: string, id: string, symbol: string): Promise<void> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/watchlist/${encodeURIComponent(symbol)}`, {
+    method: "DELETE",
+    headers: { "X-Tenant-Id": tenantId },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new MetronApiError(res.status, `DELETE watchlist → ${res.status}`);
+}
+
 /** Update a portfolio's name and/or base currency (PATCH). Empty/no-op rejected (422). */
 export async function updatePortfolio(
   tenantId: string,

@@ -27,7 +27,18 @@ from api import entitlements as ent
 from api.config import settings
 from api.db import models
 from api.db.session import get_session
-from api.services import account_meta, analytics, attribution, calendar, data_spine, performance, persistence, risk, tax
+from api.services import (
+    account_meta,
+    analytics,
+    attribution,
+    calendar,
+    data_spine,
+    performance,
+    persistence,
+    risk,
+    tax,
+    watchlist,
+)
 from api.services import fx as fx_service
 from api.services import prices as price_service
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
@@ -349,6 +360,27 @@ class CalendarOut(BaseModel):
     horizon_days: int
     n_events: int
     events: list[CalendarEventOut]
+
+
+class WatchlistEntryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    name: str | None = None
+    sector: str | None = None
+    next_earnings_date: date | None = None
+    held: bool = False
+    note: str | None = None
+
+
+class WatchlistIn(BaseModel):
+    symbol: str
+    note: str | None = None
+
+
+class WatchlistDeleteOut(BaseModel):
+    symbol: str
+    removed: bool
 
 
 class SkipOut(BaseModel):
@@ -1373,6 +1405,52 @@ def refresh_calendar(
     tickers = [h.ticker for h in analytics.holdings(session, portfolio.tenant_id, portfolio.id)]
     calendar.refresh_earnings(session, tickers)
     return calendar.upcoming_events(session, portfolio.tenant_id, portfolio.id, today=date.today())
+
+
+@router.get("/{portfolio_id}/watchlist", response_model=list[WatchlistEntryOut])
+def get_watchlist(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> list[watchlist.WatchlistEntry]:
+    """The portfolio's watchlist — tracked tickers (held or not) with reference data
+    (name / sector / next earnings) + a held flag. Read-only/illustrative in the no-feed
+    beta: no live price, since un-held tickers have no price source (metron-ops#42)."""
+    return watchlist.list_watchlist(session, portfolio.tenant_id, portfolio.id)
+
+
+@router.post("/{portfolio_id}/watchlist", response_model=WatchlistEntryOut, status_code=201)
+def add_watchlist(
+    body: WatchlistIn,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> WatchlistEntryOut:
+    """Add a symbol to the watchlist (idempotent; re-add updates the note). Caches a
+    Security row so reference data can resolve."""
+    symbol = (body.symbol or "").strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=422, detail="symbol is required")
+    watchlist.add_to_watchlist(session, portfolio.tenant_id, portfolio.id, symbol, note=body.note)
+    # Return the enriched entry (held flag + reference data), not the bare row.
+    entry = next(
+        (e for e in watchlist.list_watchlist(session, portfolio.tenant_id, portfolio.id) if e.symbol == symbol),
+        None,
+    )
+    if entry is None:  # pragma: no cover - just-added row must be present
+        raise HTTPException(status_code=500, detail="watchlist add did not persist")
+    return WatchlistEntryOut.model_validate(entry)
+
+
+@router.delete("/{portfolio_id}/watchlist/{symbol}", response_model=WatchlistDeleteOut)
+def remove_watchlist(
+    symbol: str,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> WatchlistDeleteOut:
+    """Remove a symbol from the watchlist (404 if it isn't on it)."""
+    removed = watchlist.remove_from_watchlist(session, portfolio.tenant_id, portfolio.id, symbol)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Symbol not on the watchlist")
+    return WatchlistDeleteOut(symbol=symbol.strip().upper(), removed=True)
 
 
 @router.get("/{portfolio_id}/accounts/{account_id}", response_model=AccountDetailOut)
