@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
 import { UserNav } from "@/components/user-nav";
+import { DemoBanner } from "@/components/demo-banner";
 
 export const metadata: Metadata = {
   title: "Metron — portfolio analytics, measured",
@@ -28,6 +29,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: NO_FLASH_THEME }} />
       </head>
       <body>
+        <DemoBanner />
         <div className="mx-auto max-w-6xl px-6">
           <header className="flex items-center justify-between border-b border-line py-5">
             <Link href="/" className="flex items-baseline gap-3">
