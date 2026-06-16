@@ -437,8 +437,12 @@ def reconstruct_snapshots(
     span, then value the portfolio at each valuation date by replaying the ledger to
     that date. Idempotent (upserts per day). Returns the number of snapshots written.
 
-    A position whose ticker has no cached history on a date is excluded from that date's
-    NAV (never fabricated); a date with nothing priced is skipped entirely."""
+    A position with NO price history at all (a fund the data spine can't price — e.g. a
+    Fidelity ZERO fund) is valued at its CURRENT price (flat) rather than dropped: dropping
+    it made the reconstructed NAV diverge badly from the live market value (the $374k vs
+    $835k bug) and manufactured spurious volatility/drawdown (metron-ops#44). A position
+    with no historical AND no current price is the only one excluded; a date with nothing
+    valuable is skipped."""
     txns_by_account = analytics.engine_transactions_by_account(session, tenant_id, portfolio_id)
     txns = [t for _aid, t in txns_by_account]
     if not txns:
@@ -451,6 +455,14 @@ def reconstruct_snapshots(
     price_service.backfill_prices(session, [*symbols, "SPY"], first, today, source=source)
     history = price_service.close_history_by_symbol(session, [*symbols, "SPY"])
     spy_series = history.get("SPY")
+
+    # Current per-share price per held ticker (broker / latest cache) — the flat fallback
+    # for a holding the historical spine can't price, so it stays in NAV every date.
+    current_px = {
+        h.ticker: h.last_price
+        for h in analytics.valued_holdings(session, tenant_id, portfolio_id)
+        if h.last_price is not None
+    }
 
     # WARN once, over the full set, for any per-(account, ticker) group whose history
     # can't replay; the per-date loop below then skips quietly (log=False) instead of
@@ -472,12 +484,16 @@ def reconstruct_snapshots(
             if shares <= 0:
                 continue
             cost_basis += shares * avg_cost
+            # Historical close (carry-forward); else the current price (flat) so a
+            # no-history fund stays in NAV instead of dropping out (metron-ops#44).
             px = _asof_close(history.get(ticker), when)
+            if px is None:
+                px = current_px.get(ticker)
             if px is not None:
                 nav += shares * px
                 valued_any = True
         if not valued_any:
-            continue  # nothing priced as-of this date → no fabricated NAV
+            continue  # nothing valuable as-of this date (no historical or current price)
         # Net purchases since the prior valued snapshot — the contributions to neutralize.
         # (Per-period, so every buy between snapshots is captured without needing each buy
         # date as a valuation date.) (metron-ops#44)

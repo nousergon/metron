@@ -93,3 +93,42 @@ def test_dca_with_real_gain_reads_the_gain_not_the_contributions(client, db_sess
     assert p["cumulative_return"] == pytest.approx(0.10, abs=0.02)
     # NAV ≈ 144 shares × $110.
     assert p["latest_nav"] == pytest.approx(144 * 110, rel=0.02)
+
+
+def test_no_history_holding_stays_in_nav_at_current_price(client, db_session):
+    """A holding the spine can't price HISTORICALLY but DOES have a current price (a
+    Fidelity ZERO-style fund) must stay in the reconstructed NAV at its current price —
+    not drop out and make the latest NAV diverge from the live market value (the $374k vs
+    $835k bug). (metron-ops#44)"""
+    tenant = str(uuid.uuid4())
+    csv = (
+        "date,type,symbol,quantity,price,amount,account\n"
+        "2024-01-05,BUY,AAA,10,100,1000,Brokerage\n"  # AAA: full history
+        "2024-01-05,BUY,ZZZ,5,40,200,Brokerage\n"  # ZZZ: NO spine history, only a current price
+    )
+    pid = client.post("/portfolios", json={"name": "P"}, headers=_hdr(tenant)).json()["id"]
+    client.post(
+        f"/portfolios/{pid}/import/csv",
+        files={"file": ("t.csv", io.BytesIO(csv.encode()), "text/csv")},
+        headers=_hdr(tenant),
+    )
+    # Seed ONLY a current price for ZZZ (today), no history.
+    from sqlalchemy import select
+
+    from api.db import models
+
+    zzz = db_session.scalars(select(models.Security).where(models.Security.symbol == "ZZZ")).first()
+    db_session.add(models.PriceBar(security_id=zzz.id, bar_date=date(2024, 6, 30), close=50.0, currency="USD"))
+    db_session.commit()
+
+    # History source prices AAA (+ SPY) but NOT ZZZ.
+    def _src(symbols, start, end):
+        days = [start + timedelta(d) for d in range((end - start).days + 1)]
+        return {s: [ClosePoint(bar_date=d, close=100.0) for d in days] for s in symbols if s != "ZZZ"}
+
+    performance.reconstruct_snapshots(db_session, uuid.UUID(tenant), uuid.UUID(pid), today=date(2024, 6, 30), source=_src)
+    p = client.get(f"/portfolios/{pid}/performance", headers=_hdr(tenant)).json()
+    # Latest NAV = AAA (10 × $100) + ZZZ (5 × $50) = $1,250 — ZZZ is NOT dropped.
+    assert p["latest_nav"] == pytest.approx(1250, rel=0.01)
+    # ZZZ valued flat both ends → no spurious swing; ~0% return on flat AAA + flat ZZZ.
+    assert abs(p["twr"]) < 0.02
