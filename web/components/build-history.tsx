@@ -6,9 +6,13 @@
 import { useState, useTransition } from "react";
 import { reconstructAction, type ActionResult } from "@/app/portfolios/[id]/performance/actions";
 
-export function BuildHistory({ portfolioId }: { portfolioId: string }) {
+export function BuildHistory({ portfolioId, feedOn }: { portfolioId: string; feedOn?: boolean }) {
   const [pending, start] = useTransition();
   const [result, setResult] = useState<ActionResult | null>(null);
+
+  // Feed-gated (metron-ops#52): the beta backfills NAV forward from broker valuations,
+  // not from spine history — hide the control when the feed is off.
+  if (feedOn === false) return null;
 
   return (
     <div className="flex items-center gap-3">

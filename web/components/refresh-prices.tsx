@@ -6,9 +6,13 @@
 import { useState, useTransition } from "react";
 import { refreshPricesAction, type ActionResult } from "@/app/portfolios/[id]/actions";
 
-export function RefreshPrices({ portfolioId }: { portfolioId: string }) {
+export function RefreshPrices({ portfolioId, feedOn }: { portfolioId: string; feedOn?: boolean }) {
   const [pending, start] = useTransition();
   const [result, setResult] = useState<ActionResult | null>(null);
+
+  // Beta tier (feed off) values holdings from broker data only — the spine/feed-backed
+  // refresh is feed-gated server-side (metron-ops#52), so hide the control here too.
+  if (feedOn === false) return null;
 
   return (
     <div className="flex items-center gap-3">

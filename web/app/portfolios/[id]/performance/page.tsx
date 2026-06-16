@@ -64,7 +64,7 @@ export default async function PerformancePage({
       ) : null}
 
       <div className="mt-3">
-        <BuildHistory portfolioId={id} />
+        <BuildHistory portfolioId={id} feedOn={entitlements?.feed_enabled} />
       </div>
 
       {hasMetrics ? (

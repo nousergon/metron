@@ -120,7 +120,7 @@ export default async function PortfolioPage({
 
       <Section title="Holdings" note={priced ? `all values in ${ccy} · market value from last EOD close` : "cost basis — refresh for market value"}>
         <div className="mb-3">
-          <RefreshPrices portfolioId={id} />
+          <RefreshPrices portfolioId={id} feedOn={entitlements?.feed_enabled} />
         </div>
         {holdings.length === 0 ? (
           <Empty>No open positions.</Empty>

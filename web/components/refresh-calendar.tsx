@@ -6,9 +6,12 @@
 import { useState, useTransition } from "react";
 import { refreshCalendarAction, type ActionResult } from "@/app/portfolios/[id]/calendar/actions";
 
-export function RefreshCalendar({ portfolioId }: { portfolioId: string }) {
+export function RefreshCalendar({ portfolioId, feedOn }: { portfolioId: string; feedOn?: boolean }) {
   const [pending, start] = useTransition();
   const [result, setResult] = useState<ActionResult | null>(null);
+
+  // Feed-gated (metron-ops#52): earnings dates come from the spine — hide in the beta.
+  if (feedOn === false) return null;
 
   return (
     <div className="flex items-center gap-3">

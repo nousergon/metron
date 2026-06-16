@@ -3,6 +3,7 @@ import { isoDate } from "@/lib/format";
 import { Empty, Section, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { RefreshCalendar } from "@/components/refresh-calendar";
+import { loadEntitlements } from "@/lib/entitlements";
 import { requireTenantId } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +22,8 @@ export default async function CalendarPage({ params }: { params: { id: string } 
     return <Empty>Couldn&apos;t load the calendar. Is the backend running?</Empty>;
   }
 
+  const entitlements = await loadEntitlements(tenantId);
+
   return (
     <div>
       <PortfolioNav portfolioId={id} navQuery="" />
@@ -31,7 +34,7 @@ export default async function CalendarPage({ params }: { params: { id: string } 
       </p>
 
       <div className="mt-3">
-        <RefreshCalendar portfolioId={id} />
+        <RefreshCalendar portfolioId={id} feedOn={entitlements?.feed_enabled} />
       </div>
 
       <Section title="Upcoming earnings" note={`${cal.n_events} event${cal.n_events === 1 ? "" : "s"}`}>

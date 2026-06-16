@@ -466,6 +466,33 @@ def _effective_entitlement(
     return next(f for f in resolved["features"] if f["key"] == feature_key)
 
 
+def _external_market_data_allowed(x_preview_feed: str | None) -> bool:
+    """Whether this request may read EXTERNAL market data — the S3 data-spine (whose EOD
+    closes / sectors / earnings are ultimately yfinance-derived upstream) or a licensed
+    feed. This is the feed-entitlement axis (``feed_entitled``), honoring the owner tier
+    simulator's feed preview.
+
+    The **beta tier makes ZERO yfinance-derived calls** (metron-ops#52): it values holdings
+    from BROKER-supplied prices only (read paths use the cache + the broker fallback — no
+    network), so the spine-reading REFRESH endpoints (price refresh / build-history /
+    calendar refresh) are gated here and never run for a beta (feed-off) deployment. A
+    licensed feed is a Pro-tier thing, not a beta cost."""
+    feed = settings.feed_entitled
+    if settings.tier_simulator and x_preview_feed is not None:
+        feed = x_preview_feed.strip().lower() == "true"
+    return feed
+
+
+def _require_external_market_data(x_preview_feed: str | None) -> None:
+    """Refuse a spine/feed-reading endpoint when the feed entitlement is off (the beta).
+    Keeps yfinance-derived market data off every beta surface (metron-ops#52)."""
+    if not _external_market_data_allowed(x_preview_feed):
+        raise HTTPException(
+            status_code=403,
+            detail="Live market-data refresh needs the Pro feed; the beta values holdings from your broker.",
+        )
+
+
 @router.get("", response_model=list[PortfolioOut])
 def list_portfolios(
     tenant_id: uuid.UUID = Depends(_tenant_id),
@@ -1187,13 +1214,17 @@ def include_snaptrade_connection(
 def refresh_prices(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     session: Session = Depends(get_session),
+    x_preview_feed: str | None = Header(default=None),
 ) -> PriceRefreshOut:
     """Refresh the EOD price cache for this portfolio's currently-held tickers.
 
-    Fetches the latest close per held ticker (yfinance, personal tier) into the global
-    ``price_bars`` cache, after which holdings/summary report market value + unrealized
-    P&L. Idempotent — re-running updates the same session's bar. Tickers the source
-    can't price are skipped (they stay cost-basis-only)."""
+    Fetches the latest close per held ticker from the S3 data-spine (whose closes are
+    yfinance-derived upstream) into the global ``price_bars`` cache, after which holdings/
+    summary report market value + unrealized P&L. **Feed-gated (metron-ops#52): the beta
+    tier values holdings from BROKER prices only and may not pull spine-sourced data — this
+    endpoint 403s when the feed entitlement is off.** Idempotent; unpriceable tickers stay
+    cost-basis-only."""
+    _require_external_market_data(x_preview_feed)
     held = analytics.holdings(session, portfolio.tenant_id, portfolio.id)
     symbols = [h.ticker for h in held if h.ticker]
     updated = price_service.refresh_latest_prices(session, symbols)
@@ -1284,11 +1315,13 @@ def get_performance(
 def reconstruct_performance(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     session: Session = Depends(get_session),
+    x_preview_feed: str | None = Header(default=None),
 ) -> performance.PerformanceSummary:
-    """Seed NAV history from past prices — backfill daily closes over the ledger span
-    and value the portfolio at each valuation date. Gives instant multi-year
-    performance instead of waiting for forward-recording to accumulate. Returns the
-    now-populated performance summary."""
+    """Seed NAV history from past prices — backfill daily closes (S3 data-spine, yfinance-
+    derived upstream) over the ledger span and value the portfolio at each valuation date.
+    **Feed-gated (metron-ops#52): 403s for the beta tier (broker-only); NAV history accrues
+    forward from broker valuations instead.** Returns the now-populated performance summary."""
+    _require_external_market_data(x_preview_feed)
     performance.reconstruct_snapshots(session, portfolio.tenant_id, portfolio.id, today=date.today())
     return performance.performance(session, portfolio.tenant_id, portfolio.id)
 
@@ -1414,9 +1447,12 @@ def get_calendar(
 def refresh_calendar(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     session: Session = Depends(get_session),
+    x_preview_feed: str | None = Header(default=None),
 ) -> calendar.CalendarSummary:
-    """Refresh each held ticker's next earnings date (yfinance), then return the
-    upcoming-events calendar. The heavier (network) path behind the GET."""
+    """Refresh each held ticker's next earnings date (S3 data-spine, yfinance-derived
+    upstream), then return the upcoming-events calendar. The heavier (network) path behind
+    the GET. **Feed-gated (metron-ops#52): 403s for the beta tier (broker-only)."""
+    _require_external_market_data(x_preview_feed)
     tickers = [h.ticker for h in analytics.holdings(session, portfolio.tenant_id, portfolio.id)]
     calendar.refresh_earnings(session, tickers)
     return calendar.upcoming_events(session, portfolio.tenant_id, portfolio.id, today=date.today())
