@@ -3,6 +3,9 @@ import { isoDate, money, moneyWhole, percent, signClass, signedMoneyWhole } from
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { BuildHistory } from "@/components/build-history";
+import { NavChart } from "@/components/nav-chart";
+import { TierSimulator } from "@/components/tier-simulator";
+import { loadEntitlements } from "@/lib/entitlements";
 import { requireTenantId } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
@@ -37,10 +40,15 @@ export default async function PerformancePage({
   const ccy = summary.base_currency;
   const hasMetrics = perf.twr != null || perf.cumulative_return != null;
   const recent = [...perf.points].reverse().slice(0, 30); // newest first
+  // perf.points are ascending (oldest → newest) — the chart wants chronological order.
+  const navSeries = perf.points.map((p) => ({ snap_date: p.snap_date, nav: p.nav }));
+  const entitlements = await loadEntitlements(tenantId);
 
   return (
     <div>
       <PortfolioNav portfolioId={id} navQuery={navQuery} />
+
+      {entitlements ? <TierSimulator entitlements={entitlements} /> : null}
 
       <h1 className="mt-3 text-lg font-semibold">Performance</h1>
       <p className="text-sm text-muted">
@@ -117,6 +125,12 @@ export default async function PerformancePage({
             value={perf.max_drawdown != null ? percent(perf.max_drawdown) : "—"}
             valueClass={signClass(perf.max_drawdown ?? 0)}
           />
+        </div>
+      ) : null}
+
+      {navSeries.length >= 2 ? (
+        <div className="mt-4">
+          <NavChart points={navSeries} currency={ccy} />
         </div>
       ) : null}
 
