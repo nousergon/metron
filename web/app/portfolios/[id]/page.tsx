@@ -1,10 +1,11 @@
-import { acctParams, getAccounts, getHoldings, getPlugins, getPortfolio, getSummary, MetronApiError, type Portfolio, type PluginNav } from "@/lib/api";
+import { acctParams, getAccounts, getHoldings, getMacro, getPlugins, getPortfolio, getSummary, MetronApiError, type Portfolio, type PluginNav } from "@/lib/api";
 import { moneyWhole, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { TierSimulator } from "@/components/tier-simulator";
 import { GroupedHoldings } from "@/components/grouped-holdings";
+import { MacroStrip } from "@/components/macro-strip";
 import { RefreshPrices } from "@/components/refresh-prices";
 import { RenamePortfolio } from "@/components/rename-portfolio";
 import { loadEntitlements, toFeatureStates } from "@/lib/entitlements";
@@ -56,6 +57,10 @@ export default async function PortfolioPage({
   } catch {
     plugins = [];
   }
+
+  // Macro snapshot for the overview (FRED, public-domain → beta-safe). Best-effort: a
+  // failure must never break the core view (metron-ops#49).
+  const macro = await getMacro(tenantId).catch(() => null);
 
   // Product-tier entitlements (drives the nav lock state + the owner-only tier
   // simulator). The preview cookies are honored server-side ONLY when the
@@ -133,6 +138,8 @@ export default async function PortfolioPage({
           <GroupedHoldings holdings={holdings} baseCurrency={ccy} priced={priced} portfolioId={id} />
         )}
       </Section>
+
+      {macro ? <MacroStrip macro={macro} portfolioId={id} /> : null}
     </div>
   );
 }
