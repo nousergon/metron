@@ -283,3 +283,22 @@ class InvestorPreferences(Base):
     # reloads/devices. NULL/empty = whole portfolio.
     selected_account_ids: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+class WatchlistItem(Base):
+    """A ticker the user is tracking but doesn't necessarily hold (metron-ops#42).
+
+    Positions-optional: lets the product be useful with zero account data. In the
+    no-feed beta the watchlist is read-only/illustrative — symbol + reference data
+    (name / sector / next earnings, from the Security master) but NO live price (the
+    licensed feed is a Pro cost). Tenant + portfolio scoped."""
+
+    __tablename__ = "watchlist_items"
+    __table_args__ = (UniqueConstraint("tenant_id", "portfolio_id", "symbol", name="uq_watchlist_symbol"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(40))
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)  # optional user label/thesis
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())

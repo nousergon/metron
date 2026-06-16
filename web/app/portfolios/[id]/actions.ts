@@ -7,6 +7,7 @@
 import { revalidatePath } from "next/cache";
 import {
   type AccountTagPatch,
+  addWatchlist,
   createSnapTradeConnectUrl,
   deleteAccount,
   getSnapTradeConnections,
@@ -17,6 +18,7 @@ import {
   putPreferences,
   refreshPrices,
   removeSnapTradeConnection,
+  removeWatchlist,
   renamePortfolio,
   restoreExcludedAccount,
   setSnapTradeConnectionExcluded,
@@ -254,5 +256,29 @@ export async function syncFlexAction(portfolioId: string, formData: FormData): P
     return { ok: true, message: summarize(result), result };
   } catch (e) {
     return { ok: false, message: errorMessage(e) };
+  }
+}
+
+export async function addWatchlistAction(portfolioId: string, symbol: string, note?: string): Promise<ActionResult> {
+  const sym = symbol.trim().toUpperCase();
+  if (!sym) return { ok: false, message: "Enter a ticker symbol." };
+  try {
+    const tenantId = await requireTenantId();
+    await addWatchlist(tenantId, portfolioId, sym, note?.trim() || null);
+    revalidatePath(`/portfolios/${portfolioId}/watchlist`);
+    return { ok: true, message: `Added ${sym} to the watchlist.` };
+  } catch (e) {
+    return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t add — backend reachable?" };
+  }
+}
+
+export async function removeWatchlistAction(portfolioId: string, symbol: string): Promise<ActionResult> {
+  try {
+    const tenantId = await requireTenantId();
+    await removeWatchlist(tenantId, portfolioId, symbol);
+    revalidatePath(`/portfolios/${portfolioId}/watchlist`);
+    return { ok: true, message: `Removed ${symbol}.` };
+  } catch (e) {
+    return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t remove — backend reachable?" };
   }
 }
