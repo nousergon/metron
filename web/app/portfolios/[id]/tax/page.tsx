@@ -1,5 +1,5 @@
-import { acctParams, getSummary, getTax, MetronApiError } from "@/lib/api";
-import { isoDate, money, quantity, signClass, signedMoney } from "@/lib/format";
+import { acctParams, getIncome, getSummary, getTax, MetronApiError } from "@/lib/api";
+import { isoDate, money, moneyWhole, quantity, signClass, signedMoney, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { navFeatureStates } from "@/lib/entitlements";
@@ -23,11 +23,12 @@ export default async function TaxPage({
   const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}/tax`, searchParams.account_id);
   const navQuery = acctParams(accountIds);
 
-  let taxData, summary;
+  let taxData, summary, income;
   try {
-    [taxData, summary] = await Promise.all([
+    [taxData, summary, income] = await Promise.all([
       getTax(tenantId, id, accountIds),
       getSummary(tenantId, id, accountIds),
+      getIncome(tenantId, id, accountIds, true), // taxable accounts only
     ]);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
@@ -108,6 +109,29 @@ export default async function TaxPage({
                     "—"
                   )}
                 </td>
+              </tr>
+            ))}
+          </Table>
+        )}
+      </Section>
+
+      <Section title="Realized income by year" note="taxable accounts only — short/long-term gains, dividends, interest">
+        {income.length === 0 ? (
+          <Empty>No taxable realized income yet.</Empty>
+        ) : (
+          <Table head={["Year", "Short-term", "Long-term", "Dividends", "Interest", "Taxable income"]}>
+            {income.map((y) => (
+              <tr key={y.year} className="border-b border-line last:border-0">
+                <td className="px-4 py-2 font-medium">{y.year}</td>
+                <td className={`px-4 py-2 text-right tabular-nums ${signClass(y.realized_st)}`}>
+                  {signedMoneyWhole(y.realized_st, ccy)}
+                </td>
+                <td className={`px-4 py-2 text-right tabular-nums ${signClass(y.realized_lt)}`}>
+                  {signedMoneyWhole(y.realized_lt, ccy)}
+                </td>
+                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.dividends, ccy)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.interest, ccy)}</td>
+                <td className="px-4 py-2 text-right font-medium tabular-nums">{moneyWhole(y.taxable_income, ccy)}</td>
               </tr>
             ))}
           </Table>

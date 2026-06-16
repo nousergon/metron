@@ -1262,31 +1262,55 @@ def get_holdings(
     return analytics.valued_holdings(session, portfolio.tenant_id, portfolio.id, account_ids=account_ids)
 
 
+def _taxable_scoped(
+    session: Session, portfolio: models.Portfolio, account_ids: set[uuid.UUID] | None, taxable_only: bool
+) -> set[uuid.UUID] | None:
+    """Narrow the account scope to TAXABLE accounts when ``taxable_only`` (metron-ops#48).
+    Tax-advantaged accounts (IRA / 401(k) / Roth) generate no taxable income or gains, so
+    the Tax/Activity views default to taxable accounts. Intersects the current selection
+    with the taxable set (or returns the full taxable set when nothing is selected)."""
+    if not taxable_only:
+        return account_ids
+    taxable = account_meta.taxable_account_ids(session, portfolio.tenant_id, portfolio.id)
+    return (account_ids & taxable) if account_ids is not None else taxable
+
+
 @router.get("/{portfolio_id}/transactions", response_model=list[TransactionOut])
 def get_transactions(
+    taxable_only: bool = False,
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
     session: Session = Depends(get_session),
 ) -> list[analytics.TransactionRow]:
+    """Transaction ledger. ``taxable_only`` restricts to taxable accounts (the Activity
+    view's default — most users only care about taxable events)."""
+    account_ids = _taxable_scoped(session, portfolio, account_ids, taxable_only)
     return analytics.transactions(session, portfolio.tenant_id, portfolio.id, account_ids=account_ids)
 
 
 @router.get("/{portfolio_id}/realized", response_model=list[RealizedOut])
 def get_realized(
+    taxable_only: bool = False,
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
     session: Session = Depends(get_session),
 ) -> list[analytics.RealizedLot]:
+    """Closed lots. ``taxable_only`` restricts to taxable accounts (a realized gain in an
+    IRA/401(k)/Roth is never taxed)."""
+    account_ids = _taxable_scoped(session, portfolio, account_ids, taxable_only)
     return analytics.realized(session, portfolio.tenant_id, portfolio.id, account_ids=account_ids)
 
 
 @router.get("/{portfolio_id}/income", response_model=list[IncomeOut])
 def get_income(
+    taxable_only: bool = False,
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
     session: Session = Depends(get_session),
 ) -> list:
-    """Per-year realized income (cap gains ST/LT + dividends + interest), newest first."""
+    """Per-year realized income (cap gains ST/LT + dividends + interest), newest first.
+    ``taxable_only`` restricts to taxable accounts (the Tax view's default)."""
+    account_ids = _taxable_scoped(session, portfolio, account_ids, taxable_only)
     return analytics.income(session, portfolio.tenant_id, portfolio.id, account_ids=account_ids)
 
 

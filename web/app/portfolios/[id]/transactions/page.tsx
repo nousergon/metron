@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { acctParams, getRealized, getSummary, getTransactions, MetronApiError } from "@/lib/api";
 import { isoDate, money, quantity, signClass, signedMoney } from "@/lib/format";
 import { Empty, Section, Table } from "@/components/ui";
@@ -13,7 +14,7 @@ export default async function TransactionsPage({
   searchParams,
 }: {
   params: { id: string };
-  searchParams: { account_id?: string | string[] };
+  searchParams: { account_id?: string | string[]; taxable?: string };
 }) {
   const { id } = params;
   const tenantId = await requireTenantId();
@@ -22,13 +23,15 @@ export default async function TransactionsPage({
   // URL selection wins; with none, the saved panel selection is applied (redirect).
   const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}/transactions`, searchParams.account_id);
   const navQuery = acctParams(accountIds);
+  // Default to taxable accounts only (what most users care about); ?taxable=all shows all.
+  const taxableOnly = searchParams.taxable !== "all";
 
   let summary, transactions, realized;
   try {
     [summary, transactions, realized] = await Promise.all([
       getSummary(tenantId, id, accountIds),
-      getTransactions(tenantId, id, accountIds),
-      getRealized(tenantId, id, accountIds),
+      getTransactions(tenantId, id, accountIds, taxableOnly),
+      getRealized(tenantId, id, accountIds, taxableOnly),
     ]);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
@@ -47,6 +50,26 @@ export default async function TransactionsPage({
       <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
 
       <h1 className="mt-3 text-lg font-semibold">Activity</h1>
+
+      <div className="mt-2 inline-flex rounded-lg border border-line bg-surface p-1 text-xs">
+        <Link
+          href={`/portfolios/${id}/transactions${navQuery}`}
+          className={`rounded-md px-3 py-1 ${taxableOnly ? "bg-paper text-ink" : "text-muted hover:text-ink"}`}
+        >
+          Taxable only
+        </Link>
+        <Link
+          href={`/portfolios/${id}/transactions${navQuery ? navQuery + "&" : "?"}taxable=all`}
+          className={`rounded-md px-3 py-1 ${!taxableOnly ? "bg-paper text-ink" : "text-muted hover:text-ink"}`}
+        >
+          All accounts
+        </Link>
+      </div>
+      {taxableOnly ? (
+        <p className="mt-1 text-xs text-muted">
+          Showing taxable accounts only — tax-advantaged (IRA / 401(k) / Roth) activity isn&apos;t taxed.
+        </p>
+      ) : null}
 
       <Section title="Realized lots" note={`closed positions — FIFO; gain in ${ccy} at the close-date FX rate`}>
         {lots.length === 0 ? (

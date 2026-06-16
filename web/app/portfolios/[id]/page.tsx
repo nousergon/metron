@@ -1,6 +1,6 @@
-import { acctParams, getAccounts, getHoldings, getIncome, getPlugins, getPortfolio, getSummary, MetronApiError, type Portfolio, type PluginNav } from "@/lib/api";
+import { acctParams, getAccounts, getHoldings, getPlugins, getPortfolio, getSummary, MetronApiError, type Portfolio, type PluginNav } from "@/lib/api";
 import { moneyWhole, signClass, signedMoneyWhole } from "@/lib/format";
-import { Empty, Section, StatCard, Table } from "@/components/ui";
+import { Empty, Section, StatCard } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { TierSimulator } from "@/components/tier-simulator";
@@ -30,13 +30,12 @@ export default async function PortfolioPage({
   // Carry the selection onto the cross-page nav links so it persists.
   const navQuery = acctParams(accountIds);
 
-  let portfolio: Portfolio, summary, holdings, income, accounts;
+  let portfolio: Portfolio, summary, holdings, accounts;
   try {
-    [portfolio, summary, holdings, income, accounts] = await Promise.all([
+    [portfolio, summary, holdings, accounts] = await Promise.all([
       getPortfolio(tenantId, id),
       getSummary(tenantId, id, accountIds),
       getHoldings(tenantId, id, accountIds),
-      getIncome(tenantId, id, accountIds),
       getAccounts(tenantId, id),
     ]);
   } catch (e) {
@@ -126,29 +125,6 @@ export default async function PortfolioPage({
           <Empty>No open positions.</Empty>
         ) : (
           <GroupedHoldings holdings={holdings} baseCurrency={ccy} priced={priced} portfolioId={id} />
-        )}
-      </Section>
-
-      <Section title="Income by year">
-        {income.length === 0 ? (
-          <Empty>No realized income yet.</Empty>
-        ) : (
-          <Table head={["Year", "Short-term", "Long-term", "Dividends", "Interest", "Taxable income"]}>
-            {income.map((y) => (
-              <tr key={y.year} className="border-b border-line last:border-0">
-                <td className="px-4 py-2 font-medium">{y.year}</td>
-                <td className={`px-4 py-2 text-right tabular-nums ${signClass(y.realized_st)}`}>
-                  {signedMoneyWhole(y.realized_st, ccy)}
-                </td>
-                <td className={`px-4 py-2 text-right tabular-nums ${signClass(y.realized_lt)}`}>
-                  {signedMoneyWhole(y.realized_lt, ccy)}
-                </td>
-                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.dividends, ccy)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.interest, ccy)}</td>
-                <td className="px-4 py-2 text-right font-medium tabular-nums">{moneyWhole(y.taxable_income, ccy)}</td>
-              </tr>
-            ))}
-          </Table>
         )}
       </Section>
     </div>

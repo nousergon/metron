@@ -277,13 +277,21 @@ export const getSummary = (tenantId: string, id: string, accountIds?: string[]) 
   get<Summary>(tenantId, `/portfolios/${id}/summary${acctParams(accountIds)}`);
 export const getHoldings = (tenantId: string, id: string, accountIds?: string[]) =>
   get<Holding[]>(tenantId, `/portfolios/${id}/holdings${acctParams(accountIds)}`);
-export const getIncome = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<IncomeYear[]>(tenantId, `/portfolios/${id}/income${acctParams(accountIds)}`);
+// account selection + the taxable-only flag (the Tax/Activity views default taxable —
+// tax-advantaged accounts have no taxable events; metron-ops#48).
+function activityQuery(accountIds?: string[], taxableOnly?: boolean): string {
+  const parts: string[] = (accountIds ?? []).map((a) => `account_id=${encodeURIComponent(a)}`);
+  if (taxableOnly) parts.push("taxable_only=true");
+  return parts.length ? "?" + parts.join("&") : "";
+}
+
+export const getIncome = (tenantId: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>
+  get<IncomeYear[]>(tenantId, `/portfolios/${id}/income${activityQuery(accountIds, taxableOnly)}`);
 export const getAccounts = (tenantId: string, id: string) => get<Account[]>(tenantId, `/portfolios/${id}/accounts`);
-export const getTransactions = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<Transaction[]>(tenantId, `/portfolios/${id}/transactions${acctParams(accountIds)}`);
-export const getRealized = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<RealizedLot[]>(tenantId, `/portfolios/${id}/realized${acctParams(accountIds)}`);
+export const getTransactions = (tenantId: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>
+  get<Transaction[]>(tenantId, `/portfolios/${id}/transactions${activityQuery(accountIds, taxableOnly)}`);
+export const getRealized = (tenantId: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>
+  get<RealizedLot[]>(tenantId, `/portfolios/${id}/realized${activityQuery(accountIds, taxableOnly)}`);
 export const getAccountDetail = (tenantId: string, id: string, accountId: string) =>
   get<AccountDetail>(tenantId, `/portfolios/${id}/accounts/${accountId}`);
 export const getPerformance = (tenantId: string, id: string) =>
