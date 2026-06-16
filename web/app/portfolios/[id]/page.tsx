@@ -1,5 +1,5 @@
 import { acctParams, getAccounts, getHoldings, getIncome, getPlugins, getPortfolio, getSummary, MetronApiError, type Portfolio, type PluginNav } from "@/lib/api";
-import { money, signClass, signedMoney } from "@/lib/format";
+import { moneyWhole, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
@@ -88,26 +88,26 @@ export default async function PortfolioPage({
           <>
             <StatCard
               label="Market value"
-              value={money(summary.market_value as number, ccy)}
-              hint={`cost ${money(summary.total_cost_basis, ccy)}`}
+              value={moneyWhole(summary.market_value as number, ccy)}
+              hint={`cost ${moneyWhole(summary.total_cost_basis, ccy)}`}
             />
             <StatCard
               label="Unrealized"
-              value={signedMoney(summary.unrealized_gain as number, ccy)}
+              value={signedMoneyWhole(summary.unrealized_gain as number, ccy)}
               valueClass={signClass(summary.unrealized_gain as number)}
               hint="vs cost basis"
             />
           </>
         ) : (
-          <StatCard label="Cost basis" value={money(summary.total_cost_basis, ccy)} hint={`${summary.n_holdings} holdings`} />
+          <StatCard label="Cost basis" value={moneyWhole(summary.total_cost_basis, ccy)} hint={`${summary.n_holdings} holdings`} />
         )}
         <StatCard
           label="Realized gains"
-          value={signedMoney(summary.realized_total, ccy)}
+          value={signedMoneyWhole(summary.realized_total, ccy)}
           valueClass={signClass(summary.realized_total)}
           hint="short + long term"
         />
-        <StatCard label="Income" value={money(summary.dividends + summary.interest, ccy)} hint="dividends + interest" />
+        <StatCard label="Income" value={moneyWhole(summary.dividends + summary.interest, ccy)} hint="dividends + interest" />
         <StatCard label="Accounts" value={String(summary.n_accounts)} />
       </div>
 
@@ -138,14 +138,14 @@ export default async function PortfolioPage({
               <tr key={y.year} className="border-b border-line last:border-0">
                 <td className="px-4 py-2 font-medium">{y.year}</td>
                 <td className={`px-4 py-2 text-right tabular-nums ${signClass(y.realized_st)}`}>
-                  {signedMoney(y.realized_st, ccy)}
+                  {signedMoneyWhole(y.realized_st, ccy)}
                 </td>
                 <td className={`px-4 py-2 text-right tabular-nums ${signClass(y.realized_lt)}`}>
-                  {signedMoney(y.realized_lt, ccy)}
+                  {signedMoneyWhole(y.realized_lt, ccy)}
                 </td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(y.dividends, ccy)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(y.interest, ccy)}</td>
-                <td className="px-4 py-2 text-right font-medium tabular-nums">{money(y.taxable_income, ccy)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.dividends, ccy)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.interest, ccy)}</td>
+                <td className="px-4 py-2 text-right font-medium tabular-nums">{moneyWhole(y.taxable_income, ccy)}</td>
               </tr>
             ))}
           </Table>

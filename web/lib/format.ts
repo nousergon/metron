@@ -1,5 +1,7 @@
-// Display formatting helpers. Money is shown to the cent; quantities trim trailing
-// zeros (fractional shares are real but 6.0000 reads as noise).
+// Display formatting helpers. Per-unit prices (avg cost, last price, FX) show to the
+// cent via money(); portfolio AGGREGATES (cost basis, market value, unrealized, NAV,
+// income) show whole dollars via moneyWhole() — cents are noise at portfolio magnitude
+// and misalign columns. (metron-ops#45.) Quantities trim trailing zeros.
 
 export function money(value: number, currency = "USD"): string {
   return new Intl.NumberFormat("en-US", {
@@ -9,9 +11,26 @@ export function money(value: number, currency = "USD"): string {
   }).format(value);
 }
 
+/** Whole-dollar money for aggregates (no cents). Rounds to the nearest dollar. */
+export function moneyWhole(value: number, currency = "USD"): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
 /** Signed money with a sign for non-zero values (gains/losses read at a glance). */
 export function signedMoney(value: number, currency = "USD"): string {
   const formatted = money(Math.abs(value), currency);
+  if (value > 0) return `+${formatted}`;
+  if (value < 0) return `−${formatted}`; // minus sign, not hyphen
+  return formatted;
+}
+
+/** Signed whole-dollar money for signed aggregates (unrealized/realized gains, flows). */
+export function signedMoneyWhole(value: number, currency = "USD"): string {
+  const formatted = moneyWhole(Math.abs(value), currency);
   if (value > 0) return `+${formatted}`;
   if (value < 0) return `−${formatted}`; // minus sign, not hyphen
   return formatted;

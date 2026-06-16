@@ -8,7 +8,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import type { Holding } from "@/lib/api";
-import { fxRate, money, percent, quantity, signClass, signedMoney } from "@/lib/format";
+import { fxRate, money, moneyWhole, percent, quantity, signClass, signedMoneyWhole } from "@/lib/format";
 
 type SortValue = string | number | null;
 
@@ -85,6 +85,30 @@ export function HoldingsTable({
     setSort((s) => (s?.key === col.key ? { key: col.key, desc: !s.desc } : { key: col.key, desc: !!col.defaultDesc }));
   }
 
+  // Portfolio totals over the base-currency aggregates. A foreign holding with no
+  // cached FX rate has no base value — it is EXCLUDED from the sum (never fabricated as
+  // base), and the totals row flags `*` so the number is read as a partial total.
+  const totals = useMemo(() => {
+    let cost = 0;
+    let mv = 0;
+    let unreal = 0;
+    let excluded = 0;
+    for (const h of holdings) {
+      const foreign = h.currency !== baseCurrency;
+      const costBase = h.cost_basis_base ?? (foreign ? null : h.cost_basis);
+      const mvBase = h.market_value ?? (foreign ? null : h.market_value_local);
+      if (costBase != null) cost += costBase;
+      else excluded += 1;
+      if (priced) {
+        if (mvBase != null) mv += mvBase;
+        if (h.unrealized_gain != null) unreal += h.unrealized_gain;
+      }
+    }
+    // Aggregate unrealized % is the gain over the summed cost basis (portfolio return).
+    const unrealPct = priced && cost !== 0 ? unreal / cost : null;
+    return { cost, mv, unreal, unrealPct, excluded };
+  }, [holdings, baseCurrency, priced]);
+
   return (
     <div className="overflow-x-auto rounded-lg border border-line">
       <table className="w-full text-sm">
@@ -109,14 +133,19 @@ export function HoldingsTable({
           {sorted.map((h) => {
             const foreign = h.currency !== baseCurrency;
             // Base-currency cell with the no-fabrication fallback: muted native + `*`
-            // when a foreign holding has no cached FX rate.
-            const baseMoney = (base: number | null, native: number | null): ReactNode => {
-              if (base != null) return money(base, baseCurrency);
+            // when a foreign holding has no cached FX rate. `fmt` is money() for per-unit
+            // prices (cents) or moneyWhole() for aggregates (metron-ops#45).
+            const baseMoney = (
+              base: number | null,
+              native: number | null,
+              fmt: (v: number, c: string) => string = money,
+            ): ReactNode => {
+              if (base != null) return fmt(base, baseCurrency);
               if (native == null) return "—";
-              if (!foreign) return money(native, baseCurrency);
+              if (!foreign) return fmt(native, baseCurrency);
               return (
                 <span className="text-muted" title={`No ${baseCurrency} FX rate cached`}>
-                  {money(native, h.currency)}*
+                  {fmt(native, h.currency)}*
                 </span>
               );
             };
@@ -130,17 +159,19 @@ export function HoldingsTable({
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums">{quantity(h.quantity)}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{baseMoney(avgCostBase, h.avg_cost)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{baseMoney(h.cost_basis_base, h.cost_basis)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">
+                  {baseMoney(h.cost_basis_base, h.cost_basis, moneyWhole)}
+                </td>
                 {priced ? (
                   <>
                     <td className="px-4 py-2 text-right tabular-nums text-muted">
                       {baseMoney(lastBase, h.last_price)}
                     </td>
                     <td className="px-4 py-2 text-right tabular-nums">
-                      {baseMoney(h.market_value, h.market_value_local)}
+                      {baseMoney(h.market_value, h.market_value_local, moneyWhole)}
                     </td>
                     <td className={`px-4 py-2 text-right tabular-nums ${signClass(h.unrealized_gain ?? 0)}`}>
-                      {h.unrealized_gain != null ? signedMoney(h.unrealized_gain, baseCurrency) : "—"}
+                      {h.unrealized_gain != null ? signedMoneyWhole(h.unrealized_gain, baseCurrency) : "—"}
                     </td>
                     <td className={`px-4 py-2 text-right tabular-nums ${signClass(h.unrealized_pct ?? 0)}`}>
                       {h.unrealized_pct != null ? percent(h.unrealized_pct) : "—"}
@@ -151,6 +182,31 @@ export function HoldingsTable({
             );
           })}
         </tbody>
+        {holdings.length > 0 ? (
+          <tfoot>
+            <tr className="border-t border-line bg-surface font-medium">
+              <td className="px-4 py-2" title={totals.excluded > 0 ? `${totals.excluded} holding(s) excluded — no ${baseCurrency} FX rate cached` : undefined}>
+                Total{totals.excluded > 0 ? "*" : ""}
+              </td>
+              <td className="px-4 py-2" />
+              <td className="px-4 py-2" />
+              <td className="px-4 py-2" />
+              <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(totals.cost, baseCurrency)}</td>
+              {priced ? (
+                <>
+                  <td className="px-4 py-2" />
+                  <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(totals.mv, baseCurrency)}</td>
+                  <td className={`px-4 py-2 text-right tabular-nums ${signClass(totals.unreal)}`}>
+                    {signedMoneyWhole(totals.unreal, baseCurrency)}
+                  </td>
+                  <td className={`px-4 py-2 text-right tabular-nums ${signClass(totals.unrealPct ?? 0)}`}>
+                    {totals.unrealPct != null ? percent(totals.unrealPct) : "—"}
+                  </td>
+                </>
+              ) : null}
+            </tr>
+          </tfoot>
+        ) : null}
       </table>
     </div>
   );

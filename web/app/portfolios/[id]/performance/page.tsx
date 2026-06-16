@@ -1,5 +1,5 @@
 import { acctParams, getPerformance, getSummary, MetronApiError } from "@/lib/api";
-import { isoDate, money, percent, signClass, signedMoney } from "@/lib/format";
+import { isoDate, money, moneyWhole, percent, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { BuildHistory } from "@/components/build-history";
@@ -80,7 +80,7 @@ export default async function PerformancePage({
           />
           <StatCard
             label="Latest NAV"
-            value={perf.latest_nav != null ? money(perf.latest_nav, ccy) : "—"}
+            value={perf.latest_nav != null ? moneyWhole(perf.latest_nav, ccy) : "—"}
             hint={perf.last_date ? isoDate(perf.last_date) : undefined}
           />
         </div>
@@ -128,9 +128,9 @@ export default async function PerformancePage({
             {recent.map((p) => (
               <tr key={p.snap_date} className="border-b border-line last:border-0">
                 <td className="px-4 py-2 font-medium tabular-nums">{isoDate(p.snap_date)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(p.nav, ccy)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(p.nav, ccy)}</td>
                 <td className={`px-4 py-2 text-right tabular-nums ${signClass(p.external_flow)}`}>
-                  {p.external_flow ? signedMoney(p.external_flow, ccy) : "—"}
+                  {p.external_flow ? signedMoneyWhole(p.external_flow, ccy) : "—"}
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums text-muted">
                   {p.spy_close != null ? money(p.spy_close, ccy) : "—"}
