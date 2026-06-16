@@ -2,7 +2,7 @@ import Link from "next/link";
 import { getAccountDetail, MetronApiError } from "@/lib/api";
 import { isoDate, money, moneyWhole, quantity, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, Table } from "@/components/ui";
-import { HoldingsTable } from "@/components/holdings-table";
+import { GroupedHoldings } from "@/components/grouped-holdings";
 import { requireTenantId } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -43,7 +43,7 @@ export default async function AccountPage({ params }: { params: { id: string; ac
         {holdings.length === 0 ? (
           <Empty>No open positions in this account.</Empty>
         ) : (
-          <HoldingsTable holdings={holdings} baseCurrency={ccy} priced={priced} />
+          <GroupedHoldings holdings={holdings} baseCurrency={ccy} priced={priced} />
         )}
       </Section>
 

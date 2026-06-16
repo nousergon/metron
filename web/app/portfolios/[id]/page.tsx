@@ -4,7 +4,7 @@ import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { TierSimulator } from "@/components/tier-simulator";
-import { HoldingsTable } from "@/components/holdings-table";
+import { GroupedHoldings } from "@/components/grouped-holdings";
 import { RefreshPrices } from "@/components/refresh-prices";
 import { RenamePortfolio } from "@/components/rename-portfolio";
 import { loadEntitlements, toFeatureStates } from "@/lib/entitlements";
@@ -125,7 +125,7 @@ export default async function PortfolioPage({
         {holdings.length === 0 ? (
           <Empty>No open positions.</Empty>
         ) : (
-          <HoldingsTable holdings={holdings} baseCurrency={ccy} priced={priced} />
+          <GroupedHoldings holdings={holdings} baseCurrency={ccy} priced={priced} />
         )}
       </Section>
 

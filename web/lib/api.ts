@@ -25,6 +25,8 @@ export type Holding = {
   market_value: number | null;
   unrealized_gain: number | null;
   unrealized_pct: number | null;
+  // Coarse asset class for grouping (cash / bond / equity / etf / fund / option / other).
+  security_type: string;
 };
 
 export type IncomeYear = {
