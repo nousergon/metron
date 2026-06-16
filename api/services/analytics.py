@@ -61,6 +61,9 @@ class Holding:
     market_value: float | None = None          # base market value
     unrealized_gain: float | None = None        # base unrealized P&L
     unrealized_pct: float | None = None         # currency-invariant ratio
+    # Asset class for grouping (cash / bond / equity / etf / fund / option / other),
+    # from the Security master's asset_class with a CUSIP/name fallback (metron-ops#47).
+    security_type: str = "other"
 
 
 @dataclass
@@ -287,6 +290,62 @@ def _currency_by_symbol(session: Session, symbols: list[str]) -> dict[str, str]:
     return out
 
 
+_CUSIP_LEN = 9
+
+
+def classify_security_type(asset_class: str | None, ticker: str, name: str | None) -> str:
+    """Coarse asset class for grouping holdings: one of ``cash`` / ``bond`` / ``equity``
+    / ``etf`` / ``fund`` / ``option`` / ``other`` (metron-ops#47).
+
+    The Security master's ``asset_class`` (connector-supplied: EQUITY / ETF / FUND /
+    OPTION / CASH / OTHER, lowercased) is authoritative. When it's absent, infer: a
+    9-digit numeric symbol is a CUSIP — typically a bond/CD that surfaces as an
+    unreadable number; otherwise fall back to name keywords, else equity (a normal
+    alpha ticker)."""
+    ac = (asset_class or "").strip().lower()
+    if ac:
+        if "cash" in ac:
+            return "cash"
+        if "bond" in ac or "fixed" in ac:
+            return "bond"
+        if ac == "etf":
+            return "etf"
+        if ac == "fund" or "mutual" in ac:
+            return "fund"
+        if ac == "option":
+            return "option"
+        if ac in ("equity", "stock"):
+            return "equity"
+        return "other"
+    t = (ticker or "").strip()
+    if t.isdigit() and len(t) == _CUSIP_LEN:
+        return "bond"  # a 9-digit numeric symbol is a CUSIP — typically a bond/CD
+    nm = (name or "").lower()
+    if "money market" in nm or "cash" in nm:
+        return "cash"
+    if "bond" in nm or "treasury" in nm or " cd " in f" {nm} ":
+        return "bond"
+    return "equity"
+
+
+def _security_meta_by_symbol(
+    session: Session, symbols: list[str]
+) -> dict[str, tuple[str | None, str | None]]:
+    """``{symbol: (asset_class, name)}`` from the Security master (first row per symbol,
+    mirroring ``_currency_by_symbol``). Drives the holding security-type classification."""
+    if not symbols:
+        return {}
+    rows = session.execute(
+        select(models.Security.symbol, models.Security.asset_class, models.Security.name)
+        .where(models.Security.symbol.in_(symbols))
+        .order_by(models.Security.symbol, models.Security.id)
+    ).all()
+    out: dict[str, tuple[str | None, str | None]] = {}
+    for symbol, asset_class, name in rows:
+        out.setdefault(symbol, (asset_class, name))
+    return out
+
+
 def _scoped_account_ids(
     session: Session,
     portfolio_id: uuid.UUID,
@@ -467,8 +526,11 @@ def valued_holdings(
     base = _base_currency(session, portfolio_id)
     prices = price_service.latest_close_by_symbol(session, [h.ticker for h in held])
     fx_rates = fx_service.rates_to_base(session, [h.currency for h in held], base=base)
+    meta = _security_meta_by_symbol(session, [h.ticker for h in held])
     for h in held:
         _apply_valuation(h, prices, fx_rates)
+        asset_class, name = meta.get(h.ticker, (None, None))
+        h.security_type = classify_security_type(asset_class, h.ticker, name)
     return held
 
 

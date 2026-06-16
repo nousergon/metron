@@ -113,6 +113,8 @@ class HoldingOut(BaseModel):
     market_value: float | None = None
     unrealized_gain: float | None = None
     unrealized_pct: float | None = None
+    # Coarse asset class for grouping (cash / bond / equity / etf / fund / option / other).
+    security_type: str = "other"
 
 
 class RealizedOut(BaseModel):
