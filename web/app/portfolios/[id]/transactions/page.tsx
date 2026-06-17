@@ -1,126 +1,21 @@
-import Link from "next/link";
-import { acctParams, getRealized, getSummary, getTransactions, MetronApiError } from "@/lib/api";
-import { isoDate, money, quantity, signClass, signedMoney } from "@/lib/format";
-import { Empty, Section, Table } from "@/components/ui";
-import { PortfolioNav } from "@/components/portfolio-nav";
-import { navFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
-import { resolveAccountIds } from "@/lib/selection";
+import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
-export default async function TransactionsPage({
+// Activity (realized lots + transactions) was bundled into the Tax page (metron-ops#66).
+// This route is kept as a redirect so old links/bookmarks still resolve; the account
+// selection is carried across.
+export default function TransactionsRedirect({
   params,
   searchParams,
 }: {
   params: { id: string };
-  searchParams: { account_id?: string | string[]; taxable?: string };
+  searchParams: { account_id?: string | string[] };
 }) {
-  const { id } = params;
-  const tenantId = await requireTenantId();
-  const featureStates = await navFeatureStates(tenantId);
-
-  // URL selection wins; with none, the saved panel selection is applied (redirect).
-  const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}/transactions`, searchParams.account_id);
-  const navQuery = acctParams(accountIds);
-  // Default to taxable accounts only (what most users care about); ?taxable=all shows all.
-  const taxableOnly = searchParams.taxable !== "all";
-
-  let summary, transactions, realized;
-  try {
-    [summary, transactions, realized] = await Promise.all([
-      getSummary(tenantId, id, accountIds),
-      getTransactions(tenantId, id, accountIds, taxableOnly),
-      getRealized(tenantId, id, accountIds, taxableOnly),
-    ]);
-  } catch (e) {
-    if (e instanceof MetronApiError && e.status === 404) {
-      return <Empty>Portfolio not found.</Empty>;
-    }
-    return <Empty>Couldn&apos;t load this portfolio. Is the backend running?</Empty>;
-  }
-
-  const ccy = summary.base_currency;
-  // Backend returns both oldest-first; a history reads best newest-first.
-  const txns = [...transactions].reverse();
-  const lots = [...realized].reverse();
-
-  return (
-    <div>
-      <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
-
-      <h1 className="mt-3 text-lg font-semibold">Activity</h1>
-
-      <div className="mt-2 inline-flex rounded-lg border border-line bg-surface p-1 text-xs">
-        <Link
-          href={`/portfolios/${id}/transactions${navQuery}`}
-          className={`rounded-md px-3 py-1 ${taxableOnly ? "bg-paper text-ink" : "text-muted hover:text-ink"}`}
-        >
-          Taxable only
-        </Link>
-        <Link
-          href={`/portfolios/${id}/transactions${navQuery ? navQuery + "&" : "?"}taxable=all`}
-          className={`rounded-md px-3 py-1 ${!taxableOnly ? "bg-paper text-ink" : "text-muted hover:text-ink"}`}
-        >
-          All accounts
-        </Link>
-      </div>
-      {taxableOnly ? (
-        <p className="mt-1 text-xs text-muted">
-          Showing taxable accounts only — tax-advantaged (IRA / 401(k) / Roth) activity isn&apos;t taxed.
-        </p>
-      ) : null}
-
-      <Section title="Realized lots" note={`closed positions — FIFO; gain in ${ccy} at the close-date FX rate`}>
-        {lots.length === 0 ? (
-          <Empty>No closed lots yet.</Empty>
-        ) : (
-          <Table head={["Ticker", "Ccy", "Opened", "Closed", "Quantity", "Proceeds", "Cost basis", "Gain", "Term"]}>
-            {lots.map((r, i) => (
-              <tr key={`${r.ticker}-${r.close_date}-${i}`} className="border-b border-line last:border-0">
-                <td className="px-4 py-2 font-medium">{r.ticker}</td>
-                <td className="px-4 py-2 text-muted">{r.currency}</td>
-                <td className="px-4 py-2 text-right text-muted">{isoDate(r.open_date)}</td>
-                <td className="px-4 py-2 text-right text-muted">{isoDate(r.close_date)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{quantity(r.quantity)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(r.proceeds, r.currency)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(r.cost_basis, r.currency)}</td>
-                <td className={`px-4 py-2 text-right font-medium tabular-nums ${signClass(r.gain_base ?? r.gain)}`}>
-                  {r.gain_base != null ? (
-                    signedMoney(r.gain_base, ccy)
-                  ) : (
-                    <span className="text-muted" title={`No ${ccy} FX rate for ${isoDate(r.close_date)}`}>
-                      {signedMoney(r.gain, r.currency)}*
-                    </span>
-                  )}
-                </td>
-                <td className="px-4 py-2 text-right text-muted">{r.long_term ? "Long" : "Short"}</td>
-              </tr>
-            ))}
-          </Table>
-        )}
-      </Section>
-
-      <Section title="Transactions" note={`${txns.length} imported — newest first`}>
-        {txns.length === 0 ? (
-          <Empty>No transactions imported yet.</Empty>
-        ) : (
-          <Table head={["Date", "Type", "Ticker", "Ccy", "Quantity", "Price", "Amount", "Fees"]}>
-            {txns.map((t, i) => (
-              <tr key={`${t.trade_date}-${t.txn_type}-${t.ticker}-${i}`} className="border-b border-line last:border-0">
-                <td className="px-4 py-2 font-medium tabular-nums">{isoDate(t.trade_date)}</td>
-                <td className="px-4 py-2 text-right text-muted">{t.txn_type}</td>
-                <td className="px-4 py-2 text-right">{t.ticker || "—"}</td>
-                <td className="px-4 py-2 text-right text-muted">{t.currency}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{t.quantity ? quantity(t.quantity) : "—"}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{t.price ? money(t.price, t.currency) : "—"}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(t.amount, t.currency)}</td>
-                <td className="px-4 py-2 text-right tabular-nums text-muted">{t.fees ? money(t.fees, t.currency) : "—"}</td>
-              </tr>
-            ))}
-          </Table>
-        )}
-      </Section>
-    </div>
-  );
+  const sel = searchParams.account_id;
+  const ids = sel == null ? [] : Array.isArray(sel) ? sel : [sel];
+  const qs = new URLSearchParams();
+  ids.forEach((v) => qs.append("account_id", v));
+  const s = qs.toString();
+  redirect(`/portfolios/${params.id}/tax${s ? `?${s}` : ""}`);
 }

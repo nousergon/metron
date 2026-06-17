@@ -1,5 +1,12 @@
-import Link from "next/link";
-import { acctParams, getIncome, getSummary, getTax, MetronApiError } from "@/lib/api";
+import {
+  acctParams,
+  getIncome,
+  getRealized,
+  getSummary,
+  getTax,
+  getTransactions,
+  MetronApiError,
+} from "@/lib/api";
 import { isoDate, money, moneyWhole, quantity, signClass, signedMoney, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
@@ -24,12 +31,14 @@ export default async function TaxPage({
   const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}/tax`, searchParams.account_id);
   const navQuery = acctParams(accountIds);
 
-  let taxData, summary, income;
+  let taxData, summary, income, transactions, realized;
   try {
-    [taxData, summary, income] = await Promise.all([
+    [taxData, summary, income, transactions, realized] = await Promise.all([
       getTax(tenantId, id, accountIds),
       getSummary(tenantId, id, accountIds),
       getIncome(tenantId, id, accountIds, true), // taxable accounts only
+      getTransactions(tenantId, id, accountIds, true),
+      getRealized(tenantId, id, accountIds, true),
     ]);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
@@ -39,10 +48,22 @@ export default async function TaxPage({
   }
 
   const ccy = summary.base_currency;
-  const priced = taxData.unrealized_total != null;
+  const currentYear = new Date().getFullYear();
   // Only widen the income table with a Distributions column when there actually are
   // tax-deferred withdrawals — most taxable-only users won't have any.
   const hasDistributions = income.some((y) => y.distributions !== 0);
+  // History reads best newest-first (backend returns oldest-first).
+  const lots = [...realized].reverse();
+  const txns = [...transactions].reverse();
+
+  // Unrealized: lead with the AUTHORITATIVE position-level total (reconciles to the
+  // Accounts table); ST/LT below are the lot-classified slice. The gap is positions whose
+  // broker history starts mid-position — counted in the total, not assignable to a term.
+  const lotTotal = taxData.unrealized_total;
+  const total = taxData.unrealized_position_total ?? lotTotal;
+  const priced = total != null;
+  const gap = total != null && lotTotal != null ? total - lotTotal : null;
+  const hasGap = taxData.n_incomplete > 0 || (gap != null && Math.abs(gap) >= 1);
 
   return (
     <div>
@@ -50,8 +71,8 @@ export default async function TaxPage({
 
       <h1 className="mt-3 text-lg font-semibold">Tax</h1>
       <p className="text-sm text-muted">
-        Per-lot holding-period term and unrealized P&amp;L (at the last close, in {ccy}), with harvestable losses
-        flagged. Taxable accounts only. Descriptive, not advice.
+        Realized income by year, plus per-lot holding-period term and unrealized P&amp;L (at the last close, in {ccy})
+        with harvestable losses flagged. Taxable accounts only. Descriptive, not advice.
       </p>
       {taxData.n_accounts_excluded > 0 ? (
         <p className="mt-1 text-xs text-muted">
@@ -60,36 +81,103 @@ export default async function TaxPage({
         </p>
       ) : null}
 
+      <Section
+        title="Realized income by year"
+        note={
+          hasDistributions
+            ? "short/long-term gains, dividends, interest + tax-deferred distributions"
+            : "taxable accounts only — short/long-term gains, dividends, interest"
+        }
+      >
+        {income.length === 0 ? (
+          <Empty>No taxable realized income yet.</Empty>
+        ) : (
+          <Table
+            head={[
+              "Year",
+              "Short-term",
+              "Long-term",
+              "Dividends",
+              "Interest",
+              ...(hasDistributions ? ["Distributions"] : []),
+              "Taxable income",
+            ]}
+          >
+            {income.map((y) => (
+              <tr key={y.year} className="border-b border-line last:border-0">
+                <td className="px-4 py-2 font-medium">
+                  {y.year}
+                  {y.year === currentYear ? <span className="ml-1 text-[10px] uppercase tracking-wide text-muted">YTD</span> : null}
+                </td>
+                <td className={`px-4 py-2 text-right tabular-nums ${signClass(y.realized_st)}`}>
+                  {signedMoneyWhole(y.realized_st, ccy)}
+                </td>
+                <td className={`px-4 py-2 text-right tabular-nums ${signClass(y.realized_lt)}`}>
+                  {signedMoneyWhole(y.realized_lt, ccy)}
+                </td>
+                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.dividends, ccy)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.interest, ccy)}</td>
+                {hasDistributions ? (
+                  <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.distributions, ccy)}</td>
+                ) : null}
+                <td className="px-4 py-2 text-right font-medium tabular-nums">{moneyWhole(y.taxable_income, ccy)}</td>
+              </tr>
+            ))}
+          </Table>
+        )}
+        <p className="mt-2 text-xs text-muted">
+          {income.some((y) => y.year === currentYear)
+            ? `${currentYear} is year-to-date — partial through ${isoDate(taxData.as_of)}.`
+            : "Prior full years; the current year shows once it has taxable activity."}
+          {hasDistributions
+            ? " Distributions are withdrawals from tax-deferred accounts (Trad IRA / 401(k), incl. RMDs) — taxable ordinary income even though those accounts' internal gains aren't taxed."
+            : ""}
+        </p>
+      </Section>
+
       {priced ? (
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatCard
-            label="Unrealized (short-term)"
-            value={signedMoney(taxData.unrealized_st as number, ccy)}
-            valueClass={signClass(taxData.unrealized_st as number)}
-          />
-          <StatCard
-            label="Unrealized (long-term)"
-            value={signedMoney(taxData.unrealized_lt as number, ccy)}
-            valueClass={signClass(taxData.unrealized_lt as number)}
-          />
-          <StatCard
-            label="Total unrealized"
-            value={signedMoney(taxData.unrealized_total as number, ccy)}
-            valueClass={signClass(taxData.unrealized_total as number)}
-          />
-          <StatCard
-            label="Harvestable loss"
-            value={money(taxData.harvestable_loss ?? 0, ccy)}
-            hint="available to harvest"
-          />
-        </div>
+        <Section title="Unrealized" note="market-relative to cost basis, taxable accounts">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <StatCard
+              label="Total unrealized"
+              value={signedMoney(total as number, ccy)}
+              valueClass={signClass(total as number)}
+              hint={hasGap ? "all taxable positions" : "vs cost basis"}
+            />
+            <StatCard
+              label="Lot-classified (short-term)"
+              value={signedMoney(taxData.unrealized_st ?? 0, ccy)}
+              valueClass={signClass(taxData.unrealized_st ?? 0)}
+            />
+            <StatCard
+              label="Lot-classified (long-term)"
+              value={signedMoney(taxData.unrealized_lt ?? 0, ccy)}
+              valueClass={signClass(taxData.unrealized_lt ?? 0)}
+            />
+            <StatCard
+              label="Harvestable loss"
+              value={money(taxData.harvestable_loss ?? 0, ccy)}
+              hint="available to harvest"
+            />
+          </div>
+          {hasGap ? (
+            <p className="mt-2 text-xs text-muted">
+              Total reflects every taxable position. {signedMoneyWhole(lotTotal ?? 0, ccy)} is lot-classified below
+              (term + harvesting);{" "}
+              {gap != null ? signedMoneyWhole(gap, ccy) : "the remainder"} sits in {taxData.n_incomplete} position
+              {taxData.n_incomplete === 1 ? "" : "s"} whose broker history starts mid-position
+              {taxData.incomplete_tickers.length > 0 ? ` (${taxData.incomplete_tickers.join(", ")})` : ""} — counted in
+              the total but not assignable to a holding-period term until the opening trades are imported.
+            </p>
+          ) : null}
+        </Section>
       ) : (
         <div className="mt-4">
           <Empty>Refresh prices on the portfolio page to value lots and surface harvestable losses.</Empty>
         </div>
       )}
 
-      <Section title="Lots" note={`${taxData.n_lots} open · cost basis & term are price-free`}>
+      <Section title="Open lots" note={`${taxData.n_lots} open · cost basis & term are price-free`}>
         {taxData.lots.length === 0 ? (
           <Empty>No open lots.</Empty>
         ) : (
@@ -119,58 +207,55 @@ export default async function TaxPage({
         )}
       </Section>
 
-      <Section
-        title="Realized income by year"
-        note={
-          hasDistributions
-            ? "short/long-term gains, dividends, interest + tax-deferred distributions"
-            : "taxable accounts only — short/long-term gains, dividends, interest"
-        }
-      >
-        {income.length === 0 ? (
-          <Empty>No taxable realized income yet.</Empty>
+      <Section title="Realized lots" note={`closed positions — FIFO; gain in ${ccy} at the close-date FX rate`}>
+        {lots.length === 0 ? (
+          <Empty>No closed lots yet.</Empty>
         ) : (
-          <Table
-            head={[
-              "Year",
-              "Short-term",
-              "Long-term",
-              "Dividends",
-              "Interest",
-              ...(hasDistributions ? ["Distributions"] : []),
-              "Taxable income",
-            ]}
-          >
-            {income.map((y) => (
-              <tr key={y.year} className="border-b border-line last:border-0">
-                <td className="px-4 py-2 font-medium">{y.year}</td>
-                <td className={`px-4 py-2 text-right tabular-nums ${signClass(y.realized_st)}`}>
-                  {signedMoneyWhole(y.realized_st, ccy)}
+          <Table head={["Ticker", "Ccy", "Opened", "Closed", "Quantity", "Proceeds", "Cost basis", "Gain", "Term"]}>
+            {lots.map((r, i) => (
+              <tr key={`${r.ticker}-${r.close_date}-${i}`} className="border-b border-line last:border-0">
+                <td className="px-4 py-2 font-medium">{r.ticker}</td>
+                <td className="px-4 py-2 text-muted">{r.currency}</td>
+                <td className="px-4 py-2 text-right text-muted">{isoDate(r.open_date)}</td>
+                <td className="px-4 py-2 text-right text-muted">{isoDate(r.close_date)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{quantity(r.quantity)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{money(r.proceeds, r.currency)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{money(r.cost_basis, r.currency)}</td>
+                <td className={`px-4 py-2 text-right font-medium tabular-nums ${signClass(r.gain_base ?? r.gain)}`}>
+                  {r.gain_base != null ? (
+                    signedMoney(r.gain_base, ccy)
+                  ) : (
+                    <span className="text-muted" title={`No ${ccy} FX rate for ${isoDate(r.close_date)}`}>
+                      {signedMoney(r.gain, r.currency)}*
+                    </span>
+                  )}
                 </td>
-                <td className={`px-4 py-2 text-right tabular-nums ${signClass(y.realized_lt)}`}>
-                  {signedMoneyWhole(y.realized_lt, ccy)}
-                </td>
-                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.dividends, ccy)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.interest, ccy)}</td>
-                {hasDistributions ? (
-                  <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.distributions, ccy)}</td>
-                ) : null}
-                <td className="px-4 py-2 text-right font-medium tabular-nums">{moneyWhole(y.taxable_income, ccy)}</td>
+                <td className="px-4 py-2 text-right text-muted">{r.long_term ? "Long" : "Short"}</td>
               </tr>
             ))}
           </Table>
         )}
-        {hasDistributions ? (
-          <p className="mt-2 text-xs text-muted">
-            Distributions are withdrawals from tax-deferred accounts (Trad IRA / 401(k), incl. RMDs) — taxable
-            ordinary income even though those accounts&apos; internal gains aren&apos;t taxed.
-          </p>
-        ) : null}
-        <p className="mt-2 text-xs text-muted">
-          <Link href={`/portfolios/${id}/transactions${navQuery}`} className="text-accent hover:underline">
-            View the underlying lots &amp; transactions →
-          </Link>
-        </p>
+      </Section>
+
+      <Section title="Transactions" note={`${txns.length} imported — newest first`}>
+        {txns.length === 0 ? (
+          <Empty>No transactions imported yet.</Empty>
+        ) : (
+          <Table head={["Date", "Type", "Ticker", "Ccy", "Quantity", "Price", "Amount", "Fees"]}>
+            {txns.map((t, i) => (
+              <tr key={`${t.trade_date}-${t.txn_type}-${t.ticker}-${i}`} className="border-b border-line last:border-0">
+                <td className="px-4 py-2 font-medium tabular-nums">{isoDate(t.trade_date)}</td>
+                <td className="px-4 py-2 text-right text-muted">{t.txn_type}</td>
+                <td className="px-4 py-2 text-right">{t.ticker || "—"}</td>
+                <td className="px-4 py-2 text-right text-muted">{t.currency}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{t.quantity ? quantity(t.quantity) : "—"}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{t.price ? money(t.price, t.currency) : "—"}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{money(t.amount, t.currency)}</td>
+                <td className="px-4 py-2 text-right tabular-nums text-muted">{t.fees ? money(t.fees, t.currency) : "—"}</td>
+              </tr>
+            ))}
+          </Table>
+        )}
       </Section>
     </div>
   );

@@ -291,8 +291,11 @@ class TaxOut(BaseModel):
     unrealized_st: float | None
     unrealized_lt: float | None
     unrealized_total: float | None
+    unrealized_position_total: float | None = None
     harvestable_loss: float | None
     n_accounts_excluded: int = 0
+    n_incomplete: int = 0
+    incomplete_tickers: list[str] = []
     lots: list[TaxLotOut]
 
 

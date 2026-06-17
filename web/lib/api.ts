@@ -340,8 +340,14 @@ export type Tax = {
   unrealized_st: number | null;
   unrealized_lt: number | null;
   unrealized_total: number | null;
+  // Authoritative unrealized for the taxable scope (position-level; reconciles to the
+  // Accounts table). >= unrealized_total; the gap is in positions with incomplete history.
+  unrealized_position_total: number | null;
   harvestable_loss: number | null;
   n_accounts_excluded: number;
+  // Positions counted in the total but not lot-classifiable (broker history starts mid-position).
+  n_incomplete: number;
+  incomplete_tickers: string[];
   lots: TaxLot[];
 };
 

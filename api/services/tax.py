@@ -48,11 +48,24 @@ class TaxSummary:
     n_lots: int
     n_priced: int
     # Base-currency unrealized totals (None until at least one lot is priced + convertible).
+    # ``unrealized_st``/``unrealized_lt``/``unrealized_total`` are the LOT-CLASSIFIED figures
+    # (reconstructable from the transaction ledger → term + harvesting). They under-count when
+    # a position's broker history starts mid-position (the lots can't be replayed).
     unrealized_st: float | None
     unrealized_lt: float | None
     unrealized_total: float | None
     harvestable_loss: float | None
+    # The AUTHORITATIVE total unrealized for the in-scope (taxable) accounts, valued from
+    # current positions (the same engine the Accounts panel uses) — reconciles to the
+    # Accounts table. ``>= unrealized_total``; the difference sits in positions whose lot
+    # history is incomplete (``incomplete_tickers``). None until at least one position is priced.
+    unrealized_position_total: float | None = None
     n_accounts_excluded: int = 0  # tax-advantaged accounts filtered out of this view
+    # Positions valued in the total but NOT lot-classifiable: their broker activity feed
+    # starts mid-position, so the opening BUYs can't be replayed into datable lots. We note
+    # the gap professionally rather than silently under-reporting the unrealized total.
+    n_incomplete: int = 0
+    incomplete_tickers: list[str] = field(default_factory=list)
     lots: list[TaxLot] = field(default_factory=list)
 
 
@@ -95,7 +108,7 @@ def tax_lots(
         taxable = account_meta.taxable_account_ids(session, tenant_id, portfolio_id)
         account_ids = candidate_ids & taxable
         n_excluded = len(candidate_ids) - len(account_ids)
-    ledger, _incomplete = analytics.load_ledger(session, tenant_id, portfolio_id, account_ids=account_ids)
+    ledger, incomplete = analytics.load_ledger(session, tenant_id, portfolio_id, account_ids=account_ids)
     prices = price_service.latest_close_by_symbol(session, list(ledger.open_lots))
     ccy_by_ticker = analytics._currency_by_symbol(session, list(ledger.open_lots))
     fx_rates = fx.rates_to_base(session, list(ccy_by_ticker.values()), base=base)
@@ -140,6 +153,18 @@ def tax_lots(
                 )
             )
     lots.sort(key=lambda x: (x.ticker, x.open_date))
+
+    # Reconcile to the position-level truth. The lot view above can only sum lots it could
+    # replay from the transaction ledger; a position whose broker activity feed starts
+    # mid-position is dropped from the ledger (flagged in ``incomplete``) yet still has a
+    # correct broker-snapshot cost basis. ``valued_holdings`` over the SAME (taxable) scope
+    # is exactly what the Accounts panel sums, so it is the authoritative unrealized total —
+    # we surface it and note the un-classifiable remainder rather than under-reporting.
+    held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
+    priced_unreal = [h.unrealized_gain for h in held if h.unrealized_gain is not None]
+    position_total = sum(priced_unreal) if priced_unreal else None
+    incomplete_tickers = sorted({i.ticker for i in incomplete if i.ticker})
+
     return TaxSummary(
         as_of=today,
         base_currency=base,
@@ -148,7 +173,10 @@ def tax_lots(
         unrealized_st=st if any_priced else None,
         unrealized_lt=lt if any_priced else None,
         unrealized_total=(st + lt) if any_priced else None,
+        unrealized_position_total=position_total,
         harvestable_loss=harvest_total if any_priced else None,
         n_accounts_excluded=n_excluded,
+        n_incomplete=len(incomplete),
+        incomplete_tickers=incomplete_tickers,
         lots=lots,
     )
