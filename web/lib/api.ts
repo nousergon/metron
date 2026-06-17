@@ -582,6 +582,9 @@ export type SnapTradeConnection = {
 
 export type SnapTradeConnections = {
   connections: SnapTradeConnection[];
+  // SnapTrade-sourced accounts already imported into this portfolio. 0 while connections
+  // exist = "linked but never synced" (metron-ops#21).
+  n_synced_accounts: number;
 };
 
 export const getSnapTradeConnections = (tenantId: string, id: string) =>

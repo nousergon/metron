@@ -28,7 +28,13 @@ export function MacroStrip({ macro }: { macro: Macro }) {
               {ind.label}
             </div>
             <div className="mt-0.5 text-lg font-semibold tabular-nums">{value(ind)}</div>
-            <div className={`text-[11px] tabular-nums ${signClass(ind.change ?? 0)}`}>{change(ind)}</div>
+            <div className="flex items-baseline justify-between gap-1">
+              <span className={`text-[11px] tabular-nums ${signClass(ind.change ?? 0)}`}>{change(ind)}</span>
+              {/* Per-indicator freshness (metron-ops#49) — each series updates on its own cadence. */}
+              <span className="text-[10px] tabular-nums text-muted" title={`Last updated ${isoDate(ind.latest_date)}`}>
+                {isoDate(ind.latest_date)}
+              </span>
+            </div>
           </div>
         ))}
       </div>

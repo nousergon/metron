@@ -202,6 +202,14 @@ function SnapTradeCard({ portfolioId }: { portfolioId: string }) {
       <p className="mt-1 text-xs text-muted">
         Syncs every linked brokerage. Exclude one only if it&apos;s sourced elsewhere (e.g. IBKR via Flex).
       </p>
+      {conns &&
+      conns.n_synced_accounts === 0 &&
+      conns.connections.some((c) => !c.excluded && !c.disabled && c.n_accounts > 0) ? (
+        <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          A brokerage is linked but its accounts haven&apos;t been imported yet — linking alone doesn&apos;t sync.
+          Click <span className="font-medium">Sync</span> below to import them.
+        </div>
+      ) : null}
       {conns ? (
         <ul className="mt-2 space-y-1 text-xs">
           {conns.connections.length === 0 ? (
