@@ -37,6 +37,7 @@ export type IncomeYear = {
   realized_lt: number;
   dividends: number;
   interest: number;
+  distributions: number; // taxable withdrawals from tax-deferred accounts (Trad IRA / 401k, incl. RMDs)
   net_capital_gains: number;
   taxable_income: number;
 };
@@ -103,6 +104,7 @@ export type Summary = {
   realized_total: number;
   dividends: number;
   interest: number;
+  distributions: number;
   taxable_income: number;
   market_value: number | null;
   unrealized_gain: number | null;

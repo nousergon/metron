@@ -40,6 +40,9 @@ export default async function TaxPage({
 
   const ccy = summary.base_currency;
   const priced = taxData.unrealized_total != null;
+  // Only widen the income table with a Distributions column when there actually are
+  // tax-deferred withdrawals — most taxable-only users won't have any.
+  const hasDistributions = income.some((y) => y.distributions !== 0);
 
   return (
     <div>
@@ -116,11 +119,28 @@ export default async function TaxPage({
         )}
       </Section>
 
-      <Section title="Realized income by year" note="taxable accounts only — short/long-term gains, dividends, interest">
+      <Section
+        title="Realized income by year"
+        note={
+          hasDistributions
+            ? "short/long-term gains, dividends, interest + tax-deferred distributions"
+            : "taxable accounts only — short/long-term gains, dividends, interest"
+        }
+      >
         {income.length === 0 ? (
           <Empty>No taxable realized income yet.</Empty>
         ) : (
-          <Table head={["Year", "Short-term", "Long-term", "Dividends", "Interest", "Taxable income"]}>
+          <Table
+            head={[
+              "Year",
+              "Short-term",
+              "Long-term",
+              "Dividends",
+              "Interest",
+              ...(hasDistributions ? ["Distributions"] : []),
+              "Taxable income",
+            ]}
+          >
             {income.map((y) => (
               <tr key={y.year} className="border-b border-line last:border-0">
                 <td className="px-4 py-2 font-medium">{y.year}</td>
@@ -132,11 +152,20 @@ export default async function TaxPage({
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.dividends, ccy)}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.interest, ccy)}</td>
+                {hasDistributions ? (
+                  <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.distributions, ccy)}</td>
+                ) : null}
                 <td className="px-4 py-2 text-right font-medium tabular-nums">{moneyWhole(y.taxable_income, ccy)}</td>
               </tr>
             ))}
           </Table>
         )}
+        {hasDistributions ? (
+          <p className="mt-2 text-xs text-muted">
+            Distributions are withdrawals from tax-deferred accounts (Trad IRA / 401(k), incl. RMDs) — taxable
+            ordinary income even though those accounts&apos; internal gains aren&apos;t taxed.
+          </p>
+        ) : null}
         <p className="mt-2 text-xs text-muted">
           <Link href={`/portfolios/${id}/transactions${navQuery}`} className="text-accent hover:underline">
             View the underlying lots &amp; transactions →

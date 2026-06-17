@@ -673,6 +673,7 @@ class PortfolioSummary:
     realized_lt: float
     dividends: float
     interest: float
+    distributions: float = 0.0  # taxable withdrawals from tax-deferred accounts (ordinary income)
     # Valuation — None when no holding has a cached price (price-free path); otherwise
     # the sum over priced holdings (an unpriced holding contributes only its cost basis).
     # All monetary fields are in ``base_currency``.
@@ -689,7 +690,7 @@ class PortfolioSummary:
 
     @property
     def taxable_income(self) -> float:
-        return self.realized_total + self.dividends + self.interest
+        return self.realized_total + self.dividends + self.interest + self.distributions
 
 
 def income(
@@ -698,8 +699,10 @@ def income(
     portfolio_id: uuid.UUID,
     *,
     account_ids: Collection[uuid.UUID] | None = None,
+    distribution_account_ids: Collection[uuid.UUID] | None = None,
 ) -> list[YearlyIncome]:
-    """Per-year realized taxable income — realized ST/LT gains + dividends + interest.
+    """Per-year realized taxable income — realized ST/LT gains + dividends + interest +
+    tax-deferred distributions.
 
     Realized gains come from the FIFO ledger; dividends/interest are summed directly
     from the cash transactions (they never enter the lot ledger). Every native amount is
@@ -708,7 +711,12 @@ def income(
     dividend lands in the USD income total at the rate it was actually worth, not today's.
     A row whose currency has no cached as-of rate is excluded (never summed at face
     value). Newest year first. ``account_ids`` restricts to a set of accounts (e.g. the
-    taxable subset, so an IRA's dividends don't inflate a taxable-income figure)."""
+    taxable subset, so an IRA's dividends don't inflate a taxable-income figure).
+
+    ``distribution_account_ids`` (the tax-deferred accounts, computed by the caller from
+    the *candidate* scope, NOT the taxable subset) adds their WITHDRAWAL transactions as
+    a separate **distributions** column — taxable ordinary income for a retiree even
+    though the account is otherwise excluded from the taxable view (metron-ops#62)."""
     base = _base_currency(session, portfolio_id)
     rows = _portfolio_rows(session, tenant_id, portfolio_id, account_ids=account_ids)
     ledger, _incomplete = build_portfolio_ledger(
@@ -745,7 +753,24 @@ def income(
         amount = float(row.amount) * rate
         bucket = dividends if row.txn_type == TxnType.DIVIDEND.value else interest
         bucket[row.trade_date.year] += amount
-    return summarize_income_by_year(realized_base, dict(dividends), dict(interest))
+
+    # Tax-deferred distributions: WITHDRAWAL transactions from the caller-supplied
+    # tax-deferred accounts are taxable ordinary income (Trad IRA / 401(k) withdrawals +
+    # RMDs). Scanned from their own account scope — they're deliberately outside the
+    # taxable ``account_ids`` above, so this is a separate query.
+    distributions: dict[int, float] = defaultdict(float)
+    if distribution_account_ids:
+        for row, _ticker in _portfolio_rows(
+            session, tenant_id, portfolio_id, account_ids=list(distribution_account_ids)
+        ):
+            if row.txn_type != TxnType.WITHDRAWAL.value:
+                continue
+            rate = fx_service.rate_as_of(session, row.currency, row.trade_date, base=base)
+            if rate is None:
+                continue
+            distributions[row.trade_date.year] += abs(float(row.amount)) * rate
+
+    return summarize_income_by_year(realized_base, dict(dividends), dict(interest), dict(distributions))
 
 
 def accounts(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[AccountInfo]:
@@ -824,10 +849,18 @@ def summary(
     market value / unrealized P&L when prices are cached (None otherwise, never
     fabricated). ``account_ids`` scopes every total to the selected accounts; None =
     whole portfolio."""
+    from api.services import account_meta  # local import avoids a cycle (account_meta → models)
+
     portfolio = session.get(models.Portfolio, portfolio_id)
     held = valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     closed = realized(session, tenant_id, portfolio_id, account_ids=account_ids)
-    yearly = income(session, tenant_id, portfolio_id, account_ids=account_ids)
+    # Tax-deferred accounts in scope → their withdrawals are taxable distributions.
+    deferred = account_meta.tax_deferred_account_ids(session, tenant_id, portfolio_id)
+    if account_ids is not None:
+        deferred &= set(account_ids)
+    yearly = income(
+        session, tenant_id, portfolio_id, account_ids=account_ids, distribution_account_ids=deferred
+    )
     count_stmt = (
         select(func.count())
         .select_from(models.Account)
@@ -857,6 +890,7 @@ def summary(
         realized_lt=sum(r.gain_base for r in closed if r.long_term and r.gain_base is not None),
         dividends=sum(i.dividends for i in yearly),
         interest=sum(i.interest for i in yearly),
+        distributions=sum(i.distributions for i in yearly),
         market_value=market_value,
         unrealized_gain=unrealized_gain,
         n_unconverted=n_unconverted,

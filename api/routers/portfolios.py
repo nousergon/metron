@@ -170,6 +170,7 @@ class IncomeOut(BaseModel):
     realized_lt: float
     dividends: float
     interest: float
+    distributions: float = 0.0
     net_capital_gains: float
     taxable_income: float
 
@@ -206,6 +207,7 @@ class SummaryOut(BaseModel):
     realized_total: float
     dividends: float
     interest: float
+    distributions: float = 0.0
     taxable_income: float
     market_value: float | None = None
     unrealized_gain: float | None = None
@@ -1308,10 +1310,20 @@ def get_income(
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
     session: Session = Depends(get_session),
 ) -> list:
-    """Per-year realized income (cap gains ST/LT + dividends + interest), newest first.
-    ``taxable_only`` restricts to taxable accounts (the Tax view's default)."""
-    account_ids = _taxable_scoped(session, portfolio, account_ids, taxable_only)
-    return analytics.income(session, portfolio.tenant_id, portfolio.id, account_ids=account_ids)
+    """Per-year realized income (cap gains ST/LT + dividends + interest + tax-deferred
+    distributions), newest first. ``taxable_only`` restricts the gains/dividends/interest
+    to taxable accounts (the Tax view's default); tax-deferred WITHDRAWALS within scope
+    are surfaced as their own taxable **distributions** column regardless (metron-ops#62 —
+    "Trad IRA is still taxable for retirees")."""
+    scoped = _taxable_scoped(session, portfolio, account_ids, taxable_only)
+    # Distributions are sourced from tax-deferred accounts (which taxable_only excludes),
+    # intersected with the panel selection so the scope still honors what's selected.
+    deferred = account_meta.tax_deferred_account_ids(session, portfolio.tenant_id, portfolio.id)
+    if account_ids is not None:
+        deferred &= account_ids
+    return analytics.income(
+        session, portfolio.tenant_id, portfolio.id, account_ids=scoped, distribution_account_ids=deferred
+    )
 
 
 @router.get("/{portfolio_id}/accounts", response_model=list[AccountOut])

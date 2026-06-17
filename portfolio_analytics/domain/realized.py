@@ -4,12 +4,16 @@ Pure aggregation over the ledger's ``RealizedGain`` records plus per-year
 dividend / interest cash totals. Answers "how much taxable investment income did
 I realize this calendar year?" — the year-end income-tracking surface.
 
-Three components, each tax-relevant in its own way:
+Four components, each tax-relevant in its own way:
   - **Realized capital gains**, split short- vs long-term (different rates — ST
     is ordinary-income, LT preferential), from closed lots (``RealizedGain``).
   - **Dividends** received (qualified vs non-qualified isn't distinguishable
     from the activity feed, so they're reported as one line).
   - **Interest** received.
+  - **Distributions** — withdrawals from tax-DEFERRED accounts (Trad IRA / 401(k),
+    incl. RMDs), which are taxable ordinary income even though the account's
+    internal gains/dividends are not taxed annually ("Trad IRA is still taxable
+    for retirees"). The caller decides which withdrawals qualify.
 
 This is accounting over what the activity feed shows, not a 1099 — completeness
 caveats (lots whose buy history predates the feed) are surfaced by the caller
@@ -33,6 +37,7 @@ class YearlyIncome:
     realized_lt: float  # net long-term capital gain/loss
     dividends: float
     interest: float
+    distributions: float = 0.0  # taxable withdrawals from tax-deferred accounts (ordinary income)
 
     @property
     def net_capital_gains(self) -> float:
@@ -40,22 +45,26 @@ class YearlyIncome:
 
     @property
     def taxable_income(self) -> float:
-        """Total realized taxable investment income = cap gains + dividends + interest."""
-        return self.net_capital_gains + self.dividends + self.interest
+        """Total realized taxable investment income = cap gains + dividends + interest +
+        tax-deferred distributions (all ordinary income except LT cap gains)."""
+        return self.net_capital_gains + self.dividends + self.interest + self.distributions
 
 
 def summarize_income_by_year(
     realized: list[RealizedGain],
     dividends_by_year: dict[int, float],
     interest_by_year: dict[int, float],
+    distributions_by_year: dict[int, float] | None = None,
 ) -> list[YearlyIncome]:
-    """Aggregate realized gains + dividends + interest into per-year rows.
+    """Aggregate realized gains + dividends + interest + distributions into per-year rows.
 
     ``realized`` are closed lots (each carries ``close_date``, ``gain``, and
-    ``long_term``); ``dividends_by_year`` / ``interest_by_year`` map a calendar
-    year to its summed cash income. Years are the union across all three sources,
-    returned **newest first** (so the current year leads — what the user tracks).
-    """
+    ``long_term``); ``dividends_by_year`` / ``interest_by_year`` /
+    ``distributions_by_year`` map a calendar year to its summed cash income.
+    ``distributions_by_year`` (default empty) is taxable withdrawals from tax-deferred
+    accounts. Years are the union across all sources, returned **newest first** (so the
+    current year leads — what the user tracks)."""
+    distributions_by_year = distributions_by_year or {}
     st: dict[int, float] = defaultdict(float)
     lt: dict[int, float] = defaultdict(float)
     for r in realized:
@@ -65,7 +74,7 @@ def summarize_income_by_year(
         else:
             st[year] += r.gain
 
-    years = set(st) | set(lt) | set(dividends_by_year) | set(interest_by_year)
+    years = set(st) | set(lt) | set(dividends_by_year) | set(interest_by_year) | set(distributions_by_year)
     rows = [
         YearlyIncome(
             year=y,
@@ -73,6 +82,7 @@ def summarize_income_by_year(
             realized_lt=lt.get(y, 0.0),
             dividends=dividends_by_year.get(y, 0.0),
             interest=interest_by_year.get(y, 0.0),
+            distributions=distributions_by_year.get(y, 0.0),
         )
         for y in years
     ]
