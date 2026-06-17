@@ -80,7 +80,11 @@ export function WatchlistPanel({ portfolioId, entries }: { portfolioId: string; 
         note="reference data only in beta — live prices arrive with the Pro market-data feed"
       >
         {entries.length === 0 ? (
-          <Empty>Nothing tracked yet — add a ticker above to watch it without holding it.</Empty>
+          <Empty>
+            Your watchlist is empty — it doesn&apos;t auto-populate. Add a ticker in the box above (e.g. NVDA) to
+            track a name you don&apos;t hold. In the beta you&apos;ll see its name &amp; sector; live prices and
+            earnings dates arrive with the Pro market-data feed.
+          </Empty>
         ) : (
           <Table head={["Ticker", "Name", "Sector", "Next earnings", "Status", "Note", ""]}>
             {entries.map((e) => (

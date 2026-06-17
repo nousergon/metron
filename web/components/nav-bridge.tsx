@@ -4,18 +4,24 @@
 
 import { moneyWhole, signClass, signedMoneyWhole } from "@/lib/format";
 
+export type YearBridge = { year: number; start: number; contributions: number; gain: number; end: number };
+
 export function NavBridge({
   start,
   contributions,
   gain,
   end,
   currency,
+  years,
 }: {
   start: number;
   contributions: number;
   gain: number;
   end: number;
   currency: string;
+  /** Optional per-calendar-year breakdown (metron-ops#68) — rendered as a small table
+   *  under the whole-history bridge when more than one year is present. */
+  years?: YearBridge[];
 }) {
   const total = Math.max(end, 1);
   const pct = (v: number) => `${Math.min(100, Math.max(0, (v / total) * 100))}%`;
@@ -56,6 +62,33 @@ export function NavBridge({
       <p className="mt-2 text-[11px] text-muted">
         Latest NAV = value when history began + net contributions (buys − sells) + investment gain.
       </p>
+
+      {years && years.length > 1 ? (
+        <div className="mt-4 overflow-x-auto rounded-md border border-line">
+          <table className="w-full text-sm tabular-nums">
+            <thead>
+              <tr className="border-b border-line bg-surface text-left text-[10px] uppercase tracking-wide text-muted">
+                <th className="px-3 py-1.5 font-medium">Year</th>
+                <th className="px-3 py-1.5 text-right font-medium">Start</th>
+                <th className="px-3 py-1.5 text-right font-medium">+ Contributions</th>
+                <th className="px-3 py-1.5 text-right font-medium">+ Gain</th>
+                <th className="px-3 py-1.5 text-right font-medium">= End</th>
+              </tr>
+            </thead>
+            <tbody>
+              {years.map((y) => (
+                <tr key={y.year} className="border-b border-line last:border-0">
+                  <td className="px-3 py-1.5 font-medium">{y.year}</td>
+                  <td className="px-3 py-1.5 text-right text-muted">{moneyWhole(y.start, currency)}</td>
+                  <td className="px-3 py-1.5 text-right">{signedMoneyWhole(y.contributions, currency)}</td>
+                  <td className={`px-3 py-1.5 text-right ${signClass(y.gain)}`}>{signedMoneyWhole(y.gain, currency)}</td>
+                  <td className="px-3 py-1.5 text-right font-medium">{moneyWhole(y.end, currency)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </div>
   );
 }

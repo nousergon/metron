@@ -62,6 +62,32 @@ export default async function PerformancePage({
         })()
       : null;
 
+  // Per-calendar-year NAV bridge (metron-ops#68): for each year, start = the prior
+  // snapshot's NAV (continuity), end = the last snapshot in the year, contributions = that
+  // year's net external flow (the overall-first point carries no flow), gain = the residual.
+  const yearBridges = (() => {
+    type YB = { year: number; start: number; contributions: number; gain: number; end: number };
+    if (perf.points.length < 2) return [] as YB[];
+    const years: number[] = [];
+    const idxByYear = new Map<number, number[]>();
+    perf.points.forEach((p, i) => {
+      const y = Number(p.snap_date.slice(0, 4));
+      if (!idxByYear.has(y)) {
+        idxByYear.set(y, []);
+        years.push(y);
+      }
+      idxByYear.get(y)!.push(i);
+    });
+    return years.map((y): YB => {
+      const idxs = idxByYear.get(y)!;
+      const firstIdx = idxs[0]!;
+      const start = firstIdx > 0 ? perf.points[firstIdx - 1]!.nav : perf.points[firstIdx]!.nav;
+      const end = perf.points[idxs[idxs.length - 1]!]!.nav;
+      const contributions = idxs.reduce((s, i) => s + (i > 0 ? perf.points[i]!.external_flow : 0), 0);
+      return { year: y, start, contributions, gain: end - start - contributions, end };
+    });
+  })();
+
   return (
     <div>
       <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={toFeatureStates(entitlements)} />
@@ -159,6 +185,7 @@ export default async function PerformancePage({
             gain={bridge.gain}
             end={bridge.end}
             currency={ccy}
+            years={yearBridges}
           />
         </div>
       ) : null}
