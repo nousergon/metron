@@ -88,6 +88,8 @@ def test_connections_listed_with_counts_default_included(client, personal_on, mo
     # ("E-Trade") differs from the connection name ("E*Trade").
     assert by_brokerage["E*Trade"]["excluded"] is False
     assert by_brokerage["E*Trade"]["n_accounts"] == 1
+    # Nothing imported yet → "linked but never synced" signal (metron-ops#21).
+    assert r.json()["n_synced_accounts"] == 0
 
 
 def test_exclude_include_toggle_persists(client, personal_on, monkeypatch):

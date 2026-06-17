@@ -20,7 +20,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api import entitlements as ent
@@ -1074,6 +1074,9 @@ class SnapTradeConnectionOut(BaseModel):
 
 class SnapTradeConnectionsOut(BaseModel):
     connections: list[SnapTradeConnectionOut]
+    # Imported SnapTrade accounts in this portfolio's DB. Zero while connections exist =
+    # "linked but never synced" — the gap the UI nudges the user to close (metron-ops#21).
+    n_synced_accounts: int = 0
 
 
 class SnapTradeConnectIn(BaseModel):
@@ -1118,7 +1121,18 @@ def list_snaptrade_connections(
         )
         for c in connections
     ]
-    return SnapTradeConnectionsOut(connections=out)
+    # Count SnapTrade-sourced accounts already imported into this portfolio — lets the UI
+    # spot a "linked but never synced" state (metron-ops#21).
+    n_synced = session.scalar(
+        select(func.count())
+        .select_from(models.Account)
+        .where(
+            models.Account.tenant_id == portfolio.tenant_id,
+            models.Account.portfolio_id == portfolio.id,
+            models.Account.broker.like("snaptrade%"),
+        )
+    )
+    return SnapTradeConnectionsOut(connections=out, n_synced_accounts=int(n_synced or 0))
 
 
 @router.post("/{portfolio_id}/snaptrade/connect", response_model=SnapTradeConnectUrlOut)
