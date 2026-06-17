@@ -42,6 +42,23 @@ class TestPositions:
         assert shares == 20
         assert avg == pytest.approx(110.0)
 
+    def test_money_market_buy_with_no_price_uses_amount(self):
+        # FDRXX-style sweep: broker reports quantity + cash amount but price=0 (metron-ops#61).
+        # Cost basis must come from `amount`, not collapse to $0.
+        txn = Transaction(date(2025, 1, 1), TxnType.BUY, ticker="FDRXX", quantity=10000, price=0.0, amount=10000.0)
+        led = build_ledger([txn])
+        shares, avg = led.position("FDRXX")
+        assert shares == 10000
+        assert avg == pytest.approx(1.0)
+        assert led.cash == pytest.approx(-10000.0)  # cash debited by the true amount
+
+    def test_priced_buy_ignores_amount(self):
+        # When price IS reported it stays authoritative — amount must not override it.
+        txn = Transaction(date(2025, 1, 1), TxnType.BUY, ticker="AAPL", quantity=10, price=100.0, amount=999.0)
+        led = build_ledger([txn])
+        _, avg = led.position("AAPL")
+        assert avg == pytest.approx(100.0)
+
     def test_no_position(self):
         led = build_ledger([])
         assert led.position("AAPL") == (0.0, 0.0)

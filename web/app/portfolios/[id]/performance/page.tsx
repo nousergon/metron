@@ -1,5 +1,5 @@
 import { acctParams, getPerformance, getSummary, MetronApiError } from "@/lib/api";
-import { isoDate, money, moneyWhole, percent, signClass, signedMoneyWhole } from "@/lib/format";
+import { isoDate, moneyWhole, percent, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { BuildHistory } from "@/components/build-history";
@@ -212,7 +212,7 @@ export default async function PerformancePage({
                   {p.external_flow ? signedMoneyWhole(p.external_flow, ccy) : "—"}
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums text-muted">
-                  {p.spy_close != null ? money(p.spy_close, ccy) : "—"}
+                  {p.spy_close != null ? moneyWhole(p.spy_close, ccy) : "—"}
                 </td>
               </tr>
             ))}

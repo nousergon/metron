@@ -372,8 +372,12 @@ export function AccountPanel({
         return (
           <div key={label}>
             {showGroups ? (
-              <div className="flex items-center gap-2 border-b border-line bg-surface/60 px-4 py-1.5">
-                {readOnly ? null : (
+              <div className="flex items-center gap-3 border-b border-line bg-surface/60 px-4 py-1.5">
+                {readOnly ? (
+                  // Keep the 16px checkbox slot so the group label lines up with the rows
+                  // below it (the interactive panel has a checkbox here) — metron-ops#54.
+                  <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+                ) : (
                   <input
                     type="checkbox"
                     checked={groupAllSelected}

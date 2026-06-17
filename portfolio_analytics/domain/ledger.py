@@ -171,11 +171,25 @@ def _apply(ledger: Ledger, txn: Transaction) -> None:
 def _buy(ledger: Ledger, txn: Transaction) -> None:
     if txn.quantity <= 0:
         return
-    cost_per_share = txn.price + txn.fees / txn.quantity  # fees → cost basis
+    # Per-share cost. A broker's money-market / cash-sweep BUY (FDRXX, SPAXX, a 401(k)
+    # CIT) frequently reports price=0 — or omits it — while ``amount`` carries the true
+    # cash invested. Using price then gives a $0 cost basis for a fund actually worth its
+    # full NAV (metron-ops#61). Fall back to amount/quantity when price is missing; price
+    # stays authoritative whenever it's reported. ``amount`` is a positive magnitude that
+    # already includes fees, so don't double-count them in that branch.
+    if txn.price > 0:
+        cost_per_share = txn.price + txn.fees / txn.quantity  # fees → cost basis
+        cash_out = txn.quantity * txn.price + txn.fees
+    elif txn.amount > 0:
+        cost_per_share = txn.amount / txn.quantity
+        cash_out = txn.amount
+    else:
+        cost_per_share = txn.fees / txn.quantity  # degenerate: neither price nor amount
+        cash_out = txn.fees
     ledger.open_lots.setdefault(txn.ticker, []).append(
         Lot(ticker=txn.ticker, open_date=txn.when, quantity=txn.quantity, cost_per_share=cost_per_share)
     )
-    ledger.cash -= txn.quantity * txn.price + txn.fees
+    ledger.cash -= cash_out
 
 
 def _sell(ledger: Ledger, txn: Transaction) -> None:
