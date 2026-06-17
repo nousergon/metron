@@ -5,6 +5,7 @@ import { PortfolioNav } from "@/components/portfolio-nav";
 import { BuildHistory } from "@/components/build-history";
 import { NavChart } from "@/components/nav-chart";
 import { NavBridge } from "@/components/nav-bridge";
+import { RiskOverTime } from "@/components/risk-over-time";
 import { TierSimulator } from "@/components/tier-simulator";
 import { loadEntitlements, toFeatureStates } from "@/lib/entitlements";
 import { requireTenantId } from "@/lib/session";
@@ -176,6 +177,8 @@ export default async function PerformancePage({
           />
         </div>
       ) : null}
+
+      {perf.rolling.length >= 2 ? <RiskOverTime rolling={perf.rolling} /> : null}
 
       {bridge ? (
         <div className="mt-4">

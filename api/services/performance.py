@@ -38,6 +38,14 @@ from portfolio_analytics.prices import ClosePoint, HistorySource, fetch_latest_c
 # are always shown. (metron-ops#44 — these short-window annualized values read as wrong.)
 _MIN_ANNUALIZE_DAYS = 30
 
+# Rolling risk series (metron-ops#67) — mirror the Crucible risk basket over time so the
+# user can see how Sharpe/Sortino/vol/drawdown evolve. Each point uses a trailing window of
+# the flow-neutralized returns: expanding until it reaches _ROLLING_WINDOW, then rolling.
+# A point is emitted once the window has _ROLLING_MIN_OBS returns AND spans
+# _MIN_ANNUALIZE_DAYS (the same annualization floor the headline metrics use).
+_ROLLING_WINDOW = 63       # ~3 months of trading days
+_ROLLING_MIN_OBS = 20
+
 
 def _purchase_flow(rows: list[tuple[str, float]]) -> float:
     """Net purchases for a set of (txn_type, amount) rows: a BUY brings capital INTO the
@@ -269,6 +277,17 @@ class PerfPoint:
 
 
 @dataclass
+class RollingRiskPoint:
+    """One trailing-window risk reading (metron-ops#67) — the Crucible basket over time."""
+
+    snap_date: date
+    volatility: float | None
+    sharpe: float | None
+    sortino: float | None
+    max_drawdown: float | None
+
+
+@dataclass
 class PerformanceSummary:
     n_snapshots: int
     first_date: date | None = None
@@ -288,6 +307,8 @@ class PerformanceSummary:
     max_drawdown: float | None = None
     spy_return: float | None = None
     alpha: float | None = None
+    # Trailing-window risk basket over time (metron-ops#67); empty until enough history.
+    rolling: list[RollingRiskPoint] = field(default_factory=list)
     points: list[PerfPoint] = field(default_factory=list)
 
 
@@ -337,6 +358,37 @@ def _apply_risk_and_alpha(summary: PerformanceSummary, points: list[PerfPoint]) 
         port_return = summary.twr if summary.twr is not None else summary.cumulative_return
         if port_return is not None:
             summary.alpha = port_return - summary.spy_return
+
+
+def _rolling_risk(points: list[PerfPoint]) -> list[RollingRiskPoint]:
+    """Trailing-window risk basket over time (metron-ops#67). ``rets[k]`` is the return
+    for the period ending at ``points[k+1]``; for each endpoint we annualize over the
+    window using the same empirical periods-per-year as the headline metrics."""
+    rets = _flow_neutralized_returns(points)
+    if len(rets) < _ROLLING_MIN_OBS:
+        return []
+    out: list[RollingRiskPoint] = []
+    for j in range(_ROLLING_MIN_OBS, len(rets) + 1):
+        window_len = min(j, _ROLLING_WINDOW)
+        window = rets[j - window_len : j]
+        end_pt, start_pt = points[j], points[j - window_len]
+        elapsed = (end_pt.snap_date - start_pt.snap_date).days
+        if elapsed < _MIN_ANNUALIZE_DAYS:
+            continue
+        ppy = window_len / (elapsed / 365.25)
+        index = [1.0]
+        for r in window:
+            index.append(index[-1] * (1.0 + r))
+        out.append(
+            RollingRiskPoint(
+                snap_date=end_pt.snap_date,
+                volatility=volatility(window, periods_per_year=ppy),
+                sharpe=sharpe_ratio(window, periods_per_year=ppy),
+                sortino=sortino_ratio(window, periods_per_year=ppy),
+                max_drawdown=max_drawdown(index),
+            )
+        )
+    return out
 
 
 def _account_perf_series(
@@ -449,6 +501,7 @@ def performance(
     if summary.twr is not None and summary.days >= _MIN_ANNUALIZE_DAYS:
         summary.annualized_twr = annualize(summary.twr, summary.days)
     _apply_risk_and_alpha(summary, points)
+    summary.rolling = _rolling_risk(points)
     return summary
 
 

@@ -244,6 +244,16 @@ class PerfPointOut(BaseModel):
     spy_close: float | None
 
 
+class RollingRiskOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    snap_date: date
+    volatility: float | None
+    sharpe: float | None
+    sortino: float | None
+    max_drawdown: float | None
+
+
 class PerformanceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -263,6 +273,7 @@ class PerformanceOut(BaseModel):
     max_drawdown: float | None
     spy_return: float | None
     alpha: float | None
+    rolling: list[RollingRiskOut] = []
     points: list[PerfPointOut]
 
 

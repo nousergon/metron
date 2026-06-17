@@ -223,3 +223,37 @@ def _insert_snapshot(session, tenant, portfolio_id, when, *, nav, external_flow=
         )
     )
     session.commit()
+
+
+def test_rolling_risk_matches_full_window_when_history_shorter_than_window():
+    """The rolling basket (metron-ops#67) is expanding-then-rolling: with fewer returns
+    than the window, the last rolling point uses the full series, so it must equal the
+    headline (full-window) metrics. Dates strictly increase; too-short history is empty."""
+    from datetime import timedelta
+
+    from api.services import performance as perf_svc
+
+    start = date(2024, 1, 1)
+    v = 1000.0
+    navs = [v]
+    for i in range(1, 50):  # 49 returns < _ROLLING_WINDOW (63) → expanding
+        v *= 1.015 if i % 2 == 0 else 0.995  # both up and down days (downside for Sortino)
+        navs.append(v)
+    points = [
+        perf_svc.PerfPoint(snap_date=start + timedelta(days=i), nav=navs[i], external_flow=0.0, spy_close=None)
+        for i in range(len(navs))
+    ]
+    summary = perf_svc.PerformanceSummary(n_snapshots=len(points), points=points)
+    summary.days = (points[-1].snap_date - points[0].snap_date).days
+    perf_svc._apply_risk_and_alpha(summary, points)
+
+    rolling = perf_svc._rolling_risk(points)
+    assert len(rolling) >= 2
+    assert all(rolling[k].snap_date < rolling[k + 1].snap_date for k in range(len(rolling) - 1))
+    assert rolling[-1].snap_date == points[-1].snap_date
+    assert rolling[-1].sharpe == pytest.approx(summary.sharpe)
+    assert rolling[-1].sortino == pytest.approx(summary.sortino)
+    assert rolling[-1].volatility == pytest.approx(summary.volatility)
+    assert rolling[-1].max_drawdown == pytest.approx(summary.max_drawdown)
+    # Too little history → no series.
+    assert perf_svc._rolling_risk(points[:15]) == []

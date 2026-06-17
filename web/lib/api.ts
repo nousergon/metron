@@ -124,6 +124,14 @@ export type PerfPoint = {
   spy_close: number | null;
 };
 
+export type RollingRiskPoint = {
+  snap_date: string;
+  volatility: number | null;
+  sharpe: number | null;
+  sortino: number | null;
+  max_drawdown: number | null;
+};
+
 export type Performance = {
   n_snapshots: number;
   first_date: string | null;
@@ -141,6 +149,7 @@ export type Performance = {
   max_drawdown: number | null;
   spy_return: number | null;
   alpha: number | null;
+  rolling: RollingRiskPoint[];
   points: PerfPoint[];
 };
 
