@@ -4,6 +4,7 @@ import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { BuildHistory } from "@/components/build-history";
 import { NavChart } from "@/components/nav-chart";
+import { NavBridge } from "@/components/nav-bridge";
 import { TierSimulator } from "@/components/tier-simulator";
 import { loadEntitlements, toFeatureStates } from "@/lib/entitlements";
 import { requireTenantId } from "@/lib/session";
@@ -43,6 +44,18 @@ export default async function PerformancePage({
   // perf.points are ascending (oldest → newest) — the chart wants chronological order.
   const navSeries = perf.points.map((p) => ({ snap_date: p.snap_date, nav: p.nav }));
   const entitlements = await loadEntitlements(tenantId);
+
+  // NAV bridge: latest NAV = value when history began + net contributions + the residual
+  // investment gain (metron-ops#60).
+  const bridge =
+    perf.points.length >= 2 && perf.latest_nav != null
+      ? (() => {
+          const start = perf.points[0]!.nav;
+          const contributions = perf.net_contributions;
+          const end = perf.latest_nav!;
+          return { start, contributions, gain: end - start - contributions, end };
+        })()
+      : null;
 
   return (
     <div>
@@ -124,6 +137,18 @@ export default async function PerformancePage({
             label="Max drawdown"
             value={perf.max_drawdown != null ? percent(perf.max_drawdown) : "—"}
             valueClass={signClass(perf.max_drawdown ?? 0)}
+          />
+        </div>
+      ) : null}
+
+      {bridge ? (
+        <div className="mt-4">
+          <NavBridge
+            start={bridge.start}
+            contributions={bridge.contributions}
+            gain={bridge.gain}
+            end={bridge.end}
+            currency={ccy}
           />
         </div>
       ) : null}
