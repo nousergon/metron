@@ -42,6 +42,9 @@ from api.services import (
 )
 from api.services import fx as fx_service
 from api.services import prices as price_service
+from api.services import (
+    tearsheet as tearsheet_service,
+)
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult
 from portfolio_analytics.broker_io.ofx_import import parse_ofx
@@ -1410,6 +1413,73 @@ def get_tax(
         session, portfolio.tenant_id, portfolio.id, today=date.today(),
         taxable_only=taxable_only, selected_account_ids=account_ids,
     )
+
+
+class TearsheetPositionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    currency: str = "USD"
+    quantity: float
+    avg_cost: float
+    cost_basis: float | None
+    market_value: float | None
+    unrealized_gain: float | None
+    unrealized_pct: float | None
+    weight_pct: float | None
+    accounts: list[str] = []
+
+
+class TearsheetPerformanceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    return_vs_cost: float | None
+    period_returns: dict[str, float] = {}
+    volatility: float | None = None
+    sharpe: float | None = None
+    sortino: float | None = None
+    max_drawdown: float | None = None
+    beta_vs_spy: float | None = None
+    vs_spy: float | None = None
+    n_bars: int = 0
+    history_from: date | None = None
+
+
+class TearsheetTechnicalOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    rsi_14: float | None = None
+    pct_from_52wk_high: float | None = None
+    forward_div_yield: float | None = None
+
+
+class TearsheetOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    base_currency: str = "USD"
+    as_of: date
+    position: TearsheetPositionOut
+    performance: TearsheetPerformanceOut
+    technical: TearsheetTechnicalOut
+    fundamentals_available: bool = False
+    fundamentals_reason: str = ""
+
+
+@router.get("/{portfolio_id}/tearsheet/{ticker}", response_model=TearsheetOut)
+def get_tearsheet(
+    ticker: str,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> tearsheet_service.Tearsheet:
+    """IB-style per-holding tearsheet (metron-ops#22): Position + Performance + Technical
+    computed from data Metron already has; the valuation-multiples / balance-sheet / comps
+    blocks are honestly marked N/A until the fundamentals spine artifact ships
+    (alpha-engine-config#1022). 404 if the portfolio doesn't hold the ticker."""
+    sheet = tearsheet_service.tearsheet(session, portfolio.tenant_id, portfolio.id, ticker.upper())
+    if sheet is None:
+        raise HTTPException(status_code=404, detail=f"{ticker.upper()} is not a current holding.")
+    return sheet
 
 
 @router.get("/{portfolio_id}/risk", response_model=RiskOut)

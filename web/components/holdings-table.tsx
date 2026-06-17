@@ -7,6 +7,7 @@
 // shown muted with a `*` (never silently treated as base currency).
 
 import { useMemo, useState, useTransition, type ReactNode } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { Holding } from "@/lib/api";
 import { fxRate, money, moneyWhole, percent, quantity, signClass, signedMoneyWhole } from "@/lib/format";
@@ -294,10 +295,14 @@ function TickerCell({ h, portfolioId }: { h: Holding; portfolioId?: string }) {
       {h.user_label ? (
         <>
           <span>{h.user_label}</span>
-          <span className="text-xs font-normal text-muted">{h.ticker}</span>
+          <Link href={`/portfolios/${portfolioId}/tearsheet/${encodeURIComponent(h.ticker)}`} className="text-xs font-normal text-muted hover:text-ink hover:underline" title="Open tearsheet">
+            {h.ticker}
+          </Link>
         </>
       ) : (
-        <span>{h.ticker}</span>
+        <Link href={`/portfolios/${portfolioId}/tearsheet/${encodeURIComponent(h.ticker)}`} className="hover:underline" title="Open tearsheet">
+          {h.ticker}
+        </Link>
       )}
       {!h.user_label && numericish ? (
         <button

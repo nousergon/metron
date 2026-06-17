@@ -363,6 +363,46 @@ export type Tax = {
 export const getTax = (tenantId: string, id: string, accountIds?: string[]) =>
   get<Tax>(tenantId, `/portfolios/${id}/tax${acctParams(accountIds)}`);
 
+export type Tearsheet = {
+  ticker: string;
+  base_currency: string;
+  as_of: string;
+  position: {
+    ticker: string;
+    currency: string;
+    quantity: number;
+    avg_cost: number;
+    cost_basis: number | null;
+    market_value: number | null;
+    unrealized_gain: number | null;
+    unrealized_pct: number | null;
+    weight_pct: number | null;
+    accounts: string[];
+  };
+  performance: {
+    return_vs_cost: number | null;
+    period_returns: Record<string, number>;
+    volatility: number | null;
+    sharpe: number | null;
+    sortino: number | null;
+    max_drawdown: number | null;
+    beta_vs_spy: number | null;
+    vs_spy: number | null;
+    n_bars: number;
+    history_from: string | null;
+  };
+  technical: {
+    rsi_14: number | null;
+    pct_from_52wk_high: number | null;
+    forward_div_yield: number | null;
+  };
+  fundamentals_available: boolean;
+  fundamentals_reason: string;
+};
+
+export const getTearsheet = (tenantId: string, id: string, ticker: string) =>
+  get<Tearsheet>(tenantId, `/portfolios/${id}/tearsheet/${encodeURIComponent(ticker)}`);
+
 export type SectorEffect = {
   sector: string;
   port_weight: number;
