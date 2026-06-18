@@ -1,7 +1,8 @@
-import { acctParams, getAccounts, getIndices, getPlugins, getPortfolio, getSummary, MetronApiError, type Account, type Portfolio, type PluginNav } from "@/lib/api";
+import { acctParams, getAccounts, getIndices, getPerformanceTiles, getPlugins, getPortfolio, getSummary, MetronApiError, type Account, type PeriodTiles, type Portfolio, type PluginNav } from "@/lib/api";
 import { accountingMoneyWhole, moneyWhole, signClass } from "@/lib/format";
 import { Empty, Section, StatCard } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
+import { PerfTiles } from "@/components/perf-tiles";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { TierSimulator } from "@/components/tier-simulator";
 import { IndexStrip } from "@/components/index-strip";
@@ -87,6 +88,17 @@ export default async function PortfolioPage({
   const entitlements = await loadEntitlements(tenantId);
   const featureStates = toFeatureStates(entitlements);
 
+  // Performance-vs-market hero tiles (metron-ops#83) — best-effort + account-scoped to the
+  // active selection. Benchmark columns are feed-gated server-side (portfolio-only in the
+  // no-feed beta). Shown only once ≥2 NAV snapshots make a window computable.
+  let tiles: PeriodTiles | null = null;
+  try {
+    tiles = await getPerformanceTiles(tenantId, id, accountIds);
+  } catch {
+    tiles = null;
+  }
+  const showTiles = tiles?.tiles.some((t) => t.twr != null || t.gain != null) ?? false;
+
   // Markets strip: intraday major-index proxies (feed-gated → Pro). Fetched server-side
   // for first paint ONLY when entitled (hidden in the no-feed beta, per metron-ops#53);
   // the client component then polls every ~5 min. Best-effort — never blocks the page.
@@ -137,8 +149,14 @@ export default async function PortfolioPage({
         </div>
       )}
 
-      {/* Holdings / accounts counts → their pages. Realized gains + income moved to the
-          Tax page; the performance-vs-market hero tiles land here next (metron-ops#83). */}
+      {/* Performance-vs-market hero (metron-ops#83): Today / YTD / LTM × $ gain, %TWR,
+          and per-benchmark alpha (feed-gated). The Overview leads with investment
+          performance; realized gains + income live on the Tax page. */}
+      {showTiles && tiles ? (
+        <PerfTiles tiles={tiles.tiles} benchmarksAvailable={tiles.benchmarks_available} />
+      ) : null}
+
+      {/* Holdings / accounts counts → their pages. */}
       <div className="mt-4 grid grid-cols-2 gap-3">
         <StatCard
           label="Holdings"

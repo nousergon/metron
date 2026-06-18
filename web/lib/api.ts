@@ -155,6 +155,33 @@ export type Performance = {
   estimated_note: string | null;
 };
 
+/** One benchmark's comparison over a period tile (metron-ops#83). */
+export type BenchmarkReturn = {
+  symbol: string;
+  label: string;
+  ret: number | null;   // benchmark % return over the window
+  alpha: number | null; // portfolio %TWR − benchmark %
+};
+
+/** One Overview hero tile: aggregate holdings performance over a window. */
+export type PeriodTile = {
+  period: string;       // "today" | "ytd" | "ltm"
+  label: string;        // "Today" | "YTD" | "LTM"
+  start_date: string | null;
+  end_date: string | null;
+  gain: number | null;  // $ investment gain over the window (net of external flows)
+  twr: number | null;   // % time-weighted return over the window
+  benchmarks: BenchmarkReturn[];
+};
+
+/** Overview performance-vs-market tiles. Benchmark comparison is feed-gated (Pro):
+ *  `benchmarks_available=false` in the no-feed beta → portfolio-only tiles. */
+export type PeriodTiles = {
+  tiles: PeriodTile[];
+  benchmarks_available: boolean;
+  last_date: string | null;
+};
+
 export class MetronApiError extends Error {
   constructor(
     public status: number,
@@ -309,6 +336,8 @@ export const getAccountDetail = (tenantId: string, id: string, accountId: string
   get<AccountDetail>(tenantId, `/portfolios/${id}/accounts/${accountId}`);
 export const getPerformance = (tenantId: string, id: string, accountIds?: string[]) =>
   get<Performance>(tenantId, `/portfolios/${id}/performance${acctParams(accountIds)}`);
+export const getPerformanceTiles = (tenantId: string, id: string, accountIds?: string[]) =>
+  get<PeriodTiles>(tenantId, `/portfolios/${id}/performance/tiles${acctParams(accountIds)}`);
 
 export type Risk = {
   computable: boolean;
