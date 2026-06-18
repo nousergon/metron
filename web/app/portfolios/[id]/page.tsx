@@ -1,10 +1,9 @@
-import { acctParams, getAccounts, getIndices, getMacro, getPlugins, getPortfolio, getSummary, MetronApiError, type Account, type Portfolio, type PluginNav } from "@/lib/api";
+import { acctParams, getAccounts, getIndices, getPlugins, getPortfolio, getSummary, MetronApiError, type Account, type Portfolio, type PluginNav } from "@/lib/api";
 import { accountingMoneyWhole, moneyWhole, signClass } from "@/lib/format";
 import { Empty, Section, StatCard } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { TierSimulator } from "@/components/tier-simulator";
-import { MacroStrip } from "@/components/macro-strip";
 import { IndexStrip } from "@/components/index-strip";
 import { RenamePortfolio } from "@/components/rename-portfolio";
 import { featureEntitlement, loadEntitlements, previewFromCookies, toFeatureStates } from "@/lib/entitlements";
@@ -85,9 +84,6 @@ export default async function PortfolioPage({
     plugins = [];
   }
 
-  // Macro snapshot (FRED, public-domain → beta-safe). Best-effort (metron-ops#49).
-  const macro = await getMacro(tenantId).catch(() => null);
-
   const entitlements = await loadEntitlements(tenantId);
   const featureStates = toFeatureStates(entitlements);
 
@@ -108,10 +104,9 @@ export default async function PortfolioPage({
         <RenamePortfolio portfolioId={id} name={portfolio.name} />
       </div>
 
-      {/* Markets (intraday index proxies) + Macro at the top of the dashboard. The
-          markets strip is feed-gated (Pro) — hidden in the no-feed beta (metron-ops#53). */}
+      {/* Markets (intraday index proxies) — feed-gated (Pro), hidden in the no-feed beta
+          (metron-ops#53). Macro moved back to the Macro page (metron-ops#83). */}
       {indices?.available ? <IndexStrip initial={indices} /> : null}
-      {macro ? <MacroStrip macro={macro} portfolioId={id} /> : null}
 
       {/* Headline: total value, with unrealized broken out by tax treatment. */}
       {priced ? (
@@ -142,21 +137,9 @@ export default async function PortfolioPage({
         </div>
       )}
 
-      {/* Consolidated metric tiles — each links into its source (metron-ops#64). */}
-      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard
-          label="Realized gains"
-          value={accountingMoneyWhole(summary.realized_total, ccy)}
-          valueClass={signClass(summary.realized_total)}
-          hint="short + long term"
-          href={`/portfolios/${id}/tax${navQuery}`}
-        />
-        <StatCard
-          label="Income"
-          value={moneyWhole(summary.dividends + summary.interest, ccy)}
-          hint="dividends + interest"
-          href={`/portfolios/${id}/tax${navQuery}`}
-        />
+      {/* Holdings / accounts counts → their pages. Realized gains + income moved to the
+          Tax page; the performance-vs-market hero tiles land here next (metron-ops#83). */}
+      <div className="mt-4 grid grid-cols-2 gap-3">
         <StatCard
           label="Holdings"
           value={String(summary.n_holdings)}
