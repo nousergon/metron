@@ -1,33 +1,38 @@
 // Minimal transactional email sender (server-only) for auth magic links.
 //
-// Uses Gmail SMTP via nodemailer — the same transport the alpha-engine fleet uses
-// (EMAIL_SENDER + GMAIL_APP_PASSWORD app password). For the M2 public tier this swaps
-// to a transactional provider (Resend/Postmark/SES) without touching callers.
+// Uses Resend (https://resend.com) sending over the Resend-verified `nousergon.ai`
+// domain. EMAIL_SENDER (e.g. no-reply@nousergon.ai) MUST be an address on a
+// Resend-verified domain so the message carries aligned SPF/DKIM/DMARC and isn't
+// spam-filtered. Authenticating via a provider (rather than a personal Gmail app
+// password) is what lets the From address legitimately be `@nousergon.ai`.
 //
 // Fails loud: a missing credential or a send error throws, so a magic-link request
-// surfaces a real error rather than silently never arriving.
+// surfaces a real error rather than a link that silently never arrives.
 
 import "server-only";
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
-let cached: nodemailer.Transporter | null = null;
+let cached: Resend | null = null;
 
-function transport(): nodemailer.Transporter {
+function client(): Resend {
   if (cached) return cached;
-  const user = process.env.EMAIL_SENDER;
-  const pass = process.env.GMAIL_APP_PASSWORD;
-  if (!user || !pass) {
-    throw new Error("Email not configured — set EMAIL_SENDER and GMAIL_APP_PASSWORD to send magic links.");
+  const key = process.env.RESEND_API_KEY;
+  if (!key) {
+    throw new Error("Email not configured — set RESEND_API_KEY to send magic links.");
   }
-  cached = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user, pass },
-  });
+  cached = new Resend(key);
   return cached;
 }
 
 export async function sendEmail({ to, subject, html, text }: { to: string; subject: string; html: string; text?: string }) {
-  await transport().sendMail({ from: process.env.EMAIL_SENDER, to, subject, html, text });
+  const from = process.env.EMAIL_SENDER;
+  if (!from) {
+    throw new Error("Email not configured — set EMAIL_SENDER (a Resend-verified sender, e.g. no-reply@nousergon.ai).");
+  }
+  const { error } = await client().emails.send({ from, to, subject, html, text });
+  if (error) {
+    // Resend returns a structured error object instead of throwing — re-raise so the
+    // caller (the magic-link send path) fails loud.
+    throw new Error(`Failed to send email via Resend: ${error.message}`);
+  }
 }
