@@ -23,6 +23,7 @@ def _no_derived(monkeypatch):
     monkeypatch.setattr(
         "api.maintenance.attribution.compute_attribution", lambda *a, **k: types.SimpleNamespace(computable=False)
     )
+    monkeypatch.setattr("api.maintenance.calendar_svc.refresh_earnings", lambda *a, **k: 0)
 
 CSV = "date,type,symbol,quantity,price\n2024-01-01,BUY,AAPL,10,100\n"  # 10 sh, cost 1000
 _AAPL = ClosePoint(bar_date=date(2024, 6, 3), close=150.0)  # MV 1500
@@ -108,11 +109,13 @@ def test_daily_refresh_populates_derived_pages(client, db_session, monkeypatch):
     monkeypatch.setattr(
         "api.maintenance.attribution.compute_attribution", lambda *a, **k: types.SimpleNamespace(computable=True)
     )
+    monkeypatch.setattr("api.maintenance.calendar_svc.refresh_earnings", lambda *a, **k: 7)
     _seed(client, str(uuid.uuid4()))
     result = daily_refresh(db_session, today=date(2024, 6, 3))
     assert result.snapshots_reconstructed == 5
     assert result.risk_computed == 1
     assert result.attribution_computed == 1
+    assert result.earnings_refreshed == 7  # earnings auto-pulled from the spine (metron-ops#76)
 
 
 def test_daily_refresh_derived_backfill_is_best_effort(client, db_session, monkeypatch):
@@ -127,11 +130,13 @@ def test_daily_refresh_derived_backfill_is_best_effort(client, db_session, monke
     monkeypatch.setattr("api.maintenance.performance.reconstruct_snapshots", boom)
     monkeypatch.setattr("api.maintenance.risk.compute_risk", boom)
     monkeypatch.setattr("api.maintenance.attribution.compute_attribution", boom)
+    monkeypatch.setattr("api.maintenance.calendar_svc.refresh_earnings", boom)
     _seed(client, str(uuid.uuid4()))
     result = daily_refresh(db_session, today=date(2024, 6, 3))  # must not raise
     assert result.snapshots_recorded == 1  # primary path survived
     assert result.snapshots_reconstructed == 0
     assert result.risk_computed == 0 and result.attribution_computed == 0
+    assert result.earnings_refreshed == 0  # earnings failure is best-effort too
 
 
 def test_daily_refresh_empty_db_is_a_noop(db_session):

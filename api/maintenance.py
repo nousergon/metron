@@ -31,6 +31,7 @@ from api.config import settings
 from api.db import models
 from api.db.session import SessionLocal, create_all
 from api.services import analytics, attribution, data_spine, fx, performance, risk
+from api.services import calendar as calendar_svc
 from api.services import prices as price_service
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ class RefreshResult:
     account_snapshots_recorded: int = 0  # per-account NAV snapshots written this run
     risk_computed: int = 0          # portfolios whose factor risk backfilled + fit
     attribution_computed: int = 0   # portfolios whose sector attribution backfilled + ran
+    earnings_refreshed: int = 0     # securities whose next earnings date refreshed from the spine
     universe_published: bool = False  # held-ticker universe published to the data spine
 
 
@@ -72,7 +74,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
 
     portfolios = session.scalars(select(models.Portfolio)).all()
     total_symbols = total_updated = total_snaps = total_fx = 0
-    total_recon = total_risk = total_attr = total_acct_snaps = 0
+    total_recon = total_risk = total_attr = total_acct_snaps = total_earnings = 0
     for p in portfolios:
         held = analytics.holdings(session, p.tenant_id, p.id)
         symbols = [h.ticker for h in held if h.ticker]
@@ -111,6 +113,14 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
             "attribution", p.id,
             lambda p=p: attribution.compute_attribution(session, p.tenant_id, p.id, today=today, do_backfill=True),
         )
+        # Earnings dates for the Calendar page — pulled from the data spine into
+        # securities.next_earnings_date. Only the manual "Refresh earnings" button did this
+        # before, so the Calendar stayed blank on an untouched deploy (metron-ops#76);
+        # auto-refreshing it here populates it overnight like risk/attribution.
+        earnings = _best_effort(
+            "earnings", p.id,
+            lambda p=p, syms=symbols: calendar_svc.refresh_earnings(session, syms),
+        )
 
         total_symbols += len(symbols)
         total_updated += updated
@@ -120,12 +130,14 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         total_recon += recon or 0
         total_risk += 1 if (risk_summary is not None and risk_summary.computable) else 0
         total_attr += 1 if (attr_summary is not None and attr_summary.computable) else 0
+        total_earnings += earnings or 0
         logger.info(
-            "portfolio %s: %d symbols, %d prices, %d fx, snapshot=%s, reconstructed=%s, risk=%s, attribution=%s",
+            "portfolio %s: %d symbols, %d prices, %d fx, snapshot=%s, reconstructed=%s, risk=%s, attribution=%s, earnings=%s",
             p.id, len(symbols), updated, fx_updated, snap is not None,
             recon or 0,
             risk_summary.computable if risk_summary is not None else False,
             attr_summary.computable if attr_summary is not None else False,
+            earnings or 0,
         )
     # Publish the held-ticker universe to the data spine so `alpha-engine-data` knows
     # which EOD closes + FX pairs to pull. Best-effort: a failure here WARNs and never
@@ -150,6 +162,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         account_snapshots_recorded=total_acct_snaps,
         risk_computed=total_risk,
         attribution_computed=total_attr,
+        earnings_refreshed=total_earnings,
         universe_published=universe_published,
     )
 
