@@ -578,6 +578,38 @@ def _base_currency(session: Session, portfolio_id: uuid.UUID) -> str:
     return (portfolio.base_currency if portfolio else "USD") or "USD"
 
 
+def _stored_realized_lots(
+    session: Session, tenant_id: uuid.UUID, account_ids: Collection[uuid.UUID]
+) -> list[tuple[uuid.UUID, str, RealizedGain]]:
+    """Broker-reported authoritative closed lots (e.g. IBKR ``fifoPnlRealized``) for the
+    given accounts → ``(account_id, currency, RealizedGain)``. These exist for brokers
+    with no replayable trade feed; their gains are correct regardless of import window
+    (the broker FIFO-matched against full history) — metron-ops#81."""
+    if not account_ids:
+        return []
+    rows = session.scalars(
+        select(models.RealizedLot).where(
+            models.RealizedLot.tenant_id == tenant_id,
+            models.RealizedLot.account_id.in_(list(account_ids)),
+        )
+    ).all()
+    return [
+        (
+            row.account_id,
+            row.currency or "USD",
+            RealizedGain(
+                ticker=row.ticker,
+                open_date=row.open_date,
+                close_date=row.close_date,
+                quantity=float(row.quantity),
+                proceeds=float(row.proceeds),
+                cost_basis=float(row.cost_basis),
+            ),
+        )
+        for row in rows
+    ]
+
+
 def realized(
     session: Session,
     tenant_id: uuid.UUID,
@@ -587,17 +619,32 @@ def realized(
 ) -> list[RealizedLot]:
     """Closed lots with proceeds, basis, gain, and holding-period classification.
 
+    Two disjoint sources, merged: the FIFO ledger replayed from transactions (activity-feed
+    brokers), and broker-reported authoritative closed lots (e.g. IBKR ``fifoPnlRealized``,
+    which carry the correct gain regardless of import window — metron-ops#81). An account
+    with stored lots is excluded from the replay so a disposal is never counted twice.
+
     Native amounts are converted to the portfolio base currency at the FX rate **as of
     the close date** (the rate when the gain was realized). A lot whose currency has no
     cached as-of rate keeps its base fields None (native still shown). Scopes to one
     account (``account_id``) or a set (``account_ids``)."""
     base = _base_currency(session, portfolio_id)
-    ledger, _incomplete = load_ledger(session, tenant_id, portfolio_id, account_id, account_ids)
-    closed = sorted(ledger.realized, key=lambda r: r.close_date)
-    ccy_by_ticker = _currency_by_symbol(session, [r.ticker for r in closed])
+    scope = _scoped_account_ids(session, portfolio_id, account_id, account_ids)
+    stored = _stored_realized_lots(session, tenant_id, scope)
+    authoritative = {aid for aid, _ccy, _rg in stored}
+    replay_ids = scope - authoritative
+
+    # (currency_override | None, RealizedGain): stored lots carry their own currency; a
+    # replayed lot resolves currency from the security.
+    merged: list[tuple[str | None, RealizedGain]] = [(ccy, rg) for _aid, ccy, rg in stored]
+    if replay_ids:
+        ledger, _incomplete = load_ledger(session, tenant_id, portfolio_id, account_ids=replay_ids)
+        merged += [(None, r) for r in ledger.realized]
+
+    ccy_by_ticker = _currency_by_symbol(session, [rg.ticker for ccy, rg in merged if ccy is None])
     out: list[RealizedLot] = []
-    for r in closed:
-        currency = ccy_by_ticker.get(r.ticker, base)
+    for ccy, r in sorted(merged, key=lambda x: x[1].close_date):
+        currency = ccy or ccy_by_ticker.get(r.ticker, base)
         rate = fx_service.rate_as_of(session, currency, r.close_date, base=base)
         out.append(
             RealizedLot(
@@ -719,16 +766,26 @@ def income(
     though the account is otherwise excluded from the taxable view (metron-ops#62)."""
     base = _base_currency(session, portfolio_id)
     rows = _portfolio_rows(session, tenant_id, portfolio_id, account_ids=account_ids)
+    # Broker-authoritative closed lots (IBKR) for accounts in scope — their realized comes
+    # from the stored lots, NOT a FIFO replay, so exclude their rows from the realized
+    # ledger to avoid double-counting (metron-ops#81). Their cash rows still feed
+    # dividends/interest below (the loop runs over the full `rows`).
+    stored = _stored_realized_lots(
+        session, tenant_id, _scoped_account_ids(session, portfolio_id, None, account_ids)
+    )
+    authoritative = {aid for aid, _ccy, _rg in stored}
     ledger, _incomplete = build_portfolio_ledger(
-        [(row.account_id, _to_engine_txn(row, ticker)) for row, ticker in rows]
+        [(row.account_id, _to_engine_txn(row, ticker)) for row, ticker in rows if row.account_id not in authoritative]
     )
 
     # Realized gains → base at the close-date rate (rebuild each lot with base proceeds /
-    # cost so its derived gain is in base; drop a lot we can't convert).
+    # cost so its derived gain is in base; drop a lot we can't convert). Replayed lots
+    # first, then the stored authoritative lots (their stored currency).
     ccy_by_ticker = _currency_by_symbol(session, [r.ticker for r in ledger.realized])
     realized_base: list[RealizedGain] = []
-    for r in ledger.realized:
-        rate = fx_service.rate_as_of(session, ccy_by_ticker.get(r.ticker, base), r.close_date, base=base)
+    replayed = [(ccy_by_ticker.get(r.ticker, base), r) for r in ledger.realized]
+    for ccy, r in replayed + [(c, rg) for _aid, c, rg in stored]:
+        rate = fx_service.rate_as_of(session, ccy, r.close_date, base=base)
         if rate is None:
             continue
         realized_base.append(

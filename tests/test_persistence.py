@@ -37,6 +37,47 @@ def test_persist_inserts_rows(db_session):
     assert db_session.scalar(select(func.count()).select_from(models.Transaction)) == 3
 
 
+def test_persists_and_surfaces_broker_realized_lots(db_session):
+    """IBKR-style closed lots (authoritative fifoPnlRealized, no replayable trades) are
+    persisted idempotently and surface in realized() + income() — metron-ops#81."""
+    from datetime import date
+
+    from api.services import analytics
+    from portfolio_analytics.domain.ledger import RealizedGain
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+    from portfolio_analytics.ingestion.schema import CanonicalAccount
+
+    tenant_id, portfolio_id = _make_portfolio(db_session)
+    rg = RealizedGain(
+        ticker="RKLB", open_date=date(2024, 6, 25), close_date=date(2026, 5, 20),
+        quantity=102, proceeds=13004.0, cost_basis=600.0,
+    )
+    snapshot = ConnectorSnapshot(
+        source="ibkr_flex",
+        accounts=[CanonicalAccount(number="U24215043", label="Lending Growth", tax_treatment="taxable")],
+        realized_lots=[("U24215043", rg)],
+    )
+    result = persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_id, snapshot=snapshot)
+    assert result.realized_lots_inserted == 1
+    # Idempotent on lot_key.
+    again = persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_id, snapshot=snapshot)
+    assert again.realized_lots_inserted == 0
+    assert db_session.scalar(select(func.count()).select_from(models.RealizedLot)) == 1
+
+    # realized(): the lot appears, long-term (held ~23 months), USD → gain_base == gain.
+    lots = analytics.realized(db_session, tenant_id, portfolio_id)
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.ticker == "RKLB" and lot.long_term is True
+    assert lot.gain == 13004.0 - 600.0
+    assert lot.gain_base == lot.gain
+
+    # income(): the gain lands in the 2026 long-term bucket.
+    y2026 = next(y for y in analytics.income(db_session, tenant_id, portfolio_id) if y.year == 2026)
+    assert y2026.realized_lt == 13004.0 - 600.0
+    assert y2026.realized_st == 0
+
+
 def test_reimport_is_idempotent(db_session):
     tenant_id, portfolio_id = _make_portfolio(db_session)
     snapshot = parse_transactions_csv(CSV).snapshot

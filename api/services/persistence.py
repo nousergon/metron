@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from portfolio_analytics.ingestion.base import ConnectorSnapshot
-from portfolio_analytics.ingestion.schema import CanonicalActivity, activity_key
+from portfolio_analytics.ingestion.schema import CanonicalActivity, activity_key, lot_key
 from portfolio_analytics.prices import to_yf_symbol
 
 
@@ -46,6 +46,7 @@ class PersistResult:
     transactions_skipped: int = 0  # already present (idempotent re-import)
     positions_imported: int = 0    # broker-reported holdings written (snapshot sources)
     accounts_excluded: int = 0     # snapshot accounts skipped — user-deleted (excluded keys)
+    realized_lots_inserted: int = 0  # broker closed-lot realized gains unioned (metron-ops#81)
 
 
 def account_key(broker: str, external_id: str) -> str:
@@ -280,5 +281,47 @@ def persist_snapshot(
     accounts = _upsert_accounts(session, snapshot, tenant_id, portfolio_id, result)
     _insert_activities(session, snapshot, tenant_id, accounts, securities, result)
     _replace_positions(session, snapshot, tenant_id, accounts, securities, result)
+    _insert_realized_lots(session, snapshot, tenant_id, accounts, result)
     session.commit()
     return result
+
+
+def _insert_realized_lots(
+    session: Session,
+    snapshot: ConnectorSnapshot,
+    tenant_id: uuid.UUID,
+    accounts: dict[str, models.Account],
+    result: PersistResult,
+) -> None:
+    """Union broker-reported closed lots (e.g. IBKR Flex ``fifoPnlRealized``) into
+    ``realized_lots`` by ``lot_key`` — idempotent across re-syncs. These are the
+    authoritative realized gains the realized/Tax views surface for accounts with no
+    replayable trade feed (metron-ops#81). Currency isn't carried on the parsed lot
+    (IBKR closed lots are the trade currency; US equities = USD) → default USD."""
+    for number, rg in snapshot.realized_lots:
+        account = accounts.get(number)
+        if account is None:
+            continue
+        key = lot_key(number, rg)
+        if session.scalar(
+            select(models.RealizedLot.id).where(
+                models.RealizedLot.tenant_id == tenant_id, models.RealizedLot.lot_key == key
+            )
+        ):
+            continue  # already stored — idempotent
+        session.add(
+            models.RealizedLot(
+                tenant_id=tenant_id,
+                account_id=account.id,
+                ticker=rg.ticker,
+                open_date=rg.open_date,
+                close_date=rg.close_date,
+                quantity=rg.quantity,
+                proceeds=rg.proceeds,
+                cost_basis=rg.cost_basis,
+                currency="USD",
+                source=snapshot.source,
+                lot_key=key,
+            )
+        )
+        result.realized_lots_inserted += 1

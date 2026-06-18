@@ -237,6 +237,36 @@ class AccountNavSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class RealizedLot(Base):
+    """A broker-reported closed lot — authoritative realized capital gain.
+
+    Some brokers (IBKR) emit FIFO-computed realized P&L per closed lot (the Flex query's
+    Closed Lots / ``fifoPnlRealized``) but NO replayable trade activity feed, and IBKR
+    computes the gain using the FULL lot history — so a sale this year of a lot bought
+    years ago carries its correct realized gain regardless of how far back the import
+    window reaches. We persist these lots verbatim and surface them in the realized /
+    Tax views ALONGSIDE the FIFO-from-transactions reconstruction used for activity-feed
+    brokers — never both for the same account (an account with stored lots is excluded
+    from the transaction replay). Idempotent on ``lot_key`` (metron-ops#81). Tenant-scoped."""
+
+    __tablename__ = "realized_lots"
+    __table_args__ = (UniqueConstraint("tenant_id", "lot_key", name="uq_realized_lot"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    ticker: Mapped[str] = mapped_column(index=True)
+    open_date: Mapped[date]
+    close_date: Mapped[date] = mapped_column(index=True)
+    quantity: Mapped[float] = mapped_column(Numeric(28, 10))
+    proceeds: Mapped[float] = mapped_column(Numeric(28, 10))  # native currency
+    cost_basis: Mapped[float] = mapped_column(Numeric(28, 10))  # native currency
+    currency: Mapped[str] = mapped_column(default="USD")
+    source: Mapped[str] = mapped_column(default="")  # connector source (e.g. ibkr_flex)
+    lot_key: Mapped[str] = mapped_column(index=True)  # stable identity for idempotent union
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class FxRate(Base):
     """Global FX rate cache — ``rate`` is USD (the canonical base) per 1 unit of
     ``currency`` for ``rate_date`` (e.g. HKD → 0.128). NOT tenant-scoped: one fetch of
