@@ -257,3 +257,63 @@ def test_rolling_risk_matches_full_window_when_history_shorter_than_window():
     assert rolling[-1].max_drawdown == pytest.approx(summary.max_drawdown)
     # Too little history → no series.
     assert perf_svc._rolling_risk(points[:15]) == []
+
+
+class TestNavJumpGuard:
+    """metron-ops#74 — a NAV that jumps >3x / <1/3x vs the recent baseline (net of flow)
+    is a data error (a sync racing the refresh), flagged and never persisted."""
+
+    def test_implausible_nav_logic(self):
+        from api.services import performance as perf
+
+        base = [1000.0] * 5
+        assert perf._implausible_nav(1100.0, base, 0.0) is False  # +10% — fine
+        assert perf._implausible_nav(12000.0, base, 0.0) is True  # 12x — garbage
+        assert perf._implausible_nav(200.0, base, 0.0) is True    # <1/3x — garbage
+        assert perf._implausible_nav(6000.0, [1000.0], 5000.0) is False  # a $5k deposit explains it
+        assert perf._implausible_nav(5000.0, [], 0.0) is False    # no baseline (first snapshots)
+        # A previously-undercounted run recovering (375k → 835k ≈ 2.2x) is ALLOWED.
+        assert perf._implausible_nav(835000.0, [375000.0] * 5, 0.0) is False
+
+    def test_record_snapshot_skips_implausible(self, client, db_session, tenant, monkeypatch):
+        from api.services import performance as perf
+        from portfolio_analytics.prices import ClosePoint
+
+        pid = _seed(client, tenant)
+        # A clean ~1000 baseline.
+        for d in range(1, 6):
+            _insert_snapshot(db_session, tenant, pid, date(2024, 1, d), nav=1000.0)
+        before = len(db_session.scalars(select_navsnapshots(pid)).all())
+
+        # Force valued_holdings to report a 12x-inflated portfolio (the sync-race symptom).
+        class _H:
+            market_value = 12000.0
+            cost_basis_base = 1000.0
+        monkeypatch.setattr(perf.analytics, "valued_holdings", lambda *a, **k: [_H()])
+        monkeypatch.setattr(perf, "fetch_latest_closes", lambda s, *, source=None: {"SPY": ClosePoint(close=500.0, bar_date=date(2024, 1, 6))})
+
+        row = perf.record_snapshot(db_session, uuid.UUID(tenant), uuid.UUID(pid), today=date(2024, 1, 6))
+        assert row is None  # suspect → not persisted
+        assert len(db_session.scalars(select_navsnapshots(pid)).all()) == before  # no new row
+
+
+class TestRepairNavSnapshots:
+    """metron-ops#74 — repair drops the outlier rows a race already persisted, idempotently."""
+
+    def test_removes_spike_and_is_idempotent(self, db_session, tenant, client):
+        from api.services import performance as perf
+
+        pid = _seed(client, tenant)
+        for d in range(1, 6):
+            _insert_snapshot(db_session, tenant, pid, date(2024, 1, d), nav=1000.0)
+        _insert_snapshot(db_session, tenant, pid, date(2024, 1, 6), nav=12000.0)  # the 12x spike
+        for d in range(7, 11):
+            _insert_snapshot(db_session, tenant, pid, date(2024, 1, d), nav=1000.0)
+
+        res = perf.repair_nav_snapshots(db_session, uuid.UUID(tenant), uuid.UUID(pid))
+        assert res["count"] == 1 and res["removed"][0][0] == "2024-01-06"
+        navs = [float(r.nav) for r in db_session.scalars(select_navsnapshots(pid)).all()]
+        assert max(navs) == 1000.0  # spike gone
+
+        # Idempotent — a clean series removes nothing.
+        assert perf.repair_nav_snapshots(db_session, uuid.UUID(tenant), uuid.UUID(pid))["count"] == 0

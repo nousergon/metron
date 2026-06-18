@@ -12,6 +12,8 @@ never a fabricated number.
 
 from __future__ import annotations
 
+import logging
+import statistics
 import uuid
 from collections import defaultdict
 from collections.abc import Collection
@@ -28,6 +30,8 @@ from api.services import analytics
 from api.services import prices as price_service
 from portfolio_analytics.domain.ledger import TxnType
 from portfolio_analytics.prices import ClosePoint, HistorySource, fetch_latest_closes
+
+logger = logging.getLogger(__name__)
 
 # Don't extrapolate a sub-month observation window to a yearly rate. Annualizing a few
 # days of return — annualized_twr = (1+twr)^(365.25/days) − 1 — explodes for small
@@ -140,11 +144,58 @@ def _last_account_snapshot_date(
     ).first()
 
 
+# A daily NAV can't plausibly jump beyond this FACTOR vs the recent baseline once net
+# external flows (deposits/withdrawals) are accounted for — a >3x or <1/3x move with no
+# matching flow is a data error. metron-ops#74: a sync racing the daily refresh
+# intermittently wrote ~12x-inflated NAVs (e.g. $4.5M vs a true ~$0.8M), whipsawing the
+# Performance page's latest-NAV + max-drawdown (to −96%). Such a snapshot is flagged and
+# NOT persisted (the last good value stands). Generous enough to allow a genuine
+# correction (a previously-undercounted run recovering) and large market days.
+_NAV_JUMP_FACTOR = 3.0
+_BASELINE_SNAPSHOTS = 7  # robust baseline = median of up to this many recent snapshots
+
+
+def _recent_navs(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, before: date,
+    limit: int = _BASELINE_SNAPSHOTS,
+) -> list[float]:
+    """Up to ``limit`` NAVs strictly before ``before`` (most recent first) — the robust
+    baseline for the jump guard. The median of these resists a single transient spike."""
+    return [
+        float(n) for n in session.scalars(
+            select(models.NavSnapshot.nav)
+            .where(
+                models.NavSnapshot.tenant_id == tenant_id,
+                models.NavSnapshot.portfolio_id == portfolio_id,
+                models.NavSnapshot.snap_date < before,
+            )
+            .order_by(models.NavSnapshot.snap_date.desc())
+            .limit(limit)
+        ).all()
+    ]
+
+
+def _implausible_nav(nav: float, baseline_navs: list[float], flow: float) -> bool:
+    """True when ``nav`` is a data error vs the recent baseline net of external flow — a
+    >``_NAV_JUMP_FACTOR``x or <1/factor move the day's deposits/withdrawals can't explain.
+    No baseline (the first snapshots) → never implausible."""
+    if not baseline_navs:
+        return False
+    baseline = statistics.median(baseline_navs)
+    expected = baseline + flow
+    if baseline <= 0 or expected <= 0:
+        return False
+    ratio = nav / expected
+    return ratio > _NAV_JUMP_FACTOR or ratio < 1.0 / _NAV_JUMP_FACTOR
+
+
 def record_snapshot(
     session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, today: date, source=None
 ) -> models.NavSnapshot | None:
     """Record today's NAV snapshot (idempotent per day). Returns the row, or None when
-    NAV isn't computable yet (no holding has a cached price → nothing to value)."""
+    NAV isn't computable yet (no holding has a cached price → nothing to value) OR when the
+    computed NAV is an implausible jump vs the recent baseline (a sync racing the refresh —
+    metron-ops#74); the suspect value is logged and skipped, never persisted."""
     held = analytics.valued_holdings(session, tenant_id, portfolio_id)
     priced = [h for h in held if h.market_value is not None]
     if not priced:
@@ -157,6 +208,14 @@ def record_snapshot(
         session, tenant_id, portfolio_id,
         after=_last_snapshot_date(session, tenant_id, portfolio_id, today), through=today,
     )
+    baseline = _recent_navs(session, tenant_id, portfolio_id, today)
+    if _implausible_nav(nav, baseline, flow):
+        logger.warning(
+            "metron-ops#74: skipping implausible NAV snapshot for %s — nav=%.0f, baseline median=%.0f, "
+            "flow=%.0f (likely a data sync racing the refresh); keeping the last good value",
+            today, nav, statistics.median(baseline), flow,
+        )
+        return None
     spy_point = fetch_latest_closes(["SPY"], source=source).get("SPY")
     row = _upsert_snapshot(
         session, tenant_id, portfolio_id, today,
@@ -196,6 +255,46 @@ def _upsert_snapshot(
     if spy_close is not None:
         row.spy_close = spy_close
     return row
+
+
+def repair_nav_snapshots(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID,
+    *, factor: float = _NAV_JUMP_FACTOR, window: int = 5, dry_run: bool = False,
+) -> dict:
+    """One-off repair (metron-ops#74) for NAV snapshots a sync-vs-refresh race already
+    persisted before the ``record_snapshot`` guard existed: delete rows whose NAV is a
+    >``factor``x / <1/factor x outlier vs the MEDIAN of their local neighbourhood (the
+    ``window`` rows either side). Idempotent — a clean series removes nothing. Returns the
+    removed ``(snap_date, nav, neighbourhood_median)`` rows; ``dry_run`` reports without
+    deleting. Cannot reconstruct a correct historical NAV (past market value isn't
+    derivable), so it removes the corrupt points rather than rewriting them — the series
+    self-heals forward as clean snapshots accrue."""
+    rows = session.scalars(
+        select(models.NavSnapshot)
+        .where(models.NavSnapshot.tenant_id == tenant_id, models.NavSnapshot.portfolio_id == portfolio_id)
+        .order_by(models.NavSnapshot.snap_date)
+    ).all()
+    navs = [float(r.nav) for r in rows]
+    removed: list[tuple[str, float, float]] = []
+    for i, r in enumerate(rows):
+        others = [
+            navs[j] for j in range(max(0, i - window), min(len(navs), i + window + 1))
+            if j != i and navs[j] > 0
+        ]
+        if len(others) < 2:
+            continue
+        med = statistics.median(others)
+        if med <= 0:
+            continue
+        ratio = navs[i] / med
+        if ratio > factor or ratio < 1.0 / factor:
+            removed.append((r.snap_date.isoformat(), round(navs[i]), round(med)))
+            if not dry_run:
+                session.delete(r)
+    if removed and not dry_run:
+        session.commit()
+        logger.warning("metron-ops#74: repaired %d corrupt NAV snapshot(s): %s", len(removed), removed)
+    return {"count": len(removed), "removed": removed}
 
 
 def record_account_snapshots(
