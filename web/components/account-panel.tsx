@@ -80,7 +80,27 @@ function subtotal(accts: Account[]): Subtotal {
   return { cost: haveCost ? cost : null, mv: haveMv ? mv : null, unreal: haveUnreal ? unreal : null };
 }
 
-/** The 3-column money readout, shared by account rows and subtotal/total rows. */
+// FIXED column widths, shared by the header and every value row so the figures line up
+// vertically across account rows, subtotals and the grand total (metron-ops#54 —
+// auto-width columns sized per-row shifted larger-magnitude accounts out of alignment).
+const COL_COST = "w-24";
+const COL_UNREAL = "w-32";
+const COL_MARKET = "w-24";
+
+/** A single column-header row for the metric columns — replaces the per-row Cost /
+ *  Unrealized / Market labels with one header at the top of the panel (metron-ops). */
+function MetricHeader() {
+  return (
+    <div className="flex shrink-0 gap-x-6 text-right text-[10px] uppercase tracking-wide text-muted">
+      <div className={COL_COST}>Cost</div>
+      <div className={COL_UNREAL}>Unrealized</div>
+      <div className={COL_MARKET}>Market</div>
+    </div>
+  );
+}
+
+/** The 3-column money readout, shared by account rows and subtotal/total rows. Labels
+ *  live once in <MetricHeader> at the top, not per row. */
 function MetricCells({
   cost,
   unreal,
@@ -95,31 +115,23 @@ function MetricCells({
   muted?: boolean;
 }) {
   const pct = unreal != null && cost ? unreal / cost : null;
-  // FIXED-width columns so the Cost / Unrealized / Market figures line up vertically
-  // across every account row, subtotal and the grand total (metron-ops#54 — auto-width
-  // grid columns sized per-row, so larger-magnitude accounts shifted out of alignment).
   return (
     <div className="flex shrink-0 gap-x-6 text-right text-sm tabular-nums">
-      <div className="w-24">
-        <div className="text-[10px] uppercase tracking-wide text-muted">Cost</div>
-        <div className={muted ? "text-muted" : undefined}>{cost != null ? moneyWhole(cost, baseCurrency) : "—"}</div>
+      <div className={`${COL_COST} ${muted ? "text-muted" : ""}`}>
+        {cost != null ? moneyWhole(cost, baseCurrency) : "—"}
       </div>
-      <div className="w-32">
-        <div className="text-[10px] uppercase tracking-wide text-muted">Unrealized</div>
-        <div className={unreal != null ? signClass(unreal) : "text-muted"}>
-          {unreal != null ? (
-            <>
-              {signedMoneyWhole(unreal, baseCurrency)}
-              {pct != null ? <span className="ml-1 text-xs">({percent(pct)})</span> : null}
-            </>
-          ) : (
-            "—"
-          )}
-        </div>
+      <div className={`${COL_UNREAL} ${unreal != null ? signClass(unreal) : "text-muted"}`}>
+        {unreal != null ? (
+          <>
+            {signedMoneyWhole(unreal, baseCurrency)}
+            {pct != null ? <span className="ml-1 text-xs">({percent(pct)})</span> : null}
+          </>
+        ) : (
+          "—"
+        )}
       </div>
-      <div className="w-24">
-        <div className="text-[10px] uppercase tracking-wide text-muted">Market</div>
-        <div className={muted ? "text-muted" : undefined}>{mv != null ? moneyWhole(mv, baseCurrency) : "—"}</div>
+      <div className={`${COL_MARKET} ${muted ? "text-muted" : ""}`}>
+        {mv != null ? moneyWhole(mv, baseCurrency) : "—"}
       </div>
     </div>
   );
@@ -366,6 +378,15 @@ export function AccountPanel({
       {deleteError ? (
         <div className="border-b border-line bg-rose-500/10 px-4 py-2 text-xs text-rose-300">{deleteError}</div>
       ) : null}
+      {/* One column header for the whole panel — the metric labels no longer repeat per
+          row (metron-ops). The 16px lead + w-6 trail spacers mirror the row layout so the
+          Cost / Unrealized / Market headers sit directly over their columns in both modes. */}
+      <div className="flex items-center gap-3 border-b border-line bg-surface px-4 py-2">
+        <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+        <div className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-muted">Account</div>
+        <MetricHeader />
+        <span className="w-6 shrink-0" aria-hidden="true" />
+      </div>
       {groups.map(([label, accts]) => {
         const sub = subtotal(accts);
         const groupAllSelected = accts.every((a) => selected.has(a.account_id));
