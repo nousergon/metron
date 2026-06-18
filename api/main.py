@@ -37,6 +37,16 @@ async def lifespan(app: FastAPI):
         try:
             with SessionLocal() as session:
                 demo.ensure_demo_seeded(session)
+                # Reference Rate showcase: attempt an initial live sync from the
+                # published artifact. Best-effort — no artifact (dev/no-S3) creates
+                # nothing (the portfolio materializes only once a real artifact is in
+                # hand); the daily refresh retries. Never blocks boot.
+                try:
+                    demo.sync_reference_holdings(session)
+                except Exception:  # noqa: BLE001 - live sync is best-effort
+                    logging.getLogger("api.demo").warning(
+                        "reference-rate initial sync failed — daily refresh will retry", exc_info=True
+                    )
         except Exception:  # noqa: BLE001 - secondary path; must never crash boot
             logging.getLogger("api.demo").warning("demo seed failed — continuing without it", exc_info=True)
     yield

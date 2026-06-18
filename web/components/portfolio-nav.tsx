@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { REFERENCE_DISCLAIMER, isReferencePortfolio } from "@/lib/demo";
 
 export type NavPage = { label: string; href: string; feature?: string };
 export type NavFeatureState = { available: boolean; required_tier: string | null };
@@ -81,6 +82,12 @@ export function PortfolioNav({
     (pathname === base ? pages[0] : undefined);
 
   return (
+    <>
+    {isReferencePortfolio(portfolioId) ? (
+      <div className="mb-3 rounded-md border border-line bg-accent/10 px-3 py-2 text-xs text-muted">
+        {REFERENCE_DISCLAIMER}
+      </div>
+    ) : null}
     <div className="flex items-center justify-between gap-4">
       <div className="flex min-w-0 items-baseline gap-3">
         <Link href="/" className="shrink-0 text-sm text-muted transition hover:text-ink">
@@ -153,5 +160,6 @@ export function PortfolioNav({
         ) : null}
       </div>
     </div>
+    </>
   );
 }

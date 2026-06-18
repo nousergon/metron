@@ -32,7 +32,7 @@ SYNC_INCREMENTAL = "INCREMENTAL"
 # activity history exists for realized-gain/dividend reporting and may start
 # mid-position (broker history depth), so it must never be replayed into
 # current holdings. A new snapshot connector MUST add its source here.
-SNAPSHOT_SOURCES = frozenset({"ibkr_flex", "snaptrade"})
+SNAPSHOT_SOURCES = frozenset({"ibkr_flex", "snaptrade", "reference"})
 
 
 @dataclass

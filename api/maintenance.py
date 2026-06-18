@@ -61,6 +61,20 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     """
     today = today or date.today()
 
+    # Refresh the Reference Rate showcase from the engine's published artifact BEFORE the
+    # per-portfolio loop, so its holdings are current when today's NAV snapshot is recorded.
+    # Gated on the S3 data-spine toggle (the artifact lives in that bucket) and best-effort:
+    # a missing artifact / read failure WARNs and leaves the last-good showcase intact.
+    if settings.demo_enabled and settings.market_data_sync_enabled:
+        from api.services import demo
+
+        try:
+            synced = demo.sync_reference_holdings(session)
+            logger.info("reference-rate sync: %s", "updated" if synced else "no artifact (kept last-good)")
+        except Exception as e:  # noqa: BLE001 - best-effort showcase sync; never fatal
+            logger.warning("reference-rate sync failed (non-fatal): %s", e)
+            session.rollback()
+
     def _best_effort(label: str, portfolio_id, fn):
         """Run a derived backfill; on failure log a WARN and roll back its partial work
         so the next portfolio (and the already-committed price refresh) is unaffected.

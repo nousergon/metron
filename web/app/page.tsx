@@ -3,6 +3,7 @@ import { getPortfolios, MetronApiError, type Portfolio } from "@/lib/api";
 import { requireTenantId } from "@/lib/session";
 import { Empty } from "@/components/ui";
 import { CreatePortfolio } from "@/components/create-portfolio";
+import { isReferencePortfolio } from "@/lib/demo";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +37,14 @@ export default async function HomePage() {
                 href={`/portfolios/${p.id}`}
                 className="flex items-center justify-between px-4 py-3 hover:bg-white/5"
               >
-                <span className="font-medium">{p.name}</span>
+                <span className="flex items-center gap-2 font-medium">
+                  {p.name}
+                  {isReferencePortfolio(p.id) ? (
+                    <span className="rounded-full border border-line px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted">
+                      Illustrative
+                    </span>
+                  ) : null}
+                </span>
                 <span className="text-sm text-muted">{p.base_currency}</span>
               </Link>
             </li>

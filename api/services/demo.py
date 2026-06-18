@@ -25,11 +25,21 @@ from sqlalchemy.orm import Session
 from api.db import models
 from api.services import persistence
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
+from portfolio_analytics.ingestion import reference_connector
 
 # Fixed, well-known ids (stable across restarts so links don't break). The tenant id
 # spells "demo" in its tail; never issued to a real user (auth mints random UUIDs).
 DEMO_TENANT_ID = uuid.UUID("00000000-0000-0000-0000-00000000de60")
 DEMO_PORTFOLIO_ID = uuid.UUID("00000000-0000-0000-0000-00000000de61")
+
+# A second, LIVE read-only showcase under the same demo tenant: the "Reference Rate" —
+# an illustrative reference portfolio synced daily from the engine's published artifact
+# (``metron/reference_rate.json``). It carries no claims and states no objective; it is
+# demo/illustrative only. Read-only is enforced by the shared demo-tenant guard
+# (``assert_writable`` + the HTTP ``_demo_read_only`` middleware); the daily sync runs
+# in-process (``api.maintenance`` / startup), bypassing the HTTP layer.
+REFERENCE_PORTFOLIO_ID = uuid.UUID("00000000-0000-0000-0000-00000000de62")
+REFERENCE_PORTFOLIO_NAME = "Reference Rate"
 
 # Frozen transactions — two accounts, four asset classes, a partial sell (realized lot)
 # and dividends. Dates span ~6 months so Performance annualizes (≥30-day window).
@@ -173,3 +183,124 @@ def _seed_nav(session: Session) -> None:
                 spy_close=spy_close,
             )
         )
+
+
+# ── Reference Rate (live illustrative showcase) ──────────────────────────────
+
+
+def ensure_reference_seeded(session: Session) -> bool:
+    """Idempotently create the Reference Rate portfolio shell under the demo tenant.
+
+    Returns True if it created the portfolio this call, False if it already existed.
+    Only creates the (possibly empty) portfolio so its link resolves immediately;
+    ``sync_reference_holdings`` populates it from the live artifact (at startup +
+    daily). Safe to call on every startup."""
+    if session.get(models.Portfolio, REFERENCE_PORTFOLIO_ID) is not None:
+        return False
+    if session.get(models.Tenant, DEMO_TENANT_ID) is None:
+        session.add(models.Tenant(id=DEMO_TENANT_ID, name="Demo"))
+    session.add(
+        models.Portfolio(
+            id=REFERENCE_PORTFOLIO_ID,
+            tenant_id=DEMO_TENANT_ID,
+            name=REFERENCE_PORTFOLIO_NAME,
+            base_currency="USD",
+        )
+    )
+    session.commit()
+    return True
+
+
+def sync_reference_holdings(session: Session, *, reader=None) -> bool:
+    """Sync the Reference Rate portfolio from the published artifact. Idempotent.
+
+    Reads ``metron/reference_rate.json`` (``reader`` injectable for tests), maps it
+    through the same canonical bridge every connector uses (positions →
+    ``persist_snapshot``), applies per-position sector, and upserts the NAV-vs-SPY
+    history into ``NavSnapshot``. Fail-soft: a missing/unreadable artifact leaves the
+    last-good showcase untouched and returns False — and never materializes an empty
+    portfolio (the shell is created only once a real artifact is in hand). Returns True
+    when holdings were synced."""
+    artifact = (reader or reference_connector.read_reference_artifact)()
+    if not artifact:
+        return False
+    snapshot = reference_connector.artifact_to_snapshot(artifact)
+    if not snapshot.holdings:
+        return False
+
+    ensure_reference_seeded(session)
+    persistence.persist_snapshot(
+        session,
+        tenant_id=DEMO_TENANT_ID,
+        portfolio_id=REFERENCE_PORTFOLIO_ID,
+        snapshot=snapshot,
+    )
+    _apply_reference_sectors(session, artifact.get("positions") or [])
+    _seed_reference_nav(session, artifact)
+    session.commit()
+    return True
+
+
+def _apply_reference_sectors(session: Session, positions: list[dict]) -> None:
+    """Set sector (and a display name) on the reference securities from the artifact
+    (the snapshot path leaves sector unset)."""
+    by_ticker = {(p.get("ticker") or "").strip(): p for p in positions if p.get("ticker")}
+    if not by_ticker:
+        return
+    rows = session.scalars(
+        select(models.Security).where(models.Security.symbol.in_(list(by_ticker)))
+    ).all()
+    for sec in rows:
+        pos = by_ticker.get(sec.symbol)
+        if pos and pos.get("sector"):
+            sec.sector = pos["sector"]
+
+
+def _seed_reference_nav(session: Session, artifact: dict) -> None:
+    """Upsert the NAV-vs-SPY history into ``NavSnapshot`` (idempotent by snap_date).
+
+    ``external_flow`` is 0 — the showcase models no external contributions, so the
+    flow-neutralized return series IS the portfolio return (the illustrative alpha-vs-
+    SPY curve). ``cost_basis`` is the current total cost basis (constant; it only feeds
+    the total-return-vs-cost display, not the TWR curve — and the daily ``record_snapshot``
+    refreshes the latest row natively)."""
+    history = artifact.get("nav_history") or []
+    if not history:
+        return
+    total_cost = sum(
+        abs((p.get("shares") or 0) * (p.get("avg_cost") or 0))
+        for p in (artifact.get("positions") or [])
+    )
+    existing = {
+        row.snap_date: row
+        for row in session.scalars(
+            select(models.NavSnapshot).where(
+                models.NavSnapshot.portfolio_id == REFERENCE_PORTFOLIO_ID
+            )
+        ).all()
+    }
+    for point in history:
+        raw_date = point.get("date")
+        nav = point.get("nav")
+        if raw_date is None or nav is None:
+            continue
+        snap_date = date.fromisoformat(str(raw_date)[:10])
+        spy_close = point.get("spy_close")
+        row = existing.get(snap_date)
+        if row is None:
+            session.add(
+                models.NavSnapshot(
+                    tenant_id=DEMO_TENANT_ID,
+                    portfolio_id=REFERENCE_PORTFOLIO_ID,
+                    snap_date=snap_date,
+                    nav=nav,
+                    cost_basis=total_cost or nav,
+                    external_flow=0.0,
+                    spy_close=spy_close,
+                )
+            )
+        else:
+            row.nav = nav
+            row.cost_basis = total_cost or nav
+            if spy_close is not None:
+                row.spy_close = spy_close
