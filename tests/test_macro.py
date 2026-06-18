@@ -58,3 +58,38 @@ class TestMacroEndpoint:
         monkeypatch.setattr("api.services.macro.fetch_macro_series", lambda inds, key="", *, source=None: {})
         body = client.get("/macro").json()
         assert body["available"] is False and body["reason"]
+
+
+def _daily(n: int) -> list[tuple[str, float]]:
+    """n ascending daily observations from a fixed base (for history-depth tests)."""
+    from datetime import date, timedelta
+
+    base = date(2023, 1, 1)
+    return [((base + timedelta(days=i)).isoformat(), float(i)) for i in range(n)]
+
+
+class TestMacroHistoryDepth:
+    @staticmethod
+    def _src(n: int):
+        def source(indicators, api_key=""):
+            return {indicators[0].key: _series(_daily(n))}
+        return source
+
+    def test_default_caps_history_lean(self):
+        s = macro.macro_snapshot(source=self._src(60))
+        assert len(s.indicators[0].history) == 24  # default lean window (most recent first)
+        assert s.indicators[0].history[0].value == 59.0  # newest first
+
+    def test_full_limit_returns_deep_history(self):
+        s = macro.macro_snapshot(source=self._src(300), history_limit=macro.FULL_HISTORY_LIMIT)
+        assert len(s.indicators[0].history) == 300  # all of them (< FULL_HISTORY_LIMIT)
+
+    def test_endpoint_full_param_deepens_history(self, client, monkeypatch):
+        monkeypatch.setattr(
+            "api.services.macro.fetch_macro_series",
+            lambda inds, key="", *, source=None: {inds[0].key: _series(_daily(300))},
+        )
+        short = client.get("/macro").json()
+        full = client.get("/macro?full=true").json()
+        assert len(short["indicators"][0]["history"]) == 24
+        assert len(full["indicators"][0]["history"]) == 300

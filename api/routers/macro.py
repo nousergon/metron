@@ -47,7 +47,10 @@ class MacroOut(BaseModel):
 
 
 @router.get("/macro", response_model=MacroOut)
-def get_macro() -> macro.MacroSummary:
+def get_macro(full: bool = False) -> macro.MacroSummary:
     """Latest macro indicators (fed funds, rates, curve, inflation, VIX) from FRED.
-    Marked unavailable WITH a reason when no FRED key is configured."""
-    return macro.macro_snapshot()
+    ``full=true`` returns the deep per-indicator history for the Macro detail-page charts
+    (~1y); the default lean window powers the Overview strip. Marked unavailable WITH a
+    reason when no FRED key is configured."""
+    limit = macro.FULL_HISTORY_LIMIT if full else macro._HISTORY_LIMIT
+    return macro.macro_snapshot(history_limit=limit)

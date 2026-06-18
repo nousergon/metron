@@ -493,8 +493,10 @@ export type Macro = {
 };
 
 // Macro is global market data; the tenant header is sent for client consistency but
-// the endpoint ignores it.
-export const getMacro = (tenantId: string) => get<Macro>(tenantId, `/macro`);
+// the endpoint ignores it. `full` requests the deep per-indicator history for the Macro
+// detail-page charts (~1y); the default lean window powers the Overview strip.
+export const getMacro = (tenantId: string, opts?: { full?: boolean }) =>
+  get<Macro>(tenantId, `/macro${opts?.full ? "?full=true" : ""}`);
 
 export type CalendarEvent = { event_date: string; kind: string; ticker: string; label: string };
 

@@ -16,9 +16,13 @@ from datetime import date
 
 from portfolio_analytics.macro import INDICATORS, MacroSource, fetch_macro_series
 
-# Cap the history returned per indicator (most recent first) — enough for a sparkline,
-# small enough to keep the payload lean.
+# Cap the history returned per indicator (most recent first). The Overview strip needs
+# only latest + change, so it stays lean at the default; the Macro detail page requests a
+# deeper window (~1y of daily series) for its charts via ``history_limit``.
 _HISTORY_LIMIT = 24
+# Deep window for the Macro detail page — ~1y+ of a daily series (e.g. DGS10/VIX); a
+# monthly series simply returns all it has within the producer's ~2y artifact.
+FULL_HISTORY_LIMIT = 400
 
 
 @dataclass
@@ -47,10 +51,12 @@ class MacroSummary:
     indicators: list[MacroIndicator] = field(default_factory=list)
 
 
-def macro_snapshot(*, source: MacroSource | None = None) -> MacroSummary:
+def macro_snapshot(*, source: MacroSource | None = None, history_limit: int = _HISTORY_LIMIT) -> MacroSummary:
     """Latest macro indicator readings from the data spine (`alpha-engine-data`'s macro
-    artifact). ``source`` is injectable for tests. Unavailable (with a reason) when the
-    spine hasn't published macro indicators yet."""
+    artifact). ``source`` is injectable for tests; ``history_limit`` caps the per-indicator
+    history (most recent first) — small for the Overview strip, ``FULL_HISTORY_LIMIT`` for
+    the Macro detail-page charts. Unavailable (with a reason) when the spine hasn't
+    published macro indicators yet."""
     series_by_key = fetch_macro_series(INDICATORS, source=source)
     if not series_by_key:
         return MacroSummary(False, reason="Macro data unavailable — the data spine has no macro indicators yet.")
@@ -62,7 +68,7 @@ def macro_snapshot(*, source: MacroSource | None = None) -> MacroSummary:
         obs = series.observations  # ascending by date
         latest = obs[-1]
         prior = obs[-2] if len(obs) >= 2 else None
-        recent = list(reversed(obs[-_HISTORY_LIMIT:]))  # most recent first
+        recent = list(reversed(obs[-history_limit:]))  # most recent first
         indicators.append(
             MacroIndicator(
                 key=ind.key,

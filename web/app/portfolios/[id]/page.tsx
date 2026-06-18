@@ -111,7 +111,7 @@ export default async function PortfolioPage({
       {/* Markets (intraday index proxies) + Macro at the top of the dashboard. The
           markets strip is feed-gated (Pro) — hidden in the no-feed beta (metron-ops#53). */}
       {indices?.available ? <IndexStrip initial={indices} /> : null}
-      {macro ? <MacroStrip macro={macro} /> : null}
+      {macro ? <MacroStrip macro={macro} portfolioId={id} /> : null}
 
       {/* Headline: total value, with unrealized broken out by tax treatment. */}
       {priced ? (

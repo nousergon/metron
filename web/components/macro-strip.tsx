@@ -1,7 +1,8 @@
 // Compact macro snapshot at the top of the Overview (metron-ops#49, #64) — FRED is
-// public-domain, so it stays in the no-feed beta. The standalone Macro page was retired
-// (#64): these indicators live on the dashboard now.
+// public-domain, so it stays in the no-feed beta. Each tile links to the Macro detail
+// page (1-year charts per indicator), anchored to that indicator.
 
+import Link from "next/link";
 import type { Macro, MacroIndicator } from "@/lib/api";
 import { isoDate, signClass } from "@/lib/format";
 import { Section } from "@/components/ui";
@@ -17,13 +18,18 @@ function change(ind: MacroIndicator): string {
   return ind.units === "%" ? `${sign}${mag} pp` : `${sign}${mag}`;
 }
 
-export function MacroStrip({ macro }: { macro: Macro }) {
+export function MacroStrip({ macro, portfolioId }: { macro: Macro; portfolioId: string }) {
   if (!macro.available || macro.indicators.length === 0) return null;
   return (
-    <Section title="Macro" note={macro.as_of ? `FRED · as of ${isoDate(macro.as_of)}` : "FRED"}>
+    <Section title="Macro" note={macro.as_of ? `FRED · as of ${isoDate(macro.as_of)} · charts →` : "FRED · charts →"}>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {macro.indicators.slice(0, 8).map((ind) => (
-          <div key={ind.key} className="rounded-lg border border-line p-3">
+          <Link
+            key={ind.key}
+            href={`/portfolios/${portfolioId}/macro#${ind.key}`}
+            className="rounded-lg border border-line p-3 transition hover:border-muted hover:bg-white/5"
+            title={`${ind.label} — 1-year chart`}
+          >
             <div className="truncate text-[10px] uppercase tracking-wide text-muted" title={ind.label}>
               {ind.label}
             </div>
@@ -35,7 +41,7 @@ export function MacroStrip({ macro }: { macro: Macro }) {
                 {isoDate(ind.latest_date)}
               </span>
             </div>
-          </div>
+          </Link>
         ))}
       </div>
     </Section>
