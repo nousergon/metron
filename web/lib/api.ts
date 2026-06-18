@@ -182,6 +182,24 @@ export type PeriodTiles = {
   last_date: string | null;
 };
 
+/** A point on a normalized growth series (g=1.0 at the series' first point). */
+export type SeriesPoint = { when: string; g: number };
+
+/** One account's performance line for the Holdings chart (metron-ops#78). */
+export type AccountSeries = { account_id: string; name: string; points: SeriesPoint[] };
+
+/** One benchmark overlay (SPY/QQQ/IWM) for the Holdings chart. */
+export type BenchmarkSeries = { symbol: string; label: string; points: SeriesPoint[] };
+
+/** Per-account performance lines + benchmark overlays. Each series is normalized to 1.0
+ *  at its first point so the client re-ranges + re-bases to 100 without a refetch.
+ *  Benchmark overlays are feed-gated (Pro): empty + `benchmarks_available=false` in beta. */
+export type HoldingsPerfSeries = {
+  accounts: AccountSeries[];
+  benchmarks: BenchmarkSeries[];
+  benchmarks_available: boolean;
+};
+
 export class MetronApiError extends Error {
   constructor(
     public status: number,
@@ -338,6 +356,8 @@ export const getPerformance = (tenantId: string, id: string, accountIds?: string
   get<Performance>(tenantId, `/portfolios/${id}/performance${acctParams(accountIds)}`);
 export const getPerformanceTiles = (tenantId: string, id: string, accountIds?: string[]) =>
   get<PeriodTiles>(tenantId, `/portfolios/${id}/performance/tiles${acctParams(accountIds)}`);
+export const getHoldingsPerformanceSeries = (tenantId: string, id: string, accountIds?: string[]) =>
+  get<HoldingsPerfSeries>(tenantId, `/portfolios/${id}/holdings/performance-series${acctParams(accountIds)}`);
 
 export type Risk = {
   computable: boolean;

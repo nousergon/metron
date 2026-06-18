@@ -809,6 +809,121 @@ def period_tiles(
     return result
 
 
+@dataclass
+class SeriesPoint:
+    when: date
+    g: float  # cumulative growth from the first returned point (g[0] = 1.0)
+
+
+@dataclass
+class AccountSeries:
+    account_id: uuid.UUID
+    name: str
+    points: list[SeriesPoint] = field(default_factory=list)
+
+
+@dataclass
+class BenchmarkSeries:
+    symbol: str
+    label: str
+    points: list[SeriesPoint] = field(default_factory=list)
+
+
+@dataclass
+class HoldingsPerfSeries:
+    """Per-account performance lines + benchmark overlays for the Holdings chart
+    (metron-ops#78). Each series is a cumulative GROWTH index normalized to 1.0 at its
+    first point, so the client can re-range and re-base to 100 without a refetch."""
+
+    accounts: list[AccountSeries] = field(default_factory=list)
+    benchmarks: list[BenchmarkSeries] = field(default_factory=list)
+    benchmarks_available: bool = False
+
+
+def _growth_index(points: list[PerfPoint]) -> list[SeriesPoint]:
+    """Cumulative flow-neutralized growth over a snapshot series, g[0]=1.0. A day's growth
+    factor is the flow-neutralized return (navₜ − flowₜ)/navₜ₋₁ — a deposit reads as capital
+    in, never as a gain. A non-positive prior NAV contributes a flat day (no fabricated
+    return)."""
+    out = [SeriesPoint(when=points[0].snap_date, g=1.0)]
+    g = 1.0
+    for i in range(1, len(points)):
+        prev = points[i - 1].nav
+        r = (points[i].nav - points[i].external_flow) / prev - 1.0 if prev > 0 else 0.0
+        g *= 1.0 + r
+        out.append(SeriesPoint(when=points[i].snap_date, g=g))
+    return out
+
+
+def _benchmark_growth(series: list[ClosePoint] | None, start: date) -> list[SeriesPoint]:
+    """Benchmark close history (on/after ``start``) as a growth index normalized to 1.0 at
+    the first in-window close. Empty when the window has fewer than 2 closes."""
+    if not series:
+        return []
+    window = [p for p in series if p.bar_date >= start and p.close > 0]
+    if len(window) < 2:
+        return []
+    base = window[0].close
+    return [SeriesPoint(when=p.bar_date, g=p.close / base) for p in window]
+
+
+def account_performance_series(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    today: date,
+    account_ids: Collection[uuid.UUID] | None = None,
+    with_benchmarks: bool = True,
+    benchmark_source: HistorySource | None = None,
+) -> HoldingsPerfSeries:
+    """Per-account performance lines for the Holdings chart (metron-ops#78): one cumulative
+    flow-neutralized growth index per selected account (all accounts when the selection is
+    empty), plus the SPY/QQQ/IWM benchmark overlays.
+
+    Benchmark overlays are FEED-GATED (``with_benchmarks=False`` → no benchmark lines).
+    Each series is normalized to 1.0 at its first point so the client re-ranges + re-bases
+    to 100 itself. Per-account NAV can't be reconstructed (snapshot-sourced accounts report
+    only current positions), so these accrue forward — short at first, filling in daily."""
+    targets = list(account_ids) if account_ids else list(
+        session.scalars(
+            select(models.Account.id).where(models.Account.portfolio_id == portfolio_id)
+        ).all()
+    )
+    if not targets:
+        return HoldingsPerfSeries()
+    names = {
+        aid: (nickname or name or external_id)
+        for aid, nickname, name, external_id in session.execute(
+            select(models.Account.id, models.Account.nickname, models.Account.name, models.Account.external_id)
+            .where(models.Account.id.in_(targets))
+        ).all()
+    }
+
+    result = HoldingsPerfSeries()
+    earliest: date | None = None
+    for aid in targets:
+        points = _account_perf_series(session, tenant_id, [aid])[0]
+        if len(points) < 2:
+            continue  # a single point isn't a line yet
+        result.accounts.append(
+            AccountSeries(account_id=aid, name=names.get(aid, str(aid)), points=_growth_index(points))
+        )
+        first = points[0].snap_date
+        earliest = first if earliest is None else min(earliest, first)
+
+    if with_benchmarks and earliest is not None:
+        symbols = [s for s, _ in BENCHMARKS]
+        _ensure_benchmark_coverage(session, symbols, earliest, today, benchmark_source)
+        history = price_service.close_history_by_symbol(session, symbols)
+        for sym, label in BENCHMARKS:
+            pts = _benchmark_growth(history.get(sym), earliest)
+            if pts:
+                result.benchmarks.append(BenchmarkSeries(symbol=sym, label=label, points=pts))
+        result.benchmarks_available = bool(result.benchmarks)
+    return result
+
+
 # --- historical reconstruction --------------------------------------------
 #
 # Forward-recording (record_snapshot) starts empty. Reconstruction seeds the series

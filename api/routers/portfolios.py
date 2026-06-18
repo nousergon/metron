@@ -1470,6 +1470,59 @@ def get_performance_tiles(
     )
 
 
+class SeriesPointOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    when: date
+    g: float
+
+
+class AccountSeriesOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: uuid.UUID
+    name: str
+    points: list[SeriesPointOut] = []
+
+
+class BenchmarkSeriesOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    label: str
+    points: list[SeriesPointOut] = []
+
+
+class HoldingsPerfSeriesOut(BaseModel):
+    accounts: list[AccountSeriesOut] = []
+    benchmarks: list[BenchmarkSeriesOut] = []
+    benchmarks_available: bool = False  # benchmark overlays are feed-gated (Pro)
+
+
+@router.get("/{portfolio_id}/holdings/performance-series", response_model=HoldingsPerfSeriesOut)
+def get_holdings_performance_series(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
+    session: Session = Depends(get_session),
+    x_preview_feed: str | None = Header(default=None),
+) -> performance.HoldingsPerfSeries:
+    """Per-account performance lines for the Holdings chart (metron-ops#78): one cumulative
+    growth index per selected account (all accounts when no ``?account_id=`` selection),
+    plus the SPY/QQQ/IWM benchmark overlays.
+
+    Each series is normalized to 1.0 at its first point — the client re-ranges (1M/3M/…/All)
+    and re-bases to 100 without a refetch. Benchmark overlays are **feed-gated**
+    (metron-ops#52/#78): the no-feed beta gets account lines only (no index overlays)."""
+    return performance.account_performance_series(
+        session,
+        portfolio.tenant_id,
+        portfolio.id,
+        today=date.today(),
+        account_ids=account_ids,
+        with_benchmarks=_external_market_data_allowed(x_preview_feed),
+    )
+
+
 @router.get("/{portfolio_id}/tax", response_model=TaxOut)
 def get_tax(
     taxable_only: bool = True,

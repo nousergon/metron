@@ -1,7 +1,8 @@
-import { acctParams, getAccounts, getHoldings, getSummary, MetronApiError } from "@/lib/api";
+import { acctParams, getAccounts, getHoldings, getHoldingsPerformanceSeries, getSummary, MetronApiError, type HoldingsPerfSeries } from "@/lib/api";
 import { Empty, Section } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { GroupedHoldings } from "@/components/grouped-holdings";
+import { HoldingsPerfChart } from "@/components/holdings-perf-chart";
 import { RefreshPrices } from "@/components/refresh-prices";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { loadEntitlements, navFeatureStates } from "@/lib/entitlements";
@@ -46,6 +47,17 @@ export default async function HoldingsPage({
   const priced = summary.market_value != null;
   const entitlements = await loadEntitlements(tenantId);
 
+  // Per-account performance lines above the table (metron-ops#78) — best-effort, scoped to
+  // the active account selection. Benchmark overlays are feed-gated server-side. Shown once
+  // at least one account has ≥2 recorded NAV snapshots (a line needs two points).
+  let perfSeries: HoldingsPerfSeries | null = null;
+  try {
+    perfSeries = await getHoldingsPerformanceSeries(tenantId, id, accountIds);
+  } catch {
+    perfSeries = null;
+  }
+  const showChart = (perfSeries?.accounts.length ?? 0) > 0;
+
   return (
     <div>
       <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
@@ -65,6 +77,17 @@ export default async function HoldingsPage({
           </p>
         ) : null}
       </Section>
+
+      {/* Per-account performance lines above the table (metron-ops#78). */}
+      {showChart && perfSeries ? (
+        <Section title="Performance">
+          <HoldingsPerfChart
+            accounts={perfSeries.accounts}
+            benchmarks={perfSeries.benchmarks}
+            benchmarksAvailable={perfSeries.benchmarks_available}
+          />
+        </Section>
+      ) : null}
 
       <Section title="Holdings" note={priced ? `all values in ${ccy} · market value from last EOD close` : "cost basis — refresh for market value"}>
         <div className="mb-3">
