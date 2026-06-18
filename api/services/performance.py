@@ -51,6 +51,21 @@ _MIN_ANNUALIZE_DAYS = 30
 _ROLLING_WINDOW = 63       # ~3 months of trading days
 _ROLLING_MIN_OBS = 20
 
+# Overview period-tile benchmarks (metron-ops#83) — the SAME ETF proxies the intraday
+# strip uses (api.services.indices.INDEX_ORDER). An index VALUE carries a separate license;
+# the tradeable ETF close is an ordinary equity price, so the ETF is the proxy. The
+# benchmark comparison is FEED-GATED (Pro): the no-feed beta renders the tiles
+# portfolio-only (the caller passes with_benchmarks=False). (symbol, display label).
+BENCHMARKS: list[tuple[str, str]] = [("SPY", "S&P 500"), ("QQQ", "Nasdaq 100"), ("IWM", "Russell 2000")]
+
+# The Overview hero windows (metron-ops#83): (period_key, display label).
+PERIOD_TILES: list[tuple[str, str]] = [("today", "Today"), ("ytd", "YTD"), ("ltm", "LTM")]
+
+# Benchmark history is read from the price_bars cache; before computing a window we ensure
+# the cache spans it (feed path only — gated by the caller). The latest cached bar may lag
+# "today" by a weekend/holiday, so coverage counts as fresh within this slack.
+_BENCH_COVERAGE_SLACK_DAYS = 4
+
 
 def _purchase_flow(rows: list[tuple[str, float]]) -> float:
     """Net purchases for a set of (txn_type, amount) rows: a BUY brings capital INTO the
@@ -416,6 +431,40 @@ class PerformanceSummary:
     estimated_note: str | None = None
 
 
+@dataclass
+class BenchmarkReturn:
+    """One benchmark's comparison over a tile window (metron-ops#83)."""
+
+    symbol: str
+    label: str
+    ret: float | None      # benchmark % return over the window (None if uncached)
+    alpha: float | None    # portfolio TWR − benchmark return (None if either is missing)
+
+
+@dataclass
+class PeriodTile:
+    """One Overview hero tile (metron-ops#83): the aggregate holdings' performance over a
+    window, plus the per-benchmark comparison. ``gain`` is the $ INVESTMENT gain (net of
+    external flows — never reads a contribution as a return); ``twr`` the % time-weighted
+    return over the same window. Metrics are None when the window can't be formed (history
+    doesn't span it yet)."""
+
+    period: str
+    label: str
+    start_date: date | None
+    end_date: date | None
+    gain: float | None
+    twr: float | None
+    benchmarks: list[BenchmarkReturn] = field(default_factory=list)
+
+
+@dataclass
+class PeriodTilesResult:
+    tiles: list[PeriodTile] = field(default_factory=list)
+    benchmarks_available: bool = False  # any benchmark history was readable (feed path)
+    last_date: date | None = None
+
+
 def _flow_neutralized_returns(points: list[PerfPoint]) -> list[float]:
     """Per-period flow-neutralized returns — the same neutralization the TWR uses:
     a point's NAV is recorded end-of-day (post-flow), so ``(navₜ − flowₜ) / navₜ₋₁ − 1``
@@ -608,6 +657,156 @@ def performance(
     _apply_risk_and_alpha(summary, points)
     summary.rolling = _rolling_risk(points)
     return summary
+
+
+def _window_twr(window: list[PerfPoint]) -> float | None:
+    """Time-weighted return over a window anchored at ``window[0]`` — the geometric link of
+    the flow-neutralized period returns (the same neutralization the headline TWR uses).
+    None for a window of fewer than 2 points."""
+    if len(window) < 2:
+        return None
+    cum = 1.0
+    for r in _flow_neutralized_returns(window):
+        cum *= 1.0 + r
+    return cum - 1.0
+
+
+def _window_base_index(points: list[PerfPoint], period: str, today: date) -> int | None:
+    """Index of the ANCHOR point whose NAV is a window's starting value (the window is
+    ``points[base:]``), or None when the series can't form the window.
+
+    - ``today``: the prior recorded snapshot (the latest daily change).
+    - ``ytd``: the last snapshot in a PRIOR year (year-end carry); if the series starts
+      this year, its first point (return measured from the first recorded day of the year).
+    - ``ltm``: the last snapshot on/before today−365d; if the series is shorter, its first
+      point (return measured over all available history).
+    The honest start_date the tile carries tells the user the actual span in the last two
+    cases. Returns None if the anchor would be the final point (no window)."""
+    n = len(points)
+    if n < 2:
+        return None
+    end_i = n - 1
+    if period == "today":
+        base = end_i - 1
+    elif period == "ytd":
+        year = points[end_i].snap_date.year
+        base = next((i for i in range(end_i, -1, -1) if points[i].snap_date.year < year), 0)
+    elif period == "ltm":
+        cutoff = today - timedelta(days=365)
+        base = next((i for i in range(end_i, -1, -1) if points[i].snap_date <= cutoff), 0)
+    else:
+        return None
+    return base if base < end_i else None
+
+
+def _ensure_benchmark_coverage(
+    session: Session, symbols: list[str], start: date, end: date, source: HistorySource | None
+) -> None:
+    """Backfill the benchmark close cache (price_bars) so it spans ``[start, end]`` before
+    the tiles read it. Idempotent and network-light: skips the fetch when the cache already
+    covers the window (earliest bar ≤ start AND latest bar within the weekend/holiday
+    slack of end). Feed path only — the caller passes ``source`` only when entitled."""
+    for sym in symbols:
+        price_service.ensure_security(session, sym)
+    hist = price_service.close_history_by_symbol(session, symbols)
+    need = [
+        sym
+        for sym in symbols
+        if (
+            (series := hist.get(sym)) is None
+            or series[0].bar_date > start
+            or (end - series[-1].bar_date).days > _BENCH_COVERAGE_SLACK_DAYS
+        )
+    ]
+    if need:
+        price_service.backfill_prices(session, need, start, end, source=source)
+
+
+def _load_perf_points(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    account_ids: Collection[uuid.UUID] | None,
+) -> list[PerfPoint]:
+    """The NAV snapshot series for the selection — per-account aggregate when scoped, else
+    the whole-portfolio series (shared by ``performance`` and ``period_tiles``)."""
+    if account_ids:
+        return _account_perf_series(session, tenant_id, account_ids)[0]
+    snaps = session.scalars(
+        select(models.NavSnapshot)
+        .where(models.NavSnapshot.tenant_id == tenant_id, models.NavSnapshot.portfolio_id == portfolio_id)
+        .order_by(models.NavSnapshot.snap_date)
+    ).all()
+    return [
+        PerfPoint(
+            snap_date=s.snap_date,
+            nav=float(s.nav),
+            external_flow=float(s.external_flow),
+            spy_close=float(s.spy_close) if s.spy_close is not None else None,
+        )
+        for s in snaps
+    ]
+
+
+def period_tiles(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    today: date,
+    account_ids: Collection[uuid.UUID] | None = None,
+    with_benchmarks: bool = True,
+    benchmark_source: HistorySource | None = None,
+) -> PeriodTilesResult:
+    """Overview hero tiles (metron-ops#83): aggregate holdings performance over Today / YTD
+    / LTM, each as $ investment gain + %TWR, plus the per-benchmark return and alpha.
+
+    Benchmark comparison is FEED-GATED: ``with_benchmarks=False`` (the no-feed beta) yields
+    portfolio-only tiles (no benchmark columns). When enabled, benchmark returns come from
+    the price_bars close cache (SPY/QQQ/IWM ETF proxies); ``benchmark_source`` (passed only
+    when feed-entitled) backfills any window the cache doesn't already span."""
+    points = _load_perf_points(session, tenant_id, portfolio_id, account_ids)
+    result = PeriodTilesResult(last_date=points[-1].snap_date if points else None)
+    if len(points) < 2:
+        return result
+
+    # The anchor index per period, computed first so benchmark coverage spans only what the
+    # earliest window actually needs (no over-fetch).
+    bases = {p: _window_base_index(points, p, today) for p, _ in PERIOD_TILES}
+
+    bench_history: dict[str, list[ClosePoint]] = {}
+    if with_benchmarks:
+        symbols = [s for s, _ in BENCHMARKS]
+        formed = [b for b in bases.values() if b is not None]
+        if formed:
+            # benchmark_source=None resolves to the default spine source inside backfill;
+            # coverage is a no-op (no network) when the cache already spans the window.
+            _ensure_benchmark_coverage(
+                session, symbols, points[min(formed)].snap_date, today, benchmark_source
+            )
+        bench_history = price_service.close_history_by_symbol(session, symbols)
+        result.benchmarks_available = any(bench_history.get(s) for s in symbols)
+
+    for period, label in PERIOD_TILES:
+        base_i = bases[period]
+        if base_i is None:
+            result.tiles.append(PeriodTile(period, label, None, None, None, None, []))
+            continue
+        window = points[base_i:]
+        base, end = window[0], window[-1]
+        twr = _window_twr(window)
+        gain = end.nav - base.nav - sum(p.external_flow for p in window[1:])
+        benches: list[BenchmarkReturn] = []
+        if with_benchmarks:
+            for sym, blabel in BENCHMARKS:
+                series = bench_history.get(sym)
+                b_start = _asof_close(series, base.snap_date)
+                b_end = _asof_close(series, end.snap_date)
+                ret = (b_end / b_start - 1.0) if (b_start and b_end and b_start > 0) else None
+                alpha = (twr - ret) if (twr is not None and ret is not None) else None
+                benches.append(BenchmarkReturn(symbol=sym, label=blabel, ret=ret, alpha=alpha))
+        result.tiles.append(PeriodTile(period, label, base.snap_date, end.snap_date, gain, twr, benches))
+    return result
 
 
 # --- historical reconstruction --------------------------------------------

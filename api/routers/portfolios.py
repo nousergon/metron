@@ -1418,6 +1418,58 @@ def reconstruct_performance(
     return performance.performance(session, portfolio.tenant_id, portfolio.id)
 
 
+class BenchmarkReturnOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    label: str
+    ret: float | None
+    alpha: float | None
+
+
+class PeriodTileOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    period: str
+    label: str
+    start_date: date | None
+    end_date: date | None
+    gain: float | None
+    twr: float | None
+    benchmarks: list[BenchmarkReturnOut] = []
+
+
+class PeriodTilesOut(BaseModel):
+    tiles: list[PeriodTileOut] = []
+    benchmarks_available: bool = False  # benchmark comparison is feed-gated (Pro)
+    last_date: date | None = None
+
+
+@router.get("/{portfolio_id}/performance/tiles", response_model=PeriodTilesOut)
+def get_performance_tiles(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
+    session: Session = Depends(get_session),
+    x_preview_feed: str | None = Header(default=None),
+) -> performance.PeriodTilesResult:
+    """Overview hero tiles (metron-ops#83): aggregate holdings performance over Today / YTD
+    / LTM as $ gain + %TWR, plus per-benchmark return and alpha.
+
+    Benchmark comparison is **feed-gated** (metron-ops#44/#83): the no-feed beta gets
+    portfolio-only tiles (``with_benchmarks=False`` — no yfinance-derived index data, per
+    metron-ops#52); the owner/Pro feed build gets the SPY/QQQ/IWM columns. Account-scoped
+    to the same ``?account_id=`` selection as the rest of the Overview."""
+    with_benchmarks = _external_market_data_allowed(x_preview_feed)
+    return performance.period_tiles(
+        session,
+        portfolio.tenant_id,
+        portfolio.id,
+        today=date.today(),
+        account_ids=account_ids,
+        with_benchmarks=with_benchmarks,
+    )
+
+
 @router.get("/{portfolio_id}/tax", response_model=TaxOut)
 def get_tax(
     taxable_only: bool = True,
