@@ -78,6 +78,32 @@ def test_persists_and_surfaces_broker_realized_lots(db_session):
     assert y2026.realized_st == 0
 
 
+def test_realized_lots_distinct_cost_basis_dont_collide(db_session):
+    """IBKR emits DISTINCT closed lots sharing ticker/open/close/qty/proceeds but differing
+    cost basis (two tax lots disposed together) — both must persist (the bare lot_key would
+    collide → UNIQUE violation, the prod 500). An exact re-emission still collapses."""
+    from datetime import date
+
+    from portfolio_analytics.domain.ledger import RealizedGain
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+    from portfolio_analytics.ingestion.schema import CanonicalAccount
+
+    tenant_id, portfolio_id = _make_portfolio(db_session)
+    common = dict(ticker="ASML", open_date=date(2025, 12, 30), close_date=date(2026, 4, 24), quantity=1.0, proceeds=1236.7813)
+    snapshot = ConnectorSnapshot(
+        source="ibkr_flex",
+        accounts=[CanonicalAccount(number="U23364707", label="Dividend Anchor")],
+        realized_lots=[
+            ("U23364707", RealizedGain(cost_basis=920.0, **common)),
+            ("U23364707", RealizedGain(cost_basis=917.0, **common)),  # distinct lot, same bare key
+            ("U23364707", RealizedGain(cost_basis=920.0, **common)),  # exact re-emission → collapses
+        ],
+    )
+    result = persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_id, snapshot=snapshot)
+    assert result.realized_lots_inserted == 2  # 920 + 917; the duplicate 920 dropped
+    assert db_session.scalar(select(func.count()).select_from(models.RealizedLot)) == 2
+
+
 def test_reimport_is_idempotent(db_session):
     tenant_id, portfolio_id = _make_portfolio(db_session)
     snapshot = parse_transactions_csv(CSV).snapshot

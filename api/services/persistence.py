@@ -297,18 +297,28 @@ def _insert_realized_lots(
     ``realized_lots`` by ``lot_key`` — idempotent across re-syncs. These are the
     authoritative realized gains the realized/Tax views surface for accounts with no
     replayable trade feed (metron-ops#81). Currency isn't carried on the parsed lot
-    (IBKR closed lots are the trade currency; US equities = USD) → default USD."""
+    (IBKR closed lots are the trade currency; US equities = USD) → default USD.
+
+    The stored key extends the canonical ``lot_key`` with ``cost_basis``: IBKR emits
+    DISTINCT closed lots that share account/ticker/open/close/qty/proceeds but differ in
+    cost basis (two tax lots disposed together) — they collide on the bare key and would
+    violate the unique constraint. A same-batch ``seen`` guard also drops any exact
+    re-emission within one snapshot."""
+    seen: set[str] = set()
     for number, rg in snapshot.realized_lots:
         account = accounts.get(number)
         if account is None:
             continue
-        key = lot_key(number, rg)
+        key = f"{lot_key(number, rg)}|{rg.cost_basis}"
+        if key in seen:
+            continue  # exact duplicate within this snapshot
+        seen.add(key)
         if session.scalar(
             select(models.RealizedLot.id).where(
                 models.RealizedLot.tenant_id == tenant_id, models.RealizedLot.lot_key == key
             )
         ):
-            continue  # already stored — idempotent
+            continue  # already stored — idempotent across re-syncs
         session.add(
             models.RealizedLot(
                 tenant_id=tenant_id,
