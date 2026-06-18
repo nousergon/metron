@@ -137,6 +137,53 @@ def test_open_lots_persisted_and_replaced_per_account(db_session):
     assert len(rows) == 1 and float(rows[0].quantity) == 10 and rows[0].open_date == date(2026, 1, 2)
 
 
+def _ibkr_snapshot_with_lots(*, msft_lot: bool):
+    """An IBKR snapshot holding AAPL + MSFT; AAPL always has a covering lot, MSFT only
+    when ``msft_lot`` (so the uncovered-holding path can be exercised)."""
+    from datetime import date
+
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+    from portfolio_analytics.ingestion.schema import (
+        CanonicalAccount,
+        CanonicalHolding,
+        CanonicalOpenLot,
+        CanonicalSecurity,
+    )
+
+    lots = [CanonicalOpenLot(account_number="U1", security_id="EQ:AAPL:USD", ticker="AAPL", quantity=10, open_date=date(2025, 1, 1), cost_basis=1000)]
+    if msft_lot:
+        lots.append(CanonicalOpenLot(account_number="U1", security_id="EQ:MSFT:USD", ticker="MSFT", quantity=5, open_date=date(2025, 2, 1), cost_basis=1800))
+    return ConnectorSnapshot(
+        source="ibkr_flex",
+        accounts=[CanonicalAccount(number="U1", label="IBKR")],
+        securities=[CanonicalSecurity(security_id="EQ:AAPL:USD", ticker="AAPL"), CanonicalSecurity(security_id="EQ:MSFT:USD", ticker="MSFT")],
+        holdings=[
+            CanonicalHolding(account_number="U1", security_id="EQ:AAPL:USD", quantity=10, market_value_local=1500),
+            CanonicalHolding(account_number="U1", security_id="EQ:MSFT:USD", quantity=5, market_value_local=2000),
+        ],
+        open_lots=lots,
+    )
+
+
+def test_nav_history_estimated_flags_uncovered_holdings(db_session):
+    """A holding with no covering lot → the NAV history is an estimate (metron-ops#74)."""
+    from api.services import performance
+
+    tenant_id, portfolio_id = _make_portfolio(db_session)
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_id, snapshot=_ibkr_snapshot_with_lots(msft_lot=False))
+    estimated, note = performance.nav_history_estimated(db_session, tenant_id, portfolio_id)
+    assert estimated is True and note is not None and "MSFT" in note and "AAPL" not in note
+
+
+def test_nav_history_exact_when_every_holding_lot_covered(db_session):
+    from api.services import performance
+
+    tenant_id, portfolio_id = _make_portfolio(db_session)
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_id, snapshot=_ibkr_snapshot_with_lots(msft_lot=True))
+    estimated, note = performance.nav_history_estimated(db_session, tenant_id, portfolio_id)
+    assert estimated is False and note is None
+
+
 def test_reimport_is_idempotent(db_session):
     tenant_id, portfolio_id = _make_portfolio(db_session)
     snapshot = parse_transactions_csv(CSV).snapshot

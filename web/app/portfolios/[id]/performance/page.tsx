@@ -100,6 +100,13 @@ export default async function PerformancePage({
         NAV records forward each time you refresh prices. To get instant history, build it from past prices.
       </p>
 
+      {perf.estimated ? (
+        <p className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          ⚠ {perf.estimated_note ?? "NAV history is estimated — some holdings lack complete lot data."} Returns
+          and drawdown use the best available history; the figures firm up as lot/price data fills in.
+        </p>
+      ) : null}
+
       {scoped ? (
         <p className="mt-2 rounded border border-line bg-surface px-3 py-2 text-xs text-muted">
           ⓘ Scoped to your account selection. Per-account NAV can&apos;t be reconstructed from past prices

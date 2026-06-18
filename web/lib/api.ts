@@ -151,6 +151,8 @@ export type Performance = {
   alpha: number | null;
   rolling: RollingRiskPoint[];
   points: PerfPoint[];
+  estimated: boolean;
+  estimated_note: string | null;
 };
 
 export class MetronApiError extends Error {

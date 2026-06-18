@@ -409,6 +409,10 @@ class PerformanceSummary:
     # Trailing-window risk basket over time (metron-ops#67); empty until enough history.
     rolling: list[RollingRiskPoint] = field(default_factory=list)
     points: list[PerfPoint] = field(default_factory=list)
+    # NAV history is an ESTIMATE when lot coverage is incomplete (metron-ops#74) — the
+    # page shows a banner. estimated_note names the affected holdings.
+    estimated: bool = False
+    estimated_note: str | None = None
 
 
 def _flow_neutralized_returns(points: list[PerfPoint]) -> list[float]:
@@ -571,6 +575,7 @@ def performance(
         ]
         last_cost_basis = float(snaps[-1].cost_basis) if snaps else None
     summary = PerformanceSummary(n_snapshots=len(points), points=points)
+    summary.estimated, summary.estimated_note = nav_history_estimated(session, tenant_id, portfolio_id)
     if not points:
         return summary
     summary.first_date = points[0].snap_date
@@ -647,73 +652,160 @@ def _valuation_dates(first: date, today: date, flow_dates: list[date]) -> list[d
     return sorted(dates)
 
 
+def _lot_account_ids(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> set[uuid.UUID]:
+    """Accounts that provided lot-level open positions (e.g. IBKR Flex Lot detail)."""
+    return set(
+        session.scalars(
+            select(models.OpenLot.account_id)
+            .join(models.Account, models.OpenLot.account_id == models.Account.id)
+            .where(models.OpenLot.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+        ).all()
+    )
+
+
+def _load_lot_timeline(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID):
+    """Per-ticker open + closed lots → the inputs to reconstruct the historical position.
+
+    Returns ``(open_lots, closed_lots)`` where each is ``(ticker, qty, cost_basis,
+    open_date[, close_date])``. An OPEN lot contributes to the position from its open date
+    onward; a CLOSED lot (from ``realized_lots``) contributes between open and close
+    (exclusive). Together they give position(ticker, d) without a replayable trade feed
+    (metron-ops#74)."""
+    open_lots = [
+        (r.ticker, float(r.quantity), float(r.cost_basis), r.open_date)
+        for r in session.scalars(
+            select(models.OpenLot)
+            .join(models.Account, models.OpenLot.account_id == models.Account.id)
+            .where(models.OpenLot.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+        ).all()
+    ]
+    closed_lots = [
+        (r.ticker, float(r.quantity), float(r.cost_basis), r.open_date, r.close_date)
+        for r in session.scalars(
+            select(models.RealizedLot)
+            .join(models.Account, models.RealizedLot.account_id == models.Account.id)
+            .where(models.RealizedLot.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+        ).all()
+    ]
+    return open_lots, closed_lots
+
+
+def _lot_positions_asof(open_lots, closed_lots, when: date):
+    """``(ticker → quantity, ticker → cost_basis)`` held as-of ``when`` from the lot
+    timeline: an open lot counts once its open date has passed; a closed lot counts only
+    between its open and close (exclusive). Pure — the core of lot-based reconstruction."""
+    pos: dict[str, float] = defaultdict(float)
+    cost: dict[str, float] = defaultdict(float)
+    for ticker, qty, cb, od in open_lots:
+        if od <= when:
+            pos[ticker] += qty
+            cost[ticker] += cb
+    for ticker, qty, cb, od, cd in closed_lots:
+        if od <= when < cd:
+            pos[ticker] += qty
+            cost[ticker] += cb
+    return pos, cost
+
+
+def nav_history_estimated(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> tuple[bool, str | None]:
+    """Is the reconstructed NAV history an ESTIMATE (incomplete lot coverage)?
+
+    Exact only when every current holding's lots reconcile to its position quantity. A
+    snapshot-sourced holding whose open-lot quantities don't sum to its current position
+    (e.g. a SnapTrade/E*TRADE account with no lot detail, or partial activity history)
+    can't have its past positions reconstructed → the series is an estimate, flagged with
+    the affected tickers so the page can say so honestly (metron-ops#74)."""
+    held = analytics.holdings(session, tenant_id, portfolio_id)
+    if not held:
+        return False, None
+    lot_qty: dict[str, float] = defaultdict(float)
+    for ticker, qty, _cb, _od in _load_lot_timeline(session, tenant_id, portfolio_id)[0]:
+        lot_qty[ticker] += qty
+    uncovered = [
+        h.ticker for h in held
+        if h.quantity > 0 and abs(lot_qty.get(h.ticker, 0.0) - h.quantity) > 0.01 * max(h.quantity, 1.0)
+    ]
+    if not uncovered:
+        return False, None
+    shown = ", ".join(sorted(uncovered)[:6]) + ("…" if len(uncovered) > 6 else "")
+    return True, f"NAV history is estimated — incomplete lot data for {len(uncovered)} holding(s): {shown}."
+
+
 def reconstruct_snapshots(
     session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, today: date, source: HistorySource | None = None
 ) -> int:
-    """Seed the NAV snapshot series from history: backfill daily closes over the ledger
-    span, then value the portfolio at each valuation date by replaying the ledger to
-    that date. Idempotent (upserts per day). Returns the number of snapshots written.
+    """Seed the historical NAV series from the **lot timeline** + a ledger fallback.
 
-    A position with NO price history at all (a fund the data spine can't price — e.g. a
-    Fidelity ZERO fund) is valued at its CURRENT price (flat) rather than dropped: dropping
-    it made the reconstructed NAV diverge badly from the live market value (the $374k vs
-    $835k bug) and manufactured spurious volatility/drawdown (metron-ops#44). A position
-    with no historical AND no current price is the only one excluded; a date with nothing
-    valuable is skipped."""
-    txns_by_account = analytics.engine_transactions_by_account(session, tenant_id, portfolio_id)
-    txns = [t for _aid, t in txns_by_account]
-    if not txns:
+    For snapshot-sourced accounts (IBKR/SnapTrade) there is no replayable trade feed, so
+    the old transaction-replay reconstruction undercounted badly (the $419k vs $838k bug,
+    metron-ops#74). Instead, derive position(ticker, d) from broker LOTS: open lots
+    (``open_lots``, with open dates) contribute from their open date; closed lots
+    (``realized_lots``) contribute between open and close. Accounts that provided NO lot
+    data (CSV/OFX, or a snapshot source without lot detail) fall back to the transaction
+    ledger replay. Each date is valued at the historical close (carry-forward), else the
+    current price (flat) so a no-history fund stays in NAV. ``daily_refresh`` runs this
+    BEFORE ``record_snapshot`` so the live-positions value (authoritative, and complete
+    even for non-lot holdings) overwrites today's reconstructed point. Idempotent. Returns
+    the number of snapshots written."""
+    open_lots, closed_lots = _load_lot_timeline(session, tenant_id, portfolio_id)
+    lot_account_ids = _lot_account_ids(session, tenant_id, portfolio_id)
+    # Ledger from accounts WITHOUT lot data only — never double-count a lot-covered account.
+    by_account = analytics.engine_transactions_by_account(session, tenant_id, portfolio_id)
+    ledger_by_account = [(aid, t) for aid, t in by_account if aid not in lot_account_ids]
+    ledger_txns = [t for _aid, t in ledger_by_account]
+
+    if not open_lots and not closed_lots and not ledger_txns:
         return 0
-    first = min(t.when for t in txns)
-    symbols = sorted({t.ticker for t in txns if t.ticker})
 
-    # Cache a SPY security so its history backfills for the benchmark, then backfill all.
+    lot_dates = (
+        [od for _t, _q, _cb, od in open_lots]
+        + [od for _t, _q, _cb, od, _cd in closed_lots]
+        + [cd for _t, _q, _cb, _od, cd in closed_lots]
+    )
+    first = min([*lot_dates, *(t.when for t in ledger_txns), today])
+    symbols = sorted(
+        {t for t, *_ in open_lots} | {t for t, *_ in closed_lots} | {t.ticker for t in ledger_txns if t.ticker}
+    )
+
     price_service.ensure_security(session, "SPY")
     price_service.backfill_prices(session, [*symbols, "SPY"], first, today, source=source)
     history = price_service.close_history_by_symbol(session, [*symbols, "SPY"])
     spy_series = history.get("SPY")
-
-    # Current per-share price per held ticker (broker / latest cache) — the flat fallback
-    # for a holding the historical spine can't price, so it stays in NAV every date.
     current_px = {
         h.ticker: h.last_price
         for h in analytics.valued_holdings(session, tenant_id, portfolio_id)
         if h.last_price is not None
     }
 
-    # WARN once, over the full set, for any per-(account, ticker) group whose history
-    # can't replay; the per-date loop below then skips quietly (log=False) instead of
-    # repeating the same warning for every valuation date.
-    analytics.build_portfolio_ledger(txns_by_account)
-
-    flow_dates = [t.when for t in txns if t.type in (TxnType.DEPOSIT, TxnType.WITHDRAWAL)]
+    # Flows are cash deposits/withdrawals across ALL accounts (TWR sub-period breaks).
+    flow_dates = [t.when for _aid, t in by_account if t.type in (TxnType.DEPOSIT, TxnType.WITHDRAWAL)]
     written = 0
     prev: date | None = None
     for when in _valuation_dates(first, today, flow_dates):
-        ledger, _incomplete = analytics.build_portfolio_ledger(
-            [(aid, t) for aid, t in txns_by_account if t.when <= when], log=False
-        )
+        pos, cost = _lot_positions_asof(open_lots, closed_lots, when)
+        if ledger_txns:
+            ledger, _incomplete = analytics.build_portfolio_ledger(
+                [(aid, t) for aid, t in ledger_by_account if t.when <= when], log=False
+            )
+            for ticker in ledger.open_lots:
+                shares, avg_cost = ledger.position(ticker)
+                if shares > 0:
+                    pos[ticker] += shares
+                    cost[ticker] += shares * avg_cost
+
         nav = 0.0
         cost_basis = 0.0
         valued_any = False
-        for ticker in ledger.open_lots:
-            shares, avg_cost = ledger.position(ticker)
+        for ticker, shares in pos.items():
             if shares <= 0:
                 continue
-            cost_basis += shares * avg_cost
-            # Historical close (carry-forward); else the current price (flat) so a
-            # no-history fund stays in NAV instead of dropping out (metron-ops#44).
-            px = _asof_close(history.get(ticker), when)
-            if px is None:
-                px = current_px.get(ticker)
+            cost_basis += cost[ticker]
+            px = _asof_close(history.get(ticker), when) or current_px.get(ticker)
             if px is not None:
                 nav += shares * px
                 valued_any = True
         if not valued_any:
-            continue  # nothing valuable as-of this date (no historical or current price)
-        # Net purchases since the prior valued snapshot — the contributions to neutralize.
-        # (Per-period, so every buy between snapshots is captured without needing each buy
-        # date as a valuation date.) (metron-ops#44)
+            continue
         flow = _net_purchases(session, tenant_id, portfolio_id, after=prev, through=when)
         _upsert_snapshot(
             session, tenant_id, portfolio_id, when,

@@ -278,6 +278,8 @@ class PerformanceOut(BaseModel):
     alpha: float | None
     rolling: list[RollingRiskOut] = []
     points: list[PerfPointOut]
+    estimated: bool = False
+    estimated_note: str | None = None
 
 
 class TaxLotOut(BaseModel):

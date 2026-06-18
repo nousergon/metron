@@ -103,21 +103,20 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         txn_ccys, earliest = analytics.foreign_transaction_currencies(session, p.tenant_id, p.id, base=base)
         if txn_ccys and earliest is not None:
             fx_updated += fx.backfill_fx_rates(session, txn_ccys, earliest, today, base=base)
+        # Reconstruct the historical NAV series from the lot timeline FIRST (best-effort),
+        # then record TODAY from live positions — so the authoritative live value (complete
+        # even for non-lot holdings) overwrites today's reconstructed point rather than the
+        # reverse (the reconstruct-clobbers-live bug, metron-ops#74).
+        recon = _best_effort(
+            "performance", p.id,
+            lambda p=p: performance.reconstruct_snapshots(session, p.tenant_id, p.id, today=today),
+        )
         snap = performance.record_snapshot(session, p.tenant_id, p.id, today=today)
         # Per-account NAV snapshots — additive, best-effort (a failure here never costs the
         # portfolio snapshot). Starts the per-account history that can't be reconstructed.
         acct_snaps = _best_effort(
             "account-snapshots", p.id,
             lambda p=p: performance.record_account_snapshots(session, p.tenant_id, p.id, today=today),
-        )
-
-        # Derived analytics — best-effort, so the pages self-populate overnight. Each is
-        # isolated: a yfinance failure on one never costs the price refresh / NAV snapshot.
-        # ``p=p`` binds the loop variable into each lambda (the helper calls it within the
-        # same iteration, so this is belt-and-suspenders against late-binding closures).
-        recon = _best_effort(
-            "performance", p.id,
-            lambda p=p: performance.reconstruct_snapshots(session, p.tenant_id, p.id, today=today),
         )
         risk_summary = _best_effort(
             "risk", p.id,
