@@ -130,15 +130,38 @@ def _portfolio_rows(
     return session.execute(stmt).all()
 
 
+def _normalize_bond_quantity(txn_type: str, quantity: float, price: float, amount: float) -> float:
+    r"""Normalize a fixed-income trade's quantity to the per-$100-par unit (metron-ops#74).
+
+    SnapTrade records a bond/CD/treasury BUY/SELL with ``quantity`` = FACE value (e.g.
+    10000) but ``price`` = percent of par (e.g. 97.0147, per \$100), so ``quantity*price``
+    overstates the cash ~100x — while the broker's POSITION section uses ``quantity`` =
+    face/100 (e.g. 100). Replaying the raw transaction therefore inflates the ledger cost
+    basis, realized gains, and the reconstructed NAV ~100x (the \$4.5M / −96% Performance
+    bug). The ``amount`` field carries the true cash, so the par signature is
+    ``quantity*price ≈ 100*amount``; when detected, divide quantity by 100 so
+    ``quantity*price ≈ amount`` AND it matches the position unit. Equity trades
+    (``quantity*price ≈ amount``) are far outside this band and pass through unchanged."""
+    if txn_type in (TxnType.BUY.value, TxnType.SELL.value) and quantity > 0 and price > 0 and amount > 0:
+        ratio = (quantity * price) / (100.0 * amount)
+        if 0.8 <= ratio <= 1.25:
+            return quantity / 100.0
+    return quantity
+
+
 def _to_engine_txn(row: models.Transaction, ticker: str | None) -> Transaction:
     """Map a stored transaction to an engine ``Transaction`` (floats, not Decimal)."""
+    quantity = float(row.quantity)
+    price = float(row.price)
+    amount = float(row.amount)
+    quantity = _normalize_bond_quantity(row.txn_type, quantity, price, amount)
     return Transaction(
         when=row.trade_date,
         type=TxnType(row.txn_type),
         ticker=(ticker or "").upper(),
-        quantity=float(row.quantity),
-        price=float(row.price),
-        amount=float(row.amount),
+        quantity=quantity,
+        price=price,
+        amount=amount,
         fees=float(row.fees),
         currency=row.currency,
     )
