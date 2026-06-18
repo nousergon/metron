@@ -7,7 +7,7 @@ import {
   getTransactions,
   MetronApiError,
 } from "@/lib/api";
-import { isoDate, money, moneyWhole, quantity, signClass, signedMoney, signedMoneyWhole } from "@/lib/format";
+import { accountingMoneyWhole, isoDate, money, moneyWhole, quantity, signClass, signedMoney, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { navFeatureStates } from "@/lib/entitlements";
@@ -52,6 +52,20 @@ export default async function TaxPage({
   // Only widen the income table with a Distributions column when there actually are
   // tax-deferred withdrawals — most taxable-only users won't have any.
   const hasDistributions = income.some((y) => y.distributions !== 0);
+  // All-time totals across every year — surfaced as a footer row so lifetime realized
+  // isn't buried under the current-year "YTD" line (metron-ops#75: a prior-year gain like
+  // a 2025 sale reads as "low" when only the YTD row is glanced at).
+  const totals = income.reduce(
+    (a, y) => ({
+      realized_st: a.realized_st + y.realized_st,
+      realized_lt: a.realized_lt + y.realized_lt,
+      dividends: a.dividends + y.dividends,
+      interest: a.interest + y.interest,
+      distributions: a.distributions + y.distributions,
+      taxable_income: a.taxable_income + y.taxable_income,
+    }),
+    { realized_st: 0, realized_lt: 0, dividends: 0, interest: 0, distributions: 0, taxable_income: 0 },
+  );
   // History reads best newest-first (backend returns oldest-first).
   const lots = [...realized].reverse();
   const txns = [...transactions].reverse();
@@ -110,10 +124,10 @@ export default async function TaxPage({
                   {y.year === currentYear ? <span className="ml-1 text-[10px] uppercase tracking-wide text-muted">YTD</span> : null}
                 </td>
                 <td className={`px-4 py-2 text-right tabular-nums ${signClass(y.realized_st)}`}>
-                  {signedMoneyWhole(y.realized_st, ccy)}
+                  {accountingMoneyWhole(y.realized_st, ccy)}
                 </td>
                 <td className={`px-4 py-2 text-right tabular-nums ${signClass(y.realized_lt)}`}>
-                  {signedMoneyWhole(y.realized_lt, ccy)}
+                  {accountingMoneyWhole(y.realized_lt, ccy)}
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.dividends, ccy)}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(y.interest, ccy)}</td>
@@ -123,6 +137,23 @@ export default async function TaxPage({
                 <td className="px-4 py-2 text-right font-medium tabular-nums">{moneyWhole(y.taxable_income, ccy)}</td>
               </tr>
             ))}
+            {income.length > 1 ? (
+              <tr className="border-t-2 border-line bg-surface font-medium">
+                <td className="px-4 py-2 uppercase tracking-wide text-muted">All-time</td>
+                <td className={`px-4 py-2 text-right tabular-nums ${signClass(totals.realized_st)}`}>
+                  {accountingMoneyWhole(totals.realized_st, ccy)}
+                </td>
+                <td className={`px-4 py-2 text-right tabular-nums ${signClass(totals.realized_lt)}`}>
+                  {accountingMoneyWhole(totals.realized_lt, ccy)}
+                </td>
+                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(totals.dividends, ccy)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(totals.interest, ccy)}</td>
+                {hasDistributions ? (
+                  <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(totals.distributions, ccy)}</td>
+                ) : null}
+                <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(totals.taxable_income, ccy)}</td>
+              </tr>
+            ) : null}
           </Table>
         )}
         <p className="mt-2 text-xs text-muted">
