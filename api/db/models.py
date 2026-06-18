@@ -267,6 +267,28 @@ class RealizedLot(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class OpenLot(Base):
+    """A still-open tax lot of a holding, from broker lot-level Open Positions.
+
+    Carries the lot's ``open_date`` so the historical position timeline — and thus a real
+    NAV/TWR history — can be reconstructed for snapshot-sourced accounts (IBKR/SnapTrade)
+    that have no replayable trade feed (metron-ops#74). Replaced per account each sync
+    (point-in-time snapshot, like ``positions``). Tenant-scoped."""
+
+    __tablename__ = "open_lots"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    ticker: Mapped[str] = mapped_column(index=True)
+    quantity: Mapped[float] = mapped_column(Numeric(28, 10))
+    open_date: Mapped[date] = mapped_column(index=True)
+    cost_basis: Mapped[float] = mapped_column(Numeric(28, 10))  # total native cost of this lot
+    currency: Mapped[str] = mapped_column(default="USD")
+    source: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class FxRate(Base):
     """Global FX rate cache — ``rate`` is USD (the canonical base) per 1 unit of
     ``currency`` for ``rate_date`` (e.g. HKD → 0.128). NOT tenant-scoped: one fetch of

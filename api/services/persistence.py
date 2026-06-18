@@ -47,6 +47,7 @@ class PersistResult:
     positions_imported: int = 0    # broker-reported holdings written (snapshot sources)
     accounts_excluded: int = 0     # snapshot accounts skipped — user-deleted (excluded keys)
     realized_lots_inserted: int = 0  # broker closed-lot realized gains unioned (metron-ops#81)
+    open_lots_imported: int = 0      # lot-level open positions written (metron-ops#74)
 
 
 def account_key(broker: str, external_id: str) -> str:
@@ -281,9 +282,46 @@ def persist_snapshot(
     accounts = _upsert_accounts(session, snapshot, tenant_id, portfolio_id, result)
     _insert_activities(session, snapshot, tenant_id, accounts, securities, result)
     _replace_positions(session, snapshot, tenant_id, accounts, securities, result)
+    _replace_open_lots(session, snapshot, tenant_id, accounts, result)
     _insert_realized_lots(session, snapshot, tenant_id, accounts, result)
     session.commit()
     return result
+
+
+def _replace_open_lots(
+    session: Session,
+    snapshot: ConnectorSnapshot,
+    tenant_id: uuid.UUID,
+    accounts: dict[str, models.Account],
+    result: PersistResult,
+) -> None:
+    """Replace lot-level open positions per account (point-in-time snapshot, like
+    ``_replace_positions``). Each lot carries its ``open_date`` so historical positions —
+    and thus a real NAV/TWR history — can be reconstructed for snapshot-sourced accounts
+    (metron-ops#74). Only accounts present in this snapshot's ``open_lots`` are touched, so
+    a broker that doesn't emit lot detail leaves its lots untouched."""
+    touched: set[uuid.UUID] = {
+        accounts[lot.account_number].id for lot in snapshot.open_lots if lot.account_number in accounts
+    }
+    for account_id in touched:
+        session.execute(delete(models.OpenLot).where(models.OpenLot.account_id == account_id))
+    for lot in snapshot.open_lots:
+        account = accounts.get(lot.account_number)
+        if account is None:
+            continue
+        session.add(
+            models.OpenLot(
+                tenant_id=tenant_id,
+                account_id=account.id,
+                ticker=lot.ticker,
+                quantity=lot.quantity,
+                open_date=lot.open_date,
+                cost_basis=lot.cost_basis,
+                currency=lot.currency,
+                source=snapshot.source,
+            )
+        )
+        result.open_lots_imported += 1
 
 
 def _insert_realized_lots(

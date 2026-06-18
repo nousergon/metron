@@ -104,6 +104,39 @@ def test_realized_lots_distinct_cost_basis_dont_collide(db_session):
     assert db_session.scalar(select(func.count()).select_from(models.RealizedLot)) == 2
 
 
+def test_open_lots_persisted_and_replaced_per_account(db_session):
+    """Lot-level open positions persist and are REPLACED per account each sync (snapshot
+    semantics) — metron-ops#74."""
+    from datetime import date
+
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+    from portfolio_analytics.ingestion.schema import CanonicalAccount, CanonicalOpenLot
+
+    tenant_id, portfolio_id = _make_portfolio(db_session)
+    acct = CanonicalAccount(number="U1", label="IBKR")
+    snap1 = ConnectorSnapshot(
+        source="ibkr_flex",
+        accounts=[acct],
+        open_lots=[
+            CanonicalOpenLot(account_number="U1", security_id="EQ:AAPL:USD", ticker="AAPL", quantity=6, open_date=date(2025, 1, 15), cost_basis=900),
+            CanonicalOpenLot(account_number="U1", security_id="EQ:AAPL:USD", ticker="AAPL", quantity=4, open_date=date(2025, 12, 19), cost_basis=600),
+        ],
+    )
+    r1 = persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_id, snapshot=snap1)
+    assert r1.open_lots_imported == 2
+    assert db_session.scalar(select(func.count()).select_from(models.OpenLot)) == 2
+
+    # Re-sync the same account with ONE lot → the account's lots are replaced, not unioned.
+    snap2 = ConnectorSnapshot(
+        source="ibkr_flex",
+        accounts=[acct],
+        open_lots=[CanonicalOpenLot(account_number="U1", security_id="EQ:AAPL:USD", ticker="AAPL", quantity=10, open_date=date(2026, 1, 2), cost_basis=1500)],
+    )
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_id, snapshot=snap2)
+    rows = db_session.scalars(select(models.OpenLot)).all()
+    assert len(rows) == 1 and float(rows[0].quantity) == 10 and rows[0].open_date == date(2026, 1, 2)
+
+
 def test_reimport_is_idempotent(db_session):
     tenant_id, portfolio_id = _make_portfolio(db_session)
     snapshot = parse_transactions_csv(CSV).snapshot

@@ -37,6 +37,7 @@ from portfolio_analytics.ingestion.schema import (
     CanonicalAccount,
     CanonicalActivity,
     CanonicalHolding,
+    CanonicalOpenLot,
     CanonicalSecurity,
     synth_security_id,
 )
@@ -153,6 +154,49 @@ def parse_open_positions(root: ET.Element):
     return out
 
 
+def parse_open_lots(root: ET.Element):
+    """Yield ``(CanonicalOpenLot, CanonicalSecurity)`` for each lot-level open position.
+
+    Reads the ``levelOfDetail="LOT"`` Open Position rows (enabled in the Flex query's
+    Open Positions → Lot detail) — each carries the lot's ``openDateTime``, so the
+    historical position timeline can be reconstructed for an accurate NAV/TWR history
+    (metron-ops#74). A lot with no resolvable open date or zero quantity is skipped (no
+    fabrication). Same category skips as ``parse_open_positions`` (CASH/OPT)."""
+    out = []
+    for e in root.iter():
+        if _tag(e) != "OpenPosition":
+            continue
+        if (e.get("levelOfDetail") or "").upper() != "LOT":
+            continue
+        if (e.get("assetCategory") or "").upper() in _SKIP_POSITION_CATEGORIES:
+            continue
+        ticker = e.get("symbol", "") or ""
+        open_date = _parse_flex_date(e.get("openDateTime") or e.get("holdingPeriodDateTime"))
+        qty = _f(e.get("position"))
+        if not ticker or open_date is None or qty == 0:
+            continue
+        currency = e.get("currency", "USD") or "USD"
+        sid = synth_security_id(ticker, currency)
+        lot = CanonicalOpenLot(
+            account_number=e.get("accountId", "") or "",
+            security_id=sid,
+            ticker=ticker,
+            quantity=qty,
+            open_date=open_date,
+            cost_basis=abs(_f(e.get("costBasisMoney"))),
+            currency=currency,
+        )
+        sec = CanonicalSecurity(
+            security_id=sid,
+            ticker=ticker,
+            currency=currency,
+            asset_type=_asset_type(e.get("assetCategory", "")),
+            exchange=(e.get("listingExchange") or e.get("exchange") or "").strip(),
+        )
+        out.append((lot, sec))
+    return out
+
+
 def parse_cash_transactions(root: ET.Element):
     """Yield ``(CanonicalActivity, CanonicalSecurity | None)`` for cash transactions."""
     out = []
@@ -241,6 +285,10 @@ class IbkrFlexConnector:
 
         for holding, sec in parse_open_positions(root):
             snapshot.holdings.append(holding)
+            securities.setdefault(sec.security_id, sec)
+
+        for lot, sec in parse_open_lots(root):
+            snapshot.open_lots.append(lot)
             securities.setdefault(sec.security_id, sec)
 
         for activity, sec in parse_cash_transactions(root):

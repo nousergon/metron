@@ -107,6 +107,24 @@ class CanonicalHolding:
 
 
 @dataclass(frozen=True)
+class CanonicalOpenLot:
+    """A single still-open tax lot of a holding, from broker lot-level Open Positions.
+
+    Carries the lot's ``open_date`` so the historical position timeline — and thus a real
+    NAV/TWR history — can be reconstructed for snapshot-sourced accounts that have no
+    replayable trade feed (metron-ops#74). Native currency; replaced per account each sync
+    (snapshot semantics, like holdings)."""
+
+    account_number: str
+    security_id: str
+    ticker: str
+    quantity: float
+    open_date: date
+    cost_basis: float = 0.0  # total native cost of this lot
+    currency: str = "USD"
+
+
+@dataclass(frozen=True)
 class CanonicalActivity:
     """A dated account event (trade / dividend / interest / fee / transfer).
 

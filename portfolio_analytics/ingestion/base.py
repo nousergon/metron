@@ -20,6 +20,7 @@ from portfolio_analytics.ingestion.schema import (
     CanonicalAccount,
     CanonicalActivity,
     CanonicalHolding,
+    CanonicalOpenLot,
     CanonicalSecurity,
 )
 
@@ -50,6 +51,7 @@ class ConnectorSnapshot:
     accounts: list[CanonicalAccount] = field(default_factory=list)
     securities: list[CanonicalSecurity] = field(default_factory=list)
     holdings: list[CanonicalHolding] = field(default_factory=list)
+    open_lots: list[CanonicalOpenLot] = field(default_factory=list)  # lot-level open positions
     activities: list[CanonicalActivity] = field(default_factory=list)
     realized_lots: list[tuple[str, RealizedGain]] = field(default_factory=list)
     state: dict = field(default_factory=dict)
