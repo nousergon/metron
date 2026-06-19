@@ -78,6 +78,66 @@ def test_persists_and_surfaces_broker_realized_lots(db_session):
     assert y2026.realized_st == 0
 
 
+def test_stored_lot_account_does_not_suppress_replay_of_other_accounts(db_session):
+    """A ticker held in BOTH an IBKR stored-lot account AND a replayable (CSV/SnapTrade)
+    account must surface realized gains from BOTH — the stored-lot account is excluded from
+    replay PER ACCOUNT, never portfolio-wide (metron-ops#75).
+
+    Brian's RKLB case: ~$31k of 2025 LT gains came from an E-Trade (replayable) account and
+    a separate IBKR stored lot carried ~$12.5k more. If the stored-lot exclusion were
+    portfolio-wide instead of per-account, the entire E-Trade realized history would vanish
+    and LT realized would read far too low. This guards the per-account boundary."""
+    from datetime import date
+
+    from api.services import analytics
+    from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
+    from portfolio_analytics.domain.ledger import RealizedGain
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+    from portfolio_analytics.ingestion.schema import CanonicalAccount
+
+    tenant_id, portfolio_id = _make_portfolio(db_session)
+
+    # 1) Replayable account (CSV — no stored lots): RKLB bought 2024, sold long-term 2025.
+    csv = (
+        "date,type,symbol,quantity,price,amount,fees\n"
+        "2024-06-25,BUY,RKLB,100,5,500,0\n"
+        "2025-07-01,SELL,RKLB,100,40,4000,0\n"
+    )
+    persist_snapshot(
+        db_session, tenant_id=tenant_id, portfolio_id=portfolio_id,
+        snapshot=parse_transactions_csv(csv).snapshot,
+    )
+    # 2) IBKR account with an authoritative stored RKLB lot (no replayable feed).
+    persist_snapshot(
+        db_session, tenant_id=tenant_id, portfolio_id=portfolio_id,
+        snapshot=ConnectorSnapshot(
+            source="ibkr_flex",
+            accounts=[CanonicalAccount(number="U24215043", label="IBKR", tax_treatment="taxable")],
+            realized_lots=[(
+                "U24215043",
+                RealizedGain(
+                    ticker="RKLB", open_date=date(2024, 6, 25), close_date=date(2026, 5, 20),
+                    quantity=102, proceeds=13004.0, cost_basis=600.0,
+                ),
+            )],
+        ),
+    )
+
+    lots = analytics.realized(db_session, tenant_id, portfolio_id)
+    rklb = [r for r in lots if r.ticker == "RKLB"]
+    # BOTH sources surface: the replayed 2025 LT sale AND the IBKR stored 2026 LT lot.
+    assert len(rklb) == 2, "the stored-lot account must not suppress the replayed account"
+    replayed = next(r for r in rklb if r.close_date == date(2025, 7, 1))
+    stored = next(r for r in rklb if r.close_date == date(2026, 5, 20))
+    assert replayed.gain == 4000.0 - 500.0 and replayed.long_term is True
+    assert stored.gain == 13004.0 - 600.0 and stored.long_term is True
+
+    # income(): each year's LT bucket carries its own source — neither is lost.
+    years = {y.year: y for y in analytics.income(db_session, tenant_id, portfolio_id)}
+    assert years[2025].realized_lt == 4000.0 - 500.0
+    assert years[2026].realized_lt == 13004.0 - 600.0
+
+
 def test_realized_lots_distinct_cost_basis_dont_collide(db_session):
     """IBKR emits DISTINCT closed lots sharing ticker/open/close/qty/proceeds but differing
     cost basis (two tax lots disposed together) — both must persist (the bare lot_key would
