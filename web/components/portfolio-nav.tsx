@@ -18,7 +18,7 @@ const TIER_LABEL: Record<string, string> = { pro: "Pro", agentic: "Research+", p
 
 // Pages that need the market-data feed to function — HIDDEN (not shown locked/empty) in
 // the no-feed beta (metron-ops#53). They reappear when the feed entitlement is on.
-const FEED_DEPENDENT = new Set(["risk", "attribution", "scenarios", "calendar"]);
+const FEED_DEPENDENT = new Set(["risk", "attribution", "scenarios", "calendar", "indices"]);
 
 export function PortfolioNav({
   portfolioId,
@@ -63,6 +63,10 @@ export function PortfolioNav({
   const pages: NavPage[] = [
     { label: "Overview", href: `${base}${navQuery}`, feature: "overview" },
     { label: "Holdings", href: `${base}/holdings${navQuery}`, feature: "overview" },
+    // Today: intraday overnight/intraday/day decomposition — needs the licensed intraday
+    // feed (same as the Markets strip), so it's gated on `indices` and hidden in the
+    // no-feed beta (metron-ops#23).
+    { label: "Today", href: `${base}/today${navQuery}`, feature: "indices" },
     { label: "Performance", href: `${base}/performance${navQuery}`, feature: "performance" },
     { label: "Risk", href: `${base}/risk${navQuery}`, feature: "risk" },
     { label: "Attribution", href: `${base}/attribution${navQuery}`, feature: "attribution" },

@@ -132,6 +132,47 @@ class TestLiveValuation:
         assert held[0].market_value == 1200.0
 
 
+class TestTodayView:
+    def test_decomposition_and_reconciliation(self, db_session):
+        tid, pid = _seed_one_holding(db_session, symbol="AAPL", qty=10, eod_close=120.0)
+        # prev_close 100, open 110, last 130 → overnight +10, intraday +20, day +30 (native).
+        t = intraday.today_view(
+            db_session, tid, pid, feed_entitled=True, now=_NOW,
+            reader=lambda: _art({"AAPL": {"prev_close": 100.0, "open": 110.0, "last": 130.0}}),
+        )
+        assert t.available and t.n_priced == 1 and t.n_excluded == 0
+        r = t.rows[0]
+        assert r.overnight_pct == 0.1 and r.intraday_pct == pytest.approx(20 / 110) and r.day_pct == 0.3
+        assert r.overnight_gain == 100.0 and r.intraday_gain == 200.0 and r.day_gain == 300.0
+        # Reconciliation: overnight $ + intraday $ == day $ (per-row and portfolio total).
+        assert r.overnight_gain + r.intraday_gain == r.day_gain
+        assert t.overnight_gain + t.intraday_gain == t.day_gain == 300.0
+        # Portfolio %s are leg$ / prior-close MV (10 × 100 = 1000).
+        assert t.day_pct == 0.3 and t.overnight_pct == 0.1
+
+    def test_feed_off(self, db_session):
+        tid, pid = _seed_one_holding(db_session)
+        t = intraday.today_view(db_session, tid, pid, feed_entitled=False, reader=lambda: _art({}), now=_NOW)
+        assert t.available is False and t.reason == "feed"
+
+    def test_excludes_holding_without_quote(self, db_session):
+        tid, pid = _seed_one_holding(db_session, symbol="AAPL", qty=10)
+        # Quote for a different symbol → AAPL has no decomposable quote → excluded.
+        t = intraday.today_view(
+            db_session, tid, pid, feed_entitled=True, now=_NOW,
+            reader=lambda: _art({"MSFT": {"prev_close": 1.0, "open": 1.0, "last": 1.0}}),
+        )
+        assert t.available and t.n_priced == 0 and t.n_excluded == 1 and t.day_gain is None
+
+    def test_stale_snapshot_still_renders_as_of_close(self, db_session):
+        tid, pid = _seed_one_holding(db_session, symbol="AAPL", qty=10)
+        t = intraday.today_view(
+            db_session, tid, pid, feed_entitled=True, now=_STALE_NOW,
+            reader=lambda: _art({"AAPL": {"prev_close": 100.0, "open": 110.0, "last": 130.0}}),
+        )
+        assert t.available and t.stale is True and t.n_priced == 1  # rows still show, flagged stale
+
+
 @pytest.fixture()
 def tenant():
     return str(uuid.uuid4())

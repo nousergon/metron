@@ -1051,6 +1051,44 @@ export async function getIntradayStatus(tenantId: string, id: string): Promise<I
   return get<IntradayStatus>(tenantId, `/portfolios/${id}/intraday`);
 }
 
+// Today view (metron-ops#23): per-holding prior-close/open/latest + overnight·intraday·day
+// P&L decomposition (% and base-$ legs) + portfolio totals, from the intraday spine quotes.
+export type TodayRow = {
+  ticker: string;
+  label: string;
+  quantity: number;
+  currency: string;
+  prev_close: number | null;
+  open: number | null;
+  last: number | null;
+  overnight_pct: number | null;
+  intraday_pct: number | null;
+  day_pct: number | null;
+  overnight_gain: number | null;
+  intraday_gain: number | null;
+  day_gain: number | null;
+};
+
+export type Today = {
+  available: boolean;
+  base_currency: string;
+  reason: string | null;
+  as_of_utc: string | null;
+  stale: boolean;
+  n_priced: number;
+  n_excluded: number;
+  overnight_gain: number | null;
+  intraday_gain: number | null;
+  day_gain: number | null;
+  overnight_pct: number | null;
+  intraday_pct: number | null;
+  day_pct: number | null;
+  rows: TodayRow[];
+};
+
+export const getToday = (tenantId: string, id: string, accountIds?: string[]) =>
+  get<Today>(tenantId, `/portfolios/${id}/today${acctParams(accountIds)}`);
+
 export type AdvisorSectorWeight = { sector: string; weight_pct: number; flag: string };
 export type AdvisorConcentration = { ticker: string; weight_pct: number; limit_pct: number };
 export type AdvisorGeo = {

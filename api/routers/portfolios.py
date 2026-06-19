@@ -229,6 +229,46 @@ class IntradayStatusOut(BaseModel):
     reason: str | None = None      # why not applied ("feed" / "stale" / "unavailable")
 
 
+class TodayRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    label: str
+    quantity: float
+    currency: str
+    prev_close: float | None = None
+    open: float | None = None
+    last: float | None = None
+    overnight_pct: float | None = None
+    intraday_pct: float | None = None
+    day_pct: float | None = None
+    overnight_gain: float | None = None
+    intraday_gain: float | None = None
+    day_gain: float | None = None
+
+
+class TodayOut(BaseModel):
+    """The Today view — per-holding overnight·intraday·day decomposition + totals
+    (metron-ops#23)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    available: bool
+    base_currency: str
+    reason: str | None = None
+    as_of_utc: str | None = None
+    stale: bool = False
+    n_priced: int = 0
+    n_excluded: int = 0
+    overnight_gain: float | None = None
+    intraday_gain: float | None = None
+    day_gain: float | None = None
+    overnight_pct: float | None = None
+    intraday_pct: float | None = None
+    day_pct: float | None = None
+    rows: list[TodayRowOut] = []
+
+
 class AccountDetailOut(BaseModel):
     """One account's holdings + activity — the per-account drill-down, in one call.
 
@@ -1909,4 +1949,22 @@ def get_intraday_status(
     )
     return IntradayStatusOut(
         applied=m.applied, as_of_utc=m.as_of_utc, stale=m.stale, n_priced=m.n_priced, reason=m.reason
+    )
+
+
+@router.get("/{portfolio_id}/today", response_model=TodayOut)
+def get_today(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
+    session: Session = Depends(get_session),
+) -> intraday.TodaySummary:
+    """The Today view (metron-ops#23): per-holding prior-close / open / latest with the
+    overnight·intraday·day P&L decomposition + portfolio totals, from the intraday spine
+    quotes. Feed-gated; outside market hours the snapshot is ``stale`` and the rows read
+    "as of close". ``?account_id=`` scopes the holdings like every other page. The request
+    touches the data-spine UI heartbeat (via ``_owned_portfolio``) so the producer keeps
+    publishing while the page is open."""
+    return intraday.today_view(
+        session, portfolio.tenant_id, portfolio.id,
+        feed_entitled=settings.feed_entitled, account_ids=account_ids,
     )

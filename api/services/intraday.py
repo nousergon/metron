@@ -198,3 +198,150 @@ def for_portfolio(
     held = analytics.holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     tickers = [h.ticker for h in held if h.ticker]
     return live_prices(session, tickers, feed_entitled=feed_entitled, reader=reader, now=now)
+
+
+# ── Today view: prior-close / open / latest + overnight·intraday·day decomposition ──────
+# (metron-ops#23) Day % (close→close) = Overnight % (open vs prior close) + Intraday %
+# (latest vs open); the $ legs are shares × the native price delta, FX-converted to base.
+
+
+def _f(d: dict, key: str) -> float | None:
+    v = d.get(key)
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass
+class TodayRow:
+    ticker: str
+    label: str
+    quantity: float
+    currency: str
+    prev_close: float | None      # native
+    open: float | None            # native
+    last: float | None            # native (~15-min delayed)
+    overnight_pct: float | None   # (open − prev_close) / prev_close
+    intraday_pct: float | None    # (last − open) / open
+    day_pct: float | None         # (last − prev_close) / prev_close
+    overnight_gain: float | None  # base $ = qty × (open − prev_close) × fx
+    intraday_gain: float | None   # base $ = qty × (last − open) × fx
+    day_gain: float | None        # base $ = qty × (last − prev_close) × fx
+
+
+@dataclass
+class TodaySummary:
+    available: bool
+    base_currency: str = "USD"
+    reason: str | None = None       # "feed" / "stale" / "unavailable" when not available
+    as_of_utc: str | None = None
+    stale: bool = False
+    n_priced: int = 0               # holdings with a usable (prev/open/last) quote
+    n_excluded: int = 0             # held but un-decomposable (no quote / no FX)
+    overnight_gain: float | None = None  # portfolio base $ legs
+    intraday_gain: float | None = None
+    day_gain: float | None = None
+    overnight_pct: float | None = None   # leg $ / prior-close MV (decomposable rows)
+    intraday_pct: float | None = None
+    day_pct: float | None = None
+    rows: list[TodayRow] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.rows is None:
+            self.rows = []
+
+
+def today_view(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    feed_entitled: bool,
+    account_ids: Collection[uuid.UUID] | None = None,
+    reader=None,
+    now: datetime | None = None,
+) -> TodaySummary:
+    """Per-holding prior-close / open / latest with the overnight·intraday·day P&L
+    decomposition + portfolio totals, from the intraday spine quotes (metron-ops#23).
+
+    Feed-gated (owner build); ``stale`` when the snapshot is older than the freshness
+    window (market closed) — the rows still render "as of close". A holding without a
+    usable quote (missing prev/open/last, suspect, or no cached FX) is excluded + counted,
+    never fabricated. ``account_ids`` scopes the holdings like every other page."""
+    from api.services import analytics
+
+    now = now or datetime.now(UTC)
+    if not feed_entitled:
+        return TodaySummary(available=False, reason="feed")
+
+    held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
+    base = analytics._base_currency(session, portfolio_id)
+    if not held:
+        return TodaySummary(available=True, base_currency=base, reason="unavailable")
+
+    quotes, as_of, stale = load_quotes(reader=reader, now=now)
+    if not quotes:
+        return TodaySummary(available=False, base_currency=base, reason="unavailable", as_of_utc=as_of, stale=True)
+
+    yf_by_ticker = _yf_symbol_by_ticker(session, [h.ticker for h in held])
+    rows: list[TodayRow] = []
+    tot_prev_mv = tot_on = tot_id = tot_day = 0.0
+    excluded = 0
+    for h in held:
+        q = quotes.get(yf_by_ticker.get(h.ticker, h.ticker))
+        prev = _f(q, "prev_close") if isinstance(q, dict) else None
+        opn = _f(q, "open") if isinstance(q, dict) else None
+        last = _f(q, "last") if isinstance(q, dict) else None
+        fx = h.fx_rate if h.fx_rate is not None else (1.0 if (h.currency or "USD") == base else None)
+        suspect = bool(q.get("suspect")) if isinstance(q, dict) else False
+        if suspect or prev is None or opn is None or last is None or not prev or not opn or fx is None:
+            excluded += 1
+            continue
+        qty = h.quantity
+        on_g = qty * (opn - prev) * fx
+        id_g = qty * (last - opn) * fx
+        day_g = qty * (last - prev) * fx
+        rows.append(
+            TodayRow(
+                ticker=h.ticker,
+                label=h.user_label or h.ticker,
+                quantity=qty,
+                currency=h.currency or base,
+                prev_close=prev,
+                open=opn,
+                last=last,
+                overnight_pct=(opn - prev) / prev,
+                intraday_pct=(last - opn) / opn,
+                day_pct=(last - prev) / prev,
+                overnight_gain=on_g,
+                intraday_gain=id_g,
+                day_gain=day_g,
+            )
+        )
+        tot_prev_mv += qty * prev * fx
+        tot_on += on_g
+        tot_id += id_g
+        tot_day += day_g
+
+    rows.sort(key=lambda r: abs(r.day_gain or 0.0), reverse=True)
+    has = bool(rows)
+
+    def pct(g: float) -> float | None:
+        return (g / tot_prev_mv) if tot_prev_mv else None
+
+    return TodaySummary(
+        available=True,
+        base_currency=base,
+        as_of_utc=as_of,
+        stale=stale,
+        n_priced=len(rows),
+        n_excluded=excluded,
+        overnight_gain=tot_on if has else None,
+        intraday_gain=tot_id if has else None,
+        day_gain=tot_day if has else None,
+        overnight_pct=pct(tot_on) if has else None,
+        intraday_pct=pct(tot_id) if has else None,
+        day_pct=pct(tot_day) if has else None,
+        rows=rows,
+    )
