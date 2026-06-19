@@ -7,7 +7,7 @@ import {
   getTransactions,
   MetronApiError,
 } from "@/lib/api";
-import { accountingMoneyWhole, isoDate, money, moneyWhole, quantity, signClass, signedMoney, signedMoneyWhole } from "@/lib/format";
+import { accountingMoney, accountingMoneyWhole, isoDate, money, moneyWhole, quantity, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { navFeatureStates } from "@/lib/entitlements";
@@ -171,18 +171,18 @@ export default async function TaxPage({
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <StatCard
               label="Total unrealized"
-              value={signedMoney(total as number, ccy)}
+              value={accountingMoney(total as number, ccy)}
               valueClass={signClass(total as number)}
               hint={hasGap ? "all taxable positions" : "vs cost basis"}
             />
             <StatCard
               label="Lot-classified (short-term)"
-              value={signedMoney(taxData.unrealized_st ?? 0, ccy)}
+              value={accountingMoney(taxData.unrealized_st ?? 0, ccy)}
               valueClass={signClass(taxData.unrealized_st ?? 0)}
             />
             <StatCard
               label="Lot-classified (long-term)"
-              value={signedMoney(taxData.unrealized_lt ?? 0, ccy)}
+              value={accountingMoney(taxData.unrealized_lt ?? 0, ccy)}
               valueClass={signClass(taxData.unrealized_lt ?? 0)}
             />
             <StatCard
@@ -223,7 +223,7 @@ export default async function TaxPage({
                 <td className="px-4 py-2 text-right tabular-nums">{money(l.cost_basis, l.currency)}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{l.market_value != null ? money(l.market_value, ccy) : "—"}</td>
                 <td className={`px-4 py-2 text-right tabular-nums ${signClass(l.unrealized_gain ?? 0)}`}>
-                  {l.unrealized_gain != null ? signedMoney(l.unrealized_gain, ccy) : "—"}
+                  {l.unrealized_gain != null ? accountingMoney(l.unrealized_gain, ccy) : "—"}
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums">
                   {(l.harvestable_loss ?? 0) > 0 ? (
@@ -254,10 +254,10 @@ export default async function TaxPage({
                 <td className="px-4 py-2 text-right tabular-nums">{money(r.cost_basis, r.currency)}</td>
                 <td className={`px-4 py-2 text-right font-medium tabular-nums ${signClass(r.gain_base ?? r.gain)}`}>
                   {r.gain_base != null ? (
-                    signedMoney(r.gain_base, ccy)
+                    accountingMoney(r.gain_base, ccy)
                   ) : (
                     <span className="text-muted" title={`No ${ccy} FX rate for ${isoDate(r.close_date)}`}>
-                      {signedMoney(r.gain, r.currency)}*
+                      {accountingMoney(r.gain, r.currency)}*
                     </span>
                   )}
                 </td>

@@ -52,8 +52,8 @@ const acct = (id: string, name: string): Account =>
 
 const ACCOUNTS = [acct("a1", "Brokerage"), acct("a2", "IRA"), acct("a3", "Roth")];
 
-function renderPanel() {
-  return render(<AccountPanel accounts={ACCOUNTS} baseCurrency="USD" portfolioId="p" />);
+function renderPanel(props?: { selectable?: boolean; deletable?: boolean }) {
+  return render(<AccountPanel accounts={ACCOUNTS} baseCurrency="USD" portfolioId="p" {...props} />);
 }
 
 beforeEach(() => {
@@ -106,10 +106,10 @@ describe("selection", () => {
   });
 });
 
-describe("delete", () => {
+describe("delete (deletable mode — the Overview, metron-ops#77)", () => {
   it("deletes after confirm, prunes the id from the URL selection, refreshes", async () => {
     mocks.urlAccountIds = ["a1", "a2"];
-    renderPanel();
+    renderPanel({ deletable: true });
     fireEvent.click(screen.getByLabelText("Delete Brokerage"));
     await waitFor(() => expect(deleteAccountAction).toHaveBeenCalledWith("p", "a1"));
     await waitFor(() => expect(replace).toHaveBeenCalled());
@@ -121,18 +121,36 @@ describe("delete", () => {
 
   it("declined confirm does nothing", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
-    renderPanel();
+    renderPanel({ deletable: true });
     fireEvent.click(screen.getByLabelText("Delete Brokerage"));
     expect(deleteAccountAction).not.toHaveBeenCalled();
   });
 
   it("a failed delete surfaces the error and leaves the selection alone", async () => {
     deleteAccountAction.mockResolvedValueOnce({ ok: false, message: "Delete failed — backend reachable?" });
-    renderPanel();
+    renderPanel({ deletable: true });
     fireEvent.click(screen.getByLabelText("Delete Brokerage"));
     await waitFor(() => expect(screen.getByText("Delete failed — backend reachable?")).toBeInTheDocument());
     expect(replace).not.toHaveBeenCalled();
     expect(refresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("mode split — selectable vs deletable (metron-ops#77)", () => {
+  it("the Holdings filter view (selectable, default) has checkboxes + All toggle, no delete/management", () => {
+    renderPanel(); // defaults: selectable, not deletable
+    expect(screen.getByLabelText("Include Brokerage")).toBeInTheDocument();
+    expect(screen.getByLabelText("All accounts")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Delete Brokerage")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Tax treatment for Brokerage")).not.toBeInTheDocument();
+  });
+
+  it("the Overview management view (deletable, not selectable) has delete + treatment, no checkboxes", () => {
+    renderPanel({ selectable: false, deletable: true });
+    expect(screen.getByLabelText("Delete Brokerage")).toBeInTheDocument();
+    expect(screen.getByLabelText("Tax treatment for Brokerage")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Include Brokerage")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("All accounts")).not.toBeInTheDocument();
   });
 });
 
@@ -166,7 +184,7 @@ describe("tax-status grouping + inline override", () => {
   });
 
   it("changing the inline tax treatment patches the account and refreshes", async () => {
-    renderPanel();
+    renderPanel({ deletable: true });
     fireEvent.change(screen.getByLabelText("Tax treatment for Brokerage"), { target: { value: "tax_deferred" } });
     await waitFor(() =>
       expect(updateAccountTagsAction).toHaveBeenCalledWith("p", "a1", { tax_treatment: "tax_deferred" }),
@@ -175,7 +193,7 @@ describe("tax-status grouping + inline override", () => {
   });
 
   it("selecting Auto sends a null tax_treatment (clears the override)", async () => {
-    render(<AccountPanel accounts={[taxed("a1", "Brokerage", "taxable")]} baseCurrency="USD" portfolioId="p" />);
+    render(<AccountPanel accounts={[taxed("a1", "Brokerage", "taxable")]} baseCurrency="USD" portfolioId="p" deletable />);
     fireEvent.change(screen.getByLabelText("Tax treatment for Brokerage"), { target: { value: "" } });
     await waitFor(() => expect(updateAccountTagsAction).toHaveBeenCalledWith("p", "a1", { tax_treatment: null }));
   });

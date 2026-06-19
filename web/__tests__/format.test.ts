@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  accountingMoney,
   accountingMoneyWhole,
   accountingPercent,
   money,
@@ -45,6 +46,12 @@ describe("format", () => {
 
   it("percent renders a ratio as a percentage", () => {
     expect(percent(0.1234)).toMatch(/12\.3/);
+  });
+
+  it("accountingMoney keeps cents, drops the + and parenthesizes losses", () => {
+    expect(accountingMoney(200.4)).toBe("$200.40"); // no leading +, cents kept
+    expect(accountingMoney(-200.6)).toBe("($200.60)"); // loss in parentheses
+    expect(accountingMoney(0)).toBe("$0.00");
   });
 
   it("accountingMoneyWhole drops the + and parenthesizes losses", () => {

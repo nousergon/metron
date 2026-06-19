@@ -139,14 +139,18 @@ export function AccountPanel({
   accounts,
   baseCurrency,
   portfolioId,
-  readOnly = false,
+  selectable = true,
+  deletable = false,
 }: {
   accounts: Account[];
   baseCurrency: string;
   portfolioId: string;
-  /** Read-only summary (the Overview): grouped metrics + subtotals, no checkboxes /
-   *  delete / treatment-edit. Activation lives on the Holdings page (metron-ops#64). */
-  readOnly?: boolean;
+  /** Temporary scoping: checkboxes per account + per tax-group + an All toggle, driving the
+   *  ?account_id= selection. The Holdings filter view (metron-ops#77). */
+  selectable?: boolean;
+  /** Account MANAGEMENT: the delete button + inline tax-treatment correction. The Overview
+   *  (metron-ops#77) — orthogonal to selectable so each page opts into the right capability. */
+  deletable?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -284,9 +288,7 @@ export function AccountPanel({
     const unreal = a.unrealized_gain;
     return (
       <li key={a.account_id} className="flex items-center gap-3 border-b border-line px-4 py-3 last:border-0">
-        {readOnly ? (
-          <span className="h-4 w-4 shrink-0" aria-hidden="true" />
-        ) : (
+        {selectable ? (
           <input
             type="checkbox"
             checked={selected.has(a.account_id)}
@@ -294,6 +296,8 @@ export function AccountPanel({
             aria-label={`Include ${accountLabel(a)}`}
             className="h-4 w-4 shrink-0 rounded border-line"
           />
+        ) : (
+          <span className="h-4 w-4 shrink-0" aria-hidden="true" />
         )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2">
@@ -305,9 +309,7 @@ export function AccountPanel({
             </Link>
             {a.institution ? <span className="text-xs text-muted">{a.institution}</span> : null}
             <span className="text-xs text-muted">{a.currency}</span>
-            {readOnly ? (
-              <span className="text-[10px] uppercase tracking-wide text-muted">{typeLabel(a)}</span>
-            ) : (
+            {deletable ? (
               <select
                 value={a.tax_treatment ?? ""}
                 onChange={(e) => setTreatment(a, e.target.value)}
@@ -322,6 +324,8 @@ export function AccountPanel({
                   </option>
                 ))}
               </select>
+            ) : (
+              <span className="text-[10px] uppercase tracking-wide text-muted">{typeLabel(a)}</span>
             )}
             {a.n_unconverted > 0 ? (
               <span className="text-[10px] text-muted" title="Some holdings excluded — no FX rate cached">
@@ -331,9 +335,7 @@ export function AccountPanel({
           </div>
         </div>
         <MetricCells cost={cost} unreal={unreal} mv={mv} baseCurrency={baseCurrency} />
-        {readOnly ? (
-          <span className="w-6 shrink-0" aria-hidden="true" />
-        ) : (
+        {deletable ? (
           <button
             type="button"
             onClick={() => remove(a)}
@@ -350,6 +352,8 @@ export function AccountPanel({
               />
             </svg>
           </button>
+        ) : (
+          <span className="w-6 shrink-0" aria-hidden="true" />
         )}
       </li>
     );
@@ -357,7 +361,7 @@ export function AccountPanel({
 
   return (
     <div className="overflow-hidden rounded-lg border border-line">
-      {readOnly ? null : (
+      {selectable ? (
         <div className="flex items-center justify-between border-b border-line bg-surface px-4 py-2">
           <span className="text-xs uppercase tracking-wide text-muted">
             Select accounts to filter the tables &amp; charts below
@@ -372,7 +376,7 @@ export function AccountPanel({
             All accounts
           </label>
         </div>
-      )}
+      ) : null}
       {deleteError ? (
         <div className="border-b border-line bg-rose-500/10 px-4 py-2 text-xs text-rose-300">{deleteError}</div>
       ) : null}
@@ -392,11 +396,7 @@ export function AccountPanel({
           <div key={label}>
             {showGroups ? (
               <div className="flex items-center gap-3 border-b border-line bg-surface/60 px-4 py-1.5">
-                {readOnly ? (
-                  // Keep the 16px checkbox slot so the group label lines up with the rows
-                  // below it (the interactive panel has a checkbox here) — metron-ops#54.
-                  <span className="h-4 w-4 shrink-0" aria-hidden="true" />
-                ) : (
+                {selectable ? (
                   <input
                     type="checkbox"
                     checked={groupAllSelected}
@@ -405,6 +405,10 @@ export function AccountPanel({
                     title={`Include / exclude all ${label} accounts`}
                     className="h-4 w-4 shrink-0 rounded border-line"
                   />
+                ) : (
+                  // Keep the 16px checkbox slot so the group label lines up with the rows
+                  // below it (the management panel has no checkbox here) — metron-ops#54.
+                  <span className="h-4 w-4 shrink-0" aria-hidden="true" />
                 )}
                 <span className="text-[11px] font-medium uppercase tracking-wide text-muted">
                   {label} · {accts.length}

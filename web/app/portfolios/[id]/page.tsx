@@ -179,12 +179,13 @@ export default async function PortfolioPage({
         </p>
       ) : null}
 
-      {/* Accounts summary (read-only) — activation lives on the Holdings page. */}
+      {/* Accounts — management lives here (delete + tax-treatment); temporary scoping
+          (check/uncheck) lives on the Holdings page (metron-ops#77). */}
       <Section title="Accounts" note={scoped ? `${summary.n_accounts} of ${accounts.length} active` : undefined}>
-        <AccountPanel accounts={accounts} baseCurrency={ccy} portfolioId={id} readOnly />
+        <AccountPanel accounts={accounts} baseCurrency={ccy} portfolioId={id} selectable={false} deletable />
         <p className="mt-2 text-xs text-muted">
           <Link href={`/portfolios/${id}/holdings${navQuery}`} className="text-accent hover:underline">
-            Manage &amp; activate accounts on the Holdings page →
+            Activate / scope accounts on the Holdings page →
           </Link>
         </p>
       </Section>

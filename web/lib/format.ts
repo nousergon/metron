@@ -44,6 +44,13 @@ export function accountingMoneyWhole(value: number, currency = "USD"): string {
   return value < 0 ? `(${formatted})` : formatted;
 }
 
+/** Accounting-style money WITH cents (per-lot / native realized figures): no leading "+",
+ *  losses in parentheses. The to-the-cent sibling of accountingMoneyWhole (metron-ops#80). */
+export function accountingMoney(value: number, currency = "USD"): string {
+  const formatted = money(Math.abs(value), currency);
+  return value < 0 ? `(${formatted})` : formatted;
+}
+
 /** Accounting-style percentage from a decimal ratio: no leading "+", losses in
  *  parentheses (0.05 → "5.0%", -0.05 → "(5.0%)"). (metron-ops#80) */
 export function accountingPercent(ratio: number): string {

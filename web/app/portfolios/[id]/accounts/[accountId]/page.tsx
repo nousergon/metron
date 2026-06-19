@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getAccountDetail, MetronApiError } from "@/lib/api";
-import { isoDate, money, moneyWhole, quantity, signClass, signedMoneyWhole } from "@/lib/format";
+import { accountingMoneyWhole, isoDate, money, moneyWhole, quantity, signClass } from "@/lib/format";
 import { Empty, Section, Table } from "@/components/ui";
 import { GroupedHoldings } from "@/components/grouped-holdings";
 import { requireTenantId } from "@/lib/session";
@@ -63,10 +63,10 @@ export default async function AccountPage({ params }: { params: { id: string; ac
                 <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(r.cost_basis, r.currency)}</td>
                 <td className={`px-4 py-2 text-right font-medium tabular-nums ${signClass(r.gain_base ?? r.gain)}`}>
                   {r.gain_base != null ? (
-                    signedMoneyWhole(r.gain_base, ccy)
+                    accountingMoneyWhole(r.gain_base, ccy)
                   ) : (
                     <span className="text-muted" title={`No ${ccy} FX rate for ${isoDate(r.close_date)}`}>
-                      {signedMoneyWhole(r.gain, r.currency)}*
+                      {accountingMoneyWhole(r.gain, r.currency)}*
                     </span>
                   )}
                 </td>
