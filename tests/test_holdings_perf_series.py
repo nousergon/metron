@@ -129,6 +129,51 @@ class TestAccountSeries:
         assert [a.account_id for a in res.accounts] == [a1]
 
 
+class TestReconstructedCoverage:
+    """A reconstructable account (CSV ledger / IBKR lots) gets a DEEP line tagged
+    coverage="reconstructed"; a snapshot-sourced account with no lots stays "forward"
+    (metron-ops#87)."""
+
+    def test_csv_account_is_reconstructed_deep(self, db_session, tenant):
+        pid = uuid.uuid4()
+        aid = _account(db_session, tenant, pid, "Old")  # broker="csv"
+        sec = models.Security(symbol="AAPL", currency="USD")
+        db_session.add(sec)
+        db_session.flush()
+        db_session.add(
+            models.Transaction(
+                tenant_id=uuid.UUID(tenant), account_id=aid, security_id=sec.id,
+                txn_type="BUY", quantity=10, price=100.0, amount=1000.0, currency="USD",
+                trade_date=date(2024, 1, 2), source_key="buy-1",
+            )
+        )
+        db_session.commit()
+        # Cached closes only — backfill=False on read must not hit the network.
+        _bars(db_session, "AAPL", [(date(2024, 1, 2), 100.0), (date(2024, 3, 1), 120.0), (date(2024, 6, 28), 150.0)])
+
+        res = perf.account_performance_series(
+            db_session, uuid.UUID(tenant), pid, today=date(2024, 6, 30), with_benchmarks=False
+        )
+        acct = res.accounts[0]
+        assert acct.coverage == "reconstructed"
+        assert acct.points[0].when == date(2024, 1, 2)  # deep — back to the first lot, not forward-only
+        assert round(acct.points[-1].g, 4) == 1.5  # 10×150 / 10×100
+
+    def test_snapshot_account_without_lots_stays_forward(self, db_session, tenant):
+        pid = uuid.uuid4()
+        aid = uuid.uuid4()
+        db_session.add(
+            models.Account(id=aid, tenant_id=uuid.UUID(tenant), portfolio_id=pid, broker="snaptrade", external_id="S1", name="SnapTrade")
+        )
+        db_session.commit()
+        for when, nav in zip(_DATES, [1000.0, 1100.0, 1210.0], strict=True):
+            _asnap(db_session, tenant, pid, aid, when, nav)
+        res = perf.account_performance_series(
+            db_session, uuid.UUID(tenant), pid, today=_DATES[-1], with_benchmarks=False
+        )
+        assert res.accounts[0].coverage == "forward"
+
+
 class TestEndpoint:
     def test_endpoint_shape(self, client, db_session, tenant, monkeypatch):
         monkeypatch.setattr("api.services.prices.fetch_close_history", lambda *a, **k: {})

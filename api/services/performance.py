@@ -130,6 +130,25 @@ def _account_net_purchases(
     return _purchase_flow(rows)
 
 
+def _scoped_net_purchases(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    account_ids: Collection[uuid.UUID] | None,
+    *,
+    after: date | None,
+    through: date,
+) -> float:
+    """Net purchases over ``(after, through]`` for the whole portfolio (``account_ids``
+    None) or a scoped set — the TWR flow term, at either grain. Summing per-account net
+    purchases equals the portfolio figure (BUY/SELL amounts partition by account)."""
+    if account_ids is None:
+        return _net_purchases(session, tenant_id, portfolio_id, after=after, through=through)
+    return sum(
+        _account_net_purchases(session, tenant_id, aid, after=after, through=through) for aid in account_ids
+    )
+
+
 def _last_snapshot_date(
     session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, before: date
 ) -> date | None:
@@ -820,6 +839,11 @@ class AccountSeries:
     account_id: uuid.UUID
     name: str
     points: list[SeriesPoint] = field(default_factory=list)
+    # What backs this line (metron-ops#87): "reconstructed" = full history rebuilt from the
+    # broker LOTS (IBKR) or the transaction LEDGER (CSV/OFX); "forward" = only the
+    # forward-recorded NAV snapshots (SnapTrade and other snapshot-sourced accounts with no
+    # replayable lots — history accrues from when tracking began).
+    coverage: str = "forward"
 
 
 @dataclass
@@ -852,6 +876,21 @@ def _growth_index(points: list[PerfPoint]) -> list[SeriesPoint]:
         r = (points[i].nav - points[i].external_flow) / prev - 1.0 if prev > 0 else 0.0
         g *= 1.0 + r
         out.append(SeriesPoint(when=points[i].snap_date, g=g))
+    return out
+
+
+def _growth_from_navpoints(points: list[_NavPoint]) -> list[SeriesPoint]:
+    """Cumulative flow-neutralized growth index (g[0]=1.0) over a reconstructed NAV series —
+    the _NavPoint analogue of _growth_index (which works off recorded PerfPoints)."""
+    if len(points) < 2:
+        return []
+    out = [SeriesPoint(when=points[0].when, g=1.0)]
+    g = 1.0
+    for i in range(1, len(points)):
+        prev = points[i - 1].nav
+        r = (points[i].nav - points[i].flow) / prev - 1.0 if prev > 0 else 0.0
+        g *= 1.0 + r
+        out.append(SeriesPoint(when=points[i].when, g=g))
     return out
 
 
@@ -903,14 +942,23 @@ def account_performance_series(
     result = HoldingsPerfSeries()
     earliest: date | None = None
     for aid in targets:
-        points = _account_perf_series(session, tenant_id, [aid])[0]
-        if len(points) < 2:
-            continue  # a single point isn't a line yet
+        # Prefer a RECONSTRUCTED line (deep history from this account's lots/ledger, valued
+        # from the existing price cache — no network on read). Fall back to the forward-
+        # recorded NAV snapshots when the account can't be reconstructed (SnapTrade, no lots)
+        # or its tickers aren't cached yet. The coverage tag tells the user which (#87).
+        recon = _reconstruct_nav_points(session, tenant_id, portfolio_id, account_ids=[aid], today=today, backfill=False)
+        pts = _growth_from_navpoints(recon)
+        coverage = "reconstructed"
+        if len(pts) < 2:
+            forward = _account_perf_series(session, tenant_id, [aid])[0]
+            if len(forward) < 2:
+                continue  # not a line yet either way
+            pts = _growth_index(forward)
+            coverage = "forward"
         result.accounts.append(
-            AccountSeries(account_id=aid, name=names.get(aid, str(aid)), points=_growth_index(points))
+            AccountSeries(account_id=aid, name=names.get(aid, str(aid)), points=pts, coverage=coverage)
         )
-        first = points[0].snap_date
-        earliest = first if earliest is None else min(earliest, first)
+        earliest = pts[0].when if earliest is None else min(earliest, pts[0].when)
 
     if with_benchmarks and earliest is not None:
         symbols = [s for s, _ in BENCHMARKS]
@@ -967,29 +1015,35 @@ def _valuation_dates(first: date, today: date, flow_dates: list[date]) -> list[d
     return sorted(dates)
 
 
-def _load_lot_timeline(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID):
+def _load_lot_timeline(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    account_ids: Collection[uuid.UUID] | None = None,
+):
     """Per-ticker open + closed lots → the inputs to reconstruct the historical position.
 
     Returns ``(open_lots, closed_lots)`` where each is ``(ticker, qty, cost_basis,
     open_date[, close_date])``. An OPEN lot contributes to the position from its open date
     onward; a CLOSED lot (from ``realized_lots``) contributes between open and close
     (exclusive). Together they give position(ticker, d) without a replayable trade feed
-    (metron-ops#74)."""
-    open_lots = [
-        (r.ticker, float(r.quantity), float(r.cost_basis), r.open_date)
-        for r in session.scalars(
-            select(models.OpenLot)
-            .join(models.Account, models.OpenLot.account_id == models.Account.id)
-            .where(models.OpenLot.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
-        ).all()
-    ]
+    (metron-ops#74). ``account_ids`` scopes to a SET of accounts (per-account history,
+    metron-ops#87)."""
+    scope = list(account_ids) if account_ids is not None else None
+
+    def _q(model):
+        stmt = (
+            select(model)
+            .join(models.Account, model.account_id == models.Account.id)
+            .where(model.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+        )
+        if scope is not None:
+            stmt = stmt.where(model.account_id.in_(scope))
+        return session.scalars(stmt).all()
+
+    open_lots = [(r.ticker, float(r.quantity), float(r.cost_basis), r.open_date) for r in _q(models.OpenLot)]
     closed_lots = [
-        (r.ticker, float(r.quantity), float(r.cost_basis), r.open_date, r.close_date)
-        for r in session.scalars(
-            select(models.RealizedLot)
-            .join(models.Account, models.RealizedLot.account_id == models.Account.id)
-            .where(models.RealizedLot.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
-        ).all()
+        (r.ticker, float(r.quantity), float(r.cost_basis), r.open_date, r.close_date) for r in _q(models.RealizedLot)
     ]
     return open_lots, closed_lots
 
@@ -1084,7 +1138,45 @@ def reconstruct_snapshots(
     BEFORE ``record_snapshot`` so the live-positions value (authoritative, and complete
     even for non-lot holdings) overwrites today's reconstructed point. Idempotent. Returns
     the number of snapshots written."""
-    open_lots, closed_lots = _load_lot_timeline(session, tenant_id, portfolio_id)
+    points = _reconstruct_nav_points(
+        session, tenant_id, portfolio_id, account_ids=None, today=today, source=source, backfill=True
+    )
+    written = 0
+    for p in points:
+        _upsert_snapshot(
+            session, tenant_id, portfolio_id, p.when,
+            nav=p.nav, cost_basis=p.cost_basis, flow=p.flow, spy_close=p.spy_close,
+        )
+        written += 1
+    session.commit()
+    return written
+
+
+@dataclass
+class _NavPoint:
+    when: date
+    nav: float
+    cost_basis: float
+    flow: float
+    spy_close: float | None = None
+
+
+def _reconstruct_nav_points(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    account_ids: Collection[uuid.UUID] | None,
+    today: date,
+    source: HistorySource | None = None,
+    backfill: bool = True,
+) -> list[_NavPoint]:
+    """The read-only core of NAV reconstruction — the historical valuation series for the
+    whole portfolio (``account_ids`` None) or a scoped set of accounts (per-account history,
+    metron-ops#87). ``reconstruct_snapshots`` persists this; the Holdings chart reads it
+    per account. ``backfill=False`` values from the EXISTING price cache only (no network) —
+    the cheap path for read-time per-account series; the write path backfills first."""
+    open_lots, closed_lots = _load_lot_timeline(session, tenant_id, portfolio_id, account_ids)
     # Replay the transaction ledger ONLY for genuinely ledger-sourced (CSV/OFX) accounts —
     # the SAME snapshot-vs-ledger boundary analytics.holdings() uses. Snapshot-sourced
     # accounts (IBKR Flex / SnapTrade / reference) ALSO carry a transactions/activity feed,
@@ -1094,11 +1186,14 @@ def reconstruct_snapshots(
     # detail (SnapTrade), carried flat-backward at current broker value — never replayed.
     snapshot_account_ids = analytics._snapshot_sourced_account_ids(session, tenant_id, portfolio_id)
     by_account = analytics.engine_transactions_by_account(session, tenant_id, portfolio_id)
+    if account_ids is not None:
+        scope = set(account_ids)
+        by_account = [(aid, t) for aid, t in by_account if aid in scope]
     ledger_by_account = [(aid, t) for aid, t in by_account if aid not in snapshot_account_ids]
     ledger_txns = [t for _aid, t in ledger_by_account]
 
     if not open_lots and not closed_lots and not ledger_txns:
-        return 0
+        return []
 
     lot_dates = (
         [od for _t, _q, _cb, od in open_lots]
@@ -1110,11 +1205,12 @@ def reconstruct_snapshots(
         {t for t, *_ in open_lots} | {t for t, *_ in closed_lots} | {t.ticker for t in ledger_txns if t.ticker}
     )
 
-    price_service.ensure_security(session, "SPY")
-    price_service.backfill_prices(session, [*symbols, "SPY"], first, today, source=source)
+    if backfill:
+        price_service.ensure_security(session, "SPY")
+        price_service.backfill_prices(session, [*symbols, "SPY"], first, today, source=source)
     history = price_service.close_history_by_symbol(session, [*symbols, "SPY"])
     spy_series = history.get("SPY")
-    held = analytics.valued_holdings(session, tenant_id, portfolio_id)
+    held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     current_px = {h.ticker: h.last_price for h in held if h.last_price is not None}
 
     # Holdings covered by neither lots NOR the transaction ledger (e.g. a money-market
@@ -1131,7 +1227,7 @@ def reconstruct_snapshots(
     # valuation date (a foreign close is not a USD value — the foreign-holding spike).
     ticker_ccy = _ticker_currencies(session, tenant_id, portfolio_id)
     foreign = sorted({c for c in ticker_ccy.values() if c and c != "USD"})
-    if foreign:
+    if backfill and foreign:
         fx_service.backfill_fx_rates(session, foreign, first, today, base="USD")
     _rate_cache: dict[tuple[str, date], float] = {}
 
@@ -1147,9 +1243,9 @@ def reconstruct_snapshots(
             )
         return _rate_cache[key]
 
-    # Flows are cash deposits/withdrawals across ALL accounts (TWR sub-period breaks).
+    # Flows are cash deposits/withdrawals across the in-scope accounts (TWR sub-period breaks).
     flow_dates = [t.when for _aid, t in by_account if t.type in (TxnType.DEPOSIT, TxnType.WITHDRAWAL)]
-    written = 0
+    points: list[_NavPoint] = []
     prev: date | None = None
     for when in _valuation_dates(first, today, flow_dates):
         pos, cost = _lot_positions_asof(open_lots, closed_lots, when)
@@ -1179,12 +1275,9 @@ def reconstruct_snapshots(
         cost_basis += flat_cost
         if not valued_any and flat_nav == 0:
             continue
-        flow = _net_purchases(session, tenant_id, portfolio_id, after=prev, through=when)
-        _upsert_snapshot(
-            session, tenant_id, portfolio_id, when,
-            nav=nav, cost_basis=cost_basis, flow=flow, spy_close=_asof_close(spy_series, when),
+        flow = _scoped_net_purchases(session, tenant_id, portfolio_id, account_ids, after=prev, through=when)
+        points.append(
+            _NavPoint(when=when, nav=nav, cost_basis=cost_basis, flow=flow, spy_close=_asof_close(spy_series, when))
         )
-        written += 1
         prev = when
-    session.commit()
-    return written
+    return points

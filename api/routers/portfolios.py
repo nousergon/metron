@@ -1555,6 +1555,8 @@ class AccountSeriesOut(BaseModel):
     account_id: uuid.UUID
     name: str
     points: list[SeriesPointOut] = []
+    # "reconstructed" (deep, from lots/ledger) or "forward" (accrues from tracking start).
+    coverage: str = "forward"
 
 
 class BenchmarkSeriesOut(BaseModel):

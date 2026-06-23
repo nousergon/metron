@@ -192,8 +192,15 @@ export type PeriodTiles = {
 /** A point on a normalized growth series (g=1.0 at the series' first point). */
 export type SeriesPoint = { when: string; g: number };
 
-/** One account's performance line for the Holdings chart (metron-ops#78). */
-export type AccountSeries = { account_id: string; name: string; points: SeriesPoint[] };
+/** One account's performance line for the Holdings chart (metron-ops#78, #87).
+ *  `coverage`: "reconstructed" = deep history rebuilt from lots/transactions;
+ *  "forward" = accrues from when tracking began (SnapTrade & other snapshot accounts). */
+export type AccountSeries = {
+  account_id: string;
+  name: string;
+  points: SeriesPoint[];
+  coverage: "reconstructed" | "forward";
+};
 
 /** One benchmark overlay (SPY/QQQ/IWM) for the Holdings chart. */
 export type BenchmarkSeries = { symbol: string; label: string; points: SeriesPoint[] };

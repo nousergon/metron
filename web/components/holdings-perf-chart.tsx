@@ -32,7 +32,7 @@ const VIEW_H = 200;
 const PAD = 10;
 
 type Pt = { when: string; v: number };
-type Line = { key: string; label: string; color: string; dashed: boolean; points: Pt[] };
+type Line = { key: string; label: string; color: string; dashed: boolean; points: Pt[]; forwardOnly?: boolean };
 
 /** today − `days` as an ISO date (YYYY-MM-DD), or null for the All range. */
 function cutoffISO(days: number | null, now = new Date()): string | null {
@@ -107,7 +107,7 @@ export function HoldingsPerfChart({
   accounts.forEach((a, i) => {
     const pts = rebase(a.points, cutoff);
     if (pts.length >= 2) {
-      lines.push({ key: `acct:${a.account_id}`, label: a.name, color: ACCOUNT_COLORS[i % ACCOUNT_COLORS.length]!, dashed: false, points: pts });
+      lines.push({ key: `acct:${a.account_id}`, label: a.name, color: ACCOUNT_COLORS[i % ACCOUNT_COLORS.length]!, dashed: false, points: pts, forwardOnly: a.coverage === "forward" });
     }
   });
   for (const b of benchmarks) {
@@ -269,7 +269,7 @@ export function HoldingsPerfChart({
             </span>
             <span>{isoDate(new Date(t1).toISOString().slice(0, 10))}</span>
           </div>
-          {/* Legend with each line's latest return over the visible range. */}
+          {/* Legend with each line's latest return over the visible range + data coverage. */}
           <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-line pt-2 text-[11px]">
             {lines.map((l) => {
               const last = l.points[l.points.length - 1]!;
@@ -279,10 +279,21 @@ export function HoldingsPerfChart({
                   <span className="inline-block h-0.5 w-4" style={{ backgroundColor: l.color, borderBottom: l.dashed ? `1px dashed ${l.color}` : undefined }} />
                   <span className="text-muted">{l.label}</span>
                   <span className={`tabular-nums ${pct >= 0 ? "text-positive" : "text-negative"}`}>{fmtPct(pct)}</span>
+                  {l.forwardOnly ? (
+                    <span className="rounded border border-line px-1 text-[9px] uppercase tracking-wide text-muted/70" title="No replayable history (e.g. SnapTrade) — this line accrues forward from when tracking began">
+                      since tracking
+                    </span>
+                  ) : null}
                 </span>
               );
             })}
           </div>
+          {lines.some((l) => l.forwardOnly) ? (
+            <p className="mt-1.5 text-[10px] text-muted/70">
+              “Since tracking” lines have no replayable broker history, so they start when Metron began recording; the
+              others are reconstructed from lots / transactions.
+            </p>
+          ) : null}
         </>
       )}
     </div>

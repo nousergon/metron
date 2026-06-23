@@ -28,8 +28,8 @@ describe("rebase", () => {
 });
 
 const accounts: AccountSeries[] = [
-  { account_id: "a1", name: "Brokerage", points: pts([["2024-01-01", 1], ["2024-02-01", 1.1], ["2024-03-01", 1.2]]) },
-  { account_id: "a2", name: "IRA", points: pts([["2024-01-01", 1], ["2024-02-01", 0.95], ["2024-03-01", 1.05]]) },
+  { account_id: "a1", name: "Brokerage", coverage: "reconstructed", points: pts([["2024-01-01", 1], ["2024-02-01", 1.1], ["2024-03-01", 1.2]]) },
+  { account_id: "a2", name: "IRA", coverage: "forward", points: pts([["2024-01-01", 1], ["2024-02-01", 0.95], ["2024-03-01", 1.05]]) },
 ];
 const benchmarks: BenchmarkSeries[] = [
   { symbol: "SPY", label: "S&P 500", points: pts([["2024-01-01", 1], ["2024-02-01", 1.05], ["2024-03-01", 1.08]]) },
@@ -57,8 +57,14 @@ describe("HoldingsPerfChart", () => {
     expect(screen.queryByRole("button", { name: "SPY" })).toBeNull();
   });
 
+  it("tags forward-only accounts 'since tracking' and reconstructed ones plain", () => {
+    render(<HoldingsPerfChart accounts={accounts} benchmarks={[]} benchmarksAvailable={false} />);
+    // a2 (IRA) is forward-only → one badge; a1 (Brokerage) is reconstructed → no badge.
+    expect(screen.getAllByText("since tracking").length).toBe(1);
+  });
+
   it("shows the empty message when no account has enough history for the range", () => {
-    const thin: AccountSeries[] = [{ account_id: "a1", name: "Brokerage", points: pts([["2024-01-01", 1]]) }];
+    const thin: AccountSeries[] = [{ account_id: "a1", name: "Brokerage", coverage: "forward", points: pts([["2024-01-01", 1]]) }];
     render(<HoldingsPerfChart accounts={thin} benchmarks={[]} benchmarksAvailable={false} />);
     expect(screen.getByText("Not enough history yet for this range.")).toBeTruthy();
   });
