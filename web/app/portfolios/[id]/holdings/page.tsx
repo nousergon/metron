@@ -1,5 +1,6 @@
-import { acctParams, getAccounts, getHoldings, getHoldingsPerformanceSeries, getSummary, MetronApiError, type HoldingsPerfSeries } from "@/lib/api";
-import { Empty, Section } from "@/components/ui";
+import { acctParams, getAccounts, getHoldings, getHoldingsPerformanceSeries, getSummary, getToday, MetronApiError, type HoldingsPerfSeries, type Today } from "@/lib/api";
+import { Empty, Section, StatCard } from "@/components/ui";
+import { accountingMoneyWhole, percent, signClass } from "@/lib/format";
 import { AccountPanel } from "@/components/account-panel";
 import { GroupedHoldings } from "@/components/grouped-holdings";
 import { HoldingsPerfChart } from "@/components/holdings-perf-chart";
@@ -59,6 +60,17 @@ export default async function HoldingsPage({
   }
   const showChart = (perfSeries?.accounts.length ?? 0) > 0;
 
+  // Today's overnight/intraday/day P&L strip — folded in from the old Today page
+  // (metron-ops#87). Best-effort: never blocks the page; hidden when there's no intraday
+  // data (off-hours / no feed). The per-holding decomposition lives in the table's Day column.
+  let today: Today | null = null;
+  try {
+    today = await getToday(tenantId, id, accountIds);
+  } catch {
+    today = null;
+  }
+  const showToday = !!today?.available && today.rows.length > 0;
+
   return (
     <div>
       <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
@@ -72,6 +84,32 @@ export default async function HoldingsPage({
         (De)activate accounts to see how they affect the positions below. The selection persists and the Overview
         metrics follow it.
       </p>
+
+      {/* Today's P&L (folded in from the old Today page, metron-ops#87): Day = Overnight
+          (open vs prior close) + Intraday (latest vs open). Per-holding detail is the Day
+          column in the table below. */}
+      {showToday && today ? (
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <StatCard
+            label="Overnight"
+            value={today.overnight_gain != null ? accountingMoneyWhole(today.overnight_gain, ccy) : "—"}
+            valueClass={signClass(today.overnight_gain ?? 0)}
+            hint={today.overnight_pct != null ? percent(today.overnight_pct) : undefined}
+          />
+          <StatCard
+            label="Intraday"
+            value={today.intraday_gain != null ? accountingMoneyWhole(today.intraday_gain, ccy) : "—"}
+            valueClass={signClass(today.intraday_gain ?? 0)}
+            hint={today.intraday_pct != null ? percent(today.intraday_pct) : undefined}
+          />
+          <StatCard
+            label="Day"
+            value={today.day_gain != null ? accountingMoneyWhole(today.day_gain, ccy) : "—"}
+            valueClass={signClass(today.day_gain ?? 0)}
+            hint={today.day_pct != null ? percent(today.day_pct) : undefined}
+          />
+        </div>
+      ) : null}
 
       <Section title="Accounts">
         <AccountPanel accounts={accounts} baseCurrency={ccy} portfolioId={id} />

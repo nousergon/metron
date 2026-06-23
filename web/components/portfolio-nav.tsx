@@ -62,11 +62,9 @@ export function PortfolioNav({
   // Selection-scoped pages carry navQuery; whole-portfolio pages don't.
   const pages: NavPage[] = [
     { label: "Overview", href: `${base}${navQuery}`, feature: "overview" },
+    // Holdings now carries the intraday Day decomposition + per-security YTD/LTM; the
+    // standalone Today page was folded in and /today redirects here (metron-ops#87).
     { label: "Holdings", href: `${base}/holdings${navQuery}`, feature: "overview" },
-    // Today: intraday overnight/intraday/day decomposition — needs the licensed intraday
-    // feed (same as the Markets strip), so it's gated on `indices` and hidden in the
-    // no-feed beta (metron-ops#23).
-    { label: "Today", href: `${base}/today${navQuery}`, feature: "indices" },
     { label: "Performance", href: `${base}/performance${navQuery}`, feature: "performance" },
     { label: "Risk", href: `${base}/risk${navQuery}`, feature: "risk" },
     { label: "Attribution", href: `${base}/attribution${navQuery}`, feature: "attribution" },

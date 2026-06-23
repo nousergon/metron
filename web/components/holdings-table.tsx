@@ -52,6 +52,11 @@ const COLUMNS: Column[] = [
   },
   { key: "unrealized", label: "Unrealized $", pricedOnly: true, defaultDesc: true, value: (h) => h.unrealized_gain },
   { key: "unrealized_pct", label: "Unrealized %", pricedOnly: true, defaultDesc: true, value: (h) => h.unrealized_pct },
+  // Per-security period returns (metron-ops#87): Day (overnight/intraday/day, feed-gated),
+  // YTD + LTM (from cached daily closes). Null → "—" (no feed / insufficient history).
+  { key: "day_pct", label: "Day", pricedOnly: true, defaultDesc: true, value: (h) => h.day_pct },
+  { key: "ytd_pct", label: "YTD", pricedOnly: true, defaultDesc: true, value: (h) => h.ytd_pct },
+  { key: "ltm_pct", label: "LTM", pricedOnly: true, defaultDesc: true, value: (h) => h.ltm_pct },
 ];
 
 export function HoldingsTable({
@@ -184,6 +189,22 @@ export function HoldingsTable({
                     <td className={`px-4 py-2 text-right tabular-nums ${signClass(h.unrealized_pct ?? 0)}`}>
                       {h.unrealized_pct != null ? accountingPercent(h.unrealized_pct) : "—"}
                     </td>
+                    <td
+                      className={`px-4 py-2 text-right tabular-nums ${h.day_pct != null ? signClass(h.day_pct) : "text-muted"}`}
+                      title={
+                        h.overnight_pct != null && h.intraday_pct != null
+                          ? `overnight ${accountingPercent(h.overnight_pct)} · intraday ${accountingPercent(h.intraday_pct)}`
+                          : undefined
+                      }
+                    >
+                      {h.day_pct != null ? accountingPercent(h.day_pct) : "—"}
+                    </td>
+                    <td className={`px-4 py-2 text-right tabular-nums ${h.ytd_pct != null ? signClass(h.ytd_pct) : "text-muted"}`}>
+                      {h.ytd_pct != null ? accountingPercent(h.ytd_pct) : "—"}
+                    </td>
+                    <td className={`px-4 py-2 text-right tabular-nums ${h.ltm_pct != null ? signClass(h.ltm_pct) : "text-muted"}`}>
+                      {h.ltm_pct != null ? accountingPercent(h.ltm_pct) : "—"}
+                    </td>
                   </>
                 ) : null}
               </tr>
@@ -210,6 +231,10 @@ export function HoldingsTable({
                   <td className={`px-4 py-2 text-right tabular-nums ${signClass(totals.unrealPct ?? 0)}`}>
                     {totals.unrealPct != null ? accountingPercent(totals.unrealPct) : "—"}
                   </td>
+                  {/* Day / YTD / LTM are per-security returns — no meaningful portfolio total. */}
+                  <td className="px-4 py-2" />
+                  <td className="px-4 py-2" />
+                  <td className="px-4 py-2" />
                 </>
               ) : null}
             </tr>

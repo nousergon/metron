@@ -29,6 +29,13 @@ export type Holding = {
   security_type: string;
   // User-set display label/alias (so a numeric-CUSIP bond is legible). null when unset.
   user_label: string | null;
+  // Per-security period returns (metron-ops#87). Day legs (overnight/intraday/day) need the
+  // intraday feed → null off a feed-entitled build; YTD/LTM from cached daily closes.
+  overnight_pct: number | null;
+  intraday_pct: number | null;
+  day_pct: number | null;
+  ytd_pct: number | null;
+  ltm_pct: number | null;
 };
 
 export type IncomeYear = {

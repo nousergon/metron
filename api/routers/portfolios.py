@@ -38,6 +38,7 @@ from api.services import (
     performance,
     persistence,
     risk,
+    security_perf,
     tax,
     watchlist,
 )
@@ -133,6 +134,13 @@ class HoldingOut(BaseModel):
     security_type: str = "other"
     # User-set display label/alias (so a numeric-CUSIP bond is legible). None when unset.
     user_label: str | None = None
+    # Per-security period returns (metron-ops#87). Day legs (overnight/intraday/day) need the
+    # intraday feed → null off a feed-entitled build; YTD/LTM from cached daily closes.
+    overnight_pct: float | None = None
+    intraday_pct: float | None = None
+    day_pct: float | None = None
+    ytd_pct: float | None = None
+    ltm_pct: float | None = None
 
 
 class RealizedOut(BaseModel):
@@ -1371,8 +1379,13 @@ def get_holdings(
     prices, _ = intraday.for_portfolio(
         session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled, account_ids=account_ids
     )
-    return analytics.valued_holdings(
+    held = analytics.valued_holdings(
         session, portfolio.tenant_id, portfolio.id, account_ids=account_ids, prices=prices
+    )
+    # Per-security Day / YTD / LTM returns for the Holdings table (metron-ops#87).
+    return security_perf.enrich_holdings(
+        session, portfolio.tenant_id, portfolio.id, held,
+        as_of=date.today(), feed_entitled=settings.feed_entitled, account_ids=account_ids,
     )
 
 
@@ -1909,7 +1922,11 @@ def get_account_detail(
             tax_treatment=account.tax_treatment,
             taxable=account_meta.is_taxable(account),
         ),
-        holdings=analytics.valued_holdings(session, account.tenant_id, account.portfolio_id, account.id),
+        holdings=security_perf.enrich_holdings(
+            session, account.tenant_id, account.portfolio_id,
+            analytics.valued_holdings(session, account.tenant_id, account.portfolio_id, account.id),
+            as_of=date.today(), feed_entitled=settings.feed_entitled, account_ids={account.id},
+        ),
         realized=analytics.realized(session, account.tenant_id, account.portfolio_id, account.id),
         transactions=analytics.transactions(session, account.tenant_id, account.portfolio_id, account.id),
     )

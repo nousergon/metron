@@ -68,6 +68,14 @@ class Holding:
     security_type: str = "other"
     # User-set display label/alias (so a numeric-CUSIP bond is legible). None when unset.
     user_label: str | None = None
+    # Per-security period returns — populated only by the Holdings endpoint via
+    # security_perf.enrich_holdings (None elsewhere). Day legs need the intraday feed;
+    # YTD/LTM come from cached daily closes (metron-ops#87).
+    overnight_pct: float | None = None
+    intraday_pct: float | None = None
+    day_pct: float | None = None
+    ytd_pct: float | None = None
+    ltm_pct: float | None = None
 
 
 @dataclass
