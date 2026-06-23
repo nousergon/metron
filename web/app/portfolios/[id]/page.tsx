@@ -121,6 +121,13 @@ export default async function PortfolioPage({
           (metron-ops#53). Macro moved back to the Macro page (metron-ops#83). */}
       {indices?.available ? <IndexStrip initial={indices} /> : null}
 
+      {/* Portfolio performance vs market (metron-ops#83): Today / YTD / LTM × $ gain, %TWR,
+          and per-benchmark alpha (feed-gated). Sits directly under Markets so the two read
+          in comparable TWR terms, above the Total value headline. */}
+      {showTiles && tiles ? (
+        <PerfTiles tiles={tiles.tiles} benchmarksAvailable={tiles.benchmarks_available} />
+      ) : null}
+
       {/* Headline: total value, with unrealized broken out by tax treatment. */}
       {priced ? (
         <div className="mt-6 rounded-lg border border-line p-5">
@@ -156,13 +163,6 @@ export default async function PortfolioPage({
           <StatCard label="Cost basis" value={moneyWhole(summary.total_cost_basis, ccy)} hint={`${summary.n_holdings} holdings`} href={`/portfolios/${id}/holdings${navQuery}`} />
         </div>
       )}
-
-      {/* Performance-vs-market hero (metron-ops#83): Today / YTD / LTM × $ gain, %TWR,
-          and per-benchmark alpha (feed-gated). The Overview leads with investment
-          performance; realized gains + income live on the Tax page. */}
-      {showTiles && tiles ? (
-        <PerfTiles tiles={tiles.tiles} benchmarksAvailable={tiles.benchmarks_available} />
-      ) : null}
 
       {/* Holdings / accounts counts → their pages. */}
       <div className="mt-4 grid grid-cols-2 gap-3">
