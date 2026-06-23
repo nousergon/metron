@@ -967,17 +967,6 @@ def _valuation_dates(first: date, today: date, flow_dates: list[date]) -> list[d
     return sorted(dates)
 
 
-def _lot_account_ids(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> set[uuid.UUID]:
-    """Accounts that provided lot-level open positions (e.g. IBKR Flex Lot detail)."""
-    return set(
-        session.scalars(
-            select(models.OpenLot.account_id)
-            .join(models.Account, models.OpenLot.account_id == models.Account.id)
-            .where(models.OpenLot.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
-        ).all()
-    )
-
-
 def _load_lot_timeline(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID):
     """Per-ticker open + closed lots → the inputs to reconstruct the historical position.
 
@@ -1086,17 +1075,26 @@ def reconstruct_snapshots(
     metron-ops#74). Instead, derive position(ticker, d) from broker LOTS: open lots
     (``open_lots``, with open dates) contribute from their open date; closed lots
     (``realized_lots``) contribute between open and close. Accounts that provided NO lot
-    data (CSV/OFX, or a snapshot source without lot detail) fall back to the transaction
-    ledger replay. Each date is valued at the historical close (carry-forward), else the
+    data — genuinely ledger-sourced CSV/OFX accounts only — fall back to the transaction
+    ledger replay. A snapshot source WITHOUT lot detail (e.g. SnapTrade) is carried
+    flat-backward at its current broker value, never replayed: replaying its partial
+    activity feed double-counts and lets the bond face×price ×100 inflation through (the
+    >$1M reconstructed-NAV bug). Each date is valued at the historical close (carry-forward), else the
     current price (flat) so a no-history fund stays in NAV. ``daily_refresh`` runs this
     BEFORE ``record_snapshot`` so the live-positions value (authoritative, and complete
     even for non-lot holdings) overwrites today's reconstructed point. Idempotent. Returns
     the number of snapshots written."""
     open_lots, closed_lots = _load_lot_timeline(session, tenant_id, portfolio_id)
-    lot_account_ids = _lot_account_ids(session, tenant_id, portfolio_id)
-    # Ledger from accounts WITHOUT lot data only — never double-count a lot-covered account.
+    # Replay the transaction ledger ONLY for genuinely ledger-sourced (CSV/OFX) accounts —
+    # the SAME snapshot-vs-ledger boundary analytics.holdings() uses. Snapshot-sourced
+    # accounts (IBKR Flex / SnapTrade / reference) ALSO carry a transactions/activity feed,
+    # so replaying them double-counts shares + cost basis AND lets the bond face×price ×100
+    # inflation through (the >$1M reconstructed-NAV bug — same class as metron-ops#74, via a
+    # path that fix didn't close). They are valued from their lots (IBKR) or, with no lot
+    # detail (SnapTrade), carried flat-backward at current broker value — never replayed.
+    snapshot_account_ids = analytics._snapshot_sourced_account_ids(session, tenant_id, portfolio_id)
     by_account = analytics.engine_transactions_by_account(session, tenant_id, portfolio_id)
-    ledger_by_account = [(aid, t) for aid, t in by_account if aid not in lot_account_ids]
+    ledger_by_account = [(aid, t) for aid, t in by_account if aid not in snapshot_account_ids]
     ledger_txns = [t for _aid, t in ledger_by_account]
 
     if not open_lots and not closed_lots and not ledger_txns:
