@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
-import { HoldingsPerfChart, rebase } from "@/components/holdings-perf-chart";
+import { HoldingsPerfChart, hoverRows, rebase, valueAt } from "@/components/holdings-perf-chart";
 import type { AccountSeries, BenchmarkSeries, SeriesPoint } from "@/lib/api";
 
 const pts = (xs: [string, number][]): SeriesPoint[] => xs.map(([when, g]) => ({ when, g }));
@@ -61,5 +61,35 @@ describe("HoldingsPerfChart", () => {
     const thin: AccountSeries[] = [{ account_id: "a1", name: "Brokerage", points: pts([["2024-01-01", 1]]) }];
     render(<HoldingsPerfChart accounts={thin} benchmarks={[]} benchmarksAvailable={false} />);
     expect(screen.getByText("Not enough history yet for this range.")).toBeTruthy();
+  });
+});
+
+describe("hover readout", () => {
+  const lines = [
+    { key: "a1", label: "Brokerage", color: "#000", dashed: false, points: [
+      { when: "2024-01-01", v: 100 }, { when: "2024-02-01", v: 110 }, { when: "2024-03-01", v: 120 },
+    ] },
+    { key: "a2", label: "IRA", color: "#111", dashed: false, points: [
+      { when: "2024-01-01", v: 100 }, { when: "2024-02-01", v: 95 }, { when: "2024-03-01", v: 105 },
+    ] },
+  ];
+
+  it("valueAt snaps to the nearest sample by date", () => {
+    expect(valueAt(lines[0]!.points, Date.parse("2024-02-03"))?.when).toBe("2024-02-01");
+    expect(valueAt(lines[0]!.points, Date.parse("2024-02-20"))?.when).toBe("2024-03-01");
+    expect(valueAt([], 0)).toBeNull();
+  });
+
+  it("hoverRows returns each line's % return at the cursor, sorted high→low", () => {
+    const rows = hoverRows(lines, Date.parse("2024-03-01"));
+    expect(rows.map((r) => r.label)).toEqual(["Brokerage", "IRA"]); // +20% before +5%
+    expect(rows.map((r) => Math.round(r.pct))).toEqual([20, 5]);
+  });
+
+  it("hoverRows re-sorts as the leader changes earlier in the window", () => {
+    // At Feb, IRA is −5% and Brokerage +10% → Brokerage still leads.
+    const feb = hoverRows(lines, Date.parse("2024-02-01"));
+    expect(feb.map((r) => r.label)).toEqual(["Brokerage", "IRA"]);
+    expect(feb.map((r) => Math.round(r.pct))).toEqual([10, -5]);
   });
 });

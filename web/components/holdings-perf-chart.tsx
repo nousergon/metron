@@ -1,15 +1,16 @@
 "use client";
 
-// Holdings performance chart (metron-ops#78): one indexed line per checked account, with
-// a time-range selector and toggleable benchmark overlays (SPY/QQQ/IWM). Dependency-free
-// inline SVG, matching nav-chart.tsx. The server returns each series as a cumulative
-// growth index (g=1.0 at its first point); this component re-ranges and re-bases to 100
-// client-side, so the range buttons are instant (no refetch).
+// Holdings performance chart (metron-ops#78, #87): one indexed line per checked account,
+// with a time-range selector, toggleable benchmark overlays (SPY/QQQ/IWM), and a hover
+// tooltip listing each line's return at the cursor, sorted high→low. Dependency-free inline
+// SVG, matching nav-chart.tsx. The server returns each series as a cumulative growth index
+// (g=1.0 at its first point); this component re-ranges and re-bases to 100 client-side, so
+// the range buttons are instant (no refetch).
 //
 // Benchmark overlays are feed-gated (Pro): in the no-feed beta `benchmarksAvailable` is
 // false and only the account lines render.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { AccountSeries, BenchmarkSeries, SeriesPoint } from "@/lib/api";
 import { isoDate } from "@/lib/format";
 
@@ -30,7 +31,8 @@ const VIEW_W = 640;
 const VIEW_H = 200;
 const PAD = 10;
 
-type Line = { key: string; label: string; color: string; dashed: boolean; points: { when: string; v: number }[] };
+type Pt = { when: string; v: number };
+type Line = { key: string; label: string; color: string; dashed: boolean; points: Pt[] };
 
 /** today − `days` as an ISO date (YYYY-MM-DD), or null for the All range. */
 function cutoffISO(days: number | null, now = new Date()): string | null {
@@ -42,7 +44,7 @@ function cutoffISO(days: number | null, now = new Date()): string | null {
 
 /** Filter a growth series to the window and re-base to 100 at its first in-window point.
  *  Fewer than 2 in-window points → no line. Exported for testing the math in isolation. */
-export function rebase(points: SeriesPoint[], cutoff: string | null): { when: string; v: number }[] {
+export function rebase(points: SeriesPoint[], cutoff: string | null): Pt[] {
   const win = cutoff ? points.filter((p) => p.when >= cutoff) : points.slice();
   if (win.length < 2) return [];
   const base = win[0]!.g;
@@ -52,6 +54,38 @@ export function rebase(points: SeriesPoint[], cutoff: string | null): { when: st
 
 function epoch(iso: string): number {
   return Date.parse(iso);
+}
+
+/** The point in a rebased series nearest a target epoch (used for the hover readout). */
+export function valueAt(points: Pt[], targetEpoch: number): Pt | null {
+  let best: Pt | null = null;
+  let bestD = Infinity;
+  for (const p of points) {
+    const d = Math.abs(epoch(p.when) - targetEpoch);
+    if (d < bestD) {
+      bestD = d;
+      best = p;
+    }
+  }
+  return best;
+}
+
+type HoverRow = { key: string; label: string; color: string; pct: number; when: string };
+
+/** Each line's return (rebased value − 100) at the cursor epoch, sorted high→low. The
+ *  re-based index is 100 at the window start, so `v − 100` is the % return over the visible
+ *  range up to that point. Exported for testing the ordering + math. */
+export function hoverRows(lines: Line[], targetEpoch: number): HoverRow[] {
+  const rows: HoverRow[] = [];
+  for (const l of lines) {
+    const pt = valueAt(l.points, targetEpoch);
+    if (pt) rows.push({ key: l.key, label: l.label, color: l.color, pct: pt.v - 100, when: pt.when });
+  }
+  return rows.sort((a, b) => b.pct - a.pct);
+}
+
+function fmtPct(pct: number): string {
+  return `${pct >= 0 ? "+" : "−"}${Math.abs(pct).toFixed(2)}%`;
 }
 
 export function HoldingsPerfChart({
@@ -65,6 +99,8 @@ export function HoldingsPerfChart({
 }) {
   const [rangeIdx, setRangeIdx] = useState(RANGES.length - 1); // default All
   const [hidden, setHidden] = useState<Set<string>>(new Set()); // toggled-off benchmark symbols
+  const [hoverE, setHoverE] = useState<number | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
   const cutoff = cutoffISO(RANGES[rangeIdx]![1]);
 
   const lines: Line[] = [];
@@ -101,6 +137,25 @@ export function HoldingsPerfChart({
       else next.add(symbol);
       return next;
     });
+
+  // Map the cursor's screen-x into the viewBox domain (the SVG scales non-uniformly, so we
+  // go through the wrapper's pixel width → viewBox x → epoch).
+  function onMove(clientX: number) {
+    const el = wrapRef.current;
+    if (!el || !allEpochs.length) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const xView = ((clientX - rect.left) / rect.width) * VIEW_W;
+    const frac = Math.min(1, Math.max(0, (xView - PAD) / innerW));
+    setHoverE(t0 + frac * (t1 - t0));
+  }
+
+  // Snap the hover to the nearest actual sample so the cursor + dots sit on real points.
+  const rows = hoverE != null ? hoverRows(lines, hoverE) : [];
+  const snapE = rows.length ? epoch(rows[0]!.when) : null;
+  const cursorX = snapE != null ? sx(snapE) : null;
+  const leftPct = cursorX != null ? (cursorX / VIEW_W) * 100 : 0;
+  const tooltipRight = leftPct > 60;
 
   return (
     <div className="rounded-lg border border-line bg-surface p-4">
@@ -153,23 +208,60 @@ export function HoldingsPerfChart({
         <div className="py-10 text-center text-sm text-muted">Not enough history yet for this range.</div>
       ) : (
         <>
-          <svg viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} preserveAspectRatio="none" className="h-48 w-full" role="img" aria-label="Account performance over time, indexed to 100">
-            {/* 100 baseline */}
-            <line x1={PAD} x2={VIEW_W - PAD} y1={sy(100)} y2={sy(100)} stroke="rgb(var(--c-line))" strokeWidth={1} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
-            {lines.map((l) => (
-              <polyline
-                key={l.key}
-                points={l.points.map((p) => `${sx(epoch(p.when)).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ")}
-                fill="none"
-                stroke={l.color}
-                strokeWidth={2}
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                strokeDasharray={l.dashed ? "5 3" : undefined}
-                vectorEffect="non-scaling-stroke"
-              />
-            ))}
-          </svg>
+          <div
+            ref={wrapRef}
+            className="relative"
+            onMouseMove={(e) => onMove(e.clientX)}
+            onMouseLeave={() => setHoverE(null)}
+          >
+            <svg viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} preserveAspectRatio="none" className="h-48 w-full" role="img" aria-label="Account performance over time, indexed to 100">
+              {/* 100 baseline */}
+              <line x1={PAD} x2={VIEW_W - PAD} y1={sy(100)} y2={sy(100)} stroke="rgb(var(--c-line))" strokeWidth={1} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
+              {lines.map((l) => (
+                <polyline
+                  key={l.key}
+                  points={l.points.map((p) => `${sx(epoch(p.when)).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ")}
+                  fill="none"
+                  stroke={l.color}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  strokeDasharray={l.dashed ? "5 3" : undefined}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+              {/* Hover cursor + a dot on each line at the snapped sample. */}
+              {cursorX != null ? (
+                <>
+                  <line x1={cursorX} x2={cursorX} y1={PAD} y2={VIEW_H - PAD} stroke="rgb(var(--c-line))" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+                  {lines.map((l) => {
+                    const pt = snapE != null ? valueAt(l.points, snapE) : null;
+                    return pt ? <circle key={l.key} cx={sx(epoch(pt.when))} cy={sy(pt.v)} r={2.5} fill={l.color} vectorEffect="non-scaling-stroke" /> : null;
+                  })}
+                </>
+              ) : null}
+            </svg>
+
+            {/* Hover tooltip: each line's % return at the cursor, sorted high→low. */}
+            {rows.length ? (
+              <div
+                className="pointer-events-none absolute top-1 z-10 min-w-[8rem] rounded-md border border-line bg-paper/95 p-2 text-[11px] shadow-lg"
+                style={tooltipRight ? { right: `${100 - leftPct}%`, marginRight: "8px" } : { left: `${leftPct}%`, marginLeft: "8px" }}
+              >
+                <div className="mb-1 tabular-nums text-muted">{isoDate(rows[0]!.when)}</div>
+                {rows.map((r) => (
+                  <div key={r.key} className="flex items-center justify-between gap-3">
+                    <span className="flex items-center gap-1.5">
+                      <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: r.color }} />
+                      <span className="text-muted">{r.label}</span>
+                    </span>
+                    <span className={`tabular-nums ${r.pct >= 0 ? "text-positive" : "text-negative"}`}>{fmtPct(r.pct)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
           <div className="mt-2 flex items-center justify-between text-[11px] tabular-nums text-muted">
             <span>{isoDate(new Date(t0).toISOString().slice(0, 10))}</span>
             <span>
@@ -177,14 +269,19 @@ export function HoldingsPerfChart({
             </span>
             <span>{isoDate(new Date(t1).toISOString().slice(0, 10))}</span>
           </div>
-          {/* Legend */}
+          {/* Legend with each line's latest return over the visible range. */}
           <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-line pt-2 text-[11px]">
-            {lines.map((l) => (
-              <span key={l.key} className="flex items-center gap-1.5">
-                <span className="inline-block h-0.5 w-4" style={{ backgroundColor: l.color, borderBottom: l.dashed ? `1px dashed ${l.color}` : undefined }} />
-                <span className="text-muted">{l.label}</span>
-              </span>
-            ))}
+            {lines.map((l) => {
+              const last = l.points[l.points.length - 1]!;
+              const pct = last.v - 100;
+              return (
+                <span key={l.key} className="flex items-center gap-1.5">
+                  <span className="inline-block h-0.5 w-4" style={{ backgroundColor: l.color, borderBottom: l.dashed ? `1px dashed ${l.color}` : undefined }} />
+                  <span className="text-muted">{l.label}</span>
+                  <span className={`tabular-nums ${pct >= 0 ? "text-positive" : "text-negative"}`}>{fmtPct(pct)}</span>
+                </span>
+              );
+            })}
           </div>
         </>
       )}
