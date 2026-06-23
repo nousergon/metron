@@ -748,6 +748,14 @@ class AccountInfo:
     market_value: float | None = None
     unrealized_gain: float | None = None
     n_unconverted: int = 0
+    # Per-account period returns (metron-ops#87) — enriched by the accounts endpoint via
+    # performance.account_period_returns. Day legs need the intraday feed; YTD/LTM derive
+    # from the per-account reconstructed NAV series. None until enriched / when unavailable.
+    overnight_pct: float | None = None
+    intraday_pct: float | None = None
+    day_pct: float | None = None
+    ytd_pct: float | None = None
+    ltm_pct: float | None = None
 
 
 @dataclass

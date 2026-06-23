@@ -174,6 +174,35 @@ class TestReconstructedCoverage:
         assert res.accounts[0].coverage == "forward"
 
 
+class TestAccountPeriodReturns:
+    """Per-account Day/YTD/LTM rollups (metron-ops#87): YTD/LTM from the reconstructed
+    per-account NAV series; Day legs need the feed (None off a feed-entitled build)."""
+
+    def test_ytd_ltm_from_reconstructed_series(self, db_session, tenant):
+        pid = uuid.uuid4()
+        aid = _account(db_session, tenant, pid, "Old")  # broker="csv" → reconstructable
+        sec = models.Security(symbol="AAPL", currency="USD")
+        db_session.add(sec)
+        db_session.flush()
+        db_session.add(
+            models.Transaction(
+                tenant_id=uuid.UUID(tenant), account_id=aid, security_id=sec.id,
+                txn_type="BUY", quantity=10, price=100.0, amount=1000.0, currency="USD",
+                trade_date=date(2024, 1, 2), source_key="buy-1",
+            )
+        )
+        db_session.commit()
+        _bars(db_session, "AAPL", [(date(2024, 1, 2), 100.0), (date(2025, 1, 2), 150.0), (date(2025, 6, 26), 180.0)])
+
+        out = perf.account_period_returns(
+            db_session, uuid.UUID(tenant), pid, today=date(2025, 6, 27), feed_entitled=False
+        )
+        r = out[aid]
+        assert r.ytd_pct == pytest.approx(0.20, abs=1e-3)  # 180/150 − 1 (latest vs first 2025 close)
+        assert r.ltm_pct == pytest.approx(0.80, abs=1e-3)  # 180/100 − 1 (latest vs ~1y-ago close)
+        assert r.day_pct is None  # no feed → no Day legs
+
+
 class TestEndpoint:
     def test_endpoint_shape(self, client, db_session, tenant, monkeypatch):
         monkeypatch.setattr("api.services.prices.fetch_close_history", lambda *a, **k: {})

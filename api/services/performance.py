@@ -18,7 +18,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from alpha_engine_lib.quant.returns import ValuationPoint, annualize, time_weighted_return
 from alpha_engine_lib.quant.riskstats import max_drawdown, sharpe_ratio, sortino_ratio, volatility
@@ -876,6 +876,74 @@ def _growth_index(points: list[PerfPoint]) -> list[SeriesPoint]:
         r = (points[i].nav - points[i].external_flow) / prev - 1.0 if prev > 0 else 0.0
         g *= 1.0 + r
         out.append(SeriesPoint(when=points[i].snap_date, g=g))
+    return out
+
+
+@dataclass
+class AccountPeriodReturns:
+    overnight_pct: float | None = None
+    intraday_pct: float | None = None
+    day_pct: float | None = None
+    ytd_pct: float | None = None
+    ltm_pct: float | None = None
+
+
+def _period_from_growth(points: list[SeriesPoint], as_of: date) -> tuple[float | None, float | None]:
+    """(YTD, LTM) total return from a cumulative growth index — latest vs the first point
+    on/after the window start. Omitted (None) when the series doesn't reach back to the
+    window start (no partial-window number), mirroring the per-security convention (#87)."""
+    if len(points) < 2:
+        return None, None
+    last = points[-1].g
+
+    def _ret(start: date) -> float | None:
+        if points[0].when > start:
+            return None
+        ref = next((p.g for p in points if p.when >= start), None)
+        return (last / ref - 1.0) if (ref and ref > 0) else None
+
+    try:
+        year_ago = as_of.replace(year=as_of.year - 1)
+    except ValueError:  # Feb-29 → Feb-28
+        year_ago = as_of.replace(year=as_of.year - 1, day=28)
+    return _ret(date(as_of.year, 1, 1)), _ret(year_ago)
+
+
+def account_period_returns(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    today: date,
+    feed_entitled: bool,
+    account_ids: Collection[uuid.UUID] | None = None,
+    reader=None,
+    now: datetime | None = None,
+) -> dict[uuid.UUID, AccountPeriodReturns]:
+    """Per-account Day / YTD / LTM returns for the accounts panel (metron-ops#87). YTD/LTM
+    come from each account's reconstructed NAV growth series (one
+    ``account_performance_series`` pass); Day legs (overnight/intraday/day) from the intraday
+    spine per account (owner build only). Accounts with too little history carry None."""
+    out: dict[uuid.UUID, AccountPeriodReturns] = {}
+    series = account_performance_series(
+        session, tenant_id, portfolio_id, today=today, account_ids=account_ids, with_benchmarks=False
+    )
+    for a in series.accounts:
+        ytd, ltm = _period_from_growth(a.points, today)
+        out[a.account_id] = AccountPeriodReturns(ytd_pct=ytd, ltm_pct=ltm)
+
+    if feed_entitled:
+        from api.services import intraday
+
+        ids = list(account_ids) if account_ids else list(
+            session.scalars(select(models.Account.id).where(models.Account.portfolio_id == portfolio_id)).all()
+        )
+        for aid in ids:
+            t = intraday.today_view(
+                session, tenant_id, portfolio_id, feed_entitled=True, account_ids=[aid], reader=reader, now=now
+            )
+            r = out.setdefault(aid, AccountPeriodReturns())
+            r.day_pct, r.overnight_pct, r.intraday_pct = t.day_pct, t.overnight_pct, t.intraday_pct
     return out
 
 

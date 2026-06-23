@@ -205,6 +205,13 @@ class AccountOut(BaseModel):
     market_value: float | None = None
     unrealized_gain: float | None = None
     n_unconverted: int = 0
+    # Per-account period returns (metron-ops#87). Day legs need the intraday feed; YTD/LTM
+    # from the per-account reconstructed NAV series. Null when unavailable.
+    overnight_pct: float | None = None
+    intraday_pct: float | None = None
+    day_pct: float | None = None
+    ytd_pct: float | None = None
+    ltm_pct: float | None = None
 
 
 class SummaryOut(BaseModel):
@@ -1457,7 +1464,19 @@ def get_accounts(
     session: Session = Depends(get_session),
 ) -> list[analytics.AccountInfo]:
     # Always lists ALL accounts (this is the selector itself) with per-account valuation.
-    return analytics.accounts(session, portfolio.tenant_id, portfolio.id)
+    accts = analytics.accounts(session, portfolio.tenant_id, portfolio.id)
+    # Per-account Day / YTD / LTM rollups (metron-ops#87) — YTD/LTM from each account's
+    # reconstructed NAV series, Day legs from the intraday spine (owner build).
+    returns = performance.account_period_returns(
+        session, portfolio.tenant_id, portfolio.id, today=date.today(), feed_entitled=settings.feed_entitled
+    )
+    for a in accts:
+        r = returns.get(a.account_id)
+        if r is None:
+            continue
+        a.overnight_pct, a.intraday_pct, a.day_pct = r.overnight_pct, r.intraday_pct, r.day_pct
+        a.ytd_pct, a.ltm_pct = r.ytd_pct, r.ltm_pct
+    return accts
 
 
 @router.get("/{portfolio_id}/performance", response_model=PerformanceOut)

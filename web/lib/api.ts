@@ -65,6 +65,13 @@ export type Account = {
   market_value: number | null;
   unrealized_gain: number | null;
   n_unconverted: number;
+  // Per-account period returns (metron-ops#87). Day legs need the intraday feed; YTD/LTM
+  // from the per-account reconstructed NAV series. null when unavailable.
+  overnight_pct: number | null;
+  intraday_pct: number | null;
+  day_pct: number | null;
+  ytd_pct: number | null;
+  ltm_pct: number | null;
 };
 
 export type AccountDetail = {

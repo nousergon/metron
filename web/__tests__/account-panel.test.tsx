@@ -48,6 +48,11 @@ const acct = (id: string, name: string): Account =>
     market_value: 1200,
     unrealized_gain: 200,
     n_unconverted: 0,
+    overnight_pct: null,
+    intraday_pct: null,
+    day_pct: 0.01,
+    ytd_pct: 0.25,
+    ltm_pct: 0.18,
   }) as Account;
 
 const ACCOUNTS = [acct("a1", "Brokerage"), acct("a2", "IRA"), acct("a3", "Roth")];
@@ -103,6 +108,17 @@ describe("selection", () => {
     expect(replace).not.toHaveBeenCalled();
     resolveSave({ ok: true, message: "" });
     await waitFor(() => expect(replace).toHaveBeenCalledWith("/portfolios/p", { scroll: false }));
+  });
+});
+
+describe("per-account period returns (metron-ops#87)", () => {
+  it("renders Day / YTD / LTM columns with each account's returns", () => {
+    renderPanel(); // 3 accounts, each ytd 25.0% / ltm 18.0% / day 1.0%
+    expect(screen.getByText("YTD")).toBeInTheDocument();
+    expect(screen.getByText("LTM")).toBeInTheDocument();
+    expect(screen.getByText("Day")).toBeInTheDocument();
+    expect(screen.getAllByText("25.0%").length).toBe(3); // YTD per account
+    expect(screen.getAllByText("18.0%").length).toBe(3); // LTM per account
   });
 });
 

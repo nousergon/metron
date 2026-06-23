@@ -87,9 +87,11 @@ const COL_COST = "w-24";
 const COL_UNREAL = "w-28"; // Unrealized $
 const COL_UNREAL_PCT = "w-20"; // Unrealized %
 const COL_MARKET = "w-24";
+const COL_PERIOD = "w-16"; // Day / YTD / LTM % (metron-ops#87)
 
 /** A single column-header row for the metric columns — replaces the per-row labels with
- *  one header. Unrealized is split into $ and % columns (metron-ops#80). */
+ *  one header. Unrealized is split into $ and % columns (metron-ops#80); Day/YTD/LTM are
+ *  per-account period returns (metron-ops#87). */
 function MetricHeader() {
   return (
     <div className="flex shrink-0 gap-x-6 text-right text-[10px] uppercase tracking-wide text-muted">
@@ -97,25 +99,42 @@ function MetricHeader() {
       <div className={COL_UNREAL}>Unrealized $</div>
       <div className={COL_UNREAL_PCT}>Unrealized %</div>
       <div className={COL_MARKET}>Market</div>
+      <div className={COL_PERIOD}>Day</div>
+      <div className={COL_PERIOD}>YTD</div>
+      <div className={COL_PERIOD}>LTM</div>
     </div>
   );
 }
 
+/** A single period-return cell: signed % when a number, "—" when null (no data), blank when
+ *  undefined (a subtotal/total row, where period returns don't aggregate). */
+function PeriodCell({ pct }: { pct?: number | null }) {
+  if (pct === undefined) return <div className={COL_PERIOD} />;
+  return <div className={`${COL_PERIOD} ${pct != null ? signClass(pct) : "text-muted"}`}>{pct != null ? accountingPercent(pct) : "—"}</div>;
+}
+
 /** The money readout, shared by account rows and subtotal/total rows. Labels live once in
  *  <MetricHeader>. Unrealized $ and % are separate columns; gains/losses read from color
- *  + parentheses (no leading "+"/"−") — accounting style (metron-ops#80). */
+ *  + parentheses (no leading "+"/"−") — accounting style (metron-ops#80). Day/YTD/LTM are
+ *  passed only on account rows (undefined on subtotals/total → blank). */
 function MetricCells({
   cost,
   unreal,
   mv,
   baseCurrency,
   muted,
+  dayPct,
+  ytdPct,
+  ltmPct,
 }: {
   cost: number | null;
   unreal: number | null;
   mv: number | null;
   baseCurrency: string;
   muted?: boolean;
+  dayPct?: number | null;
+  ytdPct?: number | null;
+  ltmPct?: number | null;
 }) {
   const pct = unreal != null && cost ? unreal / cost : null;
   const unrealClass = unreal != null ? signClass(unreal) : "text-muted";
@@ -131,6 +150,9 @@ function MetricCells({
       <div className={`${COL_MARKET} ${muted ? "text-muted" : ""}`}>
         {mv != null ? moneyWhole(mv, baseCurrency) : "—"}
       </div>
+      <PeriodCell pct={dayPct} />
+      <PeriodCell pct={ytdPct} />
+      <PeriodCell pct={ltmPct} />
     </div>
   );
 }
@@ -347,7 +369,15 @@ export function AccountPanel({
             ) : null}
           </div>
         </div>
-        <MetricCells cost={cost} unreal={unreal} mv={mv} baseCurrency={baseCurrency} />
+        <MetricCells
+          cost={cost}
+          unreal={unreal}
+          mv={mv}
+          baseCurrency={baseCurrency}
+          dayPct={a.day_pct}
+          ytdPct={a.ytd_pct}
+          ltmPct={a.ltm_pct}
+        />
         {deletable ? (
           <button
             type="button"
