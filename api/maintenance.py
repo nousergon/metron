@@ -118,6 +118,14 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
             "account-snapshots", p.id,
             lambda p=p: performance.record_account_snapshots(session, p.tenant_id, p.id, today=today),
         )
+        # Overnight/intraday/day decomposition for the day (metron-ops#87) — additive,
+        # best-effort; records the split from the intraday spine so its history accrues.
+        _best_effort(
+            "intraday-legs", p.id,
+            lambda p=p: performance.record_intraday_legs(
+                session, p.tenant_id, p.id, today=today, feed_entitled=settings.feed_entitled
+            ),
+        )
         risk_summary = _best_effort(
             "risk", p.id,
             lambda p=p: risk.compute_risk(session, p.tenant_id, p.id, today=today, do_backfill=True),

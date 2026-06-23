@@ -1113,6 +1113,19 @@ export type Today = {
 export const getToday = (tenantId: string, id: string, accountIds?: string[]) =>
   get<Today>(tenantId, `/portfolios/${id}/today${acctParams(accountIds)}`);
 
+// Overnight/intraday/day decomposition HISTORY (metron-ops#87) — accrues forward; the
+// cumulative split shows how much of the portfolio's drift arrives overnight vs intraday.
+export type IntradayLegDay = { when: string; overnight_pct: number | null; intraday_pct: number | null; day_pct: number | null };
+export type IntradayLegHistory = {
+  days: IntradayLegDay[];
+  cum_overnight_pct: number | null;
+  cum_intraday_pct: number | null;
+  cum_day_pct: number | null;
+  n_days: number;
+};
+export const getIntradayLegs = (tenantId: string, id: string) =>
+  get<IntradayLegHistory>(tenantId, `/portfolios/${id}/intraday-legs`);
+
 export type AdvisorSectorWeight = { sector: string; weight_pct: number; flag: string };
 export type AdvisorConcentration = { ticker: string; weight_pct: number; limit_pct: number };
 export type AdvisorGeo = {

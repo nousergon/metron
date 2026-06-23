@@ -237,6 +237,37 @@ class AccountNavSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class IntradayLegSnapshot(Base):
+    """A dated portfolio overnight/intraday/day P&L decomposition (metron-ops#87).
+
+    Forward-recorded once per trading day from the intraday spine (Day = Overnight
+    [open vs prior close] + Intraday [last vs open]), so the history of how much of the
+    portfolio's return arrives overnight vs during the session accrues over time — it can't
+    be reconstructed (the spine keeps only the latest snapshot). Skipped (never fabricated)
+    when the feed is unavailable. Tenant-scoped; one row per (portfolio, snap_date)."""
+
+    __tablename__ = "intraday_leg_snapshots"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "portfolio_id", "snap_date", name="uq_intraday_leg_day"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
+    snap_date: Mapped[date] = mapped_column(index=True)
+    # Fractions (e.g. 0.004 = +0.4%); base-currency gains; prev-close market value (the base
+    # the % are over). Nullable — a leg without a usable quote is excluded, not zeroed.
+    overnight_pct: Mapped[float | None] = mapped_column(Numeric(18, 10), nullable=True)
+    intraday_pct: Mapped[float | None] = mapped_column(Numeric(18, 10), nullable=True)
+    day_pct: Mapped[float | None] = mapped_column(Numeric(18, 10), nullable=True)
+    overnight_gain: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    intraday_gain: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    day_gain: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    prev_mv: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    n_priced: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class RealizedLot(Base):
     """A broker-reported closed lot — authoritative realized capital gain.
 

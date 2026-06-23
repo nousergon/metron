@@ -402,6 +402,95 @@ def _upsert_account_snapshot(
     return row
 
 
+def record_intraday_legs(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID,
+    *, today: date, feed_entitled: bool, reader=None, now: datetime | None = None,
+) -> models.IntradayLegSnapshot | None:
+    """Record today's portfolio overnight/intraday/day P&L decomposition (metron-ops#87) —
+    the additive sibling of ``record_snapshot``. Captures the split from the intraday spine
+    so the overnight-vs-intraday HISTORY accrues (it can't be reconstructed). Idempotent per
+    (portfolio, day); skipped (returns None) when the feed is unavailable / has no priced
+    rows — never fabricated."""
+    from api.services import intraday
+
+    t = intraday.today_view(session, tenant_id, portfolio_id, feed_entitled=feed_entitled, reader=reader, now=now)
+    if not t.available or not t.rows:
+        return None
+    # prev-close market value (the base the % are over): day_gain / day_pct when both present.
+    prev_mv = (t.day_gain / t.day_pct) if (t.day_gain is not None and t.day_pct) else None
+    row = session.scalars(
+        select(models.IntradayLegSnapshot).where(
+            models.IntradayLegSnapshot.tenant_id == tenant_id,
+            models.IntradayLegSnapshot.portfolio_id == portfolio_id,
+            models.IntradayLegSnapshot.snap_date == today,
+        )
+    ).first()
+    if row is None:
+        row = models.IntradayLegSnapshot(tenant_id=tenant_id, portfolio_id=portfolio_id, snap_date=today)
+        session.add(row)
+    row.overnight_pct, row.intraday_pct, row.day_pct = t.overnight_pct, t.intraday_pct, t.day_pct
+    row.overnight_gain, row.intraday_gain, row.day_gain = t.overnight_gain, t.intraday_gain, t.day_gain
+    row.prev_mv = prev_mv
+    row.n_priced = t.n_priced
+    session.commit()
+    return row
+
+
+@dataclass
+class IntradayLegDay:
+    when: date
+    overnight_pct: float | None
+    intraday_pct: float | None
+    day_pct: float | None
+
+
+@dataclass
+class IntradayLegHistory:
+    days: list[IntradayLegDay] = field(default_factory=list)
+    # Cumulative compounded return from each leg over the recorded span — how much of the
+    # portfolio's drift arrived overnight vs intraday. None until ≥1 day with that leg.
+    cum_overnight_pct: float | None = None
+    cum_intraday_pct: float | None = None
+    cum_day_pct: float | None = None
+    n_days: int = 0
+
+
+def intraday_leg_history(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID
+) -> IntradayLegHistory:
+    """The recorded overnight/intraday/day series + the cumulative (compounded) split —
+    the 'how much of my return comes overnight vs intraday' data point (metron-ops#87)."""
+    rows = session.scalars(
+        select(models.IntradayLegSnapshot)
+        .where(
+            models.IntradayLegSnapshot.tenant_id == tenant_id,
+            models.IntradayLegSnapshot.portfolio_id == portfolio_id,
+        )
+        .order_by(models.IntradayLegSnapshot.snap_date)
+    ).all()
+    out = IntradayLegHistory(n_days=len(rows))
+    co = ci = cd = 1.0
+    have_on = have_id = have_day = False
+    for r in rows:
+        on = float(r.overnight_pct) if r.overnight_pct is not None else None
+        idp = float(r.intraday_pct) if r.intraday_pct is not None else None
+        dp = float(r.day_pct) if r.day_pct is not None else None
+        if on is not None:
+            co *= 1.0 + on
+            have_on = True
+        if idp is not None:
+            ci *= 1.0 + idp
+            have_id = True
+        if dp is not None:
+            cd *= 1.0 + dp
+            have_day = True
+        out.days.append(IntradayLegDay(when=r.snap_date, overnight_pct=on, intraday_pct=idp, day_pct=dp))
+    out.cum_overnight_pct = co - 1.0 if have_on else None
+    out.cum_intraday_pct = ci - 1.0 if have_id else None
+    out.cum_day_pct = cd - 1.0 if have_day else None
+    return out
+
+
 @dataclass
 class PerfPoint:
     snap_date: date

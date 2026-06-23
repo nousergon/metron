@@ -1616,6 +1616,37 @@ def get_holdings_performance_series(
     )
 
 
+class IntradayLegDayOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    when: date
+    overnight_pct: float | None = None
+    intraday_pct: float | None = None
+    day_pct: float | None = None
+
+
+class IntradayLegHistoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    days: list[IntradayLegDayOut] = []
+    cum_overnight_pct: float | None = None
+    cum_intraday_pct: float | None = None
+    cum_day_pct: float | None = None
+    n_days: int = 0
+
+
+@router.get("/{portfolio_id}/intraday-legs", response_model=IntradayLegHistoryOut)
+def get_intraday_legs(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> performance.IntradayLegHistory:
+    """The recorded overnight/intraday/day decomposition history + the cumulative
+    (compounded) split — how much of the portfolio's drift arrives overnight vs intraday
+    (metron-ops#87). Accrues forward from when recording began (the spine keeps only the
+    latest snapshot, so it can't be reconstructed); empty until the first daily record."""
+    return performance.intraday_leg_history(session, portfolio.tenant_id, portfolio.id)
+
+
 @router.get("/{portfolio_id}/tax", response_model=TaxOut)
 def get_tax(
     taxable_only: bool = True,

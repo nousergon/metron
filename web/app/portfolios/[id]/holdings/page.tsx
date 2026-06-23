@@ -1,4 +1,4 @@
-import { acctParams, getAccounts, getHoldings, getHoldingsPerformanceSeries, getSummary, getToday, MetronApiError, type HoldingsPerfSeries, type Today } from "@/lib/api";
+import { acctParams, getAccounts, getHoldings, getHoldingsPerformanceSeries, getIntradayLegs, getSummary, getToday, MetronApiError, type HoldingsPerfSeries, type IntradayLegHistory, type Today } from "@/lib/api";
 import { Empty, Section, StatCard } from "@/components/ui";
 import { accountingMoneyWhole, percent, signClass } from "@/lib/format";
 import { AccountPanel } from "@/components/account-panel";
@@ -71,6 +71,17 @@ export default async function HoldingsPage({
   }
   const showToday = !!today?.available && today.rows.length > 0;
 
+  // Overnight-vs-intraday HISTORY (metron-ops#87) — the cumulative split of where the
+  // portfolio's drift comes from. Best-effort; portfolio-wide (not account-scoped) and
+  // empty until the daily recorder has ≥1 day.
+  let legs: IntradayLegHistory | null = null;
+  try {
+    legs = await getIntradayLegs(tenantId, id);
+  } catch {
+    legs = null;
+  }
+  const showLegs = (legs?.n_days ?? 0) > 0 && (legs?.cum_day_pct != null);
+
   return (
     <div>
       <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
@@ -109,6 +120,25 @@ export default async function HoldingsPage({
             hint={today.day_pct != null ? percent(today.day_pct) : undefined}
           />
         </div>
+      ) : null}
+
+      {/* Overnight vs intraday HISTORY (metron-ops#87): the cumulative compounded split
+          since recording began — where the portfolio's drift actually comes from. */}
+      {showLegs && legs ? (
+        <p className="mt-2 text-xs text-muted">
+          Since tracking ({legs.n_days} day{legs.n_days === 1 ? "" : "s"}), cumulative drift split:{" "}
+          <span className={signClass(legs.cum_overnight_pct ?? 0)}>
+            overnight {legs.cum_overnight_pct != null ? percent(legs.cum_overnight_pct) : "—"}
+          </span>{" "}
+          ·{" "}
+          <span className={signClass(legs.cum_intraday_pct ?? 0)}>
+            intraday {legs.cum_intraday_pct != null ? percent(legs.cum_intraday_pct) : "—"}
+          </span>{" "}
+          ·{" "}
+          <span className={signClass(legs.cum_day_pct ?? 0)}>
+            day {legs.cum_day_pct != null ? percent(legs.cum_day_pct) : "—"}
+          </span>
+        </p>
       ) : null}
 
       <Section title="Accounts">
