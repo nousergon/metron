@@ -47,9 +47,12 @@ export default async function PortfolioPage({
   const tenantId = await requireTenantId();
 
   // The account selection (repeatable ?account_id=); empty = whole portfolio. URL wins;
-  // with none, the saved panel selection is applied (redirect). Activation is managed on
-  // the Holdings page (metron-ops#64) — here the Overview metrics follow that selection.
-  const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}`, searchParams.account_id);
+  // the Overview does NOT restore a saved partial selection (applySaved: false) — it's the
+  // portfolio summary, so it defaults to every account on, and the headline Total value
+  // anchors on the full portfolio rather than landing scoped into a stale saved filter.
+  const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}`, searchParams.account_id, {
+    applySaved: false,
+  });
   const scoped = accountIds.length > 0;
   const navQuery = acctParams(accountIds);
 
