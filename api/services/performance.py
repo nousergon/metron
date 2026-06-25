@@ -1205,6 +1205,53 @@ def _load_lot_timeline(
     return open_lots, closed_lots
 
 
+def _load_lot_flows(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    account_ids: Collection[uuid.UUID] | None = None,
+):
+    """Capital-in / capital-out events from the lot tables — the flow signal a
+    snapshot-sourced account (IBKR Flex / SnapTrade, no replayable trade feed) needs so its
+    contribution-driven NAV build-up isn't mis-read as investment return (metron-ops#88).
+
+    Returns ``(opens, closes)`` as ``[(ticker, date, native_amount), ...]``:
+    ``opens`` is the cost basis of every OpenLot AND every RealizedLot (a closed lot also
+    brought capital in at its open); ``closes`` the PROCEEDS of every RealizedLot (capital
+    out at sale). Native amounts — the caller FX-converts at the event date, exactly as NAV
+    converts a native price. Scoped like ``_load_lot_timeline``; ledger (CSV/OFX) accounts
+    carry no lot rows, so they contribute nothing here (their flow is the trade ledger)."""
+    scope = list(account_ids) if account_ids is not None else None
+
+    def _q(model, *cols):
+        stmt = (
+            select(*cols)
+            .join(models.Account, model.account_id == models.Account.id)
+            .where(model.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+        )
+        if scope is not None:
+            stmt = stmt.where(model.account_id.in_(scope))
+        return session.execute(stmt).all()
+
+    opens = [
+        (t, d, float(amt))
+        for t, d, amt in _q(models.OpenLot, models.OpenLot.ticker, models.OpenLot.open_date, models.OpenLot.cost_basis)
+    ]
+    opens += [
+        (t, d, float(amt))
+        for t, d, amt in _q(
+            models.RealizedLot, models.RealizedLot.ticker, models.RealizedLot.open_date, models.RealizedLot.cost_basis
+        )
+    ]
+    closes = [
+        (t, d, float(amt))
+        for t, d, amt in _q(
+            models.RealizedLot, models.RealizedLot.ticker, models.RealizedLot.close_date, models.RealizedLot.proceeds
+        )
+    ]
+    return opens, closes
+
+
 def _lot_positions_asof(open_lots, closed_lots, when: date):
     """``(ticker → quantity, ticker → cost_basis)`` held as-of ``when`` from the lot
     timeline: an open lot counts once its open date has passed; a closed lot counts only
@@ -1400,8 +1447,22 @@ def _reconstruct_nav_points(
             )
         return _rate_cache[key]
 
-    # Flows are cash deposits/withdrawals across the in-scope accounts (TWR sub-period breaks).
-    flow_dates = [t.when for _aid, t in by_account if t.type in (TxnType.DEPOSIT, TxnType.WITHDRAWAL)]
+    # Capital in/out for the lot-valued (snapshot-sourced) positions — a lot opening is the
+    # moment capital enters a no-trade-feed account, the proceeds of a closed lot the moment
+    # it leaves. Without this the flow term below is 0 for these accounts and the entire
+    # contribution-driven NAV build-up reads as return (metron-ops#88). Ledger (CSV/OFX)
+    # accounts keep their trade-ledger flow via ``_scoped_net_purchases`` over JUST those
+    # accounts — the two sets partition by the snapshot/ledger boundary, so no double count.
+    lot_opens, lot_closes = _load_lot_flows(session, tenant_id, portfolio_id, account_ids)
+    ledger_account_ids = sorted({aid for aid, _t in ledger_by_account})
+
+    # TWR sub-periods break on every external flow: cash deposits/withdrawals AND each lot
+    # open/close (so a contribution lands on a period boundary, not mid-step).
+    flow_dates = (
+        [t.when for _aid, t in by_account if t.type in (TxnType.DEPOSIT, TxnType.WITHDRAWAL)]
+        + [d for _t, d, _amt in lot_opens]
+        + [d for _t, d, _amt in lot_closes]
+    )
     points: list[_NavPoint] = []
     prev: date | None = None
     for when in _valuation_dates(first, today, flow_dates):
@@ -1432,7 +1493,17 @@ def _reconstruct_nav_points(
         cost_basis += flat_cost
         if not valued_any and flat_nav == 0:
             continue
-        flow = _scoped_net_purchases(session, tenant_id, portfolio_id, account_ids, after=prev, through=when)
+        # Flow = lot capital-in (cost of lots opened this sub-period) − lot capital-out
+        # (proceeds of lots closed this sub-period), both FX-converted at the event date,
+        # PLUS the trade-ledger net purchases for genuinely ledger-sourced accounts only.
+        lo, hi = prev, when  # sub-period (lo, hi]; lo None on the first (ignored) point
+        flow = (
+            sum(amt * _rate(ticker_ccy.get(t, "USD"), d) for t, d, amt in lot_opens if (lo is None or d > lo) and d <= hi)
+            - sum(amt * _rate(ticker_ccy.get(t, "USD"), d) for t, d, amt in lot_closes if (lo is None or d > lo) and d <= hi)
+            + _scoped_net_purchases(
+                session, tenant_id, portfolio_id, ledger_account_ids, after=prev, through=when
+            )
+        )
         points.append(
             _NavPoint(when=when, nav=nav, cost_basis=cost_basis, flow=flow, spy_close=_asof_close(spy_series, when))
         )
