@@ -124,6 +124,11 @@ class Security(Base):
     yf_unlisted: Mapped[bool | None] = mapped_column(nullable=True, default=None)
     asset_class: Mapped[str | None] = mapped_column(String(40), nullable=True)  # equity | etf | cash | …
     sector: Mapped[str | None] = mapped_column(String(60), nullable=True)  # canonical GICS label; resolved lazily
+    # Country of domicile (yfinance ``Ticker.info['country']``, Title-Case, e.g.
+    # "United States"). Reference data like sector — resolved lazily from the data spine,
+    # drives the holdings US-vs-international split. Nullable so the column auto-ALTERs
+    # onto an existing SQLite DB; NULL = unclassified coverage gap, never guessed.
+    country: Mapped[str | None] = mapped_column(String(60), nullable=True)
     next_earnings_date: Mapped[date | None] = mapped_column(nullable=True)  # cached next earnings; refreshed on demand
 
 

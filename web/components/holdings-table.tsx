@@ -36,6 +36,10 @@ const COLUMNS: Column[] = [
     value: (h) => (h.fx_rate != null ? h.avg_cost * h.fx_rate : h.avg_cost),
   },
   { key: "cost_basis", label: "Cost basis", defaultDesc: true, value: (h) => h.cost_basis_base ?? h.cost_basis },
+  // Reference classification (always shown, even in the cost-basis-only view). Sorted
+  // ascending by default; an unclassified holding sorts last via the null-handling.
+  { key: "sector", label: "Sector", value: (h) => h.sector },
+  { key: "country", label: "Country", value: (h) => h.country },
   {
     key: "last",
     label: "Last",
@@ -175,6 +179,8 @@ export function HoldingsTable({
                 <td className="px-4 py-2 text-right tabular-nums">
                   {baseMoney(h.cost_basis_base, h.cost_basis, moneyWhole)}
                 </td>
+                <td className="px-4 py-2 text-right text-muted">{h.sector ?? "—"}</td>
+                <td className="px-4 py-2 text-right text-muted">{h.country ?? "—"}</td>
                 {priced ? (
                   <>
                     <td
@@ -229,6 +235,9 @@ export function HoldingsTable({
               <td className="px-4 py-2" />
               <td className="px-4 py-2" />
               <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(totals.cost, baseCurrency)}</td>
+              {/* Sector / Country are per-security labels — no portfolio total. */}
+              <td className="px-4 py-2" />
+              <td className="px-4 py-2" />
               {priced ? (
                 <>
                   <td className="px-4 py-2" />

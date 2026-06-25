@@ -85,6 +85,13 @@ class Holding:
     # by security_perf.enrich_holdings (Holdings view only); the UI surfaces it loudly so
     # a frozen feed never masquerades as a current price.
     last_price_stale: bool = False
+    # Reference classification — populated only by the Holdings endpoint via
+    # security_perf.enrich_holdings (None elsewhere). GICS sector + country of domicile,
+    # cached on the global Security row, sourced from the data spine (metron-ops#…).
+    # Country drives the US-vs-international split; both stay None when unclassified
+    # (a coverage gap, never a guessed value).
+    sector: str | None = None
+    country: str | None = None
 
 
 @dataclass

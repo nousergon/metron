@@ -2,8 +2,10 @@ import { acctParams, getAccounts, getHoldings, getHoldingsPerformanceSeries, get
 import { Empty, Section, StatCard } from "@/components/ui";
 import { accountingMoneyWhole, percent, signClass } from "@/lib/format";
 import { AccountPanel } from "@/components/account-panel";
+import { AllocationBreakdown } from "@/components/allocation-breakdown";
 import { GroupedHoldings } from "@/components/grouped-holdings";
 import { HoldingsPerfChart } from "@/components/holdings-perf-chart";
+import { TopBottomPerformers } from "@/components/top-bottom-performers";
 import { RefreshPrices } from "@/components/refresh-prices";
 import { IntradayRefresher } from "@/components/intraday-refresher";
 import { PortfolioNav } from "@/components/portfolio-nav";
@@ -159,6 +161,20 @@ export default async function HoldingsPage({
             benchmarks={perfSeries.benchmarks}
             benchmarksAvailable={perfSeries.benchmarks_available}
           />
+        </Section>
+      ) : null}
+
+      {/* Best/worst performers + the country/sector allocation, from the holdings already
+          loaded above. Performers needs priced returns; allocation needs market value. */}
+      {holdings.length > 0 && priced ? (
+        <Section title="Performers" note="best & worst holdings by return">
+          <TopBottomPerformers holdings={holdings} />
+        </Section>
+      ) : null}
+
+      {holdings.length > 0 ? (
+        <Section title="Allocation" note="by market value">
+          <AllocationBreakdown holdings={holdings} baseCurrency={ccy} />
         </Section>
       ) : null}
 

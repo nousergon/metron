@@ -40,6 +40,10 @@ export type Holding = {
   day_pct: number | null;
   ytd_pct: number | null;
   ltm_pct: number | null;
+  // Reference classification (cached from the data spine). GICS sector + country of
+  // domicile; country drives the US-vs-international split. null = unclassified gap.
+  sector: string | null;
+  country: string | null;
 };
 
 export type IncomeYear = {

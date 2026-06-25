@@ -42,8 +42,14 @@ from api.services import (
     tax,
     watchlist,
 )
+from api.services import (
+    countries as countries_service,
+)
 from api.services import fx as fx_service
 from api.services import prices as price_service
+from api.services import (
+    sectors as sectors_service,
+)
 from api.services import (
     tearsheet as tearsheet_service,
 )
@@ -145,6 +151,11 @@ class HoldingOut(BaseModel):
     day_pct: float | None = None
     ytd_pct: float | None = None
     ltm_pct: float | None = None
+    # Reference classification (cached from the data spine). GICS sector + country of
+    # domicile; country drives the Holdings US-vs-international split. None = unclassified
+    # coverage gap, never guessed.
+    sector: str | None = None
+    country: str | None = None
 
 
 class RealizedOut(BaseModel):
@@ -1394,10 +1405,22 @@ def get_holdings(
         session, portfolio.tenant_id, portfolio.id, account_ids=account_ids, prices=prices
     )
     # Per-security Day / YTD / LTM returns for the Holdings table (metron-ops#87).
-    return security_perf.enrich_holdings(
+    held = security_perf.enrich_holdings(
         session, portfolio.tenant_id, portfolio.id, held,
         as_of=date.today(), feed_entitled=settings.feed_entitled, account_ids=account_ids,
     )
+    # GICS sector + country of domicile for the table columns + the performers/geo
+    # section. Both are cached reference data from the data spine; ensure_* only sources
+    # the still-NULL gaps (idempotent — no network once a symbol is classified).
+    tickers = [h.ticker for h in held]
+    sectors_service.ensure_sectors(session, tickers)
+    countries_service.ensure_countries(session, tickers)
+    sector_of = sectors_service.sectors_by_symbol(session, tickers)
+    country_of = countries_service.countries_by_symbol(session, tickers)
+    for h in held:
+        h.sector = sector_of.get(h.ticker)
+        h.country = country_of.get(h.ticker)
+    return held
 
 
 def _taxable_scoped(

@@ -50,6 +50,8 @@ FUNDS_SECTOR_KEY: dict[str, str] = {
 
 # A sector source maps symbols → each symbol's canonical GICS label. Default = data spine.
 SectorSource = Callable[[list[str]], dict[str, str]]
+# A country source maps symbols → each symbol's country of domicile. Default = data spine.
+CountrySource = Callable[[list[str]], dict[str, str]]
 # A benchmark source returns the benchmark's GICS sector weights (canonical → fraction).
 BenchmarkSource = Callable[[], dict[str, float]]
 
@@ -65,6 +67,22 @@ def fetch_sectors(symbols: Iterable[str], *, source: SectorSource | None = None)
     if source is None:
         from portfolio_analytics.sectors.spine_source import spine_sectors
         source = spine_sectors
+    return source(unique)
+
+
+def fetch_countries(symbols: Iterable[str], *, source: CountrySource | None = None) -> dict[str, str]:
+    """Country of domicile per symbol. Deduped, order-insensitive.
+
+    Returns ``{}`` for empty input. Symbols the source can't classify are omitted
+    (the caller leaves their ``country`` NULL → counted against coverage, not guessed).
+    Same source seam as ``fetch_sectors`` — defaults to the data spine; the multi-tenant
+    tier swaps in a licensed feed via ``source`` rather than editing callers."""
+    unique = [s for s in dict.fromkeys(symbols) if s]
+    if not unique:
+        return {}
+    if source is None:
+        from portfolio_analytics.sectors.spine_source import spine_countries
+        source = spine_countries
     return source(unique)
 
 

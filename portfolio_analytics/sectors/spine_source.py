@@ -47,6 +47,16 @@ def spine_sectors(yf_symbols: list[str], *, s3=None) -> dict[str, str]:
     return {sym: sectors[sym] for sym in yf_symbols if sectors.get(sym)}
 
 
+def spine_countries(yf_symbols: list[str], *, s3=None) -> dict[str, str]:
+    """Country of domicile per yf_symbol from the spine (``sectors/latest.json`` v2's
+    additive ``countries`` map). Unclassified symbols omitted — a coverage gap, never a
+    guessed country. Co-located with sectors because the producer resolves both from the
+    same ``Ticker.info`` pass and publishes them in one artifact."""
+    art = _read_json(s3 or _s3(), SECTORS_LATEST_KEY) or {}
+    countries = art.get("countries", {})
+    return {sym: countries[sym] for sym in yf_symbols if countries.get(sym)}
+
+
 def spine_benchmark_sector_weights(*, s3=None) -> dict[str, float]:
     """SPY's GICS sector weights (canonical label → fraction) from the spine. ``{}`` if
     absent → the attribution degrades to not-computable WITH a reason, never fabricated."""

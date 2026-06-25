@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 from portfolio_analytics.calendar import fetch_earnings_dates
 from portfolio_analytics.calendar import spine_source as cal_spine
-from portfolio_analytics.sectors import fetch_benchmark_sector_weights, fetch_sectors
+from portfolio_analytics.sectors import fetch_benchmark_sector_weights, fetch_countries, fetch_sectors
 from portfolio_analytics.sectors import spine_source as sec_spine
 
 
@@ -30,8 +30,9 @@ def _s3_with(objects: dict[str, dict | None]) -> MagicMock:
     return s3
 
 
-_SECTORS = {"schema_version": 1, "as_of": "2026-06-11",
+_SECTORS = {"schema_version": 2, "as_of": "2026-06-11",
             "sectors": {"AAPL": "Technology", "1299.HK": "Financial Services"},
+            "countries": {"AAPL": "United States", "1299.HK": "Hong Kong"},
             "spy_sector_weights": {"Technology": 0.30, "Financial Services": 0.13}}
 _EARNINGS = {"schema_version": 1, "as_of": "2026-06-11", "earnings": {"AAPL": "2026-07-30"}}
 
@@ -56,6 +57,27 @@ class TestSectors:
     def test_fetch_benchmark_defaults_to_spine(self, monkeypatch):
         monkeypatch.setattr(sec_spine, "spine_benchmark_sector_weights", lambda **k: {"Technology": 0.3})
         assert fetch_benchmark_sector_weights() == {"Technology": 0.3}
+
+
+class TestCountries:
+    def test_countries_read_from_artifact(self):
+        s3 = _s3_with({sec_spine.SECTORS_LATEST_KEY: _SECTORS})
+        out = sec_spine.spine_countries(["AAPL", "1299.HK", "NOTHELD"], s3=s3)
+        assert out == {"AAPL": "United States", "1299.HK": "Hong Kong"}  # NOTHELD omitted
+
+    def test_missing_artifact_fail_soft(self):
+        s3 = _s3_with({sec_spine.SECTORS_LATEST_KEY: None})
+        assert sec_spine.spine_countries(["AAPL"], s3=s3) == {}
+
+    def test_v1_artifact_without_countries_field_fail_soft(self):
+        # A pre-v2 sectors artifact has no `countries` key → empty, never a crash.
+        v1 = {"schema_version": 1, "sectors": {"AAPL": "Technology"}}
+        s3 = _s3_with({sec_spine.SECTORS_LATEST_KEY: v1})
+        assert sec_spine.spine_countries(["AAPL"], s3=s3) == {}
+
+    def test_fetch_countries_defaults_to_spine(self, monkeypatch):
+        monkeypatch.setattr(sec_spine, "spine_countries", lambda syms, **k: {"AAPL": "United States"})
+        assert fetch_countries(["AAPL", "AAPL", ""]) == {"AAPL": "United States"}
 
 
 class TestEarnings:

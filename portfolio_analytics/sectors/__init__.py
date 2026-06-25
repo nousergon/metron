@@ -17,8 +17,10 @@ from portfolio_analytics.sectors.source import (
     FUNDS_SECTOR_KEY,
     SECTOR_ETF,
     BenchmarkSource,
+    CountrySource,
     SectorSource,
     fetch_benchmark_sector_weights,
+    fetch_countries,
     fetch_sectors,
 )
 
@@ -26,7 +28,9 @@ __all__ = [
     "FUNDS_SECTOR_KEY",
     "SECTOR_ETF",
     "BenchmarkSource",
+    "CountrySource",
     "SectorSource",
     "fetch_benchmark_sector_weights",
+    "fetch_countries",
     "fetch_sectors",
 ]
