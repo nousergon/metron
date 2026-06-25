@@ -23,6 +23,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 import uuid
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -57,7 +59,24 @@ def _bucket() -> str:
     return os.environ.get("MARKET_DATA_BUCKET", "alpha-engine-research")
 
 
-def _default_reader() -> dict | None:
+# Process-level TTL cache for the intraday snapshot S3 read. A single page load fans out to
+# ~5–7 endpoints (Holdings + Accounts + Today + intraday-legs + per-security day legs), each
+# of which reads the SAME ``latest.json`` artifact — so without this the snapshot was fetched
+# from S3 5–7× per render, serially, dominating the Holdings page latency. The producer writes
+# every ~5 min and the snapshot's own staleness window is 20 min (STALE_AFTER_SECONDS), so a
+# short TTL well under both collapses the fan-out to one read while never serving a snapshot
+# materially older than an un-cached read would. Freshness is still judged per-call in
+# ``load_quotes`` against live ``now`` (the cache holds the artifact, not a freshness verdict),
+# so a cached-but-aged snapshot still correctly reports ``stale``. Mirrors the monotonic-throttle
+# pattern in ``data_spine.touch_ui_heartbeat``. The ``reader`` injection path bypasses this
+# entirely, so tests are unaffected.
+_SNAPSHOT_TTL_S = 30.0
+_snapshot_lock = threading.Lock()
+_snapshot_cache: dict | None = None
+_snapshot_fetched_monotonic: float = 0.0
+
+
+def _read_snapshot_s3() -> dict | None:
     import boto3
 
     try:
@@ -66,6 +85,21 @@ def _default_reader() -> dict | None:
     except Exception as e:  # fail-soft: degrade to EOD valuation, never break the page
         logger.warning("data-spine read failed %s: %s", INTRADAY_KEY, e)
         return None
+
+
+def _default_reader() -> dict | None:
+    """The cached intraday snapshot dict (or None on read failure). At most one S3 read per
+    ``_SNAPSHOT_TTL_S`` across all consumers in this process; concurrent callers within the
+    window share the cached value. A failed read is also cached for the window so a transient
+    S3 blip during a page load doesn't trigger 5–7 retries (recovery lag ≤ TTL is acceptable
+    — fail-soft already degrades to EOD close)."""
+    global _snapshot_cache, _snapshot_fetched_monotonic
+    with _snapshot_lock:
+        if time.monotonic() - _snapshot_fetched_monotonic < _SNAPSHOT_TTL_S:
+            return _snapshot_cache
+        _snapshot_cache = _read_snapshot_s3()
+        _snapshot_fetched_monotonic = time.monotonic()
+        return _snapshot_cache
 
 
 def _is_stale(as_of_utc: str | None, now: datetime) -> bool:

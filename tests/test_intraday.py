@@ -68,6 +68,50 @@ class TestLoadQuotes:
         assert quotes == {} and as_of is None and stale is True
 
 
+class TestSnapshotCache:
+    """The default reader collapses a page's 5–7 snapshot reads into one S3 GetObject per TTL
+    (the Holdings-page latency fix). Freshness is still judged per-call in load_quotes, so a
+    cached-but-aged artifact still reports stale — covered by TestLoadQuotes."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self, monkeypatch):
+        # Fully reset the module cache + a controllable monotonic clock for each test.
+        self.clock = [1000.0]
+        monkeypatch.setattr(intraday.time, "monotonic", lambda: self.clock[0])
+        monkeypatch.setattr(intraday, "_snapshot_cache", None, raising=False)
+        monkeypatch.setattr(intraday, "_snapshot_fetched_monotonic", 0.0, raising=False)
+
+    def test_reads_once_within_ttl(self, monkeypatch):
+        calls = {"n": 0}
+
+        def _reader():
+            calls["n"] += 1
+            return _art({"AAPL": {"last": 130.0}})
+
+        monkeypatch.setattr(intraday, "_read_snapshot_s3", _reader)
+        first = intraday._default_reader()
+        for _ in range(5):
+            assert intraday._default_reader() == first
+        assert calls["n"] == 1  # one S3 read serves the whole fan-out
+
+    def test_refetches_after_ttl(self, monkeypatch):
+        calls = {"n": 0}
+        monkeypatch.setattr(intraday, "_read_snapshot_s3", lambda: calls.__setitem__("n", calls["n"] + 1) or _art({}))
+        intraday._default_reader()
+        self.clock[0] += intraday._SNAPSHOT_TTL_S + 1  # advance past the window
+        intraday._default_reader()
+        assert calls["n"] == 2
+
+    def test_failed_read_cached_for_window(self, monkeypatch):
+        """A transient S3 failure within a page load isn't retried 5–7×; it degrades to EOD
+        (None) for the window, then recovers after the TTL."""
+        calls = {"n": 0}
+        monkeypatch.setattr(intraday, "_read_snapshot_s3", lambda: calls.__setitem__("n", calls["n"] + 1) or None)
+        assert intraday._default_reader() is None
+        assert intraday._default_reader() is None
+        assert calls["n"] == 1
+
+
 class TestLivePrices:
     def test_not_applied_without_feed(self, db_session):
         tid, pid = _seed_one_holding(db_session)

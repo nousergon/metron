@@ -27,18 +27,35 @@ export default async function HoldingsPage({
 }) {
   const { id } = params;
   const tenantId = await requireTenantId();
-  const featureStates = await navFeatureStates(tenantId);
 
-  const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}/holdings`, searchParams.account_id);
+  // Phase A — everything that does NOT depend on the resolved account selection, in parallel
+  // (the page previously awaited these one-by-one, a 7-deep serial waterfall against the API
+  // where each endpoint also re-reads the intraday snapshot). nav feature states, entitlements
+  // and the portfolio-wide intraday-leg history are independent of the account scope, and the
+  // selection itself resolves alongside them. Best-effort calls degrade to null per-call so a
+  // soft failure never rejects the batch. (legs is portfolio-wide — not account-scoped.)
+  const [featureStates, entitlements, legs, accountIds] = await Promise.all([
+    navFeatureStates(tenantId),
+    loadEntitlements(tenantId),
+    getIntradayLegs(tenantId, id).catch((): IntradayLegHistory | null => null),
+    resolveAccountIds(tenantId, id, `/portfolios/${id}/holdings`, searchParams.account_id),
+  ]);
   const scoped = accountIds.length > 0;
   const navQuery = acctParams(accountIds);
 
+  // Phase B — the account-scoped reads, in parallel. The three core reads (summary / holdings /
+  // accounts) drive the error fallback below; the two best-effort sections (perf series, today)
+  // carry their own .catch → null so they degrade independently without failing the batch.
   let summary, holdings, accounts;
+  let perfSeries: HoldingsPerfSeries | null = null;
+  let today: Today | null = null;
   try {
-    [summary, holdings, accounts] = await Promise.all([
+    [summary, holdings, accounts, perfSeries, today] = await Promise.all([
       getSummary(tenantId, id, accountIds),
       getHoldings(tenantId, id, accountIds),
       getAccounts(tenantId, id),
+      getHoldingsPerformanceSeries(tenantId, id, accountIds).catch((): HoldingsPerfSeries | null => null),
+      getToday(tenantId, id, accountIds).catch((): Today | null => null),
     ]);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
@@ -49,39 +66,17 @@ export default async function HoldingsPage({
 
   const ccy = summary.base_currency;
   const priced = summary.market_value != null;
-  const entitlements = await loadEntitlements(tenantId);
 
-  // Per-account performance lines above the table (metron-ops#78) — best-effort, scoped to
-  // the active account selection. Benchmark overlays are feed-gated server-side. Shown once
-  // at least one account has ≥2 recorded NAV snapshots (a line needs two points).
-  let perfSeries: HoldingsPerfSeries | null = null;
-  try {
-    perfSeries = await getHoldingsPerformanceSeries(tenantId, id, accountIds);
-  } catch {
-    perfSeries = null;
-  }
+  // Per-account performance lines above the table (metron-ops#78) — shown once at least one
+  // account has ≥2 recorded NAV snapshots (a line needs two points).
   const showChart = (perfSeries?.accounts.length ?? 0) > 0;
 
-  // Today's overnight/intraday/day P&L strip — folded in from the old Today page
-  // (metron-ops#87). Best-effort: never blocks the page; hidden when there's no intraday
-  // data (off-hours / no feed). The per-holding decomposition lives in the table's Day column.
-  let today: Today | null = null;
-  try {
-    today = await getToday(tenantId, id, accountIds);
-  } catch {
-    today = null;
-  }
+  // Today's overnight/intraday/day P&L strip — hidden when there's no intraday data
+  // (off-hours / no feed). The per-holding decomposition lives in the table's Day column.
   const showToday = !!today?.available && today.rows.length > 0;
 
   // Overnight-vs-intraday HISTORY (metron-ops#87) — the cumulative split of where the
-  // portfolio's drift comes from. Best-effort; portfolio-wide (not account-scoped) and
-  // empty until the daily recorder has ≥1 day.
-  let legs: IntradayLegHistory | null = null;
-  try {
-    legs = await getIntradayLegs(tenantId, id);
-  } catch {
-    legs = null;
-  }
+  // portfolio's drift comes from. Empty until the daily recorder has ≥1 day.
   const showLegs = (legs?.n_days ?? 0) > 0 && (legs?.cum_day_pct != null);
 
   return (
