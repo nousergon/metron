@@ -32,20 +32,24 @@ from api.services import (
     analytics,
     attribution,
     calendar,
-    countries as countries_service,
     data_spine,
     intraday,
     labels,
     performance,
     persistence,
     risk,
-    sectors as sectors_service,
     security_perf,
     tax,
     watchlist,
 )
+from api.services import (
+    countries as countries_service,
+)
 from api.services import fx as fx_service
 from api.services import prices as price_service
+from api.services import (
+    sectors as sectors_service,
+)
 from api.services import (
     tearsheet as tearsheet_service,
 )
