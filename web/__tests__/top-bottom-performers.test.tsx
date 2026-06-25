@@ -77,6 +77,8 @@ describe("TopBottomPerformers", () => {
     const top = within(panel("Top performers"));
     expect(top.getByText("BIG")).toBeInTheDocument();
     expect(top.getByText("9.0%")).toBeInTheDocument(); // contribution value
-    expect(top.getByText("(10.0%)")).toBeInTheDocument(); // own return in parens
+    // Only the contribution % is shown — the holding's own return is no longer appended
+    // in parentheses (a single, unambiguous figure per bar).
+    expect(top.queryByText("(10.0%)")).not.toBeInTheDocument();
   });
 });

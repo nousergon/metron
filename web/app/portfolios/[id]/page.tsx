@@ -192,7 +192,7 @@ export default async function PortfolioPage({
           Account (de)selection / filtering lives on the Holdings page; deletion stays here.
           Tax-treatment editing lives on Settings (the rows already group by tax status). */}
       <Section title="Accounts">
-        <AccountPanel accounts={accounts} baseCurrency={ccy} portfolioId={id} deletable />
+        <AccountPanel accounts={accounts} baseCurrency={ccy} portfolioId={id} selectable={false} deletable />
       </Section>
     </div>
   );

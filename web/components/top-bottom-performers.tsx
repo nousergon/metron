@@ -54,7 +54,7 @@ function ToggleGroup<T extends string>({
   );
 }
 
-function BarList({ title, entries, maxAbs, basis }: { title: string; entries: Entry[]; maxAbs: number; basis: BasisKey }) {
+function BarList({ title, entries, maxAbs }: { title: string; entries: Entry[]; maxAbs: number }) {
   return (
     <div className="rounded-lg border border-line bg-surface p-4">
       <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">{title}</div>
@@ -78,11 +78,6 @@ function BarList({ title, entries, maxAbs, basis }: { title: string; entries: En
                 </div>
                 <span className={`w-20 shrink-0 text-right tabular-nums ${signClass(e.value)}`}>
                   {accountingPercent(e.value)}
-                  {/* For the contribution basis the bar value is portfolio-return points; the
-                      holding's own return is shown beneath so both are legible. */}
-                  {basis === "contrib" ? (
-                    <span className="ml-1 text-[10px] font-normal text-muted">({accountingPercent(e.ret)})</span>
-                  ) : null}
                 </span>
               </li>
             );
@@ -136,13 +131,13 @@ export function TopBottomPerformers({ holdings }: { holdings: Holding[] }) {
         </p>
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <BarList title="Top performers" entries={top} maxAbs={maxAbs} basis={basis} />
-          <BarList title="Bottom performers" entries={bottom} maxAbs={maxAbs} basis={basis} />
+          <BarList title="Top performers" entries={top} maxAbs={maxAbs} />
+          <BarList title="Bottom performers" entries={bottom} maxAbs={maxAbs} />
         </div>
       )}
       <p className="mt-2 text-[11px] text-muted">
         {basis === "contrib"
-          ? "Contribution = position weight × return (portfolio-return points); the holding’s own return is in parentheses."
+          ? "Contribution = position weight × return, in portfolio-return points."
           : "Each holding’s own price return over the period."}
       </p>
     </div>
