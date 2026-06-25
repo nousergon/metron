@@ -1,4 +1,4 @@
-import { acctParams, getAccounts, getIndices, getPerformanceTiles, getPlugins, getPortfolio, getSummary, MetronApiError, type Account, type PeriodTiles, type Portfolio, type PluginNav } from "@/lib/api";
+import { getAccounts, getIndices, getPerformanceTiles, getPlugins, getPortfolio, getSummary, MetronApiError, type Account, type PeriodTiles, type Portfolio, type PluginNav } from "@/lib/api";
 import { accountingMoneyWhole, moneyWhole, signClass } from "@/lib/format";
 import { Empty, Section, StatCard } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
@@ -10,7 +10,6 @@ import { IntradayRefresher } from "@/components/intraday-refresher";
 import { RenamePortfolio } from "@/components/rename-portfolio";
 import { featureEntitlement, loadEntitlements, previewFromCookies, toFeatureStates } from "@/lib/entitlements";
 import { requireTenantId } from "@/lib/session";
-import { resolveAccountIds } from "@/lib/selection";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
@@ -38,23 +37,21 @@ function sumOrNull(accts: Account[], pick: (a: Account) => number | null): numbe
 
 export default async function PortfolioPage({
   params,
-  searchParams,
 }: {
   params: { id: string };
-  searchParams: { account_id?: string | string[] };
 }) {
   const { id } = params;
   const tenantId = await requireTenantId();
 
-  // The account selection (repeatable ?account_id=); empty = whole portfolio. URL wins;
-  // the Overview does NOT restore a saved partial selection (applySaved: false) — it's the
-  // portfolio summary, so it defaults to every account on, and the headline Total value
-  // anchors on the full portfolio rather than landing scoped into a stale saved filter.
-  const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}`, searchParams.account_id, {
-    applySaved: false,
-  });
-  const scoped = accountIds.length > 0;
-  const navQuery = acctParams(accountIds);
+  // The Overview is the WHOLE-PORTFOLIO summary — it never scopes to an account subset.
+  // Account (de)selection is a Holdings concern; the headline Total value here always
+  // anchors on every account, because a partial total reads as misleadingly small for a
+  // "portfolio value" headline. So we ignore any ?account_id= entirely (no checkboxes on
+  // this page) and the nav links carry no scoping — Holdings restores its own saved
+  // selection on arrival.
+  const accountIds: string[] = [];
+  const scoped = false;
+  const navQuery = "";
 
   let portfolio: Portfolio, summary, accounts;
   try {
@@ -190,12 +187,12 @@ export default async function PortfolioPage({
         </p>
       ) : null}
 
-      {/* Accounts — the hub: toggle accounts to scope the headline Total value + every page
-          below (the selection persists and the headline tracks it, so the selected-accounts
-          total matches the headline), plus account deletion. Tax-treatment editing lives on
-          the Settings page (the rows here already group by tax status). */}
-      <Section title="Accounts" note={scoped ? `${summary.n_accounts} of ${accounts.length} active` : undefined}>
-        <AccountPanel accounts={accounts} baseCurrency={ccy} portfolioId={id} selectable deletable />
+      {/* Accounts — read-only here (no checkboxes): the Overview always shows the whole
+          portfolio, so every account is listed and contributes to the headline Total value.
+          Account (de)selection / filtering lives on the Holdings page; deletion stays here.
+          Tax-treatment editing lives on Settings (the rows already group by tax status). */}
+      <Section title="Accounts">
+        <AccountPanel accounts={accounts} baseCurrency={ccy} portfolioId={id} deletable />
       </Section>
     </div>
   );

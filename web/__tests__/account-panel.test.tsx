@@ -81,6 +81,17 @@ describe("selection", () => {
     expect(new Set(savedIds)).toEqual(new Set(["a2", "a3"]));
   });
 
+  it("flips the checkbox OPTIMISTICALLY — instantly, before the URL/navigation resolves", () => {
+    // The lag fix (metron-ops): the box must not wait for the ~0.5–1s server round-trip.
+    // With router.replace mocked (the URL never actually changes), the box can only move
+    // via the optimistic local state — so a synchronous flip proves the optimism.
+    renderPanel(); // urlAccountIds [] → all three checked
+    const box = screen.getByLabelText("Include Brokerage") as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    fireEvent.click(box);
+    expect(box.checked).toBe(false); // instant, no awaiting navigation
+  });
+
   it("checking the last unchecked account normalizes back to the whole portfolio (empty URL)", async () => {
     mocks.urlAccountIds = ["a1", "a2"];
     renderPanel();

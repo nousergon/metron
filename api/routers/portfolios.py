@@ -43,6 +43,9 @@ from api.services import (
     watchlist,
 )
 from api.services import (
+    classifications as classifications_service,
+)
+from api.services import (
     countries as countries_service,
 )
 from api.services import fx as fx_service
@@ -499,6 +502,21 @@ class SecurityLabelIn(BaseModel):
 class SecurityLabelOut(BaseModel):
     symbol: str
     label: str | None = None
+
+
+class SecurityClassificationIn(BaseModel):
+    # A user-set sector / country override (fills/corrects an Unclassified holding). Only
+    # the fields PRESENT in the request body are changed — an omitted field keeps its stored
+    # value, while an explicit null/empty CLEARS that field (and clearing both deletes the
+    # override). ``model_fields_set`` distinguishes "omitted" from "set to null".
+    sector: str | None = None
+    country: str | None = None
+
+
+class SecurityClassificationOut(BaseModel):
+    symbol: str
+    sector: str | None = None
+    country: str | None = None
 
 
 class SkipOut(BaseModel):
@@ -1417,9 +1435,14 @@ def get_holdings(
     countries_service.ensure_countries(session, tickers)
     sector_of = sectors_service.sectors_by_symbol(session, tickers)
     country_of = countries_service.countries_by_symbol(session, tickers)
+    # Tenant-set overrides win over the spine-resolved value — they fill the gaps the source
+    # couldn't classify (and correct any it got wrong) without mutating the shared securities
+    # reference row.
+    overrides = classifications_service.overrides_by_symbol(session, portfolio.tenant_id, tickers)
     for h in held:
-        h.sector = sector_of.get(h.ticker)
-        h.country = country_of.get(h.ticker)
+        ov = overrides.get(h.ticker)
+        h.sector = (ov.sector if ov and ov.sector else None) or sector_of.get(h.ticker)
+        h.country = (ov.country if ov and ov.country else None) or country_of.get(h.ticker)
     return held
 
 
@@ -1931,6 +1954,39 @@ def set_security_label(
         raise HTTPException(status_code=422, detail="symbol is required")
     stored = labels.set_label(session, portfolio.tenant_id, sym, body.label)
     return SecurityLabelOut(symbol=sym, label=stored)
+
+
+@router.put(
+    "/{portfolio_id}/securities/{symbol}/classification",
+    response_model=SecurityClassificationOut,
+)
+def set_security_classification(
+    symbol: str,
+    body: SecurityClassificationIn,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> SecurityClassificationOut:
+    """Set (or clear) a tenant's GICS-sector / country-of-domicile override for a symbol so
+    an Unclassified holding can be placed in the Allocation breakdown. Only the fields
+    present in the body are changed; an explicit null/empty clears that field, and clearing
+    both removes the override (reverting to the spine-resolved value). Tenant-scoped — never
+    mutates the shared securities reference row."""
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        raise HTTPException(status_code=422, detail="symbol is required")
+    fields = body.model_fields_set
+    stored = classifications_service.set_classification(
+        session,
+        portfolio.tenant_id,
+        sym,
+        sector=body.sector if "sector" in fields else classifications_service.UNSET,
+        country=body.country if "country" in fields else classifications_service.UNSET,
+    )
+    return SecurityClassificationOut(
+        symbol=sym,
+        sector=stored.sector if stored else None,
+        country=stored.country if stored else None,
+    )
 
 
 @router.get("/{portfolio_id}/watchlist", response_model=list[WatchlistEntryOut])

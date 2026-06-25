@@ -11,7 +11,56 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { Holding } from "@/lib/api";
 import { accountingMoneyWhole, accountingPercent, fxRate, money, moneyWhole, quantity, signClass } from "@/lib/format";
-import { setSecurityLabelAction } from "@/app/portfolios/[id]/actions";
+import { setSecurityClassificationAction, setSecurityLabelAction } from "@/app/portfolios/[id]/actions";
+
+// Canonical option lists for the inline classification override (matches the data-spine
+// vocabulary: yfinance Title-Case sectors + their SPDR ETFs, plus the "Broad Market / Index"
+// label used for index ETFs). Country is a curated list of common domiciles; a holding's
+// existing value is always offered even if it's outside the list, so an override never
+// drops an already-resolved value.
+const SECTOR_OPTIONS = [
+  "Technology",
+  "Financial Services",
+  "Healthcare",
+  "Consumer Cyclical",
+  "Consumer Defensive",
+  "Energy",
+  "Industrials",
+  "Basic Materials",
+  "Utilities",
+  "Real Estate",
+  "Communication Services",
+  "Broad Market / Index",
+];
+
+const COUNTRY_OPTIONS = [
+  "United States",
+  "Canada",
+  "United Kingdom",
+  "Ireland",
+  "France",
+  "Germany",
+  "Switzerland",
+  "Netherlands",
+  "Italy",
+  "Spain",
+  "Sweden",
+  "Denmark",
+  "Japan",
+  "China",
+  "Hong Kong",
+  "Taiwan",
+  "South Korea",
+  "Singapore",
+  "India",
+  "Australia",
+  "Brazil",
+  "Mexico",
+  "Israel",
+  "Uruguay",
+  "Bermuda",
+  "Cayman Islands",
+];
 
 type SortValue = string | number | null;
 
@@ -179,8 +228,8 @@ export function HoldingsTable({
                 <td className="px-4 py-2 text-right tabular-nums">
                   {baseMoney(h.cost_basis_base, h.cost_basis, moneyWhole)}
                 </td>
-                <td className="px-4 py-2 text-right text-muted">{h.sector ?? "—"}</td>
-                <td className="px-4 py-2 text-right text-muted">{h.country ?? "—"}</td>
+                <ClassifyCell h={h} field="sector" portfolioId={portfolioId} />
+                <ClassifyCell h={h} field="country" portfolioId={portfolioId} />
                 {priced ? (
                   <>
                     <td
@@ -259,6 +308,92 @@ export function HoldingsTable({
         ) : null}
       </table>
     </div>
+  );
+}
+
+/** The Sector / Country cell. With a portfolioId it's editable: an UNCLASSIFIED holding
+ *  shows a "Set …" dropdown directly (the gap the user wants to fill); a classified one
+ *  shows the value with a small ✎ to correct it. Choosing the blank option clears the
+ *  override (reverts to the spine-resolved value). Read-only contexts just render the
+ *  value. The override is tenant-scoped (it never mutates the shared reference row). */
+function ClassifyCell({
+  h,
+  field,
+  portfolioId,
+}: {
+  h: Holding;
+  field: "sector" | "country";
+  portfolioId?: string;
+}) {
+  const router = useRouter();
+  const value = field === "sector" ? h.sector : h.country;
+  const [editing, setEditing] = useState(false);
+  const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  // Read-only context (no portfolioId) — just the value.
+  if (!portfolioId) {
+    return <td className="px-4 py-2 text-right text-muted">{value ?? "—"}</td>;
+  }
+
+  const base = field === "sector" ? SECTOR_OPTIONS : COUNTRY_OPTIONS;
+  // Always offer the current value, even if it's outside the curated list, so an override
+  // never drops an already-resolved (possibly non-canonical) value.
+  const options = value && !base.includes(value) ? [value, ...base] : base;
+
+  function choose(next: string) {
+    setError(null);
+    start(async () => {
+      const r = await setSecurityClassificationAction(portfolioId!, h.ticker, field, next);
+      if (!r.ok) {
+        setError(r.message);
+        return;
+      }
+      setEditing(false);
+      router.refresh();
+    });
+  }
+
+  // Show the dropdown directly when unclassified (the gap to fill), or when the user
+  // clicked ✎ to correct an existing value.
+  const showSelect = value == null || editing;
+  if (showSelect) {
+    return (
+      <td className="px-4 py-2 text-right">
+        <select
+          value={value ?? ""}
+          disabled={pending}
+          onChange={(e) => choose(e.target.value)}
+          aria-label={`Set ${field} for ${h.ticker}`}
+          className="max-w-[10rem] rounded border border-line bg-surface px-1.5 py-0.5 text-xs"
+        >
+          <option value="">{value == null ? `Set ${field}…` : `— clear ${field} —`}</option>
+          {options.map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </select>
+        {error ? <div className="mt-0.5 text-[10px] text-negative">{error}</div> : null}
+      </td>
+    );
+  }
+
+  return (
+    <td className="px-4 py-2 text-right text-muted">
+      <span className="inline-flex items-center gap-1">
+        {value}
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          aria-label={`Edit ${field} for ${h.ticker}`}
+          title={`Edit ${field}`}
+          className="text-xs text-muted/70 transition hover:text-ink"
+        >
+          ✎
+        </button>
+      </span>
+    </td>
   );
 }
 

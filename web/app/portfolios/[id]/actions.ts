@@ -21,6 +21,7 @@ import {
   removeWatchlist,
   renamePortfolio,
   restoreExcludedAccount,
+  setSecurityClassification,
   setSecurityLabel,
   setSnapTradeConnectionExcluded,
   type SnapTradeConnections,
@@ -309,5 +310,26 @@ export async function setSecurityLabelAction(
     return { ok: true, message: "Label saved." };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t save the label — backend reachable?" };
+  }
+}
+
+/** Set (or clear) a tenant's sector / country override for a symbol so an Unclassified
+ * holding lands in the Allocation breakdown. `field` selects which one; an empty value
+ * clears that field. Revalidates the holdings view so the new classification shows. */
+export async function setSecurityClassificationAction(
+  portfolioId: string,
+  symbol: string,
+  field: "sector" | "country",
+  value: string,
+): Promise<ActionResult> {
+  try {
+    const tenantId = await requireTenantId();
+    // Empty string clears just this field (reverts to the spine-resolved value, if any).
+    await setSecurityClassification(tenantId, portfolioId, symbol, { [field]: value.trim() || null });
+    revalidatePath(`/portfolios/${portfolioId}/holdings`);
+    revalidatePath(`/portfolios/${portfolioId}`);
+    return { ok: true, message: `${field === "sector" ? "Sector" : "Country"} saved.` };
+  } catch (e) {
+    return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t save — backend reachable?" };
   }
 }

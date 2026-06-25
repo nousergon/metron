@@ -15,7 +15,7 @@
 // lives on the Settings page (the grouping already shows the category, so the inline
 // dropdown was redundant on the Overview).
 
-import { useCallback, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { deleteAccountAction, saveAccountSelectionAction } from "@/app/portfolios/[id]/actions";
@@ -168,15 +168,29 @@ export function AccountPanel({
   const pathname = usePathname();
   const params = useSearchParams();
   const [deleting, startDelete] = useTransition();
+  const [navPending, startNav] = useTransition();
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const allIds = useMemo(() => accounts.map((a) => a.account_id), [accounts]);
   // The selection, as a stable comma-key, so the memo + callbacks below don't rebuild
   // a new Set every render (and trip the exhaustive-deps lint).
   const urlKey = params.getAll("account_id").join(",");
-  const viewingAll = urlKey === "";
   // Empty URL selection = viewing the whole portfolio → every box reads as checked.
-  const selected = useMemo(() => new Set(urlKey ? urlKey.split(",") : allIds), [urlKey, allIds]);
+  const selectedFromUrl = useMemo(() => new Set(urlKey ? urlKey.split(",") : allIds), [urlKey, allIds]);
+
+  // OPTIMISTIC selection: the checkbox state is normally derived from the URL, which only
+  // updates AFTER the server round-trip (~0.5–1s) commits — so a click felt unresponsive
+  // ("did nothing, then snapped"). We flip the boxes instantly via a local pending set and
+  // reconcile to the URL once the navigation lands (urlKey changes → clear it). The data
+  // sections below still re-fetch, but `navPending` drives a subtle "Updating…" cue so the
+  // delay reads as in-progress, not broken.
+  const [pendingSel, setPendingSel] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    // The URL caught up with (or diverged from) the optimistic guess — drop the override.
+    setPendingSel(null);
+  }, [urlKey]);
+  const selected = pendingSel ?? selectedFromUrl;
+  const viewingAll = selected.size === allIds.length;
 
   // Group accounts by tax status (preserving the incoming order within each group), in a
   // stable display order. One group → no subtotals (they'd duplicate the grand total).
@@ -206,6 +220,8 @@ export function AccountPanel({
 
   const pushSelection = useCallback(
     async (ids: string[]) => {
+      // Optimistic: flip the boxes NOW (an empty `ids` means "all", so show every box on).
+      setPendingSel(new Set(ids.length === 0 ? allIds : ids));
       const qs = new URLSearchParams();
       // Preserve any other query params; replace the account_id set.
       params.forEach((value, key) => {
@@ -223,9 +239,13 @@ export function AccountPanel({
         // save failure must never block the URL-driven filtering.
         void saveAccountSelectionAction(portfolioId, ids);
       }
-      router.replace(s ? `${pathname}?${s}` : pathname, { scroll: false });
+      // Drive the soft navigation through a transition so `navPending` reflects the
+      // in-flight re-fetch of the data sections below (the optimistic boxes already moved).
+      startNav(() => {
+        router.replace(s ? `${pathname}?${s}` : pathname, { scroll: false });
+      });
     },
-    [params, pathname, router, portfolioId],
+    [params, pathname, router, portfolioId, allIds],
   );
 
   const toggle = useCallback(
@@ -319,7 +339,11 @@ export function AccountPanel({
             </Link>
             {a.institution ? <span className="text-xs text-muted">{a.institution}</span> : null}
             <span className="text-xs text-muted">{a.currency}</span>
-            <span className="text-[10px] uppercase tracking-wide text-muted">{typeLabel(a)}</span>
+            {/* The per-row tax-treatment label is redundant once the rows are grouped under
+                a tax-status heading; show it only when there's a single group (no heading). */}
+            {!showGroups ? (
+              <span className="text-[10px] uppercase tracking-wide text-muted">{typeLabel(a)}</span>
+            ) : null}
             {a.n_unconverted > 0 ? (
               <span className="text-[10px] text-muted" title="Some holdings excluded — no FX rate cached">
                 {a.n_unconverted} unconverted
@@ -364,8 +388,9 @@ export function AccountPanel({
     <div className="overflow-hidden rounded-lg border border-line">
       {selectable ? (
         <div className="flex items-center justify-between border-b border-line bg-surface px-4 py-2">
-          <span className="text-xs uppercase tracking-wide text-muted">
+          <span className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted">
             Select accounts to filter the tables &amp; charts below
+            {navPending ? <span className="text-[10px] normal-case tracking-normal text-muted/70">· updating…</span> : null}
           </span>
           <label className="flex cursor-pointer items-center gap-2 text-xs text-muted">
             <input

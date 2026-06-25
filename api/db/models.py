@@ -408,3 +408,27 @@ class SecurityLabel(Base):
     symbol: Mapped[str] = mapped_column(String(40))
     label: Mapped[str] = mapped_column(String(120))
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+class SecurityClassification(Base):
+    """A user-set GICS-sector / country-of-domicile override for a symbol.
+
+    Sector + country are reference data sourced from the data spine (yfinance), but the
+    source can't classify everything — a numeric-CUSIP bond, an illiquid foreign listing,
+    a fund — leaving the holding in the honest "Unclassified" bucket of the Allocation
+    breakdown. This lets the user fill (or correct) that gap so their geo/sector mix is
+    complete. TENANT-SCOPED (keyed by symbol, like ``security_labels``): it overlays the
+    user's own view without mutating the global ``securities`` reference row that every
+    tenant shares. ``sector`` / ``country`` are independently nullable — setting one leaves
+    the other untouched; clearing both deletes the row. New table → auto-created on the
+    personal SQLite (no migration)."""
+
+    __tablename__ = "security_classifications"
+    __table_args__ = (UniqueConstraint("tenant_id", "symbol", name="uq_security_classification_symbol"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(40))
+    sector: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

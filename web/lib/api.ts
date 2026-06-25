@@ -330,6 +330,34 @@ export async function setSecurityLabel(
   return res.json() as Promise<{ symbol: string; label: string | null }>;
 }
 
+/** Set a tenant's GICS-sector / country-of-domicile override for a symbol so an
+ * Unclassified holding can be placed in the Allocation breakdown. Only the keys present in
+ * `patch` are changed — omit a key to leave it, pass `null` to clear it (clearing both
+ * removes the override). Tenant-scoped; never touches the shared securities reference. */
+export async function setSecurityClassification(
+  tenantId: string,
+  id: string,
+  symbol: string,
+  patch: { sector?: string | null; country?: string | null },
+): Promise<{ symbol: string; sector: string | null; country: string | null }> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/securities/${encodeURIComponent(symbol)}/classification`, {
+    method: "PUT",
+    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail ?? detail;
+    } catch {
+      // keep the status
+    }
+    throw new MetronApiError(res.status, detail);
+  }
+  return res.json() as Promise<{ symbol: string; sector: string | null; country: string | null }>;
+}
+
 /** Update a portfolio's name and/or base currency (PATCH). Empty/no-op rejected (422). */
 export async function updatePortfolio(
   tenantId: string,
