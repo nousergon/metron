@@ -5,7 +5,7 @@
 #
 # One codebase, two top-level packages:
 #   portfolio_analytics/  — the pure engine (domain math + broker ingestion), built
-#                           on the published quant core in alpha-engine-lib[quant].
+#                           on the published quant core in nousergon-lib[quant].
 #   api/                  — FastAPI service + multi-tenant Postgres schema over it.
 # (Next.js/Tremor web/ lands in PH2.) Dev on SQLite = $0; prod on Postgres.
 
@@ -32,9 +32,12 @@ dependencies = [
     # --- engine tier (portfolio_analytics/) ---
     "pandas>=2.0",
     "numpy>=1.26",
-    # Quant core (factor risk, attribution, returns, VaR/CVaR, riskstats). Public on
-    # PyPI, MIT — the same engine the alpha-engine fleet uses. Imported, not vendored.
-    "alpha-engine-lib[quant]>=0.46",
+    # Quant core (factor risk, attribution, returns, VaR/CVaR, riskstats) + the shared
+    # cost-telemetry & SFT-capture chokepoints (nousergon_lib.sft). AGPL-3.0 (the internal
+    # NE dedup lib, relicensed from MIT at 0.60.0) — fine here, metron core is AGPL too.
+    # Renamed alpha-engine-lib → nousergon-lib at 0.60.0; old `alpha_engine_lib.*` imports
+    # still resolve via the in-package shim. Imported from PyPI, not vendored.
+    "nousergon-lib[quant]>=0.64.0",
     # Thin SnapTrade REST client used by portfolio_analytics.broker_io.snaptrade_reader
     # (imported at module load; tests stub the client but the import still runs).
     "snaptrade-python-sdk>=11.0.198",
