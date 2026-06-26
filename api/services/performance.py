@@ -12,6 +12,7 @@ never a fabricated number.
 
 from __future__ import annotations
 
+import bisect
 import logging
 import statistics
 import uuid
@@ -26,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.db import models
-from api.services import analytics
+from api.services import analytics, compute_cache
 from api.services import fx as fx_service
 from api.services import prices as price_service
 from portfolio_analytics.domain.ledger import TxnType
@@ -1173,7 +1174,42 @@ def account_performance_series(
     Benchmark overlays are FEED-GATED (``with_benchmarks=False`` → no benchmark lines).
     Each series is normalized to 1.0 at its first point so the client re-ranges + re-bases
     to 100 itself. Per-account NAV can't be reconstructed (snapshot-sourced accounts report
-    only current positions), so these accrue forward — short at first, filling in daily."""
+    only current positions), so these accrue forward — short at first, filling in daily.
+
+    This is the ~1.6s NAV-reconstruction path behind BOTH the Accounts panel and the
+    Holdings chart, so the result is cached on a per-portfolio content fingerprint
+    (compute_cache): a navigation/poll within the same data state returns instantly, and
+    the two endpoints that both call it share one computation. The cached value is treated
+    READ-ONLY by callers. An injected ``benchmark_source`` (tests / backfill) bypasses the
+    cache for determinism."""
+    if benchmark_source is not None:
+        return _account_performance_series(
+            session, tenant_id, portfolio_id, today=today,
+            account_ids=account_ids, with_benchmarks=with_benchmarks, benchmark_source=benchmark_source,
+        )
+    scope = ",".join(sorted(str(a) for a in account_ids)) if account_ids else "*"
+    fp = compute_cache.portfolio_fingerprint(session, tenant_id, portfolio_id)
+    key = f"aps|{tenant_id}|{portfolio_id}|{scope}|{today}|{int(with_benchmarks)}|{fp}"
+    return compute_cache.cached(
+        key,
+        lambda: _account_performance_series(
+            session, tenant_id, portfolio_id, today=today,
+            account_ids=account_ids, with_benchmarks=with_benchmarks, benchmark_source=benchmark_source,
+        ),
+    )
+
+
+def _account_performance_series(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    today: date,
+    account_ids: Collection[uuid.UUID] | None = None,
+    with_benchmarks: bool = True,
+    benchmark_source: HistorySource | None = None,
+) -> HoldingsPerfSeries:
+    """Uncached core of :func:`account_performance_series` — see that wrapper for caching."""
     targets = list(account_ids) if account_ids else list(
         session.scalars(
             select(models.Account.id).where(models.Account.portfolio_id == portfolio_id)
@@ -1259,16 +1295,15 @@ def account_performance_series(
 
 def _asof_close(series: list[ClosePoint] | None, when: date) -> float | None:
     """Most recent close on or before ``when`` (carry-forward over non-trading days).
-    ``series`` is ascending by date. None if nothing is on/before ``when``."""
+    ``series`` is ascending by date. None if nothing is on/before ``when``.
+
+    Binary search, not a linear scan: this is called once per (ticker, valuation date)
+    across the reconstruction grid — tens of thousands of times for a multi-year book —
+    so the O(n)→O(log n) drop is the bulk of NAV-reconstruction CPU."""
     if not series:
         return None
-    chosen: float | None = None
-    for point in series:
-        if point.bar_date <= when:
-            chosen = point.close
-        else:
-            break
-    return chosen
+    idx = bisect.bisect_right(series, when, key=lambda p: p.bar_date)
+    return series[idx - 1].close if idx > 0 else None
 
 
 def _month_ends(start: date, end: date) -> list[date]:
