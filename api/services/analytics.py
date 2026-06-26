@@ -823,6 +823,11 @@ class PortfolioSummary:
     dividends: float
     interest: float
     distributions: float = 0.0  # taxable withdrawals from tax-deferred accounts (ordinary income)
+    # YTD realized gains for the Overview cards (base currency). Taxable (the tax-relevant
+    # figure) keeps the ST/LT split; tax-advantaged is a single never-taxed total.
+    realized_st_ytd: float = 0.0
+    realized_lt_ytd: float = 0.0
+    realized_ytd_taxadv: float = 0.0
     # Valuation — None when no holding has a cached price (price-free path); otherwise
     # the sum over priced holdings (an unpriced holding contributes only its cost basis).
     # All monetary fields are in ``base_currency``.
@@ -1015,7 +1020,18 @@ def summary(
 
     portfolio = session.get(models.Portfolio, portfolio_id)
     held = valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids, prices=prices)
-    closed = realized(session, tenant_id, portfolio_id, account_ids=account_ids)
+    # Realized lots split by tax treatment so the headline can surface YTD realized the
+    # same way it splits unrealized — the taxable figure carries the tax consequence; an
+    # IRA/401(k)/Roth realization is never taxed. Two disjoint scoped calls union back to
+    # the full scope (realized() is per-account, so the partition loses nothing) and give
+    # the taxable-vs-tax-advantaged split for free.
+    scope_ids = _scoped_account_ids(session, portfolio_id, None, account_ids)
+    taxable_ids = account_meta.taxable_account_ids(session, tenant_id, portfolio_id) & scope_ids
+    adv_ids = scope_ids - taxable_ids
+    taxable_lots = realized(session, tenant_id, portfolio_id, account_ids=taxable_ids)
+    adv_lots = realized(session, tenant_id, portfolio_id, account_ids=adv_ids)
+    closed = taxable_lots + adv_lots
+    this_year = date.today().year  # calendar-year YTD, matching the Tax page's year tag
     # Tax-deferred accounts in scope → their withdrawals are taxable distributions.
     deferred = account_meta.tax_deferred_account_ids(session, tenant_id, portfolio_id)
     if account_ids is not None:
@@ -1050,6 +1066,20 @@ def summary(
         # excluded rather than mixed into the base total at native face value.
         realized_st=sum(r.gain_base for r in closed if not r.long_term and r.gain_base is not None),
         realized_lt=sum(r.gain_base for r in closed if r.long_term and r.gain_base is not None),
+        # YTD realized, split by tax treatment for the Overview cards. Taxable carries the
+        # ST/LT breakdown (the tax-relevant figure); tax-advantaged is a single no-tax total.
+        realized_st_ytd=sum(
+            r.gain_base for r in taxable_lots
+            if not r.long_term and r.gain_base is not None and r.close_date.year == this_year
+        ),
+        realized_lt_ytd=sum(
+            r.gain_base for r in taxable_lots
+            if r.long_term and r.gain_base is not None and r.close_date.year == this_year
+        ),
+        realized_ytd_taxadv=sum(
+            r.gain_base for r in adv_lots
+            if r.gain_base is not None and r.close_date.year == this_year
+        ),
         dividends=sum(i.dividends for i in yearly),
         interest=sum(i.interest for i in yearly),
         distributions=sum(i.distributions for i in yearly),

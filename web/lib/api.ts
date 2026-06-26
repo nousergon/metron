@@ -174,6 +174,9 @@ export type Summary = {
   realized_st: number;
   realized_lt: number;
   realized_total: number;
+  realized_st_ytd: number; // taxable, current calendar year
+  realized_lt_ytd: number; // taxable, current calendar year
+  realized_ytd_taxadv: number; // tax-advantaged YTD total (never taxed)
   dividends: number;
   interest: number;
   distributions: number;

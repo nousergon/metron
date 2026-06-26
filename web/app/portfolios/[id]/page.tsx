@@ -1,5 +1,5 @@
 import { getAccounts, getIndices, getPerformanceTiles, getPlugins, getPortfolio, getSummary, MetronApiError, type Account, type PeriodTiles, type Portfolio, type PluginNav } from "@/lib/api";
-import { accountingMoneyWhole, moneyWhole, signClass } from "@/lib/format";
+import { accountingMoneyWhole, moneyWhole, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { PerfTiles } from "@/components/perf-tiles";
@@ -77,6 +77,11 @@ export default async function PortfolioPage({
   const activeAccts = scoped ? accounts.filter((a) => accountIds.includes(a.account_id)) : accounts;
   const taxableUnreal = sumOrNull(activeAccts.filter(isTaxable), (a) => a.unrealized_gain);
   const advUnreal = sumOrNull(activeAccts.filter((a) => !isTaxable(a)), (a) => a.unrealized_gain);
+  // Realized YTD (current calendar year), split the same way as unrealized. Show "—" for a
+  // treatment the active selection holds no accounts of (mirrors the unrealized cards).
+  const hasTaxableAcct = activeAccts.some(isTaxable);
+  const hasAdvAcct = activeAccts.some((a) => !isTaxable(a));
+  const realizedYtdTaxable = summary.realized_st_ytd + summary.realized_lt_ytd;
 
   // Premium nav (metron-ops). Best-effort + always empty on the public tier.
   let plugins: PluginNav[] = [];
@@ -163,6 +168,33 @@ export default async function PortfolioPage({
           <StatCard label="Cost basis" value={moneyWhole(summary.total_cost_basis, ccy)} hint={`${summary.n_holdings} holdings`} href={`/portfolios/${id}/holdings${navQuery}`} />
         </div>
       )}
+
+      {/* Realized YTD — sits directly under unrealized and splits the same way: taxable
+          carries the tax consequence (with the ST/LT breakdown), tax-advantaged is never
+          taxed. Calendar-year scope, matching the Tax page's YTD tag. */}
+      <div className="mt-4 rounded-lg border border-line p-5">
+        <div className="text-xs uppercase tracking-wide text-muted">Realized YTD</div>
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Link href={`/portfolios/${id}/tax${navQuery}`} className="rounded-md border border-line p-3 transition hover:border-muted hover:bg-white/5">
+            <div className="text-xs uppercase tracking-wide text-muted">Taxable realized YTD →</div>
+            <div className={`mt-1 text-xl font-semibold tabular-nums ${signClass(realizedYtdTaxable)}`}>
+              {hasTaxableAcct ? accountingMoneyWhole(realizedYtdTaxable, ccy) : "—"}
+            </div>
+            <div className="mt-1 text-xs text-muted">
+              {hasTaxableAcct
+                ? `short-term ${signedMoneyWhole(summary.realized_st_ytd, ccy)} · long-term ${signedMoneyWhole(summary.realized_lt_ytd, ccy)}`
+                : "the realized gains with a tax consequence"}
+            </div>
+          </Link>
+          <div className="rounded-md border border-line/60 p-3">
+            <div className="text-xs uppercase tracking-wide text-muted/70">Tax-advantaged realized YTD</div>
+            <div className="mt-1 text-xl font-semibold tabular-nums text-muted">
+              {hasAdvAcct ? accountingMoneyWhole(summary.realized_ytd_taxadv, ccy) : "—"}
+            </div>
+            <div className="mt-1 text-xs text-muted/70">IRA / 401(k) / Roth — no tax consequence</div>
+          </div>
+        </div>
+      </div>
 
       {/* Holdings / accounts counts → their pages. */}
       <div className="mt-4 grid grid-cols-2 gap-3">
