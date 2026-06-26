@@ -24,29 +24,36 @@ cd "$REPO/web"
 npm install --no-audit --no-fund --silent || { echo "npm install FAILED"; exit 1; }
 NODE_OPTIONS=--max-old-space-size=700 npm run build || { echo "web build FAILED"; exit 1; }
 
-# Hydrate secrets from SSM Parameter Store into the metron-ops/.env EnvironmentFile so
-# SSM is the durable source of truth — the .env is a generated cache, refreshed every
-# deploy, so a rebuilt/replaced box self-heals instead of needing a hand-pasted token
-# (metron-ops#82). Only the marked block is rewritten; hand-set lines are preserved.
-# Values are written straight to the file and NEVER echoed (they'd leak into the GHA log).
+# Hydrate secrets + durable config flags from SSM Parameter Store into the
+# metron-ops/.env EnvironmentFile so SSM is the durable source of truth — the .env is a
+# generated cache, refreshed every deploy, so a rebuilt/replaced box self-heals instead
+# of needing a hand-pasted token/flag (metron-ops#82). Only the marked block is
+# rewritten; hand-set lines are preserved. METRON_ADVISOR_SFT_CAPTURE_ENABLED rides this
+# loop (non-secret, but capture must survive a box rebuild or it silently stops accruing
+# the distillation corpus). Values are written straight to the file and NEVER echoed
+# (they'd leak into the GHA log).
 ENVF="$REPO/../metron-ops/.env"
 echo "=== hydrating SSM secrets → metron-ops/.env ==="
 touch "$ENVF"
 BLOCK=$(mktemp)
 {
   echo "# >>> ssm-hydrated (managed by deploy-on-merge.sh — do not edit) >>>"
-  for pair in "FLEX_TOKEN:/metron/flex_token" "FLEX_QUERY_ID:/metron/flex_query_id"; do
+  for pair in \
+    "FLEX_TOKEN:/metron/flex_token" \
+    "FLEX_QUERY_ID:/metron/flex_query_id" \
+    "METRON_ADVISOR_SFT_CAPTURE_ENABLED:/metron/advisor_sft_capture_enabled"; do
     var=${pair%%:*}; path=${pair#*:}
     val=$(aws ssm get-parameter --region us-east-1 --name "$path" --with-decryption --query Parameter.Value --output text 2>/dev/null)
     [ -n "$val" ] && [ "$val" != "None" ] && printf '%s=%s\n' "$var" "$val"
   done
   echo "# <<< ssm-hydrated <<<"
 } >> "$BLOCK"
+HYDRATED=$(grep -cE '^[A-Z][A-Z0-9_]*=' "$BLOCK" || true)
 # Replace any prior managed block in place, then append the fresh one (idempotent).
 sed -i '/# >>> ssm-hydrated/,/# <<< ssm-hydrated/d' "$ENVF"
 cat "$BLOCK" >> "$ENVF"
 rm -f "$BLOCK"
-echo "  hydrated $(grep -c '^FLEX_' "$ENVF" || true) Flex var(s) from SSM (values not logged)"
+echo "  hydrated ${HYDRATED} var(s) from SSM (values not logged)"
 
 sudo systemctl restart metron-api metron-web
 sleep 6
