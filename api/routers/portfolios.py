@@ -298,6 +298,9 @@ class SummaryOut(BaseModel):
     realized_st: float
     realized_lt: float
     realized_total: float
+    realized_st_ytd: float = 0.0
+    realized_lt_ytd: float = 0.0
+    realized_ytd_taxadv: float = 0.0
     dividends: float
     interest: float
     distributions: float = 0.0
