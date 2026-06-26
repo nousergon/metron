@@ -319,6 +319,21 @@ def today_view(
         return TodaySummary(available=False, base_currency=base, reason="unavailable", as_of_utc=as_of, stale=True)
 
     yf_by_ticker = _yf_symbol_by_ticker(session, [h.ticker for h in held])
+    return _today_summary(held, quotes, yf_by_ticker, base, as_of=as_of, stale=stale)
+
+
+def _today_summary(
+    held: list,
+    quotes: dict,
+    yf_by_ticker: dict[str, str],
+    base: str,
+    *,
+    as_of: datetime | None,
+    stale: bool,
+) -> TodaySummary:
+    """Overnight·intraday·day P&L decomposition for one set of valued holdings against the
+    intraday snapshot quotes. Shared by ``today_view`` (one scope) and ``today_by_account``
+    (every account off ONE snapshot decode), so the per-holding math is single-sourced."""
     rows: list[TodayRow] = []
     tot_prev_mv = tot_on = tot_id = tot_day = 0.0
     excluded = 0
@@ -379,3 +394,45 @@ def today_view(
         day_pct=pct(tot_day) if has else None,
         rows=rows,
     )
+
+
+def today_by_account(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    feed_entitled: bool,
+    account_ids: Collection[uuid.UUID] | None = None,
+    reader=None,
+    now: datetime | None = None,
+) -> dict[uuid.UUID, TodaySummary]:
+    """Per-account TODAY decomposition computed in ONE pass — values every account's
+    holdings once (``analytics.valued_holdings_by_account``: a single price + FX lookup over
+    the union of tickers) and decodes the intraday snapshot once, then decomposes per account.
+
+    Replaces the per-account ``today_view`` N+1 in ``performance.account_period_returns``
+    (was N× valued_holdings + N× snapshot decode for an N-account portfolio — the dominant
+    cost of the Accounts panel). Empty/out-of-scope accounts are omitted from the result;
+    callers treat an absent account_id as "no TODAY legs"."""
+    from api.services import analytics
+
+    now = now or datetime.now(UTC)
+    if not feed_entitled:
+        return {}
+    per_acct = analytics.valued_holdings_by_account(session, tenant_id, portfolio_id)
+    if account_ids is not None:
+        scope = set(account_ids)
+        per_acct = {aid: hs for aid, hs in per_acct.items() if aid in scope}
+    if not per_acct:
+        return {}
+    base = analytics._base_currency(session, portfolio_id)
+    quotes, as_of, stale = load_quotes(reader=reader, now=now)
+    if not quotes:
+        return {}
+    all_tickers = [h.ticker for hs in per_acct.values() for h in hs]
+    yf_by_ticker = _yf_symbol_by_ticker(session, all_tickers)
+    return {
+        aid: _today_summary(held, quotes, yf_by_ticker, base, as_of=as_of, stale=stale)
+        for aid, held in per_acct.items()
+        if held
+    }

@@ -1118,13 +1118,12 @@ def account_period_returns(
     if feed_entitled:
         from api.services import intraday
 
-        ids = list(account_ids) if account_ids else list(
-            session.scalars(select(models.Account.id).where(models.Account.portfolio_id == portfolio_id)).all()
+        # ONE pass over all (scoped) accounts — NOT a today_view() per account, which was an
+        # O(accounts) N+1 (each call re-ran valued_holdings + decoded the intraday snapshot).
+        by_acct = intraday.today_by_account(
+            session, tenant_id, portfolio_id, feed_entitled=True, account_ids=account_ids, reader=reader, now=now
         )
-        for aid in ids:
-            t = intraday.today_view(
-                session, tenant_id, portfolio_id, feed_entitled=True, account_ids=[aid], reader=reader, now=now
-            )
+        for aid, t in by_acct.items():
             r = out.setdefault(aid, AccountPeriodReturns())
             r.day_pct, r.overnight_pct, r.intraday_pct = t.day_pct, t.overnight_pct, t.intraday_pct
     return out
@@ -1190,6 +1189,21 @@ def account_performance_series(
         ).all()
     }
 
+    # Prefetch the cross-account-IDENTICAL reconstruction inputs ONCE — close history (the
+    # heavy pull), the unscoped ledger, the snapshot-sourced account set, and the ticker→ccy
+    # map. Previously each _reconstruct_nav_points() call re-fetched all of these, so an
+    # N-account portfolio pulled the full close history N times (the Holdings-chart blowup).
+    snapshot_account_ids = analytics._snapshot_sourced_account_ids(session, tenant_id, portfolio_id)
+    by_account_all = analytics.engine_transactions_by_account(session, tenant_id, portfolio_id)
+    ticker_ccy = _ticker_currencies(session, tenant_id, portfolio_id)
+    all_open, all_closed = _load_lot_timeline(session, tenant_id, portfolio_id, None)
+    union_symbols = sorted(
+        {t for t, *_ in all_open}
+        | {t for t, *_ in all_closed}
+        | {t.ticker for _aid, t in by_account_all if t.ticker}
+    )
+    nav_history = price_service.close_history_by_symbol(session, [*union_symbols, "SPY"])
+
     result = HoldingsPerfSeries()
     earliest: date | None = None
     for aid in targets:
@@ -1197,7 +1211,18 @@ def account_performance_series(
         # from the existing price cache — no network on read). Fall back to the forward-
         # recorded NAV snapshots when the account can't be reconstructed (SnapTrade, no lots)
         # or its tickers aren't cached yet. The coverage tag tells the user which (#87).
-        recon = _reconstruct_nav_points(session, tenant_id, portfolio_id, account_ids=[aid], today=today, backfill=False)
+        recon = _reconstruct_nav_points(
+            session,
+            tenant_id,
+            portfolio_id,
+            account_ids=[aid],
+            today=today,
+            backfill=False,
+            history=nav_history,
+            by_account=by_account_all,
+            snapshot_account_ids=snapshot_account_ids,
+            ticker_ccy=ticker_ccy,
+        )
         pts = _growth_from_navpoints(recon)
         coverage = "reconstructed"
         if len(pts) < 2:
@@ -1474,12 +1499,23 @@ def _reconstruct_nav_points(
     today: date,
     source: HistorySource | None = None,
     backfill: bool = True,
+    history: dict[str, list[ClosePoint]] | None = None,
+    by_account: list | None = None,
+    snapshot_account_ids: set[uuid.UUID] | None = None,
+    ticker_ccy: dict[str, str] | None = None,
 ) -> list[_NavPoint]:
     """The read-only core of NAV reconstruction — the historical valuation series for the
     whole portfolio (``account_ids`` None) or a scoped set of accounts (per-account history,
     metron-ops#87). ``reconstruct_snapshots`` persists this; the Holdings chart reads it
     per account. ``backfill=False`` values from the EXISTING price cache only (no network) —
-    the cheap path for read-time per-account series; the write path backfills first."""
+    the cheap path for read-time per-account series; the write path backfills first.
+
+    ``history`` / ``by_account`` (UNSCOPED, full portfolio) / ``snapshot_account_ids`` /
+    ``ticker_ccy`` are optional pre-fetched inputs that are IDENTICAL across every account —
+    when a caller reconstructs per-account series in a loop it fetches them ONCE and injects
+    them here, instead of this function re-pulling the full close history + ledger on every
+    call (the O(accounts) Holdings-chart blowup). Each is computed locally when omitted, so
+    the whole-portfolio write path is unchanged."""
     open_lots, closed_lots = _load_lot_timeline(session, tenant_id, portfolio_id, account_ids)
     # Replay the transaction ledger ONLY for genuinely ledger-sourced (CSV/OFX) accounts —
     # the SAME snapshot-vs-ledger boundary analytics.holdings() uses. Snapshot-sourced
@@ -1488,8 +1524,10 @@ def _reconstruct_nav_points(
     # inflation through (the >$1M reconstructed-NAV bug — same class as metron-ops#74, via a
     # path that fix didn't close). They are valued from their lots (IBKR) or, with no lot
     # detail (SnapTrade), carried flat-backward at current broker value — never replayed.
-    snapshot_account_ids = analytics._snapshot_sourced_account_ids(session, tenant_id, portfolio_id)
-    by_account = analytics.engine_transactions_by_account(session, tenant_id, portfolio_id)
+    if snapshot_account_ids is None:
+        snapshot_account_ids = analytics._snapshot_sourced_account_ids(session, tenant_id, portfolio_id)
+    if by_account is None:
+        by_account = analytics.engine_transactions_by_account(session, tenant_id, portfolio_id)
     if account_ids is not None:
         scope = set(account_ids)
         by_account = [(aid, t) for aid, t in by_account if aid in scope]
@@ -1512,7 +1550,8 @@ def _reconstruct_nav_points(
     if backfill:
         price_service.ensure_security(session, "SPY")
         price_service.backfill_prices(session, [*symbols, "SPY"], first, today, source=source)
-    history = price_service.close_history_by_symbol(session, [*symbols, "SPY"])
+    if history is None:
+        history = price_service.close_history_by_symbol(session, [*symbols, "SPY"])
     spy_series = history.get("SPY")
     held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     current_px = {h.ticker: h.last_price for h in held if h.last_price is not None}
@@ -1529,7 +1568,8 @@ def _reconstruct_nav_points(
 
     # FX: convert each ticker's NATIVE historical price to base USD at the rate as-of the
     # valuation date (a foreign close is not a USD value — the foreign-holding spike).
-    ticker_ccy = _ticker_currencies(session, tenant_id, portfolio_id)
+    if ticker_ccy is None:
+        ticker_ccy = _ticker_currencies(session, tenant_id, portfolio_id)
     foreign = sorted({c for c in ticker_ccy.values() if c and c != "USD"})
     if backfill and foreign:
         fx_service.backfill_fx_rates(session, foreign, first, today, base="USD")

@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api.db import models
@@ -115,21 +115,36 @@ def latest_close_by_symbol(session: Session, symbols: list[str]) -> dict[str, Cl
     """Most recent cached close per symbol, read from ``price_bars``.
 
     Absent symbols (never refreshed, or refreshed but unpriceable) are omitted — the
-    caller treats absence as "no market value"."""
+    caller treats absence as "no market value".
+
+    Latest-per-symbol via a window function (``ROW_NUMBER`` partitioned by symbol, newest
+    bar first), so the DB returns ONE row per symbol off the ``(security_id, bar_date)``
+    index — NOT every bar for every symbol pulled across the wire to be deduped in Python
+    (that scanned ~all of ``price_bars`` on every valuation, the dominant page-load cost)."""
     symbols = [s for s in dict.fromkeys(symbols) if s]
     if not symbols:
         return {}
-    rows = session.execute(
-        select(models.Security.symbol, models.PriceBar.bar_date, models.PriceBar.close)
+    rn = func.row_number().over(
+        partition_by=models.Security.symbol,
+        order_by=models.PriceBar.bar_date.desc(),
+    ).label("rn")
+    ranked = (
+        select(
+            models.Security.symbol.label("symbol"),
+            models.PriceBar.bar_date.label("bar_date"),
+            models.PriceBar.close.label("close"),
+            rn,
+        )
         .join(models.PriceBar, models.PriceBar.security_id == models.Security.id)
         .where(models.Security.symbol.in_(symbols))
-        .order_by(models.Security.symbol, models.PriceBar.bar_date.desc())
+        .subquery()
+    )
+    rows = session.execute(
+        select(ranked.c.symbol, ranked.c.bar_date, ranked.c.close).where(ranked.c.rn == 1)
     ).all()
-    out: dict[str, ClosePoint] = {}
-    for symbol, bar_date, close in rows:
-        if symbol not in out:  # rows are newest-first per symbol → first is latest
-            out[symbol] = ClosePoint(bar_date=bar_date, close=float(close))
-    return out
+    return {
+        symbol: ClosePoint(bar_date=bar_date, close=float(close)) for symbol, bar_date, close in rows
+    }
 
 
 def ensure_security(session: Session, symbol: str, *, currency: str = "USD") -> uuid.UUID:
