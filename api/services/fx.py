@@ -130,16 +130,22 @@ def rate_as_of(session: Session, currency: str, on_date: date, *, base: str = "U
     ccy = (currency or base).strip().upper()
     if ccy == base:
         return 1.0
-    row = session.scalars(
-        select(models.FxRate)
+    # Scalar rate column + LIMIT 1: ``.first()`` does NOT add a SQL LIMIT, so a bare
+    # ordered ORM query materialized EVERY on-or-before row as an FxRate object just to
+    # take one — ~9s of an Accounts/Holdings-chart load, since this runs per (ccy, date)
+    # across the NAV-reconstruction valuation grid. Off the (currency, base, rate_date)
+    # ordering the DB returns exactly one row.
+    rate = session.execute(
+        select(models.FxRate.rate)
         .where(
             models.FxRate.currency == ccy,
             models.FxRate.base == base,
             models.FxRate.rate_date <= on_date,
         )
         .order_by(models.FxRate.rate_date.desc())
-    ).first()
-    return float(row.rate) if row is not None else None
+        .limit(1)
+    ).scalar()
+    return float(rate) if rate is not None else None
 
 
 def latest_rate_to_base(session: Session, currency: str, *, base: str = "USD") -> float | None:
@@ -152,12 +158,15 @@ def latest_rate_to_base(session: Session, currency: str, *, base: str = "USD") -
     ccy = (currency or base).strip().upper()
     if ccy == base:
         return 1.0
-    row = session.scalars(
-        select(models.FxRate)
+    # Scalar rate + LIMIT 1 (see rate_as_of): never materialize the whole rate history
+    # as ORM objects just to read the newest one.
+    rate = session.execute(
+        select(models.FxRate.rate)
         .where(models.FxRate.currency == ccy, models.FxRate.base == base)
         .order_by(models.FxRate.rate_date.desc())
-    ).first()
-    return float(row.rate) if row is not None else None
+        .limit(1)
+    ).scalar()
+    return float(rate) if rate is not None else None
 
 
 def rates_to_base(session: Session, currencies: list[str], *, base: str = "USD") -> dict[str, float | None]:
