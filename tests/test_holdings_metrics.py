@@ -10,7 +10,6 @@ from __future__ import annotations
 from api.routers import portfolios
 from api.services import analytics, fundamentals, technicals, valuation_medians
 
-
 # ── fundamentals v2 ──────────────────────────────────────────────────────────
 
 def test_fundamentals_parses_pb_and_ps():
