@@ -8,7 +8,7 @@ benchmark closes are seeded and the backfill fetch is monkeypatched to fail loud
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -201,6 +201,50 @@ class TestAccountPeriodReturns:
         assert r.ytd_pct == pytest.approx(0.20, abs=1e-3)  # 180/150 − 1 (latest vs first 2025 close)
         assert r.ltm_pct == pytest.approx(0.80, abs=1e-3)  # 180/100 − 1 (latest vs ~1y-ago close)
         assert r.day_pct is None  # no feed → no Day legs
+
+    def test_day_legs_single_pass_no_today_view_n_plus_1(self, db_session, tenant, monkeypatch):
+        """Day legs for N accounts must come from ONE today_by_account pass, NEVER a
+        today_view() call per account — the O(accounts) N+1 that made the Accounts panel
+        take ~11s for an 11-account book. This guards the N+1 against silently returning."""
+        from api.services import intraday
+
+        pid = uuid.uuid4()
+        a1 = _account(db_session, tenant, pid, "Brokerage")
+        a2 = _account(db_session, tenant, pid, "IRA")
+        for sym, aid, qty, px, close in (("AAPL", a1, 10, 100.0, 120.0), ("MSFT", a2, 5, 200.0, 250.0)):
+            sec = models.Security(symbol=sym, currency="USD")
+            db_session.add(sec)
+            db_session.flush()
+            db_session.add(
+                models.Transaction(
+                    tenant_id=uuid.UUID(tenant), account_id=aid, security_id=sec.id,
+                    txn_type="BUY", quantity=qty, price=px, amount=qty * px, currency="USD",
+                    trade_date=date(2026, 1, 2), source_key=f"buy-{sym}",
+                )
+            )
+            db_session.add(models.PriceBar(security_id=sec.id, bar_date=date(2026, 6, 11), close=close, currency="USD"))
+        db_session.commit()
+
+        calls: list[int] = []
+        real_today_view = intraday.today_view
+        monkeypatch.setattr(intraday, "today_view", lambda *a, **k: (calls.append(1), real_today_view(*a, **k))[1])
+
+        def _reader():
+            return {
+                "schema_version": 1, "as_of_utc": "2026-06-12T15:00:00Z", "source": "yfinance_delayed",
+                "quotes": {
+                    "AAPL": {"prev_close": 100.0, "open": 110.0, "last": 130.0},
+                    "MSFT": {"prev_close": 200.0, "open": 210.0, "last": 230.0},
+                },
+            }
+
+        out = perf.account_period_returns(
+            db_session, uuid.UUID(tenant), pid, today=date(2026, 6, 12), feed_entitled=True,
+            reader=_reader, now=datetime(2026, 6, 12, 15, 3, tzinfo=UTC),
+        )
+        assert calls == []  # the N+1 is gone — no per-account today_view()
+        assert out[a1].day_pct == pytest.approx(0.30)  # 10×(130−100)/1000, single-pass path still works
+        assert out[a2].day_pct == pytest.approx(0.15)  # 5×(230−200)/1000
 
 
 class TestEndpoint:
