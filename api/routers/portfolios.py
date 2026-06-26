@@ -178,9 +178,15 @@ class HoldingOut(BaseModel):
     op_margin: float | None = None
     roe: float | None = None
     roa: float | None = None
-    debt_to_equity: float | None = None
-    current_ratio: float | None = None
     beta: float | None = None
+    cash: float | None = None
+    debt: float | None = None
+    net_debt: float | None = None
+    debt_to_equity: float | None = None
+    net_debt_to_ebitda: float | None = None
+    current_ratio: float | None = None
+    quick_ratio: float | None = None
+    fcf: float | None = None
     rsi_14: float | None = None
     macd_hist: float | None = None
     pct_to_ma_50: float | None = None
@@ -1525,9 +1531,18 @@ def _enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
             h.op_margin = f.operating_margins
             h.roe = f.roe
             h.roa = f.roa
+            h.beta = f.beta
+            # Balance sheet: absolute balances + derived net debt / leverage.
+            h.cash = f.total_cash
+            h.debt = f.total_debt
             h.debt_to_equity = f.debt_to_equity
             h.current_ratio = f.current_ratio
-            h.beta = f.beta
+            h.quick_ratio = f.quick_ratio
+            h.fcf = f.free_cashflow
+            if f.total_debt is not None and f.total_cash is not None:
+                h.net_debt = f.total_debt - f.total_cash
+                if f.ebitda not in (None, 0):
+                    h.net_debt_to_ebitda = h.net_debt / f.ebitda
         t = techs.get(yf)
         if t is not None:
             h.rsi_14 = t.rsi_14

@@ -32,6 +32,14 @@ def test_fundamentals_missing_pb_ps_is_none():
     assert f.price_to_book is None and f.price_to_sales is None
 
 
+def test_fundamentals_parses_balance_sheet():
+    art = {"fundamentals": {"AAPL": {"totalDebt": 1.1e11, "totalCash": 6.0e10,
+                                     "ebitda": 1.3e11, "freeCashflow": 9.0e10}}}
+    f = fundamentals.load_fundamentals(reader=lambda: art).by_symbol["AAPL"]
+    assert f.total_debt == 1.1e11 and f.total_cash == 6.0e10
+    assert f.ebitda == 1.3e11 and f.free_cashflow == 9.0e10
+
+
 # ── technicals ───────────────────────────────────────────────────────────────
 
 def test_technicals_round_trip():
@@ -86,7 +94,9 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
             "fundamentals": {"AAPL": {"trailingPE": 30.0, "forwardPE": 25.0, "priceToBook": 6.0,
                                       "priceToSalesTrailing12Months": 7.5, "marketCap": 3.0e12,
                                       "returnOnEquity": 0.5, "debtToEquity": 150.0, "beta": 1.2,
-                                      "grossMargins": 0.45, "revenueGrowth": 0.08}}}),
+                                      "grossMargins": 0.45, "revenueGrowth": 0.08,
+                                      "totalDebt": 1.2e11, "totalCash": 4.0e10, "ebitda": 1.0e11,
+                                      "freeCashflow": 9.0e10, "quickRatio": 0.9}}}),
     )
     monkeypatch.setattr(
         portfolios.technicals_service, "load_technicals",
@@ -101,6 +111,10 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
     assert aapl.pe == 30.0 and aapl.fwd_pe == 25.0 and aapl.pb == 6.0 and aapl.ps == 7.5
     assert aapl.market_cap == 3.0e12 and aapl.roe == 0.5 and aapl.beta == 1.2
     assert aapl.rsi_14 == 61.0 and aapl.pct_in_52w_range == 0.8 and aapl.mom_20d == 0.03
+    # Balance sheet: absolute balances mapped, net debt + leverage derived.
+    assert aapl.cash == 4.0e10 and aapl.debt == 1.2e11 and aapl.quick_ratio == 0.9
+    assert aapl.net_debt == 1.2e11 - 4.0e10
+    assert aapl.net_debt_to_ebitda == (1.2e11 - 4.0e10) / 1.0e11
     # A holding absent from both artifacts keeps all metrics None (coverage gap, not zeros).
     zzz = held[1]
     assert zzz.pe is None and zzz.rsi_14 is None and zzz.market_cap is None

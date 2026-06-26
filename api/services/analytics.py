@@ -112,9 +112,16 @@ class Holding:
     op_margin: float | None = None        # fraction
     roe: float | None = None              # fraction
     roa: float | None = None              # fraction
-    debt_to_equity: float | None = None   # yfinance raw (a percentage, e.g. 47.2)
-    current_ratio: float | None = None
     beta: float | None = None
+    # Balance sheet (absolute $ + leverage/liquidity):
+    cash: float | None = None             # total cash ($)
+    debt: float | None = None             # total debt ($)
+    net_debt: float | None = None         # debt − cash ($); derived
+    debt_to_equity: float | None = None   # yfinance raw (a percentage, e.g. 47.2)
+    net_debt_to_ebitda: float | None = None  # (debt − cash) / EBITDA; derived leverage
+    current_ratio: float | None = None
+    quick_ratio: float | None = None
+    fcf: float | None = None              # free cash flow ($)
     # Technicals:
     rsi_14: float | None = None
     macd_hist: float | None = None

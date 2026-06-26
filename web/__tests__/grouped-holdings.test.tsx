@@ -37,7 +37,8 @@ describe("GroupedHoldings", () => {
     const holdings = [h("AAPL", "equity"), h("037833100", "bond"), h("VMFXX", "cash")];
     render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced />);
     expect(screen.getByText("Portfolio total")).toBeInTheDocument();
-    expect(screen.getByText("Cash")).toBeInTheDocument();
+    // The asset-class group HEADING (not the Balance-Sheet "Cash" column header).
+    expect(screen.getByRole("heading", { level: 3, name: /Cash/ })).toBeInTheDocument();
     expect(screen.getByText("Bonds & CDs")).toBeInTheDocument();
     expect(screen.getByText("Equities")).toBeInTheDocument();
     // Each holding still renders inside its group's table.

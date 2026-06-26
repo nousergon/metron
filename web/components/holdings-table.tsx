@@ -133,7 +133,7 @@ const COLUMNS: Column[] = [
   { key: "ltm_pct", label: "LTM", pricedOnly: true, defaultDesc: true, value: (h) => h.ltm_pct },
 ];
 
-type MetricGroup = "Valuation" | "Fundamentals" | "Technicals";
+type MetricGroup = "Valuation" | "Fundamentals" | "Balance Sheet" | "Technicals";
 
 type MetricColumn = {
   key: string;
@@ -167,9 +167,16 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "op_margin", label: "Op M", group: "Fundamentals", value: (h) => h.op_margin, render: (v) => pct1(v) },
   { key: "roe", label: "ROE", group: "Fundamentals", value: (h) => h.roe, render: (v) => percent(v), signed: true },
   { key: "roa", label: "ROA", group: "Fundamentals", value: (h) => h.roa, render: (v) => percent(v), signed: true },
-  { key: "debt_to_equity", label: "D/E", group: "Fundamentals", value: (h) => h.debt_to_equity, render: (v) => decimal(v / 100, 2), title: "Debt / equity (ratio)" },
-  { key: "current_ratio", label: "Cur R", group: "Fundamentals", value: (h) => h.current_ratio, render: (v) => decimal(v, 2) },
   { key: "beta", label: "Beta", group: "Fundamentals", value: (h) => h.beta, render: (v) => decimal(v, 2) },
+  // ── Balance Sheet (absolute balances + leverage/liquidity) ──
+  { key: "cash", label: "Cash", group: "Balance Sheet", value: (h) => h.cash, render: (v, base) => marketCapShort(v, base), title: "Total cash & equivalents" },
+  { key: "debt", label: "Debt", group: "Balance Sheet", value: (h) => h.debt, render: (v, base) => marketCapShort(v, base), title: "Total debt" },
+  { key: "net_debt", label: "Net Debt", group: "Balance Sheet", value: (h) => h.net_debt, render: (v, base) => marketCapShort(v, base), title: "Total debt − total cash (negative = net cash)" },
+  { key: "debt_to_equity", label: "D/E", group: "Balance Sheet", value: (h) => h.debt_to_equity, render: (v) => decimal(v / 100, 2), title: "Debt / equity (ratio)" },
+  { key: "net_debt_to_ebitda", label: "ND/EBITDA", group: "Balance Sheet", value: (h) => h.net_debt_to_ebitda, render: (v) => decimal(v, 2), title: "Net debt / EBITDA — leverage" },
+  { key: "current_ratio", label: "Cur R", group: "Balance Sheet", value: (h) => h.current_ratio, render: (v) => decimal(v, 2), title: "Current ratio (liquidity)" },
+  { key: "quick_ratio", label: "Quick R", group: "Balance Sheet", value: (h) => h.quick_ratio, render: (v) => decimal(v, 2), title: "Quick ratio (acid-test liquidity)" },
+  { key: "fcf", label: "FCF", group: "Balance Sheet", value: (h) => h.fcf, render: (v, base) => marketCapShort(v, base), signed: true, title: "Free cash flow (TTM)" },
   // ── Technicals ──
   { key: "rsi_14", label: "RSI", group: "Technicals", value: (h) => h.rsi_14, render: (v) => decimal(v, 0), title: "Wilder RSI(14)" },
   { key: "macd_hist", label: "MACD", group: "Technicals", value: (h) => h.macd_hist, render: (v) => decimal(v, 2), signed: true, title: "MACD histogram (line − signal)" },
@@ -179,7 +186,7 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "mom_20d", label: "Mom 20d", group: "Technicals", value: (h) => h.mom_20d, render: (v) => percent(v), signed: true, title: "20-session price momentum" },
 ];
 
-const METRIC_GROUP_ORDER: MetricGroup[] = ["Valuation", "Fundamentals", "Technicals"];
+const METRIC_GROUP_ORDER: MetricGroup[] = ["Valuation", "Fundamentals", "Balance Sheet", "Technicals"];
 
 // Lookup over EVERY sortable column (position + metric), so header clicks sort uniformly.
 const SORT_BY_KEY = new Map<string, (h: Holding) => SortValue>([

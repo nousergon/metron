@@ -60,9 +60,16 @@ export type Holding = {
   op_margin: number | null; // fraction
   roe: number | null; // fraction
   roa: number | null; // fraction
-  debt_to_equity: number | null; // yfinance raw (a percentage, e.g. 47.2)
-  current_ratio: number | null;
   beta: number | null;
+  // Balance sheet (absolute $ + leverage/liquidity).
+  cash: number | null; // total cash ($)
+  debt: number | null; // total debt ($)
+  net_debt: number | null; // debt − cash ($)
+  debt_to_equity: number | null; // yfinance raw (a percentage, e.g. 47.2)
+  net_debt_to_ebitda: number | null; // (debt − cash) / EBITDA
+  current_ratio: number | null;
+  quick_ratio: number | null;
+  fcf: number | null; // free cash flow ($)
   rsi_14: number | null;
   macd_hist: number | null;
   pct_to_ma_50: number | null; // fraction

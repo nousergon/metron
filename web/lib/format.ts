@@ -96,12 +96,14 @@ export function multiple(value: number): string {
   return `${value.toFixed(1)}×`;
 }
 
-/** Market cap in human units: "$3.0T" / "$450.2B" / "$12.3B" / "$840.0M". */
+/** A large money amount in human units: "$3.0T" / "$450.2B" / "$12.3B" / "$840.0M".
+ * Handles negatives (net debt / FCF can be negative) as "−$12.3B". */
 export function marketCapShort(value: number, currency = "USD"): string {
   const abs = Math.abs(value);
   const [div, suffix] = abs >= 1e12 ? [1e12, "T"] : abs >= 1e9 ? [1e9, "B"] : abs >= 1e6 ? [1e6, "M"] : [1e3, "K"];
   const sym = currency === "USD" ? "$" : "";
-  return `${sym}${(value / div).toFixed(1)}${suffix}`;
+  const sign = value < 0 ? "−" : "";
+  return `${sign}${sym}${(abs / div).toFixed(1)}${suffix}`;
 }
 
 /** A plain ratio/level (current ratio, beta, RSI): fixed decimals, no unit. */

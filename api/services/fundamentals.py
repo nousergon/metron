@@ -35,10 +35,14 @@ class TickerFundamentals:
     ev_ebitda: float | None
     earnings_growth: float | None  # fraction
     revenue_growth: float | None   # fraction
-    # Balance-sheet ratios
+    # Balance-sheet ratios + absolute balances ($, artifact v3)
     debt_to_equity: float | None   # raw artifact value (yfinance: a percentage, e.g. 47.2)
     current_ratio: float | None
     quick_ratio: float | None
+    total_debt: float | None       # $ (yfinance totalDebt)
+    total_cash: float | None       # $ (yfinance totalCash)
+    ebitda: float | None           # $ (yfinance ebitda) — for net-debt/EBITDA leverage
+    free_cashflow: float | None    # $ (yfinance freeCashflow)
     roe: float | None              # fraction
     roa: float | None              # fraction
     gross_margins: float | None    # fraction
@@ -102,6 +106,10 @@ def _parse(yf_symbol: str, d: dict) -> TickerFundamentals:
         debt_to_equity=_f(d, "debtToEquity"),
         current_ratio=_f(d, "currentRatio"),
         quick_ratio=_f(d, "quickRatio"),
+        total_debt=_f(d, "totalDebt"),
+        total_cash=_f(d, "totalCash"),
+        ebitda=_f(d, "ebitda"),
+        free_cashflow=_f(d, "freeCashflow"),
         roe=_f(d, "returnOnEquity"),
         roa=_f(d, "returnOnAssets"),
         gross_margins=_f(d, "grossMargins"),

@@ -42,15 +42,29 @@ describe("HoldingsTable metric bands", () => {
       <HoldingsTable
         baseCurrency="USD"
         priced
-        holdings={[h("AAPL", { pe: 30.2, pb: 6.0, rsi_14: 61, pct_to_ma_50: 0.05, market_cap: 3.0e12 })]}
+        holdings={[
+          h("AAPL", {
+            pe: 30.2,
+            pb: 6.0,
+            rsi_14: 61,
+            pct_to_ma_50: 0.05,
+            market_cap: 3.0e12,
+            cash: 6.0e10,
+            net_debt: 5.0e10,
+            net_debt_to_ebitda: 0.5,
+          }),
+        ]}
       />,
     );
     expect(screen.getByText("Valuation")).toBeInTheDocument();
     expect(screen.getByText("Fundamentals")).toBeInTheDocument();
+    expect(screen.getByText("Balance Sheet")).toBeInTheDocument();
     expect(screen.getByText("Technicals")).toBeInTheDocument();
     expect(screen.getByText("30.2×")).toBeInTheDocument(); // P/E multiple
     expect(screen.getByText("$3.0T")).toBeInTheDocument(); // market cap
     expect(screen.getByText("+5.0%")).toBeInTheDocument(); // % above 50d MA (signed)
+    expect(screen.getByText("$60.0B")).toBeInTheDocument(); // cash balance
+    expect(screen.getByText("$50.0B")).toBeInTheDocument(); // net debt
   });
 
   it("renders — for a metric coverage gap (null), never a fabricated 0", () => {
