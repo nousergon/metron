@@ -1,4 +1,5 @@
-import { acctParams, getAccounts, getHoldings, getHoldingsPerformanceSeries, getIntradayLegs, getSummary, getToday, getValuationMedians, MetronApiError, type HoldingsPerfSeries, type IntradayLegHistory, type Today, type ValuationMedians } from "@/lib/api";
+import { Suspense } from "react";
+import { acctParams, getAccounts, getHoldings, getHoldingsPerformanceSeries, getIntradayLegs, getSummary, getToday, getValuationMedians, MetronApiError, type Entitlements, type Holding, type HoldingsPerfSeries, type IntradayLegHistory, type Summary, type Today, type ValuationMedians } from "@/lib/api";
 import { Empty, Section, StatCard } from "@/components/ui";
 import { accountingMoneyWhole, percent, signClass } from "@/lib/format";
 import { AccountPanel } from "@/components/account-panel";
@@ -15,9 +16,34 @@ import { resolveAccountIds } from "@/lib/selection";
 
 export const dynamic = "force-dynamic";
 
+/** A pulsing placeholder bar (mirrors loading.tsx). */
+function Bar({ className = "" }: { className?: string }) {
+  return <div className={`rounded bg-line/60 ${className}`} />;
+}
+
+/** Skeleton fallback for a streamed Section while its data loads. */
+function SectionSkeleton({ rows = 3 }: { rows?: number }) {
+  return (
+    <section className="mt-8 animate-pulse" aria-busy="true">
+      <Bar className="h-3 w-32" />
+      <div className="mt-3 space-y-2">
+        {Array.from({ length: rows }).map((_, i) => (
+          <Bar key={i} className="h-10 w-full" />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 // Holdings — the position-level detail, separated from the Overview dashboard
 // (metron-ops#64). Accounts are (de)activated HERE to see the effect on specific
 // holdings; the selection persists and the Overview's aggregate metrics follow it.
+//
+// Streaming layout (perf): the shell + the fast Today strip paint immediately (Phase A +
+// the two cheap reads, summary/today), then the three expensive sections (Accounts,
+// Performance chart, Holdings table) each stream in behind their own <Suspense> as their
+// data lands, instead of the whole page blocking on the slowest fetch. Each streamed
+// section is an async Server Component that fetches only its own slice and fails soft.
 export default async function HoldingsPage({
   params,
   searchParams,
@@ -28,12 +54,7 @@ export default async function HoldingsPage({
   const { id } = params;
   const tenantId = await requireTenantId();
 
-  // Phase A — everything that does NOT depend on the resolved account selection, in parallel
-  // (the page previously awaited these one-by-one, a 7-deep serial waterfall against the API
-  // where each endpoint also re-reads the intraday snapshot). nav feature states, entitlements
-  // and the portfolio-wide intraday-leg history are independent of the account scope, and the
-  // selection itself resolves alongside them. Best-effort calls degrade to null per-call so a
-  // soft failure never rejects the batch. (legs is portfolio-wide — not account-scoped.)
+  // Phase A — everything independent of the resolved account selection, in parallel.
   const [featureStates, entitlements, legs, accountIds] = await Promise.all([
     navFeatureStates(tenantId),
     loadEntitlements(tenantId),
@@ -43,23 +64,15 @@ export default async function HoldingsPage({
   const scoped = accountIds.length > 0;
   const navQuery = acctParams(accountIds);
 
-  // Phase B — the account-scoped reads, in parallel. The three core reads (summary / holdings /
-  // accounts) drive the error fallback below; the two best-effort sections (perf series, today)
-  // carry their own .catch → null so they degrade independently without failing the batch.
-  let summary, holdings, accounts;
-  let perfSeries: HoldingsPerfSeries | null = null;
+  // The two CHEAP scoped reads block the shell (≈0.3s): summary gives base currency +
+  // priced state used throughout (and resolves portfolio-not-found), today drives the
+  // P&L strip. The expensive reads (accounts / perf series / holdings) stream below.
+  let summary: Summary;
   let today: Today | null = null;
-  let medians: ValuationMedians | null = null;
   try {
-    [summary, holdings, accounts, perfSeries, today, medians] = await Promise.all([
+    [summary, today] = await Promise.all([
       getSummary(tenantId, id, accountIds),
-      getHoldings(tenantId, id, accountIds),
-      getAccounts(tenantId, id),
-      getHoldingsPerformanceSeries(tenantId, id, accountIds).catch((): HoldingsPerfSeries | null => null),
       getToday(tenantId, id, accountIds).catch((): Today | null => null),
-      // SP1500-broad sector/country median bands for the "by sector → country" view —
-      // best-effort + feed-gated (empty off a feed-entitled build).
-      getValuationMedians(tenantId, id, accountIds).catch((): ValuationMedians | null => null),
     ]);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
@@ -71,17 +84,8 @@ export default async function HoldingsPage({
   const ccy = summary.base_currency;
   const priced = summary.market_value != null;
 
-  // Per-account performance lines above the table (metron-ops#78) — shown once at least one
-  // account has ≥2 recorded NAV snapshots (a line needs two points).
-  const showChart = (perfSeries?.accounts.length ?? 0) > 0;
-
-  // Today's overnight/intraday/day P&L strip — hidden when there's no intraday data
-  // (off-hours / no feed). The per-holding decomposition lives in the table's Day column.
   const showToday = !!today?.available && today.rows.length > 0;
-
-  // Overnight-vs-intraday HISTORY (metron-ops#87) — the cumulative split of where the
-  // portfolio's drift comes from. Empty until the daily recorder has ≥1 day.
-  const showLegs = (legs?.n_days ?? 0) > 0 && (legs?.cum_day_pct != null);
+  const showLegs = (legs?.n_days ?? 0) > 0 && legs?.cum_day_pct != null;
 
   return (
     <div>
@@ -97,9 +101,8 @@ export default async function HoldingsPage({
         metrics follow it.
       </p>
 
-      {/* Today's P&L (folded in from the old Today page, metron-ops#87): Day = Overnight
-          (open vs prior close) + Intraday (latest vs open). Per-holding detail is the Day
-          column in the table below. */}
+      {/* Today's P&L (metron-ops#87): Day = Overnight (open vs prior close) + Intraday
+          (latest vs open). Per-holding detail is the Day column in the table below. */}
       {showToday && today ? (
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <StatCard
@@ -123,8 +126,7 @@ export default async function HoldingsPage({
         </div>
       ) : null}
 
-      {/* Overnight vs intraday HISTORY (metron-ops#87): the cumulative compounded split
-          since recording began — where the portfolio's drift actually comes from. */}
+      {/* Overnight vs intraday HISTORY (metron-ops#87): cumulative compounded split. */}
       {showLegs && legs ? (
         <p className="mt-2 text-xs text-muted">
           Since tracking ({legs.n_days} day{legs.n_days === 1 ? "" : "s"}), cumulative drift split:{" "}
@@ -142,29 +144,85 @@ export default async function HoldingsPage({
         </p>
       ) : null}
 
-      <Section title="Accounts">
-        <AccountPanel accounts={accounts} baseCurrency={ccy} portfolioId={id} />
-        {scoped ? (
-          <p className="mt-2 text-xs text-muted">
-            Showing {summary.n_accounts} of {accounts.length} account{accounts.length === 1 ? "" : "s"} — the holdings
-            below reflect this selection.
-          </p>
-        ) : null}
-      </Section>
+      <Suspense fallback={<SectionSkeleton rows={2} />}>
+        <AccountsSection tenantId={tenantId} id={id} ccy={ccy} scoped={scoped} nSelected={summary.n_accounts} />
+      </Suspense>
 
-      {/* Per-account performance lines above the table (metron-ops#78). */}
-      {showChart && perfSeries ? (
-        <Section title="Performance">
-          <HoldingsPerfChart
-            accounts={perfSeries.accounts}
-            benchmarks={perfSeries.benchmarks}
-            benchmarksAvailable={perfSeries.benchmarks_available}
-          />
-        </Section>
+      <Suspense fallback={<SectionSkeleton rows={4} />}>
+        <PerfChartSection tenantId={tenantId} id={id} accountIds={accountIds} />
+      </Suspense>
+
+      <Suspense fallback={<SectionSkeleton rows={6} />}>
+        <HoldingsSection tenantId={tenantId} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} />
+      </Suspense>
+    </div>
+  );
+}
+
+// --- streamed sections -----------------------------------------------------
+
+async function AccountsSection({
+  tenantId, id, ccy, scoped, nSelected,
+}: {
+  tenantId: string; id: string; ccy: string; scoped: boolean; nSelected: number;
+}) {
+  const accounts = await getAccounts(tenantId, id).catch(() => null);
+  if (!accounts) return null;
+  return (
+    <Section title="Accounts">
+      <AccountPanel accounts={accounts} baseCurrency={ccy} portfolioId={id} />
+      {scoped ? (
+        <p className="mt-2 text-xs text-muted">
+          Showing {nSelected} of {accounts.length} account{accounts.length === 1 ? "" : "s"} — the holdings below
+          reflect this selection.
+        </p>
       ) : null}
+    </Section>
+  );
+}
 
-      {/* Best/worst performers + the country/sector allocation, from the holdings already
-          loaded above. Performers needs priced returns; allocation needs market value. */}
+async function PerfChartSection({
+  tenantId, id, accountIds,
+}: {
+  tenantId: string; id: string; accountIds: string[];
+}) {
+  const perfSeries = await getHoldingsPerformanceSeries(tenantId, id, accountIds).catch(
+    (): HoldingsPerfSeries | null => null,
+  );
+  // Per-account performance lines (metron-ops#78) — shown once ≥1 account has ≥2 NAV points.
+  if (!perfSeries || perfSeries.accounts.length === 0) return null;
+  return (
+    <Section title="Performance">
+      <HoldingsPerfChart
+        accounts={perfSeries.accounts}
+        benchmarks={perfSeries.benchmarks}
+        benchmarksAvailable={perfSeries.benchmarks_available}
+      />
+    </Section>
+  );
+}
+
+async function HoldingsSection({
+  tenantId, id, accountIds, ccy, priced, entitlements,
+}: {
+  tenantId: string; id: string; accountIds: string[]; ccy: string; priced: boolean; entitlements: Entitlements | null;
+}) {
+  let holdings: Holding[];
+  try {
+    holdings = await getHoldings(tenantId, id, accountIds);
+  } catch {
+    return (
+      <Section title="Holdings">
+        <Empty>Couldn&apos;t load holdings.</Empty>
+      </Section>
+    );
+  }
+  // SP1500-broad sector/country median bands — best-effort + feed-gated.
+  const medians = await getValuationMedians(tenantId, id, accountIds).catch((): ValuationMedians | null => null);
+
+  return (
+    <>
+      {/* Best/worst performers + country/sector allocation, from the holdings loaded here. */}
       {holdings.length > 0 && priced ? (
         <Section title="Performers" note="best & worst holdings by return">
           <TopBottomPerformers holdings={holdings} />
@@ -187,6 +245,6 @@ export default async function HoldingsPage({
           <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} />
         )}
       </Section>
-    </div>
+    </>
   );
 }
