@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date
 
-from alpha_engine_lib.quant.riskstats import max_drawdown, sharpe_ratio, sortino_ratio, volatility
+from nousergon_lib.quant.riskstats import max_drawdown, sharpe_ratio, sortino_ratio, volatility
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

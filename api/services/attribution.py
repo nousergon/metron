@@ -3,7 +3,7 @@
 Explains a portfolio's active return (vs SPY) over a trailing window as the sum of
 three sector effects — **allocation** (over/under-weighting sectors), **selection**
 (picking within a sector), and **interaction** — via
-``alpha_engine_lib.quant.attribution.brinson_fachler``.
+``nousergon_lib.quant.attribution.brinson_fachler``.
 
 Inputs, all sourced (never fabricated):
   - **portfolio sector weights** — market-value shares of each GICS sector, over the
@@ -26,7 +26,7 @@ from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from alpha_engine_lib.quant.attribution import BrinsonResult, brinson_fachler
+from nousergon_lib.quant.attribution import BrinsonResult, brinson_fachler
 from sqlalchemy.orm import Session
 
 from api.services import analytics

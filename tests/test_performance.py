@@ -2,7 +2,7 @@
 
 Performance is forward-recorded: each price refresh snapshots that day's NAV
 (idempotent per day), and TWR / cumulative return derive from the accumulated series
-via alpha_engine_lib.quant.returns. The network is never hit — the price source is
+via nousergon_lib.quant.returns. The network is never hit — the price source is
 monkeypatched. Invariants: a snapshot is recorded only when NAV is valuable (never
 fabricated); metrics are null until ≥2 snapshots; cash flows are neutralized in TWR.
 """

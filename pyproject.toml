@@ -38,6 +38,10 @@ dependencies = [
     # Renamed alpha-engine-lib → nousergon-lib at 0.60.0; old `alpha_engine_lib.*` imports
     # still resolve via the in-package shim. Imported from PyPI, not vendored.
     "nousergon-lib[quant]>=0.64.0",
+    # flow-doctor pipeline error-handler via krepis (MIT). krepis owns the
+    # logging+flow-doctor glue; metron is AGPL but pulls the MIT commodity
+    # layer from krepis and only the AGPL quant core from nousergon-lib.
+    "krepis[flow_doctor]>=0.2.0",
     # Thin SnapTrade REST client used by portfolio_analytics.broker_io.snaptrade_reader
     # (imported at module load; tests stub the client but the import still runs).
     "snaptrade-python-sdk>=11.0.198",

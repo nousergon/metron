@@ -1,0 +1,20 @@
+flow_name: metron
+repo: nousergon/metron
+owner: "@brianmcmahon"
+# s3-only notifier (no ${VAR} secrets) — deploy-safe with zero secret-resolution
+# crash risk. metron has its own /metron/* secret namespace + Resend email (not
+# the fleet's /alpha-engine/* + Gmail), and is not "alpha-engine-deployed", so the
+# fleet's email/SSM-seeded notifiers don't apply. Failures are captured + deduped
+# to S3 via the instance role; an alert channel (Telegram or Resend SMTP) is a
+# tracked follow-up.
+notify:
+  - type: s3
+    bucket: alpha-engine-research
+    subsystem: metron
+store:
+  type: sqlite
+  path: /tmp/flow_doctor.db
+dedup_cooldown_minutes: 60
+dependencies: []
+rate_limits:
+  max_alerts_per_day: 10

@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import StrEnum
 
-from alpha_engine_lib.quant.returns import CashFlow
+from nousergon_lib.quant.returns import CashFlow
 
 _LONG_TERM_DAYS = 365
 

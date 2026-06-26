@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from alpha_engine_lib.quant.returns import CashFlow, xirr
+from nousergon_lib.quant.returns import CashFlow, xirr
 
 from portfolio_analytics.domain.ledger import (
     Transaction,

@@ -7,18 +7,34 @@ analytics endpoints land in PH1–PH3 per the commercialization plan.
 
 from __future__ import annotations
 
+import os
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from krepis.logging import setup_logging
 
 from api.config import settings
 from api.db.session import create_all
 from api.plugins import active_plugins
 from api.routers import indices, macro, meta, portfolios
 from api.services.demo import DEMO_TENANT_ID
+
+# Structured logging + flow-doctor. Passing a flow-doctor.yaml attaches a
+# FlowDoctorHandler at ERROR (off under pytest), so every log.error() in a
+# request handler or lifespan routes through flow-doctor's capture -> dedupe
+# dispatch without explicit plumbing. Module-top so import-time errors surface
+# too. The yaml uses an s3-only notifier (no ${VAR} secrets) — deploy-safe with
+# zero secret-resolution crash risk; an alert channel is a tracked follow-up.
+# Non-edge wiring (logging) comes from the MIT krepis layer; metron pulls only
+# the AGPL quant core from nousergon-lib.
+_FLOW_DOCTOR_YAML = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "flow-doctor.yaml",
+)
+setup_logging("metron", flow_doctor_yaml=_FLOW_DOCTOR_YAML)
 
 
 @asynccontextmanager

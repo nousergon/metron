@@ -4,7 +4,7 @@ Market value can't be reconstructed for the past from cost basis alone, so — l
 robodashboard — NAV history accumulates as the user refreshes prices: each refresh
 records one snapshot (idempotent per day). ``performance()`` then derives time-weighted
 return, cash-flow-adjusted cumulative return, and annualization from that series using
-the shared ``alpha_engine_lib.quant.returns`` primitives.
+the shared ``nousergon_lib.quant.returns`` primitives.
 
 Metrics are None until ≥2 snapshots exist — the caller shows "history is building",
 never a fabricated number.
@@ -20,8 +20,8 @@ from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-from alpha_engine_lib.quant.returns import ValuationPoint, annualize, time_weighted_return
-from alpha_engine_lib.quant.riskstats import max_drawdown, sharpe_ratio, sortino_ratio, volatility
+from nousergon_lib.quant.returns import ValuationPoint, annualize, time_weighted_return
+from nousergon_lib.quant.riskstats import max_drawdown, sharpe_ratio, sortino_ratio, volatility
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

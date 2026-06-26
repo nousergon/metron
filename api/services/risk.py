@@ -4,7 +4,7 @@ Ports robodashboard's investable-factor construction (VA5 Option B) onto Metron'
 price cache: **Market** = SPY's daily return; **style factors** = each iShares MSCI
 USA factor ETF's return minus SPY (market-neutralized spreads, so a holding's market
 beta and its style tilts separate cleanly). Holding + factor return series feed
-``alpha_engine_lib.quant.factor_risk`` for ex-ante risk decomposition + tracking error
+``nousergon_lib.quant.factor_risk`` for ex-ante risk decomposition + tracking error
 vs SPY.
 
 Never fabricated: a holding without enough aligned history is excluded (and named),
@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 import pandas as pd
-from alpha_engine_lib.quant.factor_risk import (
+from nousergon_lib.quant.factor_risk import (
     benchmark_exposure,
     estimate_factor_model,
     portfolio_risk,
