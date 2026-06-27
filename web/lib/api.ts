@@ -76,6 +76,16 @@ export type Holding = {
   pct_to_ma_200: number | null; // fraction
   pct_in_52w_range: number | null; // 0-1
   mom_20d: number | null; // fraction
+  // Consensus research + news sentiment (metron-ops#105) — feed-gated, free-source data
+  // spine. null off a feed-entitled build or on a coverage gap, never fabricated.
+  consensus_rating: string | null; // strongBuy/buy/hold/sell/strongSell
+  consensus_score: number | null; // signed [-1, +1] (strongBuy=+1 … strongSell=-1)
+  price_target_mean: number | null; // mean analyst target (native price units)
+  price_target_median: number | null;
+  price_target_upside: number | null; // mean target / last_price − 1 (fraction)
+  num_analysts: number | null;
+  news_sentiment: number | null; // trust-weighted LM composite ∈ [-1, +1]
+  news_articles: number | null;
 };
 
 // Sector- / country-level median multiples (SP1500-broad peer benchmark) for the Holdings
@@ -568,6 +578,32 @@ export type Tearsheet = {
   fundamentals: TickerFundamentals | null;
   fundamentals_as_of: string | null;
   comps: Comp[];
+  // Consensus research + news sentiment panel (metron-ops#105) — feed-gated, free-source
+  // spine. consensus_available is false off-feed or on a coverage gap.
+  consensus_available: boolean;
+  consensus_as_of: string | null;
+  consensus: TearsheetConsensus;
+};
+
+export type TearsheetConsensus = {
+  consensus_rating: string | null;
+  consensus_score: number | null;
+  price_target_mean: number | null;
+  price_target_median: number | null;
+  price_target_upside: number | null; // fraction
+  num_analysts: number | null;
+  news_sentiment: number | null; // [-1, +1]
+  news_articles: number | null;
+  news_as_of: string | null;
+  // Paid forward-estimate scaffolding (metron-ops#107): columns exist now, resolve to
+  // `N/A · paid feed` until the paid consensus-estimates feed lands — no later schema change.
+  estimates_available: boolean;
+  estimates_reason: string;
+  forward_eps: number | null;
+  forward_revenue: number | null;
+  forward_pe_consensus: number | null;
+  peg_consensus: number | null;
+  estimate_revision_trend: number | null;
 };
 
 export type TickerFundamentals = {

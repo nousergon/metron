@@ -24,8 +24,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.db import models
+from api.services import analyst as analyst_service
 from api.services import analytics
 from api.services import fundamentals as fundamentals_service
+from api.services import sentiment as sentiment_service
 
 _SPY = "SPY"
 _MIN_RISK_BARS = 60          # ~3 months of daily closes before annualized risk stats mean anything
@@ -83,6 +85,32 @@ class Comp:
 
 
 @dataclass
+class TearsheetConsensus:
+    """Consensus research + news sentiment panel (metron-ops#105). Free-source data spine,
+    feed-gated; honestly empty (all None) off a feed-entitled build or on a coverage gap.
+    The paid forward-estimate columns are scaffolded N/A until metron-ops#107."""
+
+    consensus_rating: str | None = None
+    consensus_score: float | None = None        # signed [-1, +1]
+    price_target_mean: float | None = None
+    price_target_median: float | None = None
+    price_target_upside: float | None = None     # mean target / market price − 1 (fraction)
+    num_analysts: int | None = None
+    news_sentiment: float | None = None          # trust-weighted LM composite ∈ [-1, +1]
+    news_articles: int | None = None
+    news_as_of: date | None = None               # the sentiment slice's own freshness anchor
+    # Paid forward-estimate scaffolding (metron-ops#107): present columns, resolve N/A until
+    # the paid consensus-estimates feed lands — no schema/UI change then.
+    estimates_available: bool = False
+    estimates_reason: str = analyst_service.PAID_ESTIMATES_REASON
+    forward_eps: float | None = None
+    forward_revenue: float | None = None
+    forward_pe_consensus: float | None = None
+    peg_consensus: float | None = None
+    estimate_revision_trend: float | None = None
+
+
+@dataclass
 class Tearsheet:
     ticker: str
     base_currency: str
@@ -98,6 +126,10 @@ class Tearsheet:
     fundamentals: fundamentals_service.TickerFundamentals | None = None
     fundamentals_as_of: date | None = None
     comps: list[Comp] = field(default_factory=list)
+    # Consensus research + news sentiment (metron-ops#105) — feed-gated, free-source spine.
+    consensus_available: bool = False
+    consensus_as_of: date | None = None
+    consensus: TearsheetConsensus = field(default_factory=TearsheetConsensus)
 
 
 def _close_series(session: Session, symbol: str) -> list[tuple[date, float]]:
@@ -245,6 +277,8 @@ def tearsheet(
     *,
     feed_enabled: bool = False,
     fundamentals_reader=None,
+    analyst_reader=None,
+    sentiment_reader=None,
 ) -> Tearsheet | None:
     """Assemble the tearsheet for one held ticker, or None if the portfolio doesn't hold it.
 
@@ -322,4 +356,34 @@ def tearsheet(
                             )
                         )
                 sheet.comps = sorted(comps, key=lambda c: (not c.is_self, c.ticker))
+
+        # Consensus research + news sentiment panel (metron-ops#105) — feed-gated, fail-soft:
+        # a missing artifact / absent symbol leaves the panel empty (never breaks the page).
+        yf = yf_map.get(ticker, ticker)
+        a_snap = analyst_service.load_analyst(reader=analyst_reader)
+        a = a_snap.by_symbol.get(yf)
+        s_snap = sentiment_service.load_sentiment(reader=sentiment_reader)
+        s = s_snap.by_symbol.get(yf)
+        if a is not None or s is not None:
+            sheet.consensus_available = True
+            sheet.consensus_as_of = a_snap.as_of or s_snap.as_of
+            con = sheet.consensus
+            if a is not None:
+                con.consensus_rating = a.consensus_rating
+                con.consensus_score = a.rating_score
+                con.price_target_mean = a.mean_target
+                con.price_target_median = a.median_target
+                con.num_analysts = a.num_analysts
+                con.price_target_upside = a.target_upside(holding.last_price)
+                # Paid forward-estimate scaffolding (metron-ops#107) — N/A until the feed lands.
+                con.estimates_available = a.estimates_available
+                con.forward_eps = a.forward_eps
+                con.forward_revenue = a.forward_revenue
+                con.forward_pe_consensus = a.forward_pe_consensus
+                con.peg_consensus = a.peg_consensus
+                con.estimate_revision_trend = a.estimate_revision_trend
+            if s is not None:
+                con.news_sentiment = s.sentiment
+                con.news_articles = s.n_articles
+                con.news_as_of = s.as_of
     return sheet

@@ -157,6 +157,40 @@ export default async function TearsheetPage({ params }: { params: { id: string; 
           </div>
         </Section>
       )}
+
+      {/* 7 — Consensus research + news sentiment (metron-ops#105, free sources, feed-gated). */}
+      {sheet.consensus_available ? (
+        (() => {
+          const c = sheet.consensus;
+          const ratingLabel: Record<string, string> = {
+            strongBuy: "Strong Buy", buy: "Buy", hold: "Hold", sell: "Sell", strongSell: "Strong Sell",
+          };
+          return (
+            <Section
+              title="Consensus & sentiment"
+              note={sheet.consensus_as_of ? `data-spine · as of ${isoDate(sheet.consensus_as_of)}` : "data-spine"}
+            >
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <StatCard
+                  label="Consensus rating"
+                  value={c.consensus_rating ? (ratingLabel[c.consensus_rating] ?? c.consensus_rating) : "—"}
+                  hint={c.num_analysts != null ? `${c.num_analysts} analysts` : undefined}
+                />
+                <StatCard label="Mean target" value={num(c.price_target_mean, (v) => money(v, ccy))} hint={c.price_target_median != null ? `median ${money(c.price_target_median, ccy)}` : undefined} />
+                <StatCard label="Target upside" value={num(c.price_target_upside, percent)} valueClass={signClass(c.price_target_upside ?? 0)} hint="vs live price" />
+                <StatCard label="News sentiment" value={num(c.news_sentiment, (v) => v.toFixed(2))} valueClass={signClass(c.news_sentiment ?? 0)} hint={c.news_articles != null ? `${c.news_articles} articles${c.news_as_of ? ` · ${isoDate(c.news_as_of)}` : ""}` : undefined} />
+                {/* Paid forward-estimate columns scaffolded now (metron-ops#107) — they resolve
+                    from "N/A · paid feed" to values the moment the paid consensus feed lands,
+                    with no schema/UI change here. */}
+                <StatCard label="Forward EPS" value={c.estimates_available ? num(c.forward_eps, (v) => v.toFixed(2)) : c.estimates_reason} />
+                <StatCard label="Consensus fwd P/E" value={c.estimates_available ? num(c.forward_pe_consensus, (v) => `${v.toFixed(1)}×`) : c.estimates_reason} />
+                <StatCard label="PEG (consensus)" value={c.estimates_available ? num(c.peg_consensus, (v) => v.toFixed(2)) : c.estimates_reason} />
+                <StatCard label="Estimate revisions" value={c.estimates_available ? num(c.estimate_revision_trend, percent) : c.estimates_reason} />
+              </div>
+            </Section>
+          );
+        })()
+      ) : null}
     </div>
   );
 }

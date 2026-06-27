@@ -129,6 +129,18 @@ class Holding:
     pct_to_ma_200: float | None = None    # fraction
     pct_in_52w_range: float | None = None  # 0-1
     mom_20d: float | None = None          # fraction
+    # Consensus research + news sentiment (metron-ops#105, Phase 1). Populated ONLY by the
+    # Holdings endpoint on a feed-entitled build (free sources, but licensing-uniform with
+    # the rest of the spine → feed-gated); None off-feed or on a coverage gap, never
+    # fabricated. Sourced from the analyst + sentiment spine artifacts.
+    consensus_rating: str | None = None       # strongBuy/buy/hold/sell/strongSell
+    consensus_score: float | None = None      # signed [-1, +1] (strongBuy=+1 … strongSell=-1)
+    price_target_mean: float | None = None    # mean analyst target (native price units)
+    price_target_median: float | None = None
+    price_target_upside: float | None = None  # mean_target / last_price − 1 (fraction); derived
+    num_analysts: int | None = None
+    news_sentiment: float | None = None       # trust-weighted LM composite ∈ [-1, +1]
+    news_articles: int | None = None          # # articles behind the sentiment
 
 
 @dataclass

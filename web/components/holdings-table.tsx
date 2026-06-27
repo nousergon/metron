@@ -133,7 +133,7 @@ const COLUMNS: Column[] = [
   { key: "ltm_pct", label: "LTM", pricedOnly: true, defaultDesc: true, value: (h) => h.ltm_pct },
 ];
 
-type MetricGroup = "Valuation" | "Fundamentals" | "Balance Sheet" | "Technicals";
+type MetricGroup = "Valuation" | "Fundamentals" | "Balance Sheet" | "Technicals" | "Consensus";
 
 type MetricColumn = {
   key: string;
@@ -142,9 +142,21 @@ type MetricColumn = {
   value: (h: Holding) => number | null;
   /** Cell content from the non-null value (callers never see null — "—" is rendered). */
   render: (v: number, baseCurrency: string) => string;
+  /** Optional text override (e.g. a categorical rating). When present it renders the cell
+   *  from the holding directly; `value` still drives sort + sign-coloring. null → "—". */
+  text?: (h: Holding) => string | null;
   /** Color the cell by the value's sign (growth / returns / momentum). */
   signed?: boolean;
   title?: string;
+};
+
+// Consensus-rating bucket → short display label (the artifact carries the camelCase key).
+const RATING_LABEL: Record<string, string> = {
+  strongBuy: "Strong Buy",
+  buy: "Buy",
+  hold: "Hold",
+  sell: "Sell",
+  strongSell: "Strong Sell",
 };
 
 // Valuation / Fundamentals / Technicals — declarative columns sourced from the data-spine
@@ -184,9 +196,16 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "pct_to_ma_200", label: "vs 200d", group: "Technicals", value: (h) => h.pct_to_ma_200, render: (v) => percent(v), signed: true, title: "% above/below the 200-day moving average" },
   { key: "pct_in_52w_range", label: "52w Rng", group: "Technicals", value: (h) => h.pct_in_52w_range, render: (v) => pct1(v), title: "Position within the 52-week low–high range" },
   { key: "mom_20d", label: "Mom 20d", group: "Technicals", value: (h) => h.mom_20d, render: (v) => percent(v), signed: true, title: "20-session price momentum" },
+  // ── Consensus (research + sentiment, free sources — metron-ops#105) ──
+  // Rating sorts by its signed score (strongBuy=+1 … strongSell=-1) but shows the label.
+  { key: "consensus_rating", label: "Rating", group: "Consensus", value: (h) => h.consensus_score, render: () => "—", text: (h) => (h.consensus_rating ? RATING_LABEL[h.consensus_rating] ?? h.consensus_rating : null), signed: true, title: "Analyst consensus rating (free sources)" },
+  { key: "price_target_mean", label: "Target", group: "Consensus", value: (h) => h.price_target_mean, render: (v, base) => money(v, base), title: "Mean analyst price target" },
+  { key: "price_target_upside", label: "Upside", group: "Consensus", value: (h) => h.price_target_upside, render: (v) => percent(v), signed: true, title: "Mean target vs the live price" },
+  { key: "num_analysts", label: "# An", group: "Consensus", value: (h) => h.num_analysts, render: (v) => decimal(v, 0), title: "Number of analysts behind the rating/targets" },
+  { key: "news_sentiment", label: "Sentiment", group: "Consensus", value: (h) => h.news_sentiment, render: (v) => decimal(v, 2), signed: true, title: "News sentiment — trust-weighted Loughran-McDonald composite ∈ [-1, +1]" },
 ];
 
-const METRIC_GROUP_ORDER: MetricGroup[] = ["Valuation", "Fundamentals", "Balance Sheet", "Technicals"];
+const METRIC_GROUP_ORDER: MetricGroup[] = ["Valuation", "Fundamentals", "Balance Sheet", "Technicals", "Consensus"];
 
 // Lookup over EVERY sortable column (position + metric), so header clicks sort uniformly.
 const SORT_BY_KEY = new Map<string, (h: Holding) => SortValue>([
@@ -407,13 +426,16 @@ export function HoldingsTable({
                       cols.map((col, j) => {
                         const v = col.value(h);
                         const tone = v == null ? "text-muted" : col.signed ? signClass(v) : "";
+                        // Categorical columns (e.g. the consensus rating) render their own
+                        // label; numeric columns render from the non-null value.
+                        const cell = col.text ? col.text(h) : v == null ? null : col.render(v, baseCurrency);
                         return (
                           <td
                             key={col.key}
-                            className={`px-3 py-2 text-right tabular-nums ${j === 0 ? "border-l border-line" : ""} ${tone}`}
+                            className={`px-3 py-2 text-right tabular-nums ${j === 0 ? "border-l border-line" : ""} ${cell == null ? "text-muted" : tone}`}
                             title={col.title}
                           >
-                            {v == null ? "—" : col.render(v, baseCurrency)}
+                            {cell == null ? "—" : cell}
                           </td>
                         );
                       }),

@@ -43,6 +43,7 @@ from api.services import (
     tax,
     watchlist,
 )
+from api.services import analyst as analyst_service
 from api.services import (
     classifications as classifications_service,
 )
@@ -55,6 +56,7 @@ from api.services import prices as price_service
 from api.services import (
     sectors as sectors_service,
 )
+from api.services import sentiment as sentiment_service
 from api.services import (
     tearsheet as tearsheet_service,
 )
@@ -194,6 +196,16 @@ class HoldingOut(BaseModel):
     pct_to_ma_200: float | None = None
     pct_in_52w_range: float | None = None
     mom_20d: float | None = None
+    # Consensus research + news sentiment (metron-ops#105) — feed-gated (data spine, free
+    # sources). None off a feed-entitled build or on a coverage gap, never fabricated.
+    consensus_rating: str | None = None
+    consensus_score: float | None = None
+    price_target_mean: float | None = None
+    price_target_median: float | None = None
+    price_target_upside: float | None = None
+    num_analysts: int | None = None
+    news_sentiment: float | None = None
+    news_articles: int | None = None
 
 
 class GroupMediansOut(BaseModel):
@@ -1511,12 +1523,15 @@ def get_holdings(
 
 
 def _enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
-    """Fill each holding's valuation/fundamentals/technicals fields from the data-spine
-    fundamentals + technicals artifacts (keyed by yf_symbol). Fail-soft: a missing artifact
-    or absent symbol leaves the fields None (coverage gap, never fabricated)."""
+    """Fill each holding's valuation/fundamentals/technicals + consensus/sentiment fields
+    from the data-spine fundamentals + technicals + analyst + sentiment artifacts (keyed by
+    yf_symbol). Fail-soft: a missing artifact or absent symbol leaves the fields None
+    (coverage gap, never fabricated)."""
     yf_map = tearsheet_service._yf_symbol_map(session, [h.ticker for h in held])
     funds = fundamentals_service.load_fundamentals().by_symbol
     techs = technicals_service.load_technicals().by_symbol
+    analysts = analyst_service.load_analyst().by_symbol
+    sentiments = sentiment_service.load_sentiment().by_symbol
     for h in held:
         yf = yf_map.get(h.ticker, h.ticker)
         f = funds.get(yf)
@@ -1555,6 +1570,20 @@ def _enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
             h.pct_to_ma_200 = t.pct_to_ma_200
             h.pct_in_52w_range = t.pct_in_52w_range
             h.mom_20d = t.mom_20d
+        # Consensus research (metron-ops#105) — price-target upside derived vs the live price.
+        a = analysts.get(yf)
+        if a is not None:
+            h.consensus_rating = a.consensus_rating
+            h.consensus_score = a.rating_score
+            h.price_target_mean = a.mean_target
+            h.price_target_median = a.median_target
+            h.num_analysts = a.num_analysts
+            h.price_target_upside = a.target_upside(h.last_price)
+        # News sentiment (metron-ops#105).
+        s = sentiments.get(yf)
+        if s is not None:
+            h.news_sentiment = s.sentiment
+            h.news_articles = s.n_articles
 
 
 @router.get("/{portfolio_id}/valuation-medians", response_model=ValuationMediansOut)
@@ -1971,6 +2000,29 @@ class CompOut(BaseModel):
     is_self: bool = False
 
 
+class TearsheetConsensusOut(BaseModel):
+    """Consensus research + news sentiment tearsheet panel (metron-ops#105). Free-source
+    spine, feed-gated; the paid forward-estimate columns resolve N/A until metron-ops#107."""
+    model_config = ConfigDict(from_attributes=True)
+
+    consensus_rating: str | None = None
+    consensus_score: float | None = None
+    price_target_mean: float | None = None
+    price_target_median: float | None = None
+    price_target_upside: float | None = None
+    num_analysts: int | None = None
+    news_sentiment: float | None = None
+    news_articles: int | None = None
+    news_as_of: date | None = None
+    estimates_available: bool = False
+    estimates_reason: str = ""
+    forward_eps: float | None = None
+    forward_revenue: float | None = None
+    forward_pe_consensus: float | None = None
+    peg_consensus: float | None = None
+    estimate_revision_trend: float | None = None
+
+
 class TearsheetOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1985,6 +2037,9 @@ class TearsheetOut(BaseModel):
     fundamentals: TickerFundamentalsOut | None = None
     fundamentals_as_of: date | None = None
     comps: list[CompOut] = []
+    consensus_available: bool = False
+    consensus_as_of: date | None = None
+    consensus: TearsheetConsensusOut = TearsheetConsensusOut()
 
 
 @router.get("/{portfolio_id}/tearsheet/{ticker}", response_model=TearsheetOut)
