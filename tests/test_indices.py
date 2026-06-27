@@ -83,6 +83,41 @@ class TestLoadIndices:
         snap = indices.load_indices(reader=lambda: art, now=_NOW)
         assert snap.indices[0].suspect is True
 
+    def test_change_shown_when_session_is_today(self):
+        """The artifact is dated for the current NYSE session → a real TODAY move shows."""
+        # _NOW is 2026-06-12 15:03Z = 11:03 ET, so the market session is 2026-06-12, matching
+        # every fixture quote's session_date.
+        assert security_perf.market_today(_NOW).isoformat() == "2026-06-12"
+        snap = indices.load_indices(reader=lambda: _ART, now=_NOW)
+        spy = snap.indices[0]
+        assert spy.last == pytest.approx(605.2)  # level still rendered
+        assert spy.change == pytest.approx(605.2 - 602.4)
+        assert spy.change_pct == pytest.approx((605.2 - 602.4) / 602.4)
+
+    def test_stale_prior_session_move_suppressed_preopen(self):
+        """metron-ops#96: pre-open the overnight artifact still carries the PRIOR session's
+        last/prev_close. With ``now`` on a LATER session than the quote's ``session_date``,
+        the strip must show the level but NO "today" move (else yesterday's move reads as
+        TODAY). The level + session_date are preserved; only change/change_pct go flat."""
+        # now = the next session's pre-open (2026-06-15 08:00 ET = 12:00Z); the artifact is
+        # still last night's, dated 2026-06-12.
+        preopen = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
+        assert security_perf.market_today(preopen).isoformat() == "2026-06-15"  # != 2026-06-12
+        snap = indices.load_indices(reader=lambda: _ART, now=preopen)
+        for q in snap.indices:
+            assert q.last is not None, f"{q.symbol} level dropped"  # level still shown
+            assert q.session_date == "2026-06-12"
+            assert q.change is None, f"{q.symbol} stale change leaked as TODAY"
+            assert q.change_pct is None, f"{q.symbol} stale change_pct leaked as TODAY"
+
+    def test_missing_session_date_suppresses_move(self):
+        """A quote with no ``session_date`` can't be proven to be the current session, so its
+        move is suppressed (fail-safe — never assume an undated quote is today's)."""
+        art = {"as_of_utc": _AS_OF, "indices": {"SPY": {"last": 605.2, "prev_close": 602.4}}}
+        snap = indices.load_indices(reader=lambda: art, now=_NOW)
+        q = snap.indices[0]
+        assert q.last == pytest.approx(605.2) and q.change is None and q.change_pct is None
+
 
 class TestIndicesEndpoint:
     def test_available_returns_indices_on_feed_deployment(self, client, monkeypatch):

@@ -108,7 +108,16 @@ def load_indices(*, reader=None, now: datetime | None = None) -> IndicesSnapshot
     """The latest major-index intraday strip. ``reader`` (a no-arg callable returning the
     raw intraday artifact dict) and ``now`` are injectable for tests; ``reader`` defaults
     to the S3 read, ``now`` to the current UTC time."""
+    from api.services import security_perf
+
     now = now or datetime.now(UTC)
+    # The current trading session in NYSE market time — the SAME notion of "today" the
+    # portfolio TODAY tile uses (security_perf.market_today). Pre-open / on a weekend or
+    # holiday the overnight artifact still carries the PRIOR session's last/prev_close, so a
+    # quote whose session_date != today's session has no "today" move to show: we keep its
+    # level but suppress change/change_pct (metron-ops#96, mirrors the metron#119 portfolio
+    # guard) rather than relabel the last completed session's move as TODAY.
+    session_today = security_perf.market_today(now).isoformat()
     art = (reader or _default_reader)()
     if not art:
         return IndicesSnapshot(False, reason="Market data unavailable — the intraday feed hasn't published yet.")
@@ -121,7 +130,11 @@ def load_indices(*, reader=None, now: datetime | None = None) -> IndicesSnapshot
             continue  # absent from this snapshot — omitted, not fabricated
         last = _f(q, "last")
         prev = _f(q, "prev_close")
-        change = (last - prev) if (last is not None and prev is not None) else None
+        session_date = q.get("session_date")
+        is_today = session_date is not None and str(session_date) == session_today
+        # Only a quote dated for the live session carries a real "today" move; otherwise the
+        # level still renders but the move is flat/blank (no stale prior-session % as TODAY).
+        change = (last - prev) if (is_today and last is not None and prev is not None) else None
         change_pct = (change / prev) if (change is not None and prev) else None
         quotes.append(
             IndexQuote(
@@ -132,7 +145,7 @@ def load_indices(*, reader=None, now: datetime | None = None) -> IndicesSnapshot
                 open=_f(q, "open"),
                 change=change,
                 change_pct=change_pct,
-                session_date=q.get("session_date"),
+                session_date=session_date,
                 suspect=bool(q.get("suspect", False)),
             )
         )
