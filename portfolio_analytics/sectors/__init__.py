@@ -15,10 +15,12 @@ editing callers — exactly like the price source seam.
 
 from portfolio_analytics.sectors.source import (
     FUNDS_SECTOR_KEY,
+    SECTOR_ALIASES,
     SECTOR_ETF,
     BenchmarkSource,
     CountrySource,
     SectorSource,
+    canonical_sector,
     fetch_benchmark_sector_weights,
     fetch_countries,
     fetch_sectors,
@@ -26,10 +28,12 @@ from portfolio_analytics.sectors.source import (
 
 __all__ = [
     "FUNDS_SECTOR_KEY",
+    "SECTOR_ALIASES",
     "SECTOR_ETF",
     "BenchmarkSource",
     "CountrySource",
     "SectorSource",
+    "canonical_sector",
     "fetch_benchmark_sector_weights",
     "fetch_countries",
     "fetch_sectors",
