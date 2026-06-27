@@ -48,6 +48,53 @@ FUNDS_SECTOR_KEY: dict[str, str] = {
     "communication_services": "Communication Services",
 }
 
+# Sector-vocabulary drift map (metron-ops#93). The canonical taxonomy is the yfinance
+# Title-Case one — the ``SECTOR_ETF`` keys, which ``Ticker.info['sector']`` returns and
+# which the benchmark sector weights are keyed by. A second, non-spine write path leaked
+# GICS-proper labels ("Information Technology", "Health Care") and a few common synonyms
+# into ``securities.sector``, so the same GICS sector rendered as two rows in the
+# Allocation "By sector" breakdown. ``canonical_sector`` folds every known variant onto
+# its ``SECTOR_ETF`` key BEFORE the value is persisted/grouped — fixing the split at the
+# source seam instead of at each read site. Aliases are matched case-insensitively (see
+# ``canonical_sector``), so pure-casing variants need no separate entry here.
+SECTOR_ALIASES: dict[str, str] = {
+    # GICS-proper → yfinance Title-Case canonical
+    "information technology": "Technology",
+    "health care": "Healthcare",
+    "financials": "Financial Services",
+    "financial": "Financial Services",
+    "materials": "Basic Materials",
+    "consumer discretionary": "Consumer Cyclical",
+    "consumer staples": "Consumer Defensive",
+    "telecommunication services": "Communication Services",
+    "telecommunications": "Communication Services",
+    # common synonyms / underscored variants
+    "tech": "Technology",
+    "information_technology": "Technology",
+}
+
+# Lower-cased lookup folding both the canonical labels (for idempotency) and every alias
+# onto the canonical ``SECTOR_ETF`` key. Built once at import.
+_CANONICAL_BY_LOWER: dict[str, str] = {
+    **{label.lower(): label for label in SECTOR_ETF},
+    **{alias.lower(): canonical for alias, canonical in SECTOR_ALIASES.items()},
+}
+
+
+def canonical_sector(label: str | None) -> str | None:
+    """Fold a raw sector ``label`` onto the canonical yfinance Title-Case taxonomy (the
+    ``SECTOR_ETF`` keys). Idempotent on already-canonical values; case- and
+    whitespace-insensitive. Empty/None → ``None``. An unrecognized label is returned
+    trimmed but otherwise unchanged — never guessed; it just isn't a drift variant we
+    know how to fold (e.g. the custom "Broad Market / Index" index-ETF label)."""
+    if not label:
+        return None
+    stripped = label.strip()
+    if not stripped:
+        return None
+    return _CANONICAL_BY_LOWER.get(stripped.lower(), stripped)
+
+
 # A sector source maps symbols → each symbol's canonical GICS label. Default = data spine.
 SectorSource = Callable[[list[str]], dict[str, str]]
 # A country source maps symbols → each symbol's country of domicile. Default = data spine.
@@ -60,14 +107,17 @@ def fetch_sectors(symbols: Iterable[str], *, source: SectorSource | None = None)
     """GICS sector per symbol. Deduped, order-insensitive.
 
     Returns ``{}`` for empty input. Symbols the source can't classify are omitted
-    (the caller leaves their ``sector`` NULL → counted against coverage, not guessed)."""
+    (the caller leaves their ``sector`` NULL → counted against coverage, not guessed).
+    Every resolved label is folded through ``canonical_sector`` (metron-ops#93), so the
+    one canonical taxonomy reaches the persistence/grouping seam regardless of which
+    source path produced it — fixing sector-vocabulary drift at the writer."""
     unique = [s for s in dict.fromkeys(symbols) if s]
     if not unique:
         return {}
     if source is None:
         from portfolio_analytics.sectors.spine_source import spine_sectors
         source = spine_sectors
-    return source(unique)
+    return {sym: c for sym, label in source(unique).items() if (c := canonical_sector(label))}
 
 
 def fetch_countries(symbols: Iterable[str], *, source: CountrySource | None = None) -> dict[str, str]:
@@ -90,8 +140,16 @@ def fetch_benchmark_sector_weights(*, source: BenchmarkSource | None = None) -> 
     """The benchmark's GICS sector weights (canonical label → raw fraction).
 
     Returns ``{}`` on any failure — the caller then can't build a benchmark and the
-    attribution degrades to not-computable WITH a reason, never to a fabricated split."""
+    attribution degrades to not-computable WITH a reason, never to a fabricated split.
+    Keys are folded through ``canonical_sector`` (metron-ops#93) so the benchmark side
+    of the attribution join uses the same taxonomy as the portfolio side; if two drift
+    variants collapse onto one canonical label their fractions are summed."""
     if source is None:
         from portfolio_analytics.sectors.spine_source import spine_benchmark_sector_weights
         source = spine_benchmark_sector_weights
-    return source()
+    out: dict[str, float] = {}
+    for label, weight in source().items():
+        canonical = canonical_sector(label)
+        if canonical:
+            out[canonical] = out.get(canonical, 0.0) + weight
+    return out
