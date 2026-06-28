@@ -133,7 +133,7 @@ const COLUMNS: Column[] = [
   { key: "ltm_pct", label: "LTM", pricedOnly: true, defaultDesc: true, value: (h) => h.ltm_pct },
 ];
 
-type MetricGroup = "Valuation" | "Fundamentals" | "Balance Sheet" | "Technicals" | "Consensus";
+type MetricGroup = "Score" | "Valuation" | "Fundamentals" | "Balance Sheet" | "Technicals" | "Consensus";
 
 type MetricColumn = {
   key: string;
@@ -147,6 +147,9 @@ type MetricColumn = {
   text?: (h: Holding) => string | null;
   /** Color the cell by the value's sign (growth / returns / momentum). */
   signed?: boolean;
+  /** Explicit tone class from the value (overrides `signed`) — e.g. the attractiveness score
+   *  bands around its 50 neutral midpoint, not around zero. */
+  tone?: (v: number) => string;
   title?: string;
 };
 
@@ -162,7 +165,26 @@ const RATING_LABEL: Record<string, string> = {
 // Valuation / Fundamentals / Technicals — declarative columns sourced from the data-spine
 // fundamentals + technicals artifacts (Holdings metrics). Shown only in the priced view;
 // each is null off a feed-entitled build → "—".
+// Attractiveness 0–100 → tone banded around the 50 neutral midpoint (≥60 attractive,
+// ≤40 unattractive). Kept here so the headline column reads at a glance.
+const attractivenessTone = (v: number): string =>
+  v >= 60 ? "text-positive" : v <= 40 ? "text-negative" : "";
+
 const METRIC_COLUMNS: MetricColumn[] = [
+  // ── Score (headline) — composite attractiveness (metron-ops#106, Phase 2). The first metric
+  // band so it heads the priced view; a transparent 0–100 blend of the columns that follow. ──
+  {
+    key: "attractiveness",
+    label: "Score",
+    group: "Score",
+    value: (h) => h.attractiveness,
+    render: (v) => decimal(v, 1),
+    tone: attractivenessTone,
+    title:
+      "Composite attractiveness (0–100): transparent blend of fwd-P/E vs sector median, " +
+      "price-target upside, consensus rating, revision momentum, and news sentiment. " +
+      "Open a holding's tearsheet for the weighted breakdown.",
+  },
   // ── Valuation ──
   { key: "market_cap", label: "Mkt Cap", group: "Valuation", value: (h) => h.market_cap, render: (v, base) => marketCapShort(v, base) },
   { key: "pe", label: "P/E", group: "Valuation", value: (h) => h.pe, render: (v) => multiple(v) },
@@ -205,7 +227,7 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "news_sentiment", label: "Sentiment", group: "Consensus", value: (h) => h.news_sentiment, render: (v) => decimal(v, 2), signed: true, title: "News sentiment — trust-weighted Loughran-McDonald composite ∈ [-1, +1]" },
 ];
 
-const METRIC_GROUP_ORDER: MetricGroup[] = ["Valuation", "Fundamentals", "Balance Sheet", "Technicals", "Consensus"];
+const METRIC_GROUP_ORDER: MetricGroup[] = ["Score", "Valuation", "Fundamentals", "Balance Sheet", "Technicals", "Consensus"];
 
 // Lookup over EVERY sortable column (position + metric), so header clicks sort uniformly.
 const SORT_BY_KEY = new Map<string, (h: Holding) => SortValue>([
@@ -425,7 +447,14 @@ export function HoldingsTable({
                   ? metricsByGroup.map(([, cols]) =>
                       cols.map((col, j) => {
                         const v = col.value(h);
-                        const tone = v == null ? "text-muted" : col.signed ? signClass(v) : "";
+                        const tone =
+                          v == null
+                            ? "text-muted"
+                            : col.tone
+                              ? col.tone(v)
+                              : col.signed
+                                ? signClass(v)
+                                : "";
                         // Categorical columns (e.g. the consensus rating) render their own
                         // label; numeric columns render from the non-null value.
                         const cell = col.text ? col.text(h) : v == null ? null : col.render(v, baseCurrency);

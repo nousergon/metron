@@ -86,6 +86,10 @@ export type Holding = {
   num_analysts: number | null;
   news_sentiment: number | null; // trust-weighted LM composite ∈ [-1, +1]
   news_articles: number | null;
+  // Composite attractiveness score (metron-ops#106, Phase 2) — transparent 0–100 blend of the
+  // fields above. null off-feed or on a total coverage gap, never fabricated.
+  attractiveness: number | null;
+  attractiveness_coverage: number | null; // # of components that contributed
 };
 
 // Sector- / country-level median multiples (SP1500-broad peer benchmark) for the Holdings
@@ -583,6 +587,22 @@ export type Tearsheet = {
   consensus_available: boolean;
   consensus_as_of: string | null;
   consensus: TearsheetConsensus;
+  // Composite attractiveness gauge (metron-ops#106, Phase 2) — feed-gated; available is false
+  // off-feed or on a total coverage gap.
+  attractiveness: TearsheetAttractiveness;
+};
+
+export type TearsheetAttractivenessComponent = {
+  key: string; // valuation / upside / rating / revision / sentiment
+  weight: number; // catalog weight (pre-renormalization)
+  sub_score: number; // unit sub-score ∈ [0, 1]
+};
+
+export type TearsheetAttractiveness = {
+  available: boolean;
+  score: number | null; // 0–100
+  coverage: number | null; // # of components that contributed
+  components: TearsheetAttractivenessComponent[];
 };
 
 export type TearsheetConsensus = {

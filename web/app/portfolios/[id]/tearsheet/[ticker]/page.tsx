@@ -8,6 +8,17 @@ export const dynamic = "force-dynamic";
 
 const PERIODS = ["1Y", "3Y", "5Y", "10Y"];
 
+// Attractiveness component keys → human labels for the inspectable gauge breakdown
+// (metron-ops#106). The count is the catalog size — the gauge note reads "N of M inputs".
+const ATTRACTIVENESS_COMPONENT_LABELS: Record<string, string> = {
+  valuation: "Valuation (fwd P/E vs sector)",
+  upside: "Price-target upside",
+  rating: "Consensus rating",
+  revision: "Revision momentum",
+  sentiment: "News sentiment",
+};
+const COMPONENT_LABELS_COUNT = Object.keys(ATTRACTIVENESS_COMPONENT_LABELS).length;
+
 function num(v: number | null, fmt: (n: number) => string): string {
   return v != null ? fmt(v) : "—";
 }
@@ -158,7 +169,47 @@ export default async function TearsheetPage({ params }: { params: { id: string; 
         </Section>
       )}
 
-      {/* 7 — Consensus research + news sentiment (metron-ops#105, free sources, feed-gated). */}
+      {/* 7 — Composite attractiveness gauge (metron-ops#106, Phase 2). A transparent 0–100
+          blend; the breakdown surfaces each component's weight + sub-score so it's never a
+          black box. Feed-gated; shown only when at least one component is present. */}
+      {sheet.attractiveness.available && sheet.attractiveness.score != null ? (
+        (() => {
+          const a = sheet.attractiveness;
+          const score = a.score ?? 0;
+          const scoreTone = score >= 60 ? "text-positive" : score <= 40 ? "text-negative" : "";
+          const barTone = score >= 60 ? "bg-positive" : score <= 40 ? "bg-negative" : "bg-muted";
+          return (
+            <Section
+              title="Attractiveness"
+              note={`composite · ${a.coverage ?? 0} of ${COMPONENT_LABELS_COUNT} inputs`}
+            >
+              <div className="flex items-center gap-4">
+                <div className={`text-3xl font-semibold tabular-nums ${scoreTone}`}>
+                  {score.toFixed(1)}
+                  <span className="ml-1 text-sm text-muted">/ 100</span>
+                </div>
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-line">
+                  <div className={`h-full ${barTone}`} style={{ width: `${Math.max(0, Math.min(100, score))}%` }} />
+                </div>
+              </div>
+              {/* Inspectable weighting — the deliberate "not a black box" deliverable. */}
+              <div className="mt-4">
+                <Table head={["Component", "Weight", "Sub-score"]}>
+                  {a.components.map((c) => (
+                    <tr key={c.key} className="border-b border-line last:border-0">
+                      <td className="px-4 py-2">{ATTRACTIVENESS_COMPONENT_LABELS[c.key] ?? c.key}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">{percent(c.weight)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">{c.sub_score.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </Table>
+              </div>
+            </Section>
+          );
+        })()
+      ) : null}
+
+      {/* 8 — Consensus research + news sentiment (metron-ops#105, free sources, feed-gated). */}
       {sheet.consensus_available ? (
         (() => {
           const c = sheet.consensus;

@@ -141,6 +141,12 @@ class Holding:
     num_analysts: int | None = None
     news_sentiment: float | None = None       # trust-weighted LM composite ∈ [-1, +1]
     news_articles: int | None = None          # # articles behind the sentiment
+    # Composite attractiveness score (metron-ops#106, Phase 2) — a transparent 0–100 blend of
+    # the fields above (fwd-P/E vs sector median, upside, rating, revision, sentiment). Set by
+    # the Holdings endpoint on a feed-entitled build via api.services.attractiveness; None
+    # off-feed or when no component is present, never fabricated.
+    attractiveness: float | None = None
+    attractiveness_coverage: int | None = None  # # of components that contributed to the score
 
 
 @dataclass

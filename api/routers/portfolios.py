@@ -44,6 +44,7 @@ from api.services import (
     watchlist,
 )
 from api.services import analyst as analyst_service
+from api.services import attractiveness as attractiveness_service
 from api.services import (
     classifications as classifications_service,
 )
@@ -206,6 +207,10 @@ class HoldingOut(BaseModel):
     num_analysts: int | None = None
     news_sentiment: float | None = None
     news_articles: int | None = None
+    # Composite attractiveness score (metron-ops#106, Phase 2) — transparent 0–100 blend of the
+    # fields above. None off-feed or on a total coverage gap, never fabricated.
+    attractiveness: float | None = None
+    attractiveness_coverage: int | None = None
 
 
 class GroupMediansOut(BaseModel):
@@ -1532,6 +1537,10 @@ def _enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
     techs = technicals_service.load_technicals().by_symbol
     analysts = analyst_service.load_analyst().by_symbol
     sentiments = sentiment_service.load_sentiment().by_symbol
+    # Sector/country median multiples — the peer benchmark for the attractiveness valuation
+    # component (metron-ops#106). Fail-soft: a missing artifact leaves medians empty → the
+    # valuation component is simply dropped from the renormalized blend.
+    medians = valuation_medians_service.load_valuation_medians()
     for h in held:
         yf = yf_map.get(h.ticker, h.ticker)
         f = funds.get(yf)
@@ -1584,6 +1593,26 @@ def _enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
         if s is not None:
             h.news_sentiment = s.sentiment
             h.news_articles = s.n_articles
+        # Composite attractiveness score (metron-ops#106, Phase 2) — a transparent blend of the
+        # fields just set. The valuation leg bands fwd-P/E against the holding's sector median
+        # (country median as a fallback), exactly as the Holdings "by sector → country" view
+        # does. Components with no input drop out and the weights renormalize (never fabricated).
+        sec_grp = medians.by_sector.get(h.sector) if h.sector else None
+        cty_grp = medians.by_country.get(h.country) if h.country else None
+        median_fwd_pe = (sec_grp.forward_pe if sec_grp else None)
+        if median_fwd_pe is None and cty_grp is not None:
+            median_fwd_pe = cty_grp.forward_pe
+        att = attractiveness_service.compute(
+            fwd_pe=h.fwd_pe,
+            median_fwd_pe=median_fwd_pe,
+            price_target_upside=h.price_target_upside,
+            consensus_score=h.consensus_score,
+            estimate_revision_trend=(a.estimate_revision_trend if a is not None else None),
+            news_sentiment=h.news_sentiment,
+        )
+        if att is not None:
+            h.attractiveness = att.score
+            h.attractiveness_coverage = att.coverage
 
 
 @router.get("/{portfolio_id}/valuation-medians", response_model=ValuationMediansOut)
@@ -2023,6 +2052,27 @@ class TearsheetConsensusOut(BaseModel):
     estimate_revision_trend: float | None = None
 
 
+class TearsheetAttractivenessComponentOut(BaseModel):
+    """One inspectable line of the attractiveness breakdown — the gauge tooltip renders these
+    so the weighting is never a black box (metron-ops#106)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    key: str
+    weight: float
+    sub_score: float
+
+
+class TearsheetAttractivenessOut(BaseModel):
+    """Composite attractiveness gauge (metron-ops#106, Phase 2) — the 0–100 headline score plus
+    its per-component breakdown. ``available`` is false off-feed or on a total coverage gap."""
+    model_config = ConfigDict(from_attributes=True)
+
+    available: bool = False
+    score: float | None = None
+    coverage: int | None = None
+    components: list[TearsheetAttractivenessComponentOut] = []
+
+
 class TearsheetOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -2040,6 +2090,7 @@ class TearsheetOut(BaseModel):
     consensus_available: bool = False
     consensus_as_of: date | None = None
     consensus: TearsheetConsensusOut = TearsheetConsensusOut()
+    attractiveness: TearsheetAttractivenessOut = TearsheetAttractivenessOut()
 
 
 @router.get("/{portfolio_id}/tearsheet/{ticker}", response_model=TearsheetOut)
