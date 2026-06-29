@@ -30,20 +30,27 @@ export function IntradayRefresher({ portfolioId }: { portfolioId: string }) {
 
   useEffect(() => {
     let alive = true;
+    let id: ReturnType<typeof setInterval> | null = null;
     // First paint: fetch the current status immediately (the SSR'd page is already fresh,
     // so no refresh on this first call) — the label appears without waiting a full cycle.
     fetchIntradayStatusAction(portfolioId).then((s) => {
-      if (alive && s) setStatus(s);
+      if (!alive || !s) return;
+      setStatus(s);
+      // Persistent off-states won't change within the session — the user's intraday toggle
+      // is off ("off") or this deployment has no feed ("feed") — so don't burn a 5-min
+      // router.refresh cycle. Transient states (stale after the close, momentarily
+      // unavailable) can recover during the session, so those keep polling.
+      if (s.reason === "off" || s.reason === "feed") return;
+      id = setInterval(async () => {
+        const next = await fetchIntradayStatusAction(portfolioId);
+        if (!alive) return;
+        if (next) setStatus(next);
+        router.refresh(); // re-render server components → NAV + positions revalue live
+      }, REFRESH_MS);
     });
-    const id = setInterval(async () => {
-      const next = await fetchIntradayStatusAction(portfolioId);
-      if (!alive) return;
-      if (next) setStatus(next);
-      router.refresh(); // re-render server components → NAV + positions revalue live
-    }, REFRESH_MS);
     return () => {
       alive = false;
-      clearInterval(id);
+      if (id) clearInterval(id);
     };
   }, [portfolioId, router]);
 

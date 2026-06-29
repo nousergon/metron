@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from datetime import UTC, date, datetime
 
 from sqlalchemy import select
@@ -55,14 +56,28 @@ _HEARTBEAT_MIN_INTERVAL_S = 120.0
 _last_heartbeat_monotonic: float = 0.0
 
 
-def touch_ui_heartbeat(*, s3_client=None, now: datetime | None = None) -> bool:
+def touch_ui_heartbeat(
+    *,
+    session: Session | None = None,
+    tenant_id: uuid.UUID | None = None,
+    portfolio_id: uuid.UUID | None = None,
+    s3_client=None,
+    now: datetime | None = None,
+) -> bool:
     """Record that the app is actively in use (throttled; fail-soft; flag-gated).
 
     Returns True when a heartbeat was written this call, False when throttled,
-    disabled (``market_data_sync_enabled`` off), or the write failed. STRICTLY
-    best-effort by design: this is secondary observability hung off the request
-    path — a failure is WARN-logged (the recording surface) and must never break
-    a page render; the only consequence is the intraday feed staying paused.
+    disabled (``market_data_sync_enabled`` off), the active portfolio has the intraday
+    overlay turned OFF, or the write failed. STRICTLY best-effort by design: this is
+    secondary observability hung off the request path — a failure is WARN-logged (the
+    recording surface) and must never break a page render; the only consequence is the
+    intraday feed staying paused.
+
+    When ``session`` + ``portfolio_id`` are passed, the heartbeat (which keeps the
+    upstream intraday producer fetching) is gated on that portfolio's single intraday
+    toggle — so a closed OR intraday-disabled app costs zero upstream quote fetches. The
+    pref lookup runs AFTER the throttle gate, so it happens at most once per interval, not
+    once per request. No context (legacy callers / tests) → not gated on the pref.
     """
     global _last_heartbeat_monotonic
     if not settings.market_data_sync_enabled:
@@ -70,6 +85,10 @@ def touch_ui_heartbeat(*, s3_client=None, now: datetime | None = None) -> bool:
     mono = time.monotonic()
     if mono - _last_heartbeat_monotonic < _HEARTBEAT_MIN_INTERVAL_S:
         return False
+    if session is not None and portfolio_id is not None:
+        from api.services import intraday  # local import: avoid a module-load cycle
+        if not intraday.intraday_enabled(session, tenant_id, portfolio_id):
+            return False
     ts = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         _write_s3_json(

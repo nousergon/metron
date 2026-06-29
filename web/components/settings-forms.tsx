@@ -153,6 +153,7 @@ export function PreferencesForm({ portfolioId, current }: { portfolioId: string;
   const [risk, setRisk] = useState(current.risk_tolerance ?? "");
   const [objective, setObjective] = useState(current.objective ?? "");
   const [notes, setNotes] = useState(current.notes ?? "");
+  const [intradayEnabled, setIntradayEnabled] = useState(current.intraday_enabled ?? false);
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -163,6 +164,7 @@ export function PreferencesForm({ portfolioId, current }: { portfolioId: string;
         risk_tolerance: risk || null,
         objective: objective || null,
         notes: notes.trim() || null,
+        intraday_enabled: intradayEnabled,
       });
       setMsg({ ok: r.ok, text: r.message });
     });
@@ -204,6 +206,21 @@ export function PreferencesForm({ portfolioId, current }: { portfolioId: string;
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
         />
+      </label>
+      <label className="flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="mt-1"
+          checked={intradayEnabled}
+          onChange={(e) => setIntradayEnabled(e.target.checked)}
+        />
+        <span>
+          <span className="text-muted">Live intraday prices</span>
+          <span className="mt-0.5 block text-xs text-muted">
+            Overlay ~15-min-delayed intraday prices on your holdings while the app is open. Off by
+            default — values come from the official end-of-day close.
+          </span>
+        </span>
       </label>
       <div className="flex items-center gap-2">
         <button

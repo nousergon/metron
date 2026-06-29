@@ -1091,6 +1091,7 @@ export type Preferences = {
   risk_tolerance: string | null;
   objective: string | null;
   notes: string | null;
+  intraday_enabled?: boolean | null;
 };
 
 export const getPreferences = (tenantId: string, id: string) =>

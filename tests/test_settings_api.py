@@ -89,7 +89,9 @@ class TestPreferences:
     def test_get_defaults_then_put(self, client, tenant):
         pid = _seed(client, tenant)
         d = client.get(f"/portfolios/{pid}/preferences", headers={"X-Tenant-Id": tenant}).json()
-        assert d == {"risk_tolerance": None, "objective": None, "notes": None}
+        assert d == {
+            "risk_tolerance": None, "objective": None, "notes": None, "intraday_enabled": None,
+        }
         r = client.put(
             f"/portfolios/{pid}/preferences",
             json={"risk_tolerance": "moderate", "objective": "growth", "notes": "buy and hold"},
@@ -99,3 +101,24 @@ class TestPreferences:
         # Persisted + idempotent update.
         again = client.get(f"/portfolios/{pid}/preferences", headers={"X-Tenant-Id": tenant}).json()
         assert again["objective"] == "growth" and again["notes"] == "buy and hold"
+
+    def test_intraday_toggle_round_trip(self, client, tenant):
+        pid = _seed(client, tenant)
+        # Default off — a missing/unset toggle reads as disabled.
+        d = client.get(f"/portfolios/{pid}/preferences", headers={"X-Tenant-Id": tenant}).json()
+        assert d["intraday_enabled"] in (None, False)
+        # Turn it on, then off — the full-replace PUT governs it.
+        client.put(
+            f"/portfolios/{pid}/preferences",
+            json={"intraday_enabled": True}, headers={"X-Tenant-Id": tenant},
+        )
+        assert client.get(
+            f"/portfolios/{pid}/preferences", headers={"X-Tenant-Id": tenant}
+        ).json()["intraday_enabled"] is True
+        client.put(
+            f"/portfolios/{pid}/preferences",
+            json={"intraday_enabled": False}, headers={"X-Tenant-Id": tenant},
+        )
+        assert client.get(
+            f"/portfolios/{pid}/preferences", headers={"X-Tenant-Id": tenant}
+        ).json()["intraday_enabled"] is False

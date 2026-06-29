@@ -25,6 +25,8 @@ def _seed(session):
     pf = models.Portfolio(tenant_id=tenant.id, name="P", base_currency="USD")
     session.add(pf)
     session.flush()
+    # The intraday overlay is opt-in — enable it so the leg-recording feed path runs.
+    session.add(models.InvestorPreferences(tenant_id=tenant.id, portfolio_id=pf.id, intraday_enabled=True))
     acct = models.Account(tenant_id=tenant.id, portfolio_id=pf.id, broker="csv", external_id="A1", currency="USD")
     sec = models.Security(symbol="AAPL", yf_symbol="AAPL", currency="USD")
     session.add_all([acct, sec])
