@@ -167,27 +167,28 @@ class TestBenchmarks:
 
 
 class TestTodayDateGuard:
-    """A TODAY tile must reflect TODAY — never relabel the last completed session's change
-    as "today" when the freshest valuation predates today (pre-open / weekend / stale
-    series). Regression for the bug where a −$10k prior-session move showed as TODAY before
-    the market even opened."""
+    """When the freshest valuation predates today (pre-open / weekend / intraday-off owner
+    build), the TODAY tile shows the latest completed close-to-close change BUT labels it
+    "as of <date>" — so it's never read as a live "today" move (the metron-ops −$10k-before-
+    open bug was the missing label, not the value). When a snapshot IS dated today, no label."""
 
-    def test_today_suppressed_when_latest_snapshot_predates_today(self, db_session, tenant):
+    def test_today_shows_latest_close_with_as_of_label_when_snapshot_predates_today(self, db_session, tenant):
         pid = uuid.uuid4()
-        for when, nav in _SERIES:  # last snapshot 2024-06-30
+        for when, nav in _SERIES:  # last snapshot 2024-06-30 @ 1320 (prior 2024-06-29 @ 1300)
             _snap(db_session, tenant, pid, when, nav)
-        # It's the NEXT day, pre-open: no snapshot dated today yet.
+        # It's the NEXT day, pre-open / intraday off: no snapshot dated today yet.
         res = perf.period_tiles(
             db_session, uuid.UUID(tenant), pid, today=date(2024, 7, 1), with_benchmarks=False
         )
         today = next(t for t in res.tiles if t.period == "today")
-        # No phantom number — the prior session's −/+ move is NOT shown as today.
-        assert today.gain is None
-        assert today.twr is None
-        assert today.benchmarks == []
-        # ...and the user is told why, with the as-of date of the freshest valuation.
+        # The latest close-to-close change shows (1300 → 1320) — but clearly labeled as of the
+        # freshest valuation, not as a live "today" move.
+        assert today.gain == pytest.approx(20.0)
+        assert today.twr == pytest.approx(1320 / 1300 - 1)
+        assert today.end_date == date(2024, 6, 30)
         assert today.note == "as of 2024-06-30"
-        # YTD/LTM still form (they don't require a snapshot dated exactly today).
+        assert today.intraday is False
+        # YTD/LTM carry no as-of label.
         ytd = next(t for t in res.tiles if t.period == "ytd")
         assert ytd.gain is not None and ytd.note is None
 
@@ -256,14 +257,16 @@ class TestLiveIntradayToday:
         pid = uuid.uuid4()
         for when, nav in _SERIES:
             _snap(db_session, tenant, pid, when, nav)
-        # Feed present but overlay not in effect (stale / pre-open) → snapshot path + guard.
+        # Feed present but overlay not in effect (stale / pre-open) → snapshot path.
         live = perf.LiveToday(nav=9999.0, intraday_applied=False)
         res = perf.period_tiles(
             db_session, uuid.UUID(tenant), pid, today=date(2024, 7, 1), with_benchmarks=False, live=live
         )
         today = next(t for t in res.tiles if t.period == "today")
+        # The live overlay is ignored (not applied); the tile shows the latest settled close-
+        # to-close change, labeled "as of <date>" — never the 9999 live NAV.
         assert today.intraday is False
-        assert today.gain is None and today.note == "as of 2024-06-30"
+        assert today.gain == pytest.approx(20.0) and today.note == "as of 2024-06-30"
 
     def test_intraday_skipped_when_no_prior_session_to_anchor(self, db_session, tenant):
         # Only a same-day snapshot exists → no prior session before today → no intraday tile.

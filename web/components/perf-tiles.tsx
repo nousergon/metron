@@ -43,6 +43,10 @@ function Tile({ tile, selected }: { tile: PeriodTile; selected: Set<string> }) {
         <div className="text-xs font-medium uppercase tracking-wide text-muted">{tile.label}</div>
         {tile.intraday ? (
           <div className="text-[10px] text-accent/80">live · ~15m delay</div>
+        ) : tile.note ? (
+          // TODAY valued from a prior session's close (intraday off / pre-open) — label it so
+          // a completed-session change is never read as a live "today" move.
+          <div className="text-[10px] text-muted/70">{tile.note}</div>
         ) : span ? (
           <div className="text-[10px] text-muted/70">since {span}</div>
         ) : null}

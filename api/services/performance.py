@@ -810,11 +810,11 @@ def _window_base_index(points: list[PerfPoint], period: str, today: date) -> int
     """Index of the ANCHOR point whose NAV is a window's starting value (the window is
     ``points[base:]``), or None when the series can't form the window.
 
-    - ``today``: the prior recorded snapshot (today's daily change) — but ONLY when the
-      latest snapshot is actually dated ``today``. If the freshest valuation predates
-      ``today`` (pre-open, weekend/holiday, or a stale series), there is no "today" move to
-      report, so this returns None rather than relabel the last completed session's change
-      as "today" (metron-ops bug: a −$10k prior-session move shown as TODAY before the open).
+    - ``today``: the prior recorded snapshot (the latest close-to-close daily change). When
+      the freshest valuation predates ``today`` (pre-open, weekend/holiday, intraday-off owner
+      build), the change still forms, but ``period_tiles`` labels the tile "as of <date>" so a
+      completed session is never read as a live "today" move (the metron-ops −$10k-before-open
+      bug was the missing label, not the value).
     - ``ytd``: the last snapshot in a PRIOR year (year-end carry); if the series starts
       this year, its first point (return measured from the first recorded day of the year).
     - ``ltm``: the last snapshot on/before today−365d; if the series is shorter, its first
@@ -826,8 +826,10 @@ def _window_base_index(points: list[PerfPoint], period: str, today: date) -> int
         return None
     end_i = n - 1
     if period == "today":
-        if points[end_i].snap_date != today:
-            return None  # no valuation dated today → no honest "today" change to show
+        # The latest recorded close-to-close change. When the freshest snapshot predates
+        # ``today`` (pre-open / weekend / intraday-off owner build), the tile still shows it,
+        # but ``period_tiles`` labels it "as of <date>" so a prior session is never read as a
+        # live "today" move (the −$10k-before-open bug was the MISLABEL, not the value).
         base = end_i - 1
     elif period == "ytd":
         year = points[end_i].snap_date.year
@@ -986,14 +988,8 @@ def period_tiles(
             continue
         base_i = bases[period]
         if base_i is None:
-            # A TODAY tile is suppressed (not just history-thin) when the freshest valuation
-            # predates today — tell the user the as-of date instead of a phantom number.
-            note = (
-                f"as of {points[-1].snap_date.isoformat()}"
-                if period == "today" and points[-1].snap_date != today
-                else None
-            )
-            result.tiles.append(PeriodTile(period, label, None, None, None, None, [], note))
+            # Only YTD/LTM reach here (a thin series); TODAY always forms with ≥2 snapshots.
+            result.tiles.append(PeriodTile(period, label, None, None, None, None, [], None))
             continue
         window = points[base_i:]
         base, end = window[0], window[-1]
@@ -1008,7 +1004,14 @@ def period_tiles(
                 ret = (b_end / b_start - 1.0) if (b_start and b_end and b_start > 0) else None
                 alpha = (twr - ret) if (twr is not None and ret is not None) else None
                 benches.append(BenchmarkReturn(symbol=sym, label=blabel, ret=ret, alpha=alpha))
-        result.tiles.append(PeriodTile(period, label, base.snap_date, end.snap_date, gain, twr, benches))
+        # TODAY whose freshest snapshot predates today (pre-open / intraday-off) carries an
+        # "as of <date>" label so the completed-session change isn't read as a live move.
+        note = (
+            f"as of {end.snap_date.isoformat()}"
+            if period == "today" and end.snap_date != today
+            else None
+        )
+        result.tiles.append(PeriodTile(period, label, base.snap_date, end.snap_date, gain, twr, benches, note))
     return result
 
 
