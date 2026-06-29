@@ -21,6 +21,7 @@ import uuid
 from datetime import date, datetime
 
 from sqlalchemy import (
+    JSON,
     ForeignKey,
     Numeric,
     String,
@@ -213,6 +214,16 @@ class NavSnapshot(Base):
     cost_basis: Mapped[float] = mapped_column(Numeric(28, 10), default=0)
     external_flow: Mapped[float] = mapped_column(Numeric(28, 10), default=0)
     spy_close: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    # Provisional = recorded while ≥1 held FUND leg still carried a pre-snap_date (stale)
+    # NAV — its true NAV strikes hours after the EOD run. NULL/False = final/struck. The
+    # reconcile pass flips it to False once every fund leg's struck NAV is captured. Nullable
+    # so it auto-ALTERs onto the existing SQLite DB (api/db/session._sync_additive_columns).
+    provisional: Mapped[bool | None] = mapped_column(nullable=True, default=None)
+    # Priced per-holding composition AS OF snap_date — the exact legs that summed to ``nav``,
+    # so a restatement swaps one stale leg's price WITHOUT re-deriving composition (which is
+    # impossible for snapshot-only SnapTrade accounts with no trade ledger). JSON; see
+    # performance._composition for the shape. Nullable → auto-ALTER.
+    composition: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
@@ -239,6 +250,9 @@ class AccountNavSnapshot(Base):
     cost_basis: Mapped[float] = mapped_column(Numeric(28, 10), default=0)
     external_flow: Mapped[float] = mapped_column(Numeric(28, 10), default=0)
     spy_close: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    # See NavSnapshot — same provisional/composition semantics at account grain.
+    provisional: Mapped[bool | None] = mapped_column(nullable=True, default=None)
+    composition: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 

@@ -45,6 +45,7 @@ class RefreshResult:
     snapshots_recorded: int
     fx_rates_updated: int = 0
     snapshots_reconstructed: int = 0
+    snapshots_reconciled: int = 0  # provisional snapshots restated with struck fund NAVs
     account_snapshots_recorded: int = 0  # per-account NAV snapshots written this run
     risk_computed: int = 0          # portfolios whose factor risk backfilled + fit
     attribution_computed: int = 0   # portfolios whose sector attribution backfilled + ran
@@ -89,6 +90,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     portfolios = session.scalars(select(models.Portfolio)).all()
     total_symbols = total_updated = total_snaps = total_fx = 0
     total_recon = total_risk = total_attr = total_acct_snaps = total_earnings = 0
+    total_reconciled = 0
     for p in portfolios:
         held = analytics.holdings(session, p.tenant_id, p.id)
         symbols = [h.ticker for h in held if h.ticker]
@@ -103,6 +105,14 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         txn_ccys, earliest = analytics.foreign_transaction_currencies(session, p.tenant_id, p.id, base=base)
         if txn_ccys and earliest is not None:
             fx_updated += fx.backfill_fx_rates(session, txn_ccys, earliest, today, base=base)
+        # Reconcile provisional snapshots BEFORE recording today's — the price refresh just
+        # above cached the prior session's now-struck mutual-fund NAVs, so this restates
+        # yesterday's stale-fund snapshot with the real value before today's (again
+        # provisional) snapshot is recorded. Best-effort; a failure never costs the snapshot.
+        reconciled = _best_effort(
+            "reconcile", p.id,
+            lambda p=p: performance.reconcile_snapshots(session, p.tenant_id, p.id, today=today),
+        )
         # Reconstruct the historical NAV series from the lot timeline FIRST (best-effort),
         # then record TODAY from live positions — so the authoritative live value (complete
         # even for non-lot holdings) overwrites today's reconstructed point rather than the
@@ -149,13 +159,14 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         total_snaps += 1 if snap is not None else 0
         total_acct_snaps += acct_snaps or 0
         total_recon += recon or 0
+        total_reconciled += reconciled or 0
         total_risk += 1 if (risk_summary is not None and risk_summary.computable) else 0
         total_attr += 1 if (attr_summary is not None and attr_summary.computable) else 0
         total_earnings += earnings or 0
         logger.info(
-            "portfolio %s: %d symbols, %d prices, %d fx, snapshot=%s, reconstructed=%s, risk=%s, attribution=%s, earnings=%s",
+            "portfolio %s: %d symbols, %d prices, %d fx, snapshot=%s, reconstructed=%s, reconciled=%s, risk=%s, attribution=%s, earnings=%s",
             p.id, len(symbols), updated, fx_updated, snap is not None,
-            recon or 0,
+            recon or 0, reconciled or 0,
             risk_summary.computable if risk_summary is not None else False,
             attr_summary.computable if attr_summary is not None else False,
             earnings or 0,
@@ -180,6 +191,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         snapshots_recorded=total_snaps,
         fx_rates_updated=total_fx,
         snapshots_reconstructed=total_recon,
+        snapshots_reconciled=total_reconciled,
         account_snapshots_recorded=total_acct_snaps,
         risk_computed=total_risk,
         attribution_computed=total_attr,

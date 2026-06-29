@@ -678,9 +678,15 @@ def valued_holdings_by_account(
     base = _base_currency(session, portfolio_id)
     prices = price_service.latest_close_by_symbol(session, [h.ticker for h in all_held])
     fx_rates = fx_service.rates_to_base(session, [h.currency for h in all_held], base=base)
+    # Classify asset class per holding (one meta lookup over the union) so per-account
+    # callers can detect FUND legs — the late-fund-NAV provisional/reconcile path needs
+    # `security_type` at account grain, matching what `valued_holdings` already stamps.
+    meta = _security_meta_by_symbol(session, [h.ticker for h in all_held])
     for hs in per_account.values():
         for h in hs:
             _apply_valuation(h, prices, fx_rates)
+            asset_class, name = meta.get(h.ticker, (None, None))
+            h.security_type = classify_security_type(asset_class, h.ticker, name)
     return per_account
 
 

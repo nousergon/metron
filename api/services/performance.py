@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.db import models
-from api.services import analytics, compute_cache
+from api.services import analytics, compute_cache, fund_proxy
 from api.services import fx as fx_service
 from api.services import prices as price_service
 from portfolio_analytics.domain.ledger import TxnType
@@ -225,6 +225,59 @@ def _implausible_nav(nav: float, baseline_navs: list[float], flow: float) -> boo
     return ratio > _NAV_JUMP_FACTOR or ratio < 1.0 / _NAV_JUMP_FACTOR
 
 
+# Late-striking mutual funds: a fund prints its NAV hours after the EOD run, so at snapshot
+# time its cached close lags by a session and reads "flat," understating the pooled TWR. A
+# snapshot taken with ≥1 such stale fund leg is recorded PROVISIONAL and RESTATED later (see
+# reconcile_snapshots) once the fund's true NAV is captured. The reconcile looks back this
+# many calendar days — enough to span a long weekend plus a holiday before a fund strikes.
+_RECONCILE_WINDOW_DAYS = 7
+_COMPOSITION_SCHEMA = 1
+
+
+def _is_stale_fund_leg(h, snap_date: date) -> bool:
+    """True when a priced FUND holding's cached close predates ``snap_date`` — its real NAV
+    hasn't struck yet. Only close-fed legs count (a broker snapshot is legitimately old)."""
+    return (
+        h.security_type == "fund"
+        and h.last_price_from_close
+        and h.last_price_date is not None
+        and h.last_price_date < snap_date
+    )
+
+
+def _fund_legs_stale(held, snap_date: date) -> bool:
+    """Any priced fund leg still on a pre-``snap_date`` NAV → the snapshot is provisional."""
+    return any(
+        _is_stale_fund_leg(h, snap_date) for h in held if h.market_value is not None
+    )
+
+
+def _composition(held, snap_date: date) -> dict:
+    """The priced per-holding legs that sum to the snapshot NAV — persisted so a later
+    restatement swaps a stale fund leg's price WITHOUT re-deriving composition (impossible
+    for snapshot-only SnapTrade accounts). ``value`` is the base-currency market value, so
+    ``nav == sum(leg.value)`` by construction and reconcile = swap the leg's price/value and
+    re-sum. Only legs with a base market value are included (they are exactly what NAV sums)."""
+    legs = []
+    for h in held:
+        if h.market_value is None:
+            continue
+        is_fund = h.security_type == "fund"
+        legs.append({
+            "ticker": h.ticker,
+            "qty": h.quantity,
+            "price": h.last_price,
+            "price_date": h.last_price_date.isoformat() if h.last_price_date else None,
+            "currency": h.currency,
+            "fx_rate": h.fx_rate,
+            "value": h.market_value,
+            "is_fund": is_fund,
+            "stale": _is_stale_fund_leg(h, snap_date),
+            "proxy": fund_proxy.proxy_for(h.ticker) if is_fund else None,
+        })
+    return {"schema": _COMPOSITION_SCHEMA, "legs": legs}
+
+
 def record_snapshot(
     session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, today: date, source=None
 ) -> models.NavSnapshot | None:
@@ -256,6 +309,7 @@ def record_snapshot(
     row = _upsert_snapshot(
         session, tenant_id, portfolio_id, today,
         nav=nav, cost_basis=cost_basis, flow=flow, spy_close=spy_point.close if spy_point else None,
+        provisional=_fund_legs_stale(held, today), composition=_composition(held, today),
     )
     session.commit()
     session.refresh(row)
@@ -272,6 +326,8 @@ def _upsert_snapshot(
     cost_basis: float,
     flow: float,
     spy_close: float | None,
+    provisional: bool = False,
+    composition: dict | None = None,
 ) -> models.NavSnapshot:
     """Find-or-create the (portfolio, day) snapshot and set its fields. Does NOT commit
     — the caller batches the commit (one per refresh, one per reconstruction run)."""
@@ -290,6 +346,9 @@ def _upsert_snapshot(
     row.external_flow = flow
     if spy_close is not None:
         row.spy_close = spy_close
+    row.provisional = provisional
+    if composition is not None:
+        row.composition = composition
     return row
 
 
@@ -363,6 +422,7 @@ def record_account_snapshots(
         _upsert_account_snapshot(
             session, tenant_id, portfolio_id, account_id, today,
             nav=nav, cost_basis=cost_basis, flow=flow, spy_close=spy_close,
+            provisional=_fund_legs_stale(held, today), composition=_composition(held, today),
         )
         written += 1
     if written:
@@ -381,6 +441,8 @@ def _upsert_account_snapshot(
     cost_basis: float,
     flow: float,
     spy_close: float | None,
+    provisional: bool = False,
+    composition: dict | None = None,
 ) -> models.AccountNavSnapshot:
     """Find-or-create the (account, day) snapshot and set its fields. Does NOT commit."""
     row = session.scalars(
@@ -400,7 +462,102 @@ def _upsert_account_snapshot(
     row.external_flow = flow
     if spy_close is not None:
         row.spy_close = spy_close
+    row.provisional = provisional
+    if composition is not None:
+        row.composition = composition
     return row
+
+
+def _restate_provisional(row, history: dict[str, list[ClosePoint]]) -> bool:
+    """Restate one provisional snapshot row IN PLACE from now-cached struck fund NAVs.
+
+    For each stale fund leg, the struck price is the newest cached close that is later than
+    the recorded (stale) price AND no later than ``snap_date`` — so it picks the fund's true
+    NAV for the snapshot's session whether or not ``snap_date`` is itself a trading day. A
+    leg whose fund still hasn't struck stays stale. After swapping struck legs, re-sum NAV
+    and clear ``provisional`` once no fund leg is stale. Returns True if anything changed.
+
+    UPDATE-only (never delete/insert): preserves the (portfolio/account, snap_date) identity
+    so the per-account cohort guard and snapshot-day continuity are untouched. Produces the
+    authoritative value — deliberately NOT routed through the implausible-NAV jump guard (a
+    stale→struck fund move is sub-1%, so it could never trip it anyway)."""
+    comp = row.composition
+    if not comp or not comp.get("legs"):
+        return False
+    snap = row.snap_date
+    changed = False
+    legs = [dict(leg) for leg in comp["legs"]]  # copy so a fresh dict is reassigned (JSON dirty)
+    for leg in legs:
+        if not (leg.get("stale") and leg.get("is_fund")):
+            continue
+        series = history.get(leg["ticker"])
+        if not series:
+            continue
+        recorded = date.fromisoformat(leg["price_date"]) if leg.get("price_date") else date.min
+        struck = next(
+            (p for p in reversed(series) if recorded < p.bar_date <= snap), None
+        )
+        if struck is None:
+            continue  # fund hasn't struck for this session yet — keep provisional
+        leg["price"] = struck.close
+        leg["price_date"] = struck.bar_date.isoformat()
+        leg["value"] = struck.close * leg["qty"] * (leg["fx_rate"] if leg.get("fx_rate") is not None else 1.0)
+        leg["stale"] = False
+        changed = True
+    if not changed:
+        return False
+    row.nav = sum(leg["value"] for leg in legs)
+    row.composition = {"schema": comp.get("schema", _COMPOSITION_SCHEMA), "legs": legs}
+    row.provisional = any(leg.get("stale") and leg.get("is_fund") for leg in legs)
+    return True
+
+
+def reconcile_snapshots(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, today: date
+) -> int:
+    """Restate PROVISIONAL NAV snapshots once each held fund's true struck NAV has landed.
+
+    A mutual fund's NAV strikes hours after the EOD run, so a snapshot recorded with a stale
+    fund leg froze a flat price and understated the pooled TWR. This runs the morning after
+    (when the data refresh has cached the fund's struck close for the prior session) over the
+    trailing ``_RECONCILE_WINDOW_DAYS``: for each provisional portfolio and per-account
+    snapshot, swap the struck close into the stale legs, re-sum NAV, and finalize once every
+    fund leg has struck. Idempotent — a snapshot with nothing left to restate is skipped.
+    Returns the count of rows restated."""
+    cutoff = today - timedelta(days=_RECONCILE_WINDOW_DAYS)
+    port_rows = list(session.scalars(
+        select(models.NavSnapshot).where(
+            models.NavSnapshot.tenant_id == tenant_id,
+            models.NavSnapshot.portfolio_id == portfolio_id,
+            models.NavSnapshot.provisional.is_(True),
+            models.NavSnapshot.snap_date >= cutoff,
+        )
+    ).all())
+    acct_rows = list(session.scalars(
+        select(models.AccountNavSnapshot).where(
+            models.AccountNavSnapshot.tenant_id == tenant_id,
+            models.AccountNavSnapshot.portfolio_id == portfolio_id,
+            models.AccountNavSnapshot.provisional.is_(True),
+            models.AccountNavSnapshot.snap_date >= cutoff,
+        )
+    ).all())
+    if not port_rows and not acct_rows:
+        return 0
+    # One close-history fetch over the union of stale fund tickers across all rows.
+    fund_tickers = {
+        leg["ticker"]
+        for row in (*port_rows, *acct_rows)
+        if row.composition
+        for leg in row.composition.get("legs", [])
+        if leg.get("stale") and leg.get("is_fund")
+    }
+    if not fund_tickers:
+        return 0
+    history = price_service.close_history_by_symbol(session, sorted(fund_tickers))
+    restated = sum(_restate_provisional(row, history) for row in (*port_rows, *acct_rows))
+    if restated:
+        session.commit()
+    return restated
 
 
 def record_intraday_legs(
