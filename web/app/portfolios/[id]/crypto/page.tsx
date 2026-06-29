@@ -28,8 +28,9 @@ export default async function CryptoPage({ params }: { params: { id: string } })
 
       <h1 className="mt-3 text-lg font-semibold">Crypto</h1>
       <p className="text-sm text-muted">
-        Track BTC &amp; ETH by wallet address — balances and USD value sync automatically. Standalone for now
-        (separate from your holdings &amp; NAV) since crypto trades 24/7. Read-only: we never hold your keys.
+        Track BTC &amp; ETH by wallet address — or a BTC <span className="font-mono">xpub/ypub/zpub</span> to sum a
+        whole HD wallet. Balances and USD value sync automatically. Standalone for now (separate from your
+        holdings &amp; NAV) since crypto trades 24/7. Read-only: we never hold your keys (an xpub is watch-only).
       </p>
 
       <CryptoPanel portfolioId={id} summary={summary} />

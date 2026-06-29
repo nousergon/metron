@@ -80,8 +80,8 @@ export function CryptoPanel({ portfolioId, summary }: { portfolioId: string; sum
         <input
           value={address}
           onChange={(e) => setAddress(e.target.value)}
-          placeholder="Wallet address"
-          aria-label="Wallet address"
+          placeholder="Address — or BTC xpub/ypub/zpub for a whole wallet"
+          aria-label="Wallet address or extended public key"
           className="w-96 max-w-full rounded border border-line bg-surface px-2 py-1 text-sm font-mono"
         />
         <input

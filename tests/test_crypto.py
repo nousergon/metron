@@ -71,6 +71,17 @@ class TestValidation:
         with pytest.raises(crypto.InvalidAddress):
             crypto.normalize_address("BTC", "not-an-address")
 
+    def test_btc_xpub_accepted(self):
+        # An HD-wallet extended key is a valid BTC entry (the producer derives + sums it).
+        zpub = "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs"
+        assert crypto.normalize_address("BTC", zpub) == ("BTC", zpub)
+
+    def test_eth_xpub_rejected(self):
+        # xpub is BTC-only; an extended key on the ETH chain is invalid.
+        zpub = "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs"
+        with pytest.raises(crypto.InvalidAddress):
+            crypto.normalize_address("ETH", zpub)
+
 
 class TestAddressCrud:
     def test_add_dedupes_and_updates_label(self, db_session):

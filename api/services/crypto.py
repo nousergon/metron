@@ -40,6 +40,11 @@ CHAINS = {"BTC": "Bitcoin", "ETH": "Ethereum"}
 # syncing to zero.
 _BTC_RE = re.compile(r"^(bc1[a-z0-9]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,39})$")
 _ETH_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+# BTC extended public key (HD wallet). A single address isn't the wallet balance — a self-
+# custody wallet is tracked by its xpub/ypub/zpub, which the producer derives + sums. Metron
+# only validates the shape + stores/publishes it (no derivation here). Watch-only: an xpub
+# cannot move funds. Base58, ~111 chars.
+_XPUB_RE = re.compile(r"^(xpub|ypub|zpub)[1-9A-HJ-NP-Za-km-z]{100,115}$")
 
 
 class InvalidAddress(ValueError):
@@ -58,8 +63,10 @@ def normalize_address(chain: str, address: str) -> tuple[str, str]:
     if not addr:
         raise InvalidAddress("address is required")
     if ch == "BTC":
-        if not _BTC_RE.match(addr):
-            raise InvalidAddress("not a valid BTC address")
+        # Accept either a plain address OR an extended public key (HD wallet). Both are
+        # case-sensitive (kept verbatim). The producer decides which path to take by prefix.
+        if not (_BTC_RE.match(addr) or _XPUB_RE.match(addr)):
+            raise InvalidAddress("not a valid BTC address or extended key (xpub/ypub/zpub)")
         return ch, addr
     # ETH
     if not _ETH_RE.match(addr):
