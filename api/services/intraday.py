@@ -174,6 +174,20 @@ def _overlay(session: Session, tickers: list[str], quotes: dict[str, dict], *, t
     return out
 
 
+def intraday_enabled(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> bool:
+    """The portfolio's single user-facing intraday toggle (``InvestorPreferences``, set from
+    Settings). Default OFF — a missing prefs row or a NULL column reads as disabled — so the
+    live overlay is opt-in and the persisted EOD-close valuation stays authoritative until the
+    user turns it on. The overlay applies iff ``feed_entitled AND intraday_enabled``."""
+    val = session.scalars(
+        select(models.InvestorPreferences.intraday_enabled).where(
+            models.InvestorPreferences.tenant_id == tenant_id,
+            models.InvestorPreferences.portfolio_id == portfolio_id,
+        )
+    ).first()
+    return bool(val)
+
+
 def live_prices(
     session: Session,
     tickers: Collection[str],
@@ -229,6 +243,13 @@ def for_portfolio(
     page endpoints use ``prices``; the ``GET .../intraday`` status endpoint uses ``meta``."""
     from api.services import analytics
 
+    # Two gates, deployment axis first: the feed must be OFFERED here (reason="feed" on a
+    # no-feed tier), then the user's single intraday toggle must be ON (reason="off", the
+    # default). Either off → value from EOD close, and the UI shows no live-tick label.
+    if not feed_entitled:
+        return None, IntradayMeta(applied=False, reason="feed")
+    if not intraday_enabled(session, tenant_id, portfolio_id):
+        return None, IntradayMeta(applied=False, reason="off")
     held = analytics.holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     tickers = [h.ticker for h in held if h.ticker]
     return live_prices(session, tickers, feed_entitled=feed_entitled, reader=reader, now=now)
@@ -308,6 +329,8 @@ def today_view(
     now = now or datetime.now(UTC)
     if not feed_entitled:
         return TodaySummary(available=False, reason="feed")
+    if not intraday_enabled(session, tenant_id, portfolio_id):
+        return TodaySummary(available=False, reason="off")
 
     held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     base = analytics._base_currency(session, portfolio_id)

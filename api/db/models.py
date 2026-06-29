@@ -370,6 +370,13 @@ class InvestorPreferences(Base):
     # without an explicit ``?account_id=`` apply this, so the selection survives
     # reloads/devices. NULL/empty = whole portfolio.
     selected_account_ids: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    # The SINGLE user-facing switch for the live intraday price overlay (Settings). NULL/False
+    # = OFF — the default — so the persisted EOD-close valuation is authoritative and Metron
+    # makes zero intraday fetches; True = overlay the ~15-min-delayed intraday last-price on
+    # held positions while the app is open. Subordinate to feed entitlement (a no-feed tier
+    # never offers it: overlay applies iff feed_entitled AND intraday_enabled). Nullable so the
+    # column auto-ALTERs onto an existing SQLite DB; NULL reads as OFF.
+    intraday_enabled: Mapped[bool | None] = mapped_column(nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 

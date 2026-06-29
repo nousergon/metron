@@ -26,14 +26,23 @@ def _art(quotes: dict) -> dict:
     return {"schema_version": 1, "as_of_utc": _AS_OF, "source": "yfinance_delayed", "quotes": quotes}
 
 
-def _seed_one_holding(session, *, symbol="AAPL", yf_symbol="AAPL", qty=10, buy_px=100.0, eod_close=120.0):
-    """One USD holding with a BUY (cost basis) + a cached EOD close bar."""
+def _seed_one_holding(
+    session, *, symbol="AAPL", yf_symbol="AAPL", qty=10, buy_px=100.0, eod_close=120.0,
+    intraday_enabled=True,
+):
+    """One USD holding with a BUY (cost basis) + a cached EOD close bar. Enables the intraday
+    overlay toggle by default — the overlay-mechanics tests below assume intraday is ON; the
+    gate itself is covered by ``TestIntradayToggle``."""
     tenant = models.Tenant(name="t")
     session.add(tenant)
     session.flush()
     pf = models.Portfolio(tenant_id=tenant.id, name="P", base_currency="USD")
     session.add(pf)
     session.flush()
+    if intraday_enabled:
+        session.add(
+            models.InvestorPreferences(tenant_id=tenant.id, portfolio_id=pf.id, intraday_enabled=True)
+        )
     acct = models.Account(
         tenant_id=tenant.id, portfolio_id=pf.id, broker="csv", external_id="A1", currency="USD"
     )
@@ -217,6 +226,47 @@ class TestTodayView:
         assert t.available and t.stale is True and t.n_priced == 1  # rows still show, flagged stale
 
 
+class TestIntradayToggle:
+    """The single user-facing intraday switch (InvestorPreferences.intraday_enabled),
+    default OFF — opt-in overlay; EOD-close valuation is authoritative until turned on."""
+
+    def test_default_off_no_pref_row(self, db_session):
+        tid, pid = _seed_one_holding(db_session, symbol="AAPL", intraday_enabled=False)
+        assert intraday.intraday_enabled(db_session, tid, pid) is False
+        prices, meta = intraday.for_portfolio(
+            db_session, tid, pid, feed_entitled=True, now=_NOW,
+            reader=lambda: _art({"AAPL": {"last": 130.0}}),
+        )
+        assert prices is None and meta.applied is False and meta.reason == "off"
+
+    def test_today_view_off_when_toggle_off(self, db_session):
+        tid, pid = _seed_one_holding(db_session, symbol="AAPL", intraday_enabled=False)
+        t = intraday.today_view(
+            db_session, tid, pid, feed_entitled=True, now=_NOW,
+            reader=lambda: _art({"AAPL": {"prev_close": 100.0, "open": 110.0, "last": 130.0}}),
+        )
+        assert t.available is False and t.reason == "off"
+
+    def test_overlay_applies_when_toggle_on(self, db_session):
+        # Seeder enables the toggle by default → the overlay is in effect.
+        tid, pid = _seed_one_holding(db_session, symbol="AAPL", eod_close=120.0)
+        assert intraday.intraday_enabled(db_session, tid, pid) is True
+        prices, meta = intraday.for_portfolio(
+            db_session, tid, pid, feed_entitled=True, now=_NOW,
+            reader=lambda: _art({"AAPL": {"last": 130.0}}),
+        )
+        assert meta.applied is True and prices["AAPL"].close == 130.0
+
+    def test_feed_off_beats_toggle_on(self, db_session):
+        # Deployment axis wins: no feed → "feed", even with the user toggle on.
+        tid, pid = _seed_one_holding(db_session, symbol="AAPL")
+        prices, meta = intraday.for_portfolio(
+            db_session, tid, pid, feed_entitled=False, now=_NOW,
+            reader=lambda: _art({"AAPL": {"last": 130.0}}),
+        )
+        assert prices is None and meta.reason == "feed"
+
+
 @pytest.fixture()
 def tenant():
     return str(uuid.uuid4())
@@ -235,6 +285,20 @@ class TestIntradayStatusEndpoint:
         monkeypatch.setattr(settings, "feed_entitled", True)
         # No holdings → nothing to overlay; wiring still returns a clean status (not 500).
         pid = client.post("/portfolios", json={"name": "P"}, headers={"X-Tenant-Id": tenant}).json()["id"]
+        # Turn the intraday toggle on so we exercise the no-holdings path (not the off gate).
+        client.put(
+            f"/portfolios/{pid}/preferences",
+            json={"intraday_enabled": True}, headers={"X-Tenant-Id": tenant},
+        )
         r = client.get(f"/portfolios/{pid}/intraday", headers={"X-Tenant-Id": tenant})
         assert r.status_code == 200
         assert r.json()["applied"] is False
+
+    def test_toggle_off_reports_off_even_with_feed(self, client, tenant, monkeypatch):
+        # Feed entitled, but the user's single intraday switch is off (default) → reason "off".
+        monkeypatch.setattr(settings, "feed_entitled", True)
+        pid = client.post("/portfolios", json={"name": "P"}, headers={"X-Tenant-Id": tenant}).json()["id"]
+        r = client.get(f"/portfolios/{pid}/intraday", headers={"X-Tenant-Id": tenant})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["applied"] is False and body["reason"] == "off"

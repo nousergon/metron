@@ -118,6 +118,9 @@ class PreferencesIn(BaseModel):
     risk_tolerance: str | None = None
     objective: str | None = None
     notes: str | None = None
+    # The single user-facing intraday-overlay switch (default OFF). Full-replace PUT, so a
+    # client that loaded `current` and submits the whole object governs this too.
+    intraday_enabled: bool | None = None
 
 
 class PreferencesOut(BaseModel):
@@ -126,6 +129,7 @@ class PreferencesOut(BaseModel):
     risk_tolerance: str | None = None
     objective: str | None = None
     notes: str | None = None
+    intraday_enabled: bool | None = None
 
 
 class HoldingOut(BaseModel):
@@ -732,9 +736,10 @@ def _owned_portfolio(
         raise HTTPException(status_code=404, detail="Portfolio not found")
     # The app is being actively used — touch the data-spine UI heartbeat (throttled,
     # fail-soft, flag-gated) so the intraday quote producer runs only while someone
-    # is actually looking. Every authenticated portfolio request flows through this
-    # dependency, making it the one natural chokepoint for "Metron is open".
-    data_spine.touch_ui_heartbeat()
+    # is actually looking AND has the intraday overlay enabled. Every authenticated
+    # portfolio request flows through this dependency, making it the one natural
+    # chokepoint for "Metron is open".
+    data_spine.touch_ui_heartbeat(session=session, tenant_id=tenant_id, portfolio_id=portfolio.id)
     return portfolio
 
 
@@ -803,6 +808,7 @@ def put_preferences(
     pref.risk_tolerance = (body.risk_tolerance or "").strip() or None
     pref.objective = (body.objective or "").strip() or None
     pref.notes = (body.notes or "").strip() or None
+    pref.intraday_enabled = bool(body.intraday_enabled)
     session.commit()
     session.refresh(pref)
     return pref
