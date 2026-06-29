@@ -7,8 +7,22 @@
 // are ignored, so a normal user can't re-scope their own entitlements.
 
 import { cookies } from "next/headers";
+import { unstable_cache } from "next/cache";
 import { getEntitlements, type Entitlement, type Entitlements } from "@/lib/api";
 import type { NavFeatureState } from "@/components/portfolio-nav";
+
+/** Short-TTL revalidation window for the entitlement flags (metron-ops#91 Part 2).
+ *  These flags gate UI affordances only — the backend re-checks entitlements on every
+ *  (no-store) data/compute call — so a flag that is up to this many seconds stale can
+ *  never grant real access; the worst case is a feature toggle taking ≤TTL to reflect a
+ *  tier change. Keeps `getEntitlements` off the every-nav round-trip without touching the
+ *  live NAV/price paths (which stay `cache: "no-store"`). */
+export const ENTITLEMENTS_REVALIDATE_SECONDS = 60;
+
+/** Cache tag for one tenant's entitlements. A tier/billing change handler (e.g. a Stripe
+ *  webhook) can call `revalidateTag(entitlementsTag(tenantId))` to drop the ≤TTL window to
+ *  zero for that tenant; otherwise the TTL above bounds staleness. */
+export const entitlementsTag = (tenantId: string) => `entitlements:${tenantId}`;
 
 /** The owner-simulator preview selection (tier dropdown + feed toggle) from cookies. */
 export function previewFromCookies(): { tier?: string; feed?: boolean } {
@@ -19,10 +33,28 @@ export function previewFromCookies(): { tier?: string; feed?: boolean } {
 }
 
 /** Resolve entitlements for the current request (best-effort — null on backend error,
- *  so a transient failure degrades to "ungated" rather than blanking the page). */
+ *  so a transient failure degrades to "ungated" rather than blanking the page).
+ *
+ *  Read through a short-TTL `unstable_cache` so repeated navs reuse one fetch within the
+ *  revalidate window. `cookies()` is read OUTSIDE the cached scope (it is request-dynamic
+ *  and disallowed inside `unstable_cache`); the resolved tenant + preview are passed as
+ *  EXPLICIT keyParts so cache isolation never depends on Next's header-based fetch keying
+ *  (a documented cross-tenant footgun for header-authed multi-tenant apps). Distinct
+ *  preview tiers/feeds key to distinct entries, so the owner tier-simulator stays exact. */
 export async function loadEntitlements(tenantId: string): Promise<Entitlements | null> {
+  const preview = previewFromCookies();
   try {
-    return await getEntitlements(tenantId, previewFromCookies());
+    const read = unstable_cache(
+      () => getEntitlements(tenantId, preview),
+      [
+        "entitlements",
+        tenantId,
+        preview.tier ?? "",
+        preview.feed === undefined ? "" : String(preview.feed),
+      ],
+      { revalidate: ENTITLEMENTS_REVALIDATE_SECONDS, tags: [entitlementsTag(tenantId)] },
+    );
+    return await read();
   } catch {
     return null;
   }
