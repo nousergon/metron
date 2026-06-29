@@ -7,9 +7,11 @@
 import { revalidatePath } from "next/cache";
 import {
   type AccountTagPatch,
+  addCryptoAddress,
   addWatchlist,
   createSnapTradeConnectUrl,
   deleteAccount,
+  deleteCryptoAddress,
   getSnapTradeConnections,
   importFile,
   MetronApiError,
@@ -219,6 +221,37 @@ export async function restoreExcludedAccountAction(portfolioId: string, key: str
     return { ok: true, message: "Account restored — run a sync to re-import it." };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Restore failed — backend reachable?" };
+  }
+}
+
+/** Add a crypto wallet address to track (metron-ops#111). A bad address surfaces the
+ * backend's 422 detail (e.g. "not a valid ETH address") inline. */
+export async function addCryptoAddressAction(
+  portfolioId: string,
+  chain: string,
+  address: string,
+  label?: string,
+): Promise<ActionResult> {
+  const addr = address.trim();
+  if (!addr) return { ok: false, message: "Enter a wallet address." };
+  try {
+    const tenantId = await requireTenantId();
+    await addCryptoAddress(tenantId, portfolioId, chain, addr, label?.trim() || null);
+    revalidatePath(`/portfolios/${portfolioId}/crypto`);
+    return { ok: true, message: `Tracking ${chain} wallet.` };
+  } catch (e) {
+    return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t add — backend reachable?" };
+  }
+}
+
+export async function deleteCryptoAddressAction(portfolioId: string, addressId: string): Promise<ActionResult> {
+  try {
+    const tenantId = await requireTenantId();
+    await deleteCryptoAddress(tenantId, portfolioId, addressId);
+    revalidatePath(`/portfolios/${portfolioId}/crypto`);
+    return { ok: true, message: "Wallet removed." };
+  } catch (e) {
+    return { ok: false, message: e instanceof MetronApiError ? e.message : "Remove failed — backend reachable?" };
   }
 }
 

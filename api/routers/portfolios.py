@@ -32,6 +32,7 @@ from api.services import (
     analytics,
     attribution,
     calendar,
+    crypto,
     data_spine,
     indices,
     intraday,
@@ -2325,6 +2326,98 @@ def remove_watchlist(
     if not removed:
         raise HTTPException(status_code=404, detail="Symbol not on the watchlist")
     return WatchlistDeleteOut(symbol=symbol.strip().upper(), removed=True)
+
+
+# ── Crypto (standalone wallet-address tracking; metron-ops#111) ──────────────────────────
+
+
+class CryptoAddressIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chain: str            # "BTC" | "ETH"
+    address: str
+    label: str | None = None
+
+
+class CryptoPositionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    chain: str
+    address: str
+    label: str | None = None
+    symbol: str | None = None
+    balance: float | None = None
+    price_usd: float | None = None
+    value_usd: float | None = None
+    synced: bool
+
+
+class CryptoSummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    available: bool
+    as_of_utc: str | None = None
+    stale: bool = False
+    total_usd: float | None = None
+    n_pending: int = 0
+    positions: list[CryptoPositionOut] = []
+    reason: str | None = None
+
+
+class CryptoAddressDeleteOut(BaseModel):
+    id: uuid.UUID
+    removed: bool
+
+
+@router.get("/{portfolio_id}/crypto", response_model=CryptoSummaryOut)
+def get_crypto(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> crypto.CryptoSummary:
+    """The portfolio's tracked crypto wallets joined with the producer's synced balances
+    (metron-ops#111). Standalone — decoupled from the EOD-close holdings/NAV. Addresses
+    awaiting a first sync render as ``synced=False`` (never zeroed). Forward-records today's
+    total value (idempotent) when a fresh total is present."""
+    summary = crypto.for_portfolio(session, portfolio.tenant_id, portfolio.id)
+    crypto.record_snapshot(session, portfolio.tenant_id, portfolio.id, summary)
+    return summary
+
+
+@router.post("/{portfolio_id}/crypto/addresses", response_model=CryptoPositionOut, status_code=201)
+def add_crypto_address(
+    body: CryptoAddressIn,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> CryptoPositionOut:
+    """Add a wallet to track (idempotent on chain+address; re-add updates the label). The
+    address is format-validated for its chain (422 on a bad address). Publishes the updated
+    fetch universe so the producer picks the wallet up on its next cycle."""
+    try:
+        row = crypto.add_address(
+            session, portfolio.tenant_id, portfolio.id, body.chain, body.address, label=body.label
+        )
+    except crypto.InvalidAddress as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    # The freshly added address has no synced balance yet — return it as a pending position.
+    return CryptoPositionOut(
+        id=row.id, chain=row.chain, address=row.address, label=row.label,
+        symbol=None, balance=None, price_usd=None, value_usd=None, synced=False,
+    )
+
+
+@router.delete("/{portfolio_id}/crypto/addresses/{address_id}", response_model=CryptoAddressDeleteOut)
+def delete_crypto_address(
+    address_id: uuid.UUID,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> CryptoAddressDeleteOut:
+    """Stop tracking a wallet (404 if it isn't this portfolio's). Re-publishes the fetch
+    universe so the producer drops it."""
+    removed = crypto.delete_address(session, portfolio.tenant_id, portfolio.id, address_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Wallet address not found")
+    return CryptoAddressDeleteOut(id=address_id, removed=True)
 
 
 @router.get("/{portfolio_id}/accounts/{account_id}", response_model=AccountDetailOut)

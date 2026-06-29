@@ -374,6 +374,68 @@ export async function removeWatchlist(tenantId: string, id: string, symbol: stri
   if (!res.ok) throw new MetronApiError(res.status, `DELETE watchlist → ${res.status}`);
 }
 
+// Crypto — standalone wallet-address tracking (BTC+ETH), decoupled from the EOD-close
+// holdings/NAV. Balances are synced by the nousergon-data producer; Metron never calls a
+// chain. A position with synced=false is awaiting its first sync. (metron-ops#111)
+export type CryptoPosition = {
+  id: string;
+  chain: string;
+  address: string;
+  label: string | null;
+  symbol: string | null;
+  balance: number | null;
+  price_usd: number | null;
+  value_usd: number | null;
+  synced: boolean;
+};
+
+export type CryptoSummary = {
+  available: boolean;
+  as_of_utc: string | null;
+  stale: boolean;
+  total_usd: number | null;
+  n_pending: number;
+  positions: CryptoPosition[];
+  reason: string | null;
+};
+
+export const getCrypto = (tenantId: string, id: string) =>
+  get<CryptoSummary>(tenantId, `/portfolios/${id}/crypto`);
+
+export async function addCryptoAddress(
+  tenantId: string,
+  id: string,
+  chain: string,
+  address: string,
+  label?: string | null,
+): Promise<CryptoPosition> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/crypto/addresses`, {
+    method: "POST",
+    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    body: JSON.stringify({ chain, address, label: label ?? null }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail ?? detail;
+    } catch {
+      // keep the status
+    }
+    throw new MetronApiError(res.status, detail);
+  }
+  return res.json() as Promise<CryptoPosition>;
+}
+
+export async function deleteCryptoAddress(tenantId: string, id: string, addressId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/crypto/addresses/${encodeURIComponent(addressId)}`, {
+    method: "DELETE",
+    headers: { "X-Tenant-Id": tenantId },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new MetronApiError(res.status, `DELETE crypto address → ${res.status}`);
+}
+
 /** Set (or clear, with an empty label) a user alias for a symbol (metron-ops#47). */
 export async function setSecurityLabel(
   tenantId: string,

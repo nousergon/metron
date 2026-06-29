@@ -191,3 +191,41 @@ def publish_holdings_universe(
         bucket or settings.market_data_bucket, HOLDINGS_UNIVERSE_KEY,
     )
     return payload
+
+
+# Crypto wallet addresses → S3 for `nousergon-data`'s crypto-balances producer to consume
+# (metron-ops#111). Metron publishes the deduped (chain, address) set; the producer queries
+# the chain for balances and writes `crypto/holdings.json` back. Metron makes NO chain calls.
+WALLET_ADDRESSES_SCHEMA_VERSION = 1
+WALLET_ADDRESSES_KEY = "metron/crypto/wallet_addresses.json"
+# The producer's output that the crypto page reads back (balances + USD value per address).
+CRYPTO_HOLDINGS_KEY = "crypto/holdings.json"
+
+
+def build_wallet_addresses(session: Session) -> dict:
+    """The deduped (chain, address) set across ALL tracked wallets — the producer's fetch
+    universe. System-internal (the producer just needs to know WHAT to query); labels and
+    tenant scoping stay Metron-side, so this carries no per-tenant data. Sorted for a stable,
+    diff-friendly artifact."""
+    pairs = sorted(
+        {(c, a) for c, a in session.execute(
+            select(models.WalletAddress.chain, models.WalletAddress.address).distinct()
+        ).all()}
+    )
+    return {
+        "schema_version": WALLET_ADDRESSES_SCHEMA_VERSION,
+        "addresses": [{"chain": c, "address": a} for c, a in pairs],
+    }
+
+
+def publish_wallet_addresses(session: Session, *, s3_client=None, bucket: str | None = None) -> dict:
+    """Publish the wallet-address fetch universe to S3 for the crypto-balances producer.
+    Returns the published payload. Raises ``DataSpineUnavailable`` on S3 failure — callers on
+    the request path treat it as best-effort (WARN, never break the add/delete)."""
+    payload = build_wallet_addresses(session)
+    _write_s3_json(bucket or settings.market_data_bucket, WALLET_ADDRESSES_KEY, payload, s3_client=s3_client)
+    logger.info(
+        "published wallet addresses: %d (chain, address) → s3://%s/%s",
+        len(payload["addresses"]), bucket or settings.market_data_bucket, WALLET_ADDRESSES_KEY,
+    )
+    return payload

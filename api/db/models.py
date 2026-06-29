@@ -439,3 +439,50 @@ class SecurityClassification(Base):
     sector: Mapped[str | None] = mapped_column(String(80), nullable=True)
     country: Mapped[str | None] = mapped_column(String(80), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+class WalletAddress(Base):
+    """A crypto wallet address this portfolio tracks (metron-ops#111).
+
+    The standalone crypto page is decoupled from the broker/EOD holdings axis (crypto is
+    24/7, no market close). The user manages addresses here; Metron PUBLISHES the deduped
+    set to S3 (``metron/crypto/wallet_addresses.json``) and the ``nousergon-data`` producer
+    reads it, queries the chain for balances, and writes ``crypto/holdings.json`` back — so
+    Metron itself makes NO chain calls (the data-spine invariant). Balances join back to
+    these rows by ``(chain, address)``. Tenant + portfolio scoped; new table → auto-created
+    on the personal SQLite (no migration)."""
+
+    __tablename__ = "wallet_addresses"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "portfolio_id", "chain", "address", name="uq_wallet_address"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
+    chain: Mapped[str] = mapped_column(String(10))     # "BTC" | "ETH"
+    address: Mapped[str] = mapped_column(String(120))  # on-chain address (native format per chain)
+    label: Mapped[str | None] = mapped_column(String(120), nullable=True)  # optional user label
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class CryptoValueSnapshot(Base):
+    """A dated total-crypto-value snapshot for one portfolio (metron-ops#111).
+
+    Forward-recorded once per UTC day from the synced ``crypto/holdings.json`` total, like
+    ``NavSnapshot`` for equities — crypto value can't be reconstructed for the past from the
+    current chain balance alone, so history accrues one day at a time. Recorded idempotently
+    when the crypto page is viewed with a fresh artifact; never fabricated when the feed is
+    absent. Tenant + portfolio scoped; one row per (portfolio, snap_date)."""
+
+    __tablename__ = "crypto_value_snapshots"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "portfolio_id", "snap_date", name="uq_crypto_value_snapshot_day"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
+    snap_date: Mapped[date] = mapped_column(index=True)
+    value_usd: Mapped[float] = mapped_column(Numeric(28, 10))
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())

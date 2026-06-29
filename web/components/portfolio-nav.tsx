@@ -77,6 +77,7 @@ export function PortfolioNav({
     { label: "Macro", href: `${base}/macro`, feature: "macro" },
     { label: "Calendar", href: `${base}/calendar`, feature: "calendar" },
     { label: "Watchlist", href: `${base}/watchlist` },
+    { label: "Crypto", href: `${base}/crypto` },
     ...plugins.map((p) => ({ label: p.label, href: `${base}/${p.href}` })),
     { label: "Settings & data", href: `${base}/settings` },
   ];
