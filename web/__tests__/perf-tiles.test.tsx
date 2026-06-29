@@ -77,24 +77,26 @@ describe("PerfTiles", () => {
     expect(screen.getByText("history building…")).toBeTruthy();
   });
 
-  it("shows the as-of note (not a phantom number) when TODAY is suppressed pre-open", () => {
-    // Server suppresses TODAY when the freshest valuation predates today and supplies an
-    // honest note — the tile must surface that, never a relabeled prior-session move.
-    const suppressed: PeriodTile[] = [
+  it("shows the latest close value with an as-of label when TODAY predates today", () => {
+    // Intraday off / pre-open: the server populates TODAY from the latest settled close and
+    // supplies an "as of <date>" note. The tile shows the value AND the label — so it's never
+    // read as a live "today" move, but it's not blank either.
+    const asOf: PeriodTile[] = [
       {
         period: "today",
         label: "Today",
-        start_date: null,
-        end_date: null,
-        gain: null,
-        twr: null,
+        start_date: "2026-06-24",
+        end_date: "2026-06-25",
+        gain: 20,
+        twr: 0.015,
         benchmarks: [],
         note: "as of 2026-06-25",
       },
       ...tiles.slice(1),
     ];
-    render(<PerfTiles tiles={suppressed} benchmarksAvailable={false} />);
-    expect(screen.getByText("as of 2026-06-25")).toBeTruthy();
+    render(<PerfTiles tiles={asOf} benchmarksAvailable={false} />);
+    expect(screen.getByText("as of 2026-06-25")).toBeTruthy(); // honest label
+    expect(screen.getByText("+1.5% TWR")).toBeTruthy(); // value shown, not blank
     expect(screen.queryByText("history building…")).toBeNull();
   });
 
