@@ -3,7 +3,6 @@ NAV lands — swapping the stale leg's price, re-summing NAV, and finalizing the
 
 from __future__ import annotations
 
-import uuid
 from datetime import date, timedelta
 
 import pytest
