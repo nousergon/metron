@@ -9,11 +9,12 @@
 // so the view survives reloads — hydrated from the saved values, saved fire-and-forget on
 // change.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { GroupedByAccount } from "@/components/grouped-by-account";
 import { GroupedByClassification } from "@/components/grouped-by-classification";
 import { GroupedHoldings } from "@/components/grouped-holdings";
+import { TypeFilterChips } from "@/components/holdings-type-filter";
 import { ColumnPresetControl, DEFAULT_VISIBLE_GROUPS } from "@/components/holdings-column-presets";
 import { METRIC_GROUP_ORDER, type MetricGroup } from "@/components/holdings-table";
 import { saveHoldingsViewAction } from "@/app/portfolios/[id]/actions";
@@ -87,6 +88,21 @@ export function HoldingsView({
   const params = useSearchParams();
   const [mode, setMode] = useState<Mode>(() => initialMode(savedGrouping));
   const [visibleGroups, setVisibleGroups] = useState<MetricGroup[]>(() => initialBands(savedBands));
+  // Faceted type filter (metron-ops#115) — session-only (a holding-hiding filter shouldn't
+  // silently persist the way layout does). Set of HIDDEN security_types; empty = all shown.
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
+  const toggleType = (t: string) =>
+    setHiddenTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
+      return next;
+    });
+  const securityTypes = useMemo(() => holdings.map((h) => h.security_type), [holdings]);
+  const filtered = useMemo(
+    () => (hiddenTypes.size ? holdings.filter((h) => !hiddenTypes.has(h.security_type)) : holdings),
+    [holdings, hiddenTypes],
+  );
 
   // Persist the full view on any control change (fire-and-forget). Always sends all three
   // fields (the PUT is a full replace), defaulting unspecified facets to current state.
@@ -144,9 +160,14 @@ export function HoldingsView({
         {/* Column presets only matter in the priced view (metric bands are feed-gated). */}
         {priced ? <ColumnPresetControl value={visibleGroups} onChange={changeBands} /> : null}
       </div>
-      {effectiveMode === "account" ? (
+      <TypeFilterChips securityTypes={securityTypes} hidden={hiddenTypes} onToggle={toggleType} />
+      {filtered.length === 0 ? (
+        <p className="rounded-lg border border-line bg-surface px-4 py-3 text-sm text-muted">
+          All instrument types are hidden — re-enable a type chip above to see holdings.
+        </p>
+      ) : effectiveMode === "account" ? (
         <GroupedByAccount
-          holdings={holdings}
+          holdings={filtered}
           baseCurrency={baseCurrency}
           priced={priced}
           portfolioId={portfolioId}
@@ -154,7 +175,7 @@ export function HoldingsView({
         />
       ) : effectiveMode === "asset" ? (
         <GroupedHoldings
-          holdings={holdings}
+          holdings={filtered}
           baseCurrency={baseCurrency}
           priced={priced}
           portfolioId={portfolioId}
@@ -163,7 +184,7 @@ export function HoldingsView({
         />
       ) : (
         <GroupedByClassification
-          holdings={holdings}
+          holdings={filtered}
           baseCurrency={baseCurrency}
           priced={priced}
           medians={medians}
