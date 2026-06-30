@@ -391,6 +391,12 @@ class InvestorPreferences(Base):
     # never offers it: overlay applies iff feed_entitled AND intraday_enabled). Nullable so the
     # column auto-ALTERs onto an existing SQLite DB; NULL reads as OFF.
     intraday_enabled: Mapped[bool | None] = mapped_column(nullable=True, default=None)
+    # Saved Holdings-table view (metron-ops#114): grouping mode (asset/classification/account),
+    # the visible metric-band set (comma-separated), and the combine-across-accounts toggle.
+    # All nullable → auto-ALTER onto the existing SQLite DB; NULL = the page default.
+    holdings_grouping: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    holdings_visible_bands: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    holdings_combine_by_account: Mapped[bool | None] = mapped_column(nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 

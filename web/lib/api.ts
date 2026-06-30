@@ -1158,6 +1158,30 @@ export async function putAccountSelection(
   }
 }
 
+// Saved Holdings-table view (metron-ops#114): grouping mode + visible metric bands +
+// combine-across-accounts. All null = the page default.
+export type HoldingsViewPrefs = {
+  grouping: string | null;
+  visible_bands: string[] | null;
+  combine_by_account: boolean | null;
+};
+
+export const getHoldingsView = (tenantId: string, id: string) =>
+  get<HoldingsViewPrefs>(tenantId, `/portfolios/${id}/holdings-view`);
+
+/** Persist the Holdings-table view (fire-and-forget from the toolbar controls). */
+export async function putHoldingsView(tenantId: string, id: string, prefs: HoldingsViewPrefs): Promise<void> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/holdings-view`, {
+    method: "PUT",
+    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    body: JSON.stringify(prefs),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new MetronApiError(res.status, `save holdings view → ${res.status}`);
+  }
+}
+
 export type Preferences = {
   risk_tolerance: string | null;
   objective: string | null;

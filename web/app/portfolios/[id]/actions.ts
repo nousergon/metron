@@ -15,8 +15,10 @@ import {
   getSnapTradeConnections,
   importFile,
   MetronApiError,
+  type HoldingsViewPrefs,
   type Preferences,
   putAccountSelection,
+  putHoldingsView,
   putPreferences,
   refreshPrices,
   removeSnapTradeConnection,
@@ -265,6 +267,19 @@ export async function saveAccountSelectionAction(portfolioId: string, accountIds
     return { ok: true, message: "Selection saved." };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Selection save failed." };
+  }
+}
+
+/** Persist the Holdings-table view (grouping / visible bands / combine) — fire-and-forget
+ *  from the toolbar controls so the view survives reloads. No revalidate: the page already
+ *  reflects the change client-side. */
+export async function saveHoldingsViewAction(portfolioId: string, prefs: HoldingsViewPrefs): Promise<ActionResult> {
+  try {
+    const tenantId = await requireTenantId();
+    await putHoldingsView(tenantId, portfolioId, prefs);
+    return { ok: true, message: "View saved." };
+  } catch (e) {
+    return { ok: false, message: e instanceof MetronApiError ? e.message : "View save failed." };
   }
 }
 

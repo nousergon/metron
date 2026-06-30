@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { acctParams, getAccounts, getHoldings, getSummary, getValuationMedians, MetronApiError, type Entitlements, type Holding, type Summary, type ValuationMedians } from "@/lib/api";
+import { acctParams, getAccounts, getHoldings, getHoldingsView, getSummary, getValuationMedians, MetronApiError, type Entitlements, type Holding, type HoldingsViewPrefs, type Summary, type ValuationMedians } from "@/lib/api";
 import { Empty, Section } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { HoldingsView } from "@/components/holdings-view";
@@ -50,21 +50,30 @@ export default async function HoldingsPage({
 }) {
   const { id } = params;
   const tenantId = await requireTenantId();
-  // Combine across accounts (metron-ops#114): default consolidates one row per ticker;
-  // `?combine=accounts` shows the uncombined view (one row per account-position, +Account
-  // column). URL-driven like the account selection — it changes the holdings DATA shape, so
-  // it belongs server-side (column presets + grouping stay client-side / presentational).
-  const byAccount = searchParams.combine === "accounts";
 
   // Phase A — everything independent of the resolved account selection, in parallel.
   // Holdings defaults to ALL accounts (metron-ops#113): with no explicit ?account_id= the
   // page anchors on the whole portfolio rather than restoring a saved subset — the account
-  // panel still filters within the session via the URL.
-  const [featureStates, entitlements, accountIds] = await Promise.all([
+  // panel still filters within the session via the URL. The saved view (metron-ops#114)
+  // hydrates the toolbar so grouping / bands / combine survive reloads.
+  const [featureStates, entitlements, accountIds, savedView] = await Promise.all([
     navFeatureStates(tenantId),
     loadEntitlements(tenantId),
     resolveAccountIds(tenantId, id, `/portfolios/${id}/holdings`, searchParams.account_id, { applySaved: false }),
+    getHoldingsView(tenantId, id).catch((): HoldingsViewPrefs | null => null),
   ]);
+
+  // Combine across accounts (metron-ops#114): an explicit `?combine=` in the URL wins for the
+  // session; on a fresh load (no param) the saved preference seeds it. `combine=accounts`
+  // shows the uncombined view (one row per account-position, +Account column). URL-driven
+  // because it changes the holdings DATA shape (fetched server-side); grouping + column
+  // presets are client-side presentational state, hydrated from the saved view below.
+  const byAccount =
+    searchParams.combine === "accounts"
+      ? true
+      : searchParams.combine === "combined"
+        ? false
+        : (savedView?.combine_by_account ?? false);
   const scoped = accountIds.length > 0;
   const navQuery = acctParams(accountIds);
 
@@ -102,7 +111,7 @@ export default async function HoldingsPage({
       </Suspense>
 
       <Suspense fallback={<SectionSkeleton rows={6} />}>
-        <HoldingsSection tenantId={tenantId} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} />
+        <HoldingsSection tenantId={tenantId} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} savedView={savedView} />
       </Suspense>
     </div>
   );
@@ -131,9 +140,9 @@ async function AccountsSection({
 }
 
 async function HoldingsSection({
-  tenantId, id, accountIds, ccy, priced, entitlements, byAccount,
+  tenantId, id, accountIds, ccy, priced, entitlements, byAccount, savedView,
 }: {
-  tenantId: string; id: string; accountIds: string[]; ccy: string; priced: boolean; entitlements: Entitlements | null; byAccount: boolean;
+  tenantId: string; id: string; accountIds: string[]; ccy: string; priced: boolean; entitlements: Entitlements | null; byAccount: boolean; savedView: HoldingsViewPrefs | null;
 }) {
   let holdings: Holding[];
   try {
@@ -156,7 +165,7 @@ async function HoldingsSection({
       {holdings.length === 0 ? (
         <Empty>No open positions.</Empty>
       ) : (
-        <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} />
+        <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedBands={savedView?.visible_bands ?? null} />
       )}
     </Section>
   );

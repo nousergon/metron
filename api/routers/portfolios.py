@@ -1072,6 +1072,73 @@ def put_account_selection(
     return AccountSelectionOut(account_ids=body.account_ids)
 
 
+# Saved Holdings-table view (metron-ops#114). Valid grouping modes + metric bands — a saved
+# value outside these sets is ignored on read (degrades to the default) and rejected on write.
+_HOLDINGS_GROUPINGS = {"asset", "classification", "account"}
+_HOLDINGS_BANDS = {"Score", "Valuation", "Fundamentals", "Balance Sheet", "Technicals", "Consensus"}
+
+
+class HoldingsViewOut(BaseModel):
+    grouping: str | None = None
+    visible_bands: list[str] | None = None
+    combine_by_account: bool | None = None
+
+
+class HoldingsViewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    grouping: str | None = None
+    visible_bands: list[str] | None = None
+    combine_by_account: bool | None = None
+
+
+@router.get("/{portfolio_id}/holdings-view", response_model=HoldingsViewOut)
+def get_holdings_view(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> HoldingsViewOut:
+    """The saved Holdings-table view (grouping / visible bands / combine). All-null when
+    unset → the page applies its defaults. An unrecognized stored grouping/band is dropped
+    rather than served, so a renamed band never breaks the page."""
+    pref = session.scalars(
+        select(models.InvestorPreferences).where(
+            models.InvestorPreferences.tenant_id == portfolio.tenant_id,
+            models.InvestorPreferences.portfolio_id == portfolio.id,
+        )
+    ).first()
+    if pref is None:
+        return HoldingsViewOut()
+    grouping = pref.holdings_grouping if pref.holdings_grouping in _HOLDINGS_GROUPINGS else None
+    bands_raw = [b.strip() for b in (pref.holdings_visible_bands or "").split(",") if b.strip()]
+    bands = [b for b in bands_raw if b in _HOLDINGS_BANDS] or None
+    return HoldingsViewOut(
+        grouping=grouping, visible_bands=bands, combine_by_account=pref.holdings_combine_by_account
+    )
+
+
+@router.put("/{portfolio_id}/holdings-view", response_model=HoldingsViewOut)
+def put_holdings_view(
+    body: HoldingsViewIn,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> HoldingsViewOut:
+    """Save the Holdings-table view. Each field is independently nullable — null clears that
+    facet back to the default. Validates the grouping mode + band names so only known view
+    state is persisted."""
+    if body.grouping is not None and body.grouping not in _HOLDINGS_GROUPINGS:
+        raise HTTPException(status_code=422, detail="Unknown grouping")
+    if body.visible_bands is not None and any(b not in _HOLDINGS_BANDS for b in body.visible_bands):
+        raise HTTPException(status_code=422, detail="Unknown metric band")
+    pref = _get_or_create_preferences(session, portfolio)
+    pref.holdings_grouping = body.grouping
+    pref.holdings_visible_bands = ", ".join(body.visible_bands) if body.visible_bands else None
+    pref.holdings_combine_by_account = body.combine_by_account
+    session.commit()
+    return HoldingsViewOut(
+        grouping=body.grouping, visible_bands=body.visible_bands, combine_by_account=body.combine_by_account
+    )
+
+
 def _summarize(snapshot, persisted: persistence.PersistResult, *, parsed: int, skipped: int, errors) -> ImportOut:
     """Build the import summary from a persisted snapshot — one shape for every source."""
     return ImportOut(
