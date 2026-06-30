@@ -402,23 +402,62 @@ def _currency_by_symbol(session: Session, symbols: list[str]) -> dict[str, str]:
 
 
 _CUSIP_LEN = 9
+# US Treasury issues share the "912" CUSIP issuer prefix (bills 912796/912797, notes/bonds
+# 9128xx + 91282x, long bonds 912810). A strong, no-guess treasury signal off the bare CUSIP.
+_TREASURY_CUSIP_PREFIX = "912"
+
+
+def _has_token(text: str, token: str) -> bool:
+    """Whole-token match (so 'cd' matches in 'brokered cd 4.5%' but not inside 'cad')."""
+    return f" {token} " in f" {text} "
+
+
+def _bond_family_subtype(asset_class: str, ticker: str, name: str | None) -> str:
+    """Within the fixed-income family, distinguish ``treasury`` / ``cd`` / generic ``bond``
+    (metron-ops#114). No-guess: only a confident signal (asset_class keyword, the Treasury
+    CUSIP prefix, or a whole-token name match) promotes off the generic ``bond`` — anything
+    ambiguous stays ``bond`` and the user can reclassify via the Type override."""
+    ac = asset_class  # already lowercased
+    nm = (name or "").lower()
+    t = (ticker or "").strip()
+    if (
+        "treasur" in ac
+        or "treasur" in nm
+        or _has_token(nm, "t-bill")
+        or _has_token(nm, "t-note")
+        or _has_token(nm, "t-bond")
+    ):
+        return "treasury"
+    if t.isdigit() and len(t) == _CUSIP_LEN and t.startswith(_TREASURY_CUSIP_PREFIX):
+        return "treasury"
+    if "certificate of deposit" in ac or "certificate of deposit" in nm or _has_token(ac, "cd") or _has_token(nm, "cd"):
+        return "cd"
+    return "bond"
 
 
 def classify_security_type(asset_class: str | None, ticker: str, name: str | None) -> str:
-    """Coarse asset class for grouping holdings: one of ``cash`` / ``bond`` / ``equity``
-    / ``etf`` / ``fund`` / ``option`` / ``other`` (metron-ops#47).
+    """Asset class for grouping holdings: one of ``cash`` / ``treasury`` / ``cd`` / ``bond``
+    / ``equity`` / ``etf`` / ``fund`` / ``option`` / ``other`` (metron-ops#47, fixed-income
+    split metron-ops#114).
 
     The Security master's ``asset_class`` (connector-supplied: EQUITY / ETF / FUND /
     OPTION / CASH / OTHER, lowercased) is authoritative. When it's absent, infer: a
-    9-digit numeric symbol is a CUSIP — typically a bond/CD that surfaces as an
+    9-digit numeric symbol is a CUSIP — typically a bond/CD/treasury that surfaces as an
     unreadable number; otherwise fall back to name keywords, else equity (a normal
-    alpha ticker)."""
+    alpha ticker). The fixed-income family is split into treasury / cd / generic bond by
+    ``_bond_family_subtype`` (no-guess — ambiguous stays ``bond``)."""
     ac = (asset_class or "").strip().lower()
     if ac:
         if "cash" in ac:
             return "cash"
-        if "bond" in ac or "fixed" in ac:
-            return "bond"
+        if (
+            "bond" in ac
+            or "fixed" in ac
+            or "treasur" in ac
+            or "certificate of deposit" in ac
+            or _has_token(ac, "cd")
+        ):
+            return _bond_family_subtype(ac, ticker, name)
         if ac == "etf":
             return "etf"
         if ac == "fund" or "mutual" in ac:
@@ -430,12 +469,12 @@ def classify_security_type(asset_class: str | None, ticker: str, name: str | Non
         return "other"
     t = (ticker or "").strip()
     if t.isdigit() and len(t) == _CUSIP_LEN:
-        return "bond"  # a 9-digit numeric symbol is a CUSIP — typically a bond/CD
+        return _bond_family_subtype(ac, ticker, name)  # 9-digit CUSIP → fixed-income family
     nm = (name or "").lower()
     if "money market" in nm or "cash" in nm:
         return "cash"
-    if "bond" in nm or "treasury" in nm or " cd " in f" {nm} ":
-        return "bond"
+    if "bond" in nm or "treasury" in nm or _has_token(nm, "cd"):
+        return _bond_family_subtype(ac, ticker, name)
     return "equity"
 
 

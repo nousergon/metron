@@ -42,13 +42,16 @@ function PricesAsOf({ holdings }: { holdings: Holding[] }) {
   return <p className="text-xs text-muted">Prices as of {isoDate(asOf)}.</p>;
 }
 
-// Display order + labels for the security types classify_security_type emits.
+// Display order + labels for the security types classify_security_type emits. The
+// fixed-income family is split into Treasuries / Bonds / CDs (metron-ops#114).
 const TYPE_LABELS: [string, string][] = [
-  ["cash", "Cash"],
-  ["bond", "Bonds & CDs"],
   ["equity", "Equities"],
   ["etf", "ETFs"],
   ["fund", "Funds"],
+  ["treasury", "Treasuries"],
+  ["bond", "Bonds"],
+  ["cd", "CDs"],
+  ["cash", "Cash"],
   ["option", "Options"],
   ["other", "Other"],
 ];

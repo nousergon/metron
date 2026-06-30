@@ -21,13 +21,18 @@ from api.services.analytics import classify_security_type
         ("fund", "VFIAX", "Vanguard 500", "fund"),
         ("option", "AAPL  240119C", None, "option"),
         ("cash", "USD", "US Dollar", "cash"),
-        ("bond", "912828", "US Treasury", "bond"),
         ("weird-thing", "X", None, "other"),
+        # Fixed-income family split (metron-ops#114): treasury / cd / generic bond.
+        ("bond", "912828XG8", "US Treasury Note 2.5%", "treasury"),  # name + 912 CUSIP → treasury
+        ("bond", "459200AB1", "IBM Corp 3.45% 2026", "bond"),  # corporate → generic bond
+        ("treasury", "912796YR3", "US T-Bill", "treasury"),  # asset_class treasury
+        ("cd", "06051GFN4", "Goldman Sachs Bank CD 5%", "cd"),  # asset_class cd
+        (None, "912810TM0", "US Treasury Bond", "treasury"),  # 912 CUSIP prefix → treasury
+        (None, "037833100", "Apple Inc 3.85% Note", "bond"),  # non-912 CUSIP → generic bond
+        (None, "Brokered CD 4.5%", "Marcus Bank CD", "cd"),  # name CD token → cd
         # Inference when asset_class is missing.
-        (None, "037833100", "Apple bond", "bond"),  # 9-digit CUSIP → bond
         (None, "12345678", None, "equity"),  # 8 digits — not a CUSIP
         (None, "VMFXX", "Vanguard Money Market", "cash"),
-        (None, "TLT", "20+ Year Treasury Bond", "bond"),
         (None, "AAPL", "Apple Inc", "equity"),  # normal alpha ticker → equity
         ("", "AAPL", None, "equity"),  # empty asset_class treated as missing
     ],
