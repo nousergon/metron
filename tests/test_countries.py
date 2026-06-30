@@ -27,6 +27,13 @@ class TestGeoBucket:
         assert countries.geo_bucket(None) == "Unclassified"
         assert countries.is_us_domicile(None) is False
 
+    def test_international_sentinel_buckets_international(self):
+        # A broad-international fund (e.g. FTIHX) reclassified via override to the explicit
+        # sentinel buckets International, not US (its listing domicile would say US).
+        assert countries.geo_bucket(countries.INTERNATIONAL) == "International"
+        assert countries.INTERNATIONAL == "International"
+        assert countries.is_us_domicile(countries.INTERNATIONAL) is False
+
 
 class TestEnsureCountries:
     def test_fills_null_from_source_keyed_by_yf_symbol(self, db_session):

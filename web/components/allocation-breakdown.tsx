@@ -11,9 +11,14 @@ import type { Holding } from "@/lib/api";
 import { accountingPercent, moneyWhole } from "@/lib/format";
 
 const US_COUNTRY = "United States";
+// Sentinel for a multi-country / ex-US holding (a broad-international fund whose listing
+// domicile doesn't describe its exposure). Mirrors api/services/countries.py INTERNATIONAL;
+// set via a tenant classification override, it buckets International like any foreign domicile.
+const INTERNATIONAL = "International";
 
 function geoBucket(country: string | null): "US" | "International" | "Unclassified" {
   if (country == null) return "Unclassified";
+  if (country === INTERNATIONAL) return "International";
   return country === US_COUNTRY ? "US" : "International";
 }
 
@@ -99,7 +104,7 @@ export function AllocationBreakdown({ holdings, baseCurrency }: { holdings: Hold
             resolved country — excluded from the split above.
           </p>
         ) : null}
-        <p className="mt-1 text-[11px] text-muted">By country of domicile. A fund/ETF is classified by its listing domicile — not its underlying geographic exposure.</p>
+        <p className="mt-1 text-[11px] text-muted">By country of domicile. A fund/ETF defaults to its listing domicile — not its underlying exposure; reclassify a broad-international fund as &ldquo;International&rdquo; via its Country override.</p>
       </div>
 
       {/* By sector */}

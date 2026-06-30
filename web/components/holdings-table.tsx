@@ -34,9 +34,11 @@ import { setSecurityClassificationAction, setSecurityLabelAction } from "@/app/p
 
 // Canonical option lists for the inline classification override (matches the data-spine
 // vocabulary: yfinance Title-Case sectors + their SPDR ETFs, plus the "Broad Market / Index"
-// label used for index ETFs). Country is a curated list of common domiciles; a holding's
-// existing value is always offered even if it's outside the list, so an override never
-// drops an already-resolved value.
+// label used for index ETFs). Country is a curated list of common domiciles plus the
+// "International" sentinel for a broad-international fund whose listing domicile (often the
+// US) misrepresents its exposure (e.g. FTIHX) — it buckets as International in the geo
+// split. A holding's existing value is always offered even if it's outside the list, so an
+// override never drops an already-resolved value.
 const SECTOR_OPTIONS = [
   "Technology",
   "Financial Services",
@@ -54,6 +56,7 @@ const SECTOR_OPTIONS = [
 
 const COUNTRY_OPTIONS = [
   "United States",
+  "International",
   "Canada",
   "United Kingdom",
   "Ireland",

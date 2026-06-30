@@ -21,6 +21,15 @@ from portfolio_analytics.sectors import CountrySource, fetch_countries
 # yfinance returns the US under this exact Title-Case label in ``Ticker.info['country']``.
 US_COUNTRY = "United States"
 
+# Canonical sentinel for a multi-country / ex-US holding whose single domicile doesn't
+# describe its geographic exposure — a broad-international fund/ETF (e.g. FTIHX, which
+# yfinance reports as domiciled "United States" but is ~100% ex-US). Not a yfinance value:
+# it only ever reaches ``country`` via a tenant-scoped classification override, so the
+# canonical domicile on the global ``securities`` row is never overwritten. It buckets as
+# International (it isn't the US), but naming it keeps the override + UI option intentional
+# rather than relying on the stringly-typed "anything-not-US" fallthrough.
+INTERNATIONAL = "International"
+
 
 def is_us_domicile(country: str | None) -> bool:
     """Whether ``country`` is the United States (the US side of the US-vs-international
@@ -30,9 +39,9 @@ def is_us_domicile(country: str | None) -> bool:
 
 def geo_bucket(country: str | None) -> str:
     """The US-vs-international bucket for a holding: ``"US"``, ``"International"``, or
-    ``"Unclassified"`` (no country resolved). Funds/ETFs are classified by their listing
-    domicile like any other security — the UI flags that fund domicile ≠ underlying
-    geographic exposure."""
+    ``"Unclassified"`` (no country resolved). A specific foreign domicile and the explicit
+    ``INTERNATIONAL`` sentinel both bucket as International; the sentinel lets a multi-country
+    fund be reclassified out of its (misleading) listing domicile via an override."""
     if country is None:
         return "Unclassified"
     return "US" if is_us_domicile(country) else "International"
