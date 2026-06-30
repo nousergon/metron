@@ -77,6 +77,7 @@ describe("HoldingsView saved-view hydration", () => {
       grouping: "classification",
       visible_bands: ["Score"],
       combine_by_account: false,
+      hidden_types: [],
     });
   });
 });

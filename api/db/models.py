@@ -397,6 +397,9 @@ class InvestorPreferences(Base):
     holdings_grouping: Mapped[str | None] = mapped_column(String(20), nullable=True)
     holdings_visible_bands: Mapped[str | None] = mapped_column(String(120), nullable=True)
     holdings_combine_by_account: Mapped[bool | None] = mapped_column(nullable=True, default=None)
+    # Hidden instrument types — the faceted type-filter chips (metron-ops#115), comma-separated
+    # security_type keys. NULL/empty = nothing hidden (all types shown).
+    holdings_hidden_types: Mapped[str | None] = mapped_column(String(120), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 

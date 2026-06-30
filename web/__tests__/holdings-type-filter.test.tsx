@@ -9,8 +9,9 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/portfolios/p1/holdings",
   useSearchParams: () => new URLSearchParams(""),
 }));
+const saveHoldingsViewAction = vi.fn();
 vi.mock("@/app/portfolios/[id]/actions", () => ({
-  saveHoldingsViewAction: vi.fn(),
+  saveHoldingsViewAction: (...args: unknown[]) => saveHoldingsViewAction(...args),
   setSecurityLabelAction: vi.fn(),
   setSecurityClassificationAction: vi.fn(),
 }));
@@ -75,5 +76,28 @@ describe("TypeFilterChips in HoldingsView", () => {
     fireEvent.click(screen.getByRole("button", { name: /Stocks/ }));
     fireEvent.click(screen.getByRole("button", { name: /ETFs/ }));
     expect(screen.getByText(/All instrument types are hidden/)).toBeInTheDocument();
+  });
+
+  it("hydrates from saved hidden types (the saved-hidden rows start hidden)", () => {
+    render(
+      <HoldingsView
+        holdings={holdings}
+        baseCurrency="USD"
+        priced
+        medians={null}
+        portfolioId="p1"
+        savedHiddenTypes={["treasury"]}
+      />,
+    );
+    expect(screen.queryByText("912828YK0")).not.toBeInTheDocument(); // treasury hidden on load
+    expect(screen.getByRole("button", { name: /Treasuries/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+  });
+
+  it("persists the hidden-types set when a chip toggles", () => {
+    render(<HoldingsView holdings={holdings} baseCurrency="USD" priced medians={null} portfolioId="p1" />);
+    saveHoldingsViewAction.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /CDs/ }));
+    expect(saveHoldingsViewAction).toHaveBeenCalledWith("p1", expect.objectContaining({ hidden_types: ["cd"] }));
   });
 });

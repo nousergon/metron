@@ -71,6 +71,7 @@ export function HoldingsView({
   byAccount = false,
   savedGrouping = null,
   savedBands = null,
+  savedHiddenTypes = null,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -79,39 +80,41 @@ export function HoldingsView({
   portfolioId?: string;
   /** Uncombined view — holdings carry per-account rows; render the Account column. */
   byAccount?: boolean;
-  /** Saved view (metron-ops#114) — hydrate the grouping + visible bands. */
+  /** Saved view (metron-ops#114/#115) — hydrate grouping / visible bands / hidden types. */
   savedGrouping?: string | null;
   savedBands?: string[] | null;
+  savedHiddenTypes?: string[] | null;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
   const [mode, setMode] = useState<Mode>(() => initialMode(savedGrouping));
   const [visibleGroups, setVisibleGroups] = useState<MetricGroup[]>(() => initialBands(savedBands));
-  // Faceted type filter (metron-ops#115) — session-only (a holding-hiding filter shouldn't
-  // silently persist the way layout does). Set of HIDDEN security_types; empty = all shown.
-  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
-  const toggleType = (t: string) =>
-    setHiddenTypes((prev) => {
-      const next = new Set(prev);
-      if (next.has(t)) next.delete(t);
-      else next.add(t);
-      return next;
-    });
+  // Faceted type filter (metron-ops#115) — the set of HIDDEN security_types (empty = all
+  // shown), hydrated from + persisted to the saved view like the other controls.
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(() => new Set(savedHiddenTypes ?? []));
+  const toggleType = (t: string) => {
+    const next = new Set(hiddenTypes);
+    if (next.has(t)) next.delete(t);
+    else next.add(t);
+    setHiddenTypes(next);
+    persist({ hidden: [...next] });
+  };
   const securityTypes = useMemo(() => holdings.map((h) => h.security_type), [holdings]);
   const filtered = useMemo(
     () => (hiddenTypes.size ? holdings.filter((h) => !hiddenTypes.has(h.security_type)) : holdings),
     [holdings, hiddenTypes],
   );
 
-  // Persist the full view on any control change (fire-and-forget). Always sends all three
-  // fields (the PUT is a full replace), defaulting unspecified facets to current state.
-  const persist = (next: { grouping?: Mode; bands?: MetricGroup[]; combine?: boolean }) => {
+  // Persist the full view on any control change (fire-and-forget). Always sends every field
+  // (the PUT is a full replace), defaulting unspecified facets to current state.
+  const persist = (next: { grouping?: Mode; bands?: MetricGroup[]; combine?: boolean; hidden?: string[] }) => {
     if (!portfolioId) return;
     void saveHoldingsViewAction(portfolioId, {
       grouping: next.grouping !== undefined ? next.grouping : mode,
       visible_bands: next.bands !== undefined ? next.bands : visibleGroups,
       combine_by_account: next.combine !== undefined ? next.combine : byAccount,
+      hidden_types: next.hidden !== undefined ? next.hidden : [...hiddenTypes],
     });
   };
 

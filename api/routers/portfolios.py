@@ -1087,6 +1087,7 @@ class HoldingsViewOut(BaseModel):
     grouping: str | None = None
     visible_bands: list[str] | None = None
     combine_by_account: bool | None = None
+    hidden_types: list[str] | None = None
 
 
 class HoldingsViewIn(BaseModel):
@@ -1095,6 +1096,7 @@ class HoldingsViewIn(BaseModel):
     grouping: str | None = None
     visible_bands: list[str] | None = None
     combine_by_account: bool | None = None
+    hidden_types: list[str] | None = None
 
 
 @router.get("/{portfolio_id}/holdings-view", response_model=HoldingsViewOut)
@@ -1116,8 +1118,13 @@ def get_holdings_view(
     grouping = pref.holdings_grouping if pref.holdings_grouping in _HOLDINGS_GROUPINGS else None
     bands_raw = [b.strip() for b in (pref.holdings_visible_bands or "").split(",") if b.strip()]
     bands = [b for b in bands_raw if b in _HOLDINGS_BANDS] or None
+    hidden_raw = [t.strip() for t in (pref.holdings_hidden_types or "").split(",") if t.strip()]
+    hidden = [t for t in hidden_raw if t in _INSTRUMENT_TYPES] or None
     return HoldingsViewOut(
-        grouping=grouping, visible_bands=bands, combine_by_account=pref.holdings_combine_by_account
+        grouping=grouping,
+        visible_bands=bands,
+        combine_by_account=pref.holdings_combine_by_account,
+        hidden_types=hidden,
     )
 
 
@@ -1134,13 +1141,20 @@ def put_holdings_view(
         raise HTTPException(status_code=422, detail="Unknown grouping")
     if body.visible_bands is not None and any(b not in _HOLDINGS_BANDS for b in body.visible_bands):
         raise HTTPException(status_code=422, detail="Unknown metric band")
+    # Hidden types are filtered to known values rather than rejected — an unrecognized held
+    # type (a raw security_type key) simply isn't persisted, never a 422 on a best-effort save.
+    hidden = [t for t in (body.hidden_types or []) if t in _INSTRUMENT_TYPES]
     pref = _get_or_create_preferences(session, portfolio)
     pref.holdings_grouping = body.grouping
     pref.holdings_visible_bands = ", ".join(body.visible_bands) if body.visible_bands else None
     pref.holdings_combine_by_account = body.combine_by_account
+    pref.holdings_hidden_types = ", ".join(hidden) if hidden else None
     session.commit()
     return HoldingsViewOut(
-        grouping=body.grouping, visible_bands=body.visible_bands, combine_by_account=body.combine_by_account
+        grouping=body.grouping,
+        visible_bands=body.visible_bands,
+        combine_by_account=body.combine_by_account,
+        hidden_types=hidden or None,
     )
 
 
