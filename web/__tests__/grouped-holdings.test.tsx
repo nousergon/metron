@@ -39,7 +39,7 @@ describe("GroupedHoldings", () => {
     expect(screen.getByText("Portfolio total")).toBeInTheDocument();
     // The asset-class group HEADING (not the Balance-Sheet "Cash" column header).
     expect(screen.getByRole("heading", { level: 3, name: /Cash/ })).toBeInTheDocument();
-    expect(screen.getByText("Bonds & CDs")).toBeInTheDocument();
+    expect(screen.getByText("Bonds")).toBeInTheDocument();
     expect(screen.getByText("Equities")).toBeInTheDocument();
     // Each holding still renders inside its group's table.
     expect(screen.getByText("AAPL")).toBeInTheDocument();
@@ -55,12 +55,12 @@ describe("GroupedHoldings", () => {
     expect(screen.getByText("MSFT")).toBeInTheDocument();
   });
 
-  it("orders groups canonically: cash, bonds, then equities", () => {
+  it("orders groups canonically: equities, bonds, then cash", () => {
     const holdings = [h("AAPL", "equity"), h("VMFXX", "cash"), h("037833100", "bond")];
     render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced />);
     const headings = screen.getAllByRole("heading", { level: 3 }).map((n) => n.textContent);
     const order = headings.map((t) => t!.replace(/\d.*/, "").trim());
-    expect(order).toEqual(["Cash", "Bonds & CDs", "Equities"]);
+    expect(order).toEqual(["Equities", "Bonds", "Cash"]);
   });
 
   it("appends an unrecognized security_type under its raw key (never drops a holding)", () => {
