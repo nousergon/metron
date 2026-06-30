@@ -46,7 +46,7 @@ describe("presentTypes", () => {
   it("returns held types in canonical order with counts; appends unrecognized", () => {
     const got = presentTypes(["bond", "equity", "equity", "weird"]);
     expect(got).toEqual([
-      { type: "equity", label: "Stocks", count: 2 },
+      { type: "equity", label: "Equities", count: 2 },
       { type: "bond", label: "Bonds", count: 1 },
       { type: "weird", label: "weird", count: 1 },
     ]);
@@ -58,7 +58,7 @@ describe("TypeFilterChips in HoldingsView", () => {
 
   it("renders a chip per held type (with count); no chip row for a single type", () => {
     render(<HoldingsView holdings={holdings} baseCurrency="USD" priced medians={null} portfolioId="p1" />);
-    expect(screen.getByRole("button", { name: /Stocks/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Equities/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Treasuries/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /CDs/ })).toBeInTheDocument();
   });
@@ -73,7 +73,7 @@ describe("TypeFilterChips in HoldingsView", () => {
 
   it("hiding every type shows the all-hidden note", () => {
     render(<HoldingsView holdings={[h("AAPL", "equity"), h("MSFT", "etf")]} baseCurrency="USD" priced medians={null} portfolioId="p1" />);
-    fireEvent.click(screen.getByRole("button", { name: /Stocks/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Equities/ }));
     fireEvent.click(screen.getByRole("button", { name: /ETFs/ }));
     expect(screen.getByText(/All instrument types are hidden/)).toBeInTheDocument();
   });

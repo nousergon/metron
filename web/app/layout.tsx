@@ -30,7 +30,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <DemoBanner />
-        <div className="mx-auto max-w-6xl px-6">
+        <div className="mx-auto max-w-7xl px-6">
           <header className="flex items-center justify-between border-b border-line py-5">
             <Link href="/" className="flex items-baseline gap-3">
               <span className="text-base font-semibold uppercase tracking-[0.22em]">Metron</span>

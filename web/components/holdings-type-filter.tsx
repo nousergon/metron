@@ -9,7 +9,7 @@
 // Canonical chip order + short plural labels, keyed by the security_type value the
 // classifier emits. Mirrors the "By asset class" grouping order.
 const CHIP_LABELS: [string, string][] = [
-  ["equity", "Stocks"],
+  ["equity", "Equities"],
   ["etf", "ETFs"],
   ["fund", "Funds"],
   ["treasury", "Treasuries"],
