@@ -446,9 +446,9 @@ class SecurityClassification(Base):
     breakdown. This lets the user fill (or correct) that gap so their geo/sector mix is
     complete. TENANT-SCOPED (keyed by symbol, like ``security_labels``): it overlays the
     user's own view without mutating the global ``securities`` reference row that every
-    tenant shares. ``sector`` / ``country`` are independently nullable — setting one leaves
-    the other untouched; clearing both deletes the row. New table → auto-created on the
-    personal SQLite (no migration)."""
+    tenant shares. ``sector`` / ``country`` / ``instrument_type`` are independently nullable
+    — setting one leaves the others untouched; clearing all deletes the row. New table →
+    auto-created on the personal SQLite (no migration)."""
 
     __tablename__ = "security_classifications"
     __table_args__ = (UniqueConstraint("tenant_id", "symbol", name="uq_security_classification_symbol"),)
@@ -458,6 +458,10 @@ class SecurityClassification(Base):
     symbol: Mapped[str] = mapped_column(String(40))
     sector: Mapped[str | None] = mapped_column(String(80), nullable=True)
     country: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # The asset-class override (metron-ops#115) — corrects a misclassified instrument type
+    # (e.g. a brokered CD the source booked as a generic bond). Nullable → auto-ALTERs onto
+    # the existing SQLite DB; one of classify_security_type's values.
+    instrument_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 

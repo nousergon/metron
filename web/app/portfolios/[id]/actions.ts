@@ -367,16 +367,19 @@ export async function setSecurityLabelAction(
 export async function setSecurityClassificationAction(
   portfolioId: string,
   symbol: string,
-  field: "sector" | "country",
+  field: "sector" | "country" | "type",
   value: string,
 ): Promise<ActionResult> {
   try {
     const tenantId = await requireTenantId();
-    // Empty string clears just this field (reverts to the spine-resolved value, if any).
-    await setSecurityClassification(tenantId, portfolioId, symbol, { [field]: value.trim() || null });
+    // The UI "type" field maps to the API's instrument_type column.
+    const key = field === "type" ? "instrument_type" : field;
+    // Empty string clears just this field (reverts to the spine/classified value, if any).
+    await setSecurityClassification(tenantId, portfolioId, symbol, { [key]: value.trim() || null });
     revalidatePath(`/portfolios/${portfolioId}/holdings`);
     revalidatePath(`/portfolios/${portfolioId}`);
-    return { ok: true, message: `${field === "sector" ? "Sector" : "Country"} saved.` };
+    const label = field === "sector" ? "Sector" : field === "country" ? "Country" : "Type";
+    return { ok: true, message: `${label} saved.` };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t save — backend reachable?" };
   }

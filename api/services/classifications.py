@@ -27,6 +27,7 @@ from api.db import models
 class Classification:
     sector: str | None = None
     country: str | None = None
+    instrument_type: str | None = None
 
 
 # Sentinel for "field not provided in this patch" (distinct from None = "clear this field").
@@ -57,12 +58,16 @@ def overrides_by_symbol(
             models.SecurityClassification.symbol,
             models.SecurityClassification.sector,
             models.SecurityClassification.country,
+            models.SecurityClassification.instrument_type,
         ).where(
             models.SecurityClassification.tenant_id == tenant_id,
             models.SecurityClassification.symbol.in_(symbols),
         )
     ).all()
-    return {symbol: Classification(sector=sector, country=country) for symbol, sector, country in rows}
+    return {
+        symbol: Classification(sector=sector, country=country, instrument_type=instrument_type)
+        for symbol, sector, country, instrument_type in rows
+    }
 
 
 def set_classification(
@@ -72,11 +77,12 @@ def set_classification(
     *,
     sector: str | None | object = UNSET,
     country: str | None | object = UNSET,
+    instrument_type: str | None | object = UNSET,
 ) -> Classification | None:
-    """Upsert a tenant's sector/country override for ``symbol``. Fields left ``UNSET`` keep
-    their stored value; a field passed as ``None``/empty CLEARS it. When both effective
-    fields end up empty the row is deleted. Returns the stored ``Classification`` (or None
-    when cleared away)."""
+    """Upsert a tenant's sector/country/instrument_type override for ``symbol``. Fields left
+    ``UNSET`` keep their stored value; a field passed as ``None``/empty CLEARS it. When all
+    effective fields end up empty the row is deleted. Returns the stored ``Classification``
+    (or None when cleared away)."""
     sym = _norm_symbol(symbol)
     if not sym:
         raise ValueError("symbol is required")
@@ -94,8 +100,11 @@ def set_classification(
     new_country = row.country if (country is UNSET and row is not None) else (
         None if country is UNSET else _norm_value(country)  # type: ignore[arg-type]
     )
+    new_type = row.instrument_type if (instrument_type is UNSET and row is not None) else (
+        None if instrument_type is UNSET else _norm_value(instrument_type)  # type: ignore[arg-type]
+    )
 
-    if new_sector is None and new_country is None:
+    if new_sector is None and new_country is None and new_type is None:
         if row is not None:
             session.delete(row)
             session.commit()
@@ -103,11 +112,12 @@ def set_classification(
 
     if row is None:
         row = models.SecurityClassification(
-            tenant_id=tenant_id, symbol=sym, sector=new_sector, country=new_country
+            tenant_id=tenant_id, symbol=sym, sector=new_sector, country=new_country, instrument_type=new_type
         )
         session.add(row)
     else:
         row.sector = new_sector
         row.country = new_country
+        row.instrument_type = new_type
     session.commit()
-    return Classification(sector=new_sector, country=new_country)
+    return Classification(sector=new_sector, country=new_country, instrument_type=new_type)

@@ -54,6 +54,22 @@ const SECTOR_OPTIONS = [
   "Broad Market / Index",
 ];
 
+// Instrument-type override options (metron-ops#115). Value = the security_type key the
+// classifier emits + the API validates; label = the friendly display. Order mirrors the
+// "By asset class" grouping.
+const TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "equity", label: "Stock / Equity" },
+  { value: "etf", label: "ETF" },
+  { value: "fund", label: "Fund" },
+  { value: "treasury", label: "Treasury" },
+  { value: "bond", label: "Bond" },
+  { value: "cd", label: "CD" },
+  { value: "cash", label: "Cash" },
+  { value: "option", label: "Option" },
+  { value: "other", label: "Other" },
+];
+const TYPE_LABEL: Record<string, string> = Object.fromEntries(TYPE_OPTIONS.map((o) => [o.value, o.label]));
+
 const COUNTRY_OPTIONS = [
   "United States",
   "International",
@@ -113,6 +129,7 @@ const COLUMNS: Column[] = [
   // ascending by default; an unclassified holding sorts last via the null-handling.
   { key: "sector", label: "Sector", value: (h) => h.sector },
   { key: "country", label: "Country", value: (h) => h.country },
+  { key: "type", label: "Type", value: (h) => h.security_type },
   {
     key: "last",
     label: "Last",
@@ -426,6 +443,7 @@ export function HoldingsTable({
                 </td>
                 <ClassifyCell h={h} field="sector" portfolioId={portfolioId} />
                 <ClassifyCell h={h} field="country" portfolioId={portfolioId} />
+                <ClassifyCell h={h} field="type" portfolioId={portfolioId} />
                 {priced ? (
                   <>
                     <td
@@ -511,7 +529,8 @@ export function HoldingsTable({
               <td className="px-4 py-2" />
               <td className="px-4 py-2" />
               <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(totals.cost, baseCurrency)}</td>
-              {/* Sector / Country are per-security labels — no portfolio total. */}
+              {/* Sector / Country / Type are per-security labels — no portfolio total. */}
+              <td className="px-4 py-2" />
               <td className="px-4 py-2" />
               <td className="px-4 py-2" />
               {priced ? (
@@ -603,24 +622,34 @@ function ClassifyCell({
   portfolioId,
 }: {
   h: Holding;
-  field: "sector" | "country";
+  field: "sector" | "country" | "type";
   portfolioId?: string;
 }) {
   const router = useRouter();
-  const value = field === "sector" ? h.sector : h.country;
+  // Type rides on security_type (a key like "treasury" shown via a friendly label); sector /
+  // country are free strings where the value IS the label.
+  const value = field === "sector" ? h.sector : field === "country" ? h.country : h.security_type;
+  const display = field === "type" ? (value ? TYPE_LABEL[value] ?? value : null) : value;
   const [editing, setEditing] = useState(false);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
   // Read-only context (no portfolioId) — just the value.
   if (!portfolioId) {
-    return <td className="px-4 py-2 text-right text-muted">{value ?? "—"}</td>;
+    return <td className="px-4 py-2 text-right text-muted">{display ?? "—"}</td>;
   }
 
-  const base = field === "sector" ? SECTOR_OPTIONS : COUNTRY_OPTIONS;
-  // Always offer the current value, even if it's outside the curated list, so an override
-  // never drops an already-resolved (possibly non-canonical) value.
-  const options = value && !base.includes(value) ? [value, ...base] : base;
+  // Options as {value,label}: a curated list for sector/country (value == label, current
+  // value always offered so an override never drops a non-canonical value), the fixed
+  // key/label set for type.
+  const options: { value: string; label: string }[] =
+    field === "type"
+      ? TYPE_OPTIONS
+      : (() => {
+          const base = field === "sector" ? SECTOR_OPTIONS : COUNTRY_OPTIONS;
+          const list = value && !base.includes(value) ? [value, ...base] : base;
+          return list.map((o) => ({ value: o, label: o }));
+        })();
 
   function choose(next: string) {
     setError(null);
@@ -635,8 +664,8 @@ function ClassifyCell({
     });
   }
 
-  // Show the dropdown directly when unclassified (the gap to fill), or when the user
-  // clicked ✎ to correct an existing value.
+  // Show the dropdown directly when unclassified (the gap to fill — sector/country), or when
+  // the user clicked ✎ to correct an existing value. Type is always classified → edit-only.
   const showSelect = value == null || editing;
   if (showSelect) {
     return (
@@ -650,8 +679,8 @@ function ClassifyCell({
         >
           <option value="">{value == null ? `Set ${field}…` : `— clear ${field} —`}</option>
           {options.map((o) => (
-            <option key={o} value={o}>
-              {o}
+            <option key={o.value} value={o.value}>
+              {o.label}
             </option>
           ))}
         </select>
@@ -663,7 +692,7 @@ function ClassifyCell({
   return (
     <td className="px-4 py-2 text-right text-muted">
       <span className="inline-flex items-center gap-1">
-        {value}
+        {display}
         <button
           type="button"
           onClick={() => setEditing(true)}

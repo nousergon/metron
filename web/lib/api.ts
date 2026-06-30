@@ -473,8 +473,8 @@ export async function setSecurityClassification(
   tenantId: string,
   id: string,
   symbol: string,
-  patch: { sector?: string | null; country?: string | null },
-): Promise<{ symbol: string; sector: string | null; country: string | null }> {
+  patch: { sector?: string | null; country?: string | null; instrument_type?: string | null },
+): Promise<{ symbol: string; sector: string | null; country: string | null; instrument_type: string | null }> {
   const res = await fetch(`${API_URL}/portfolios/${id}/securities/${encodeURIComponent(symbol)}/classification`, {
     method: "PUT",
     headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
@@ -490,7 +490,7 @@ export async function setSecurityClassification(
     }
     throw new MetronApiError(res.status, detail);
   }
-  return res.json() as Promise<{ symbol: string; sector: string | null; country: string | null }>;
+  return res.json() as Promise<{ symbol: string; sector: string | null; country: string | null; instrument_type: string | null }>;
 }
 
 /** Update a portfolio's name and/or base currency (PATCH). Empty/no-op rejected (422). */

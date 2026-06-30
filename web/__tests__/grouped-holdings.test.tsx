@@ -66,7 +66,9 @@ describe("GroupedHoldings", () => {
   it("appends an unrecognized security_type under its raw key (never drops a holding)", () => {
     const holdings = [h("AAPL", "equity"), h("BTC", "crypto")];
     render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced />);
-    expect(screen.getByText("crypto")).toBeInTheDocument();
+    // The unrecognized type heads its own section under its raw key (the Type column also
+    // renders "crypto" now, so scope to the section heading).
+    expect(screen.getByRole("heading", { level: 3, name: /crypto/ })).toBeInTheDocument();
     expect(screen.getByText("BTC")).toBeInTheDocument();
   });
 

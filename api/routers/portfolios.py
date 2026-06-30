@@ -590,18 +590,21 @@ class SecurityLabelOut(BaseModel):
 
 
 class SecurityClassificationIn(BaseModel):
-    # A user-set sector / country override (fills/corrects an Unclassified holding). Only
-    # the fields PRESENT in the request body are changed — an omitted field keeps its stored
-    # value, while an explicit null/empty CLEARS that field (and clearing both deletes the
-    # override). ``model_fields_set`` distinguishes "omitted" from "set to null".
+    # A user-set sector / country / instrument_type override (fills/corrects a holding's
+    # classification). Only the fields PRESENT in the request body are changed — an omitted
+    # field keeps its stored value, while an explicit null/empty CLEARS that field (and
+    # clearing all deletes the override). ``model_fields_set`` distinguishes "omitted" from
+    # "set to null".
     sector: str | None = None
     country: str | None = None
+    instrument_type: str | None = None
 
 
 class SecurityClassificationOut(BaseModel):
     symbol: str
     sector: str | None = None
     country: str | None = None
+    instrument_type: str | None = None
 
 
 class SkipOut(BaseModel):
@@ -1076,6 +1079,8 @@ def put_account_selection(
 # value outside these sets is ignored on read (degrades to the default) and rejected on write.
 _HOLDINGS_GROUPINGS = {"asset", "classification", "account"}
 _HOLDINGS_BANDS = {"Score", "Valuation", "Fundamentals", "Balance Sheet", "Technicals", "Consensus"}
+# Valid instrument-type override values — the set classify_security_type emits (metron-ops#115).
+_INSTRUMENT_TYPES = {"cash", "treasury", "cd", "bond", "equity", "etf", "fund", "option", "other"}
 
 
 class HoldingsViewOut(BaseModel):
@@ -1606,6 +1611,10 @@ def get_holdings(
         ov = overrides.get(h.ticker)
         h.sector = (ov.sector if ov and ov.sector else None) or sector_of.get(h.ticker)
         h.country = (ov.country if ov and ov.country else None) or country_of.get(h.ticker)
+        # Type override (metron-ops#115) — corrects a misclassified instrument type; falls
+        # back to the classify_security_type result already stamped on the holding.
+        if ov and ov.instrument_type:
+            h.security_type = ov.instrument_type
     # Valuation / fundamentals / technicals columns (Holdings metrics) — feed-gated, same as
     # the Day legs above: yfinance-derived spine artifacts (licensed) populate only on a
     # feed-entitled build; off-feed each metric stays None and the table shows "—".
@@ -2348,17 +2357,21 @@ def set_security_classification(
     if not sym:
         raise HTTPException(status_code=422, detail="symbol is required")
     fields = body.model_fields_set
+    if "instrument_type" in fields and body.instrument_type and body.instrument_type not in _INSTRUMENT_TYPES:
+        raise HTTPException(status_code=422, detail="Unknown instrument type")
     stored = classifications_service.set_classification(
         session,
         portfolio.tenant_id,
         sym,
         sector=body.sector if "sector" in fields else classifications_service.UNSET,
         country=body.country if "country" in fields else classifications_service.UNSET,
+        instrument_type=body.instrument_type if "instrument_type" in fields else classifications_service.UNSET,
     )
     return SecurityClassificationOut(
         symbol=sym,
         sector=stored.sector if stored else None,
         country=stored.country if stored else None,
+        instrument_type=stored.instrument_type if stored else None,
     )
 
 
