@@ -70,6 +70,11 @@ class Holding:
     # Asset class for grouping (cash / bond / equity / etf / fund / option / other),
     # from the Security master's asset_class with a CUSIP/name fallback (metron-ops#47).
     security_type: str = "other"
+    # Account attribution — populated ONLY on the per-account ("uncombined") holdings path
+    # (valued_holdings_by_account_flat, metron-ops#114), where one row is one (account,
+    # ticker). None on the default consolidated path (one row per ticker across accounts).
+    account_id: uuid.UUID | None = None
+    account_label: str | None = None  # nickname / name / external_id, resolved once
     # User-set display label/alias (so a numeric-CUSIP bond is legible). None when unset.
     user_label: str | None = None
     # Per-security period returns — populated only by the Holdings endpoint via
@@ -688,6 +693,63 @@ def valued_holdings_by_account(
             asset_class, name = meta.get(h.ticker, (None, None))
             h.security_type = classify_security_type(asset_class, h.ticker, name)
     return per_account
+
+
+def valued_holdings_by_account_flat(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    account_ids: Collection[uuid.UUID] | None = None,
+    *,
+    prices: dict[str, ClosePoint] | None = None,
+) -> list[Holding]:
+    """Per-account valued holdings as a FLAT list — one row per (account, ticker), each
+    tagged with ``account_id`` + ``account_label`` (metron-ops#114).
+
+    The "uncombined" Holdings view: a security held in N accounts shows as N rows. Scoped
+    to ``account_ids`` (None = every account in the portfolio). Prices + FX resolve ONCE
+    over the union of tickers/currencies (no N round-trips), exactly like
+    ``valued_holdings_by_account``; ``prices`` overrides the source (the intraday overlay).
+    Native + base fields populate identically to the consolidated ``valued_holdings`` path,
+    so the two views value the same security identically."""
+    acct_rows = session.execute(
+        select(
+            models.Account.id, models.Account.nickname, models.Account.name, models.Account.external_id
+        ).where(
+            models.Account.tenant_id == tenant_id,
+            models.Account.portfolio_id == portfolio_id,
+        )
+    ).all()
+    scope = set(account_ids) if account_ids is not None else None
+    label_of: dict[uuid.UUID, str] = {}
+    aids: list[uuid.UUID] = []
+    for aid, nickname, name, external_id in acct_rows:
+        if scope is not None and aid not in scope:
+            continue
+        aids.append(aid)
+        label_of[aid] = nickname or name or external_id or str(aid)
+
+    flat: list[Holding] = []
+    for aid in aids:
+        for h in holdings(session, tenant_id, portfolio_id, account_id=aid):
+            h.account_id = aid
+            h.account_label = label_of[aid]
+            flat.append(h)
+    if not flat:
+        return flat
+    base = _base_currency(session, portfolio_id)
+    if prices is None:
+        prices = price_service.latest_close_by_symbol(session, [h.ticker for h in flat])
+    fx_rates = fx_service.rates_to_base(session, [h.currency for h in flat], base=base)
+    meta = _security_meta_by_symbol(session, [h.ticker for h in flat])
+    user_labels = labels.labels_by_symbol(session, tenant_id, [h.ticker for h in flat])
+    for h in flat:
+        _apply_valuation(h, prices, fx_rates)
+        asset_class, name = meta.get(h.ticker, (None, None))
+        h.security_type = classify_security_type(asset_class, h.ticker, name)
+        h.user_label = user_labels.get(h.ticker)
+    flat.sort(key=lambda h: (h.ticker, h.account_label or ""))
+    return flat
 
 
 def _base_currency(session: Session, portfolio_id: uuid.UUID) -> str:

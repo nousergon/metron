@@ -251,6 +251,7 @@ export function HoldingsTable({
   priced,
   portfolioId,
   visibleMetricGroups = METRIC_GROUP_ORDER,
+  accountColumn = false,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -260,8 +261,16 @@ export function HoldingsTable({
   /** Which metric bands to render, in canonical order (column presets, metron-ops#114).
    *  Defaults to every band; the position spine is always shown. */
   visibleMetricGroups?: MetricGroup[];
+  /** Render an Account column (the uncombined per-account view, metron-ops#114). The rows
+   *  must carry `account_label`; sits in the position spine right after Ticker. */
+  accountColumn?: boolean;
 }) {
   const positionColumns = priced ? COLUMNS : COLUMNS.filter((c) => !c.pricedOnly);
+  // Optional Account column injected after Ticker (the uncombined view). Kept out of the
+  // shared COLUMNS so the consolidated view + its sort map are untouched.
+  const headerPositionCols: { key: string; label: string }[] = accountColumn
+    ? [positionColumns[0], { key: "account", label: "Account" }, ...positionColumns.slice(1)]
+    : positionColumns;
   // Metric bands only in the priced view (they're feed-gated; the cost-basis-only view
   // stays exactly as before).
   const showMetrics = priced;
@@ -272,7 +281,8 @@ export function HoldingsTable({
 
   const sorted = useMemo(() => {
     if (!sort) return holdings;
-    const accessor = SORT_BY_KEY.get(sort.key);
+    // The Account column isn't in the shared sort map — resolve it directly.
+    const accessor = sort.key === "account" ? (h: Holding) => h.account_label : SORT_BY_KEY.get(sort.key);
     if (!accessor) return holdings;
     return [...holdings].sort((a, b) => {
       const va = accessor(a);
@@ -333,13 +343,13 @@ export function HoldingsTable({
   );
 
   return (
-    <DualScroll deps={`${positionColumns.length}:${holdings.length}:${showMetrics}:${visibleMetricCols.length}`}>
+    <DualScroll deps={`${headerPositionCols.length}:${holdings.length}:${showMetrics}:${visibleMetricCols.length}`}>
       <table className="w-full text-sm">
         <thead className="sticky top-0 z-20">
           {showMetrics ? (
             // Group-band row: spans Position + each metric band.
             <tr className="border-b border-line bg-surface text-left text-[10px] uppercase tracking-wider text-muted">
-              <th colSpan={positionColumns.length} className={`${STICKY} bg-surface px-4 py-1.5 font-semibold`}>
+              <th colSpan={headerPositionCols.length} className={`${STICKY} bg-surface px-4 py-1.5 font-semibold`}>
                 Position
               </th>
               {metricsByGroup.map(([group, cols]) => (
@@ -354,10 +364,10 @@ export function HoldingsTable({
             </tr>
           ) : null}
           <tr className="border-b border-line bg-surface text-left text-xs uppercase tracking-wide text-muted">
-            {positionColumns.map((col, i) => (
+            {headerPositionCols.map((col, i) => (
               <th
                 key={col.key}
-                className={`px-4 py-2 font-medium ${i === 0 ? `${STICKY} bg-surface` : "text-right"}`}
+                className={`px-4 py-2 font-medium ${i === 0 ? `${STICKY} bg-surface` : col.key === "account" ? "text-left" : "text-right"}`}
               >
                 <SortTh colKey={col.key} label={col.label} />
               </th>
@@ -403,6 +413,9 @@ export function HoldingsTable({
                 <td className={`${STICKY} bg-paper px-4 py-2 font-medium`}>
                   <TickerCell h={h} portfolioId={portfolioId} />
                 </td>
+                {accountColumn ? (
+                  <td className="px-4 py-2 text-left text-muted">{h.account_label ?? "—"}</td>
+                ) : null}
                 <td className="px-4 py-2 text-right text-muted">
                   {foreign ? `${h.currency} @ ${h.fx_rate != null ? fxRate(h.fx_rate) : "—"}` : h.currency}
                 </td>
@@ -493,6 +506,7 @@ export function HoldingsTable({
               >
                 Total{totals.excluded > 0 ? "*" : ""}
               </td>
+              {accountColumn ? <td className="px-4 py-2" /> : null}
               <td className="px-4 py-2" />
               <td className="px-4 py-2" />
               <td className="px-4 py-2" />

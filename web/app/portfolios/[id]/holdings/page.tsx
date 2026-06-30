@@ -46,10 +46,15 @@ export default async function HoldingsPage({
   searchParams,
 }: {
   params: { id: string };
-  searchParams: { account_id?: string | string[] };
+  searchParams: { account_id?: string | string[]; combine?: string };
 }) {
   const { id } = params;
   const tenantId = await requireTenantId();
+  // Combine across accounts (metron-ops#114): default consolidates one row per ticker;
+  // `?combine=accounts` shows the uncombined view (one row per account-position, +Account
+  // column). URL-driven like the account selection — it changes the holdings DATA shape, so
+  // it belongs server-side (column presets + grouping stay client-side / presentational).
+  const byAccount = searchParams.combine === "accounts";
 
   // Phase A — everything independent of the resolved account selection, in parallel.
   // Holdings defaults to ALL accounts (metron-ops#113): with no explicit ?account_id= the
@@ -97,7 +102,7 @@ export default async function HoldingsPage({
       </Suspense>
 
       <Suspense fallback={<SectionSkeleton rows={6} />}>
-        <HoldingsSection tenantId={tenantId} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} />
+        <HoldingsSection tenantId={tenantId} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} />
       </Suspense>
     </div>
   );
@@ -126,13 +131,13 @@ async function AccountsSection({
 }
 
 async function HoldingsSection({
-  tenantId, id, accountIds, ccy, priced, entitlements,
+  tenantId, id, accountIds, ccy, priced, entitlements, byAccount,
 }: {
-  tenantId: string; id: string; accountIds: string[]; ccy: string; priced: boolean; entitlements: Entitlements | null;
+  tenantId: string; id: string; accountIds: string[]; ccy: string; priced: boolean; entitlements: Entitlements | null; byAccount: boolean;
 }) {
   let holdings: Holding[];
   try {
-    holdings = await getHoldings(tenantId, id, accountIds);
+    holdings = await getHoldings(tenantId, id, accountIds, byAccount);
   } catch {
     return (
       <Section title="Holdings">
@@ -151,7 +156,7 @@ async function HoldingsSection({
       {holdings.length === 0 ? (
         <Empty>No open positions.</Empty>
       ) : (
-        <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} />
+        <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} />
       )}
     </Section>
   );

@@ -113,6 +113,7 @@ export function GroupedByClassification({
   medians,
   portfolioId,
   visibleMetricGroups,
+  accountColumn,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -121,6 +122,8 @@ export function GroupedByClassification({
   portfolioId?: string;
   /** Column-preset bands threaded to every HoldingsTable (metron-ops#114). */
   visibleMetricGroups?: MetricGroup[];
+  /** Uncombined per-account view — render the Account column (metron-ops#114). */
+  accountColumn?: boolean;
 }) {
   const sectors = partition(holdings, "sector");
 
@@ -154,6 +157,7 @@ export function GroupedByClassification({
                   priced={priced}
                   portfolioId={portfolioId}
                   visibleMetricGroups={visibleMetricGroups}
+                  accountColumn={accountColumn}
                 />
               </div>
             ))}

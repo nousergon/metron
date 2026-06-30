@@ -31,6 +31,10 @@ export type Holding = {
   unrealized_pct: number | null;
   // Coarse asset class for grouping (cash / bond / equity / etf / fund / option / other).
   security_type: string;
+  // Account attribution — set only on the uncombined (by-account) view, where one row is
+  // one (account, ticker). null on the default consolidated view (metron-ops#114).
+  account_id: string | null;
+  account_label: string | null;
   // User-set display label/alias (so a numeric-CUSIP bond is legible). null when unset.
   user_label: string | null;
   // Per-security period returns (metron-ops#87). Day legs (overnight/intraday/day) need the
@@ -521,8 +525,13 @@ export const renamePortfolio = (tenantId: string, id: string, name: string) =>
 // IS the selector, so it lists every account with its own valuation.
 export const getSummary = (tenantId: string, id: string, accountIds?: string[]) =>
   get<Summary>(tenantId, `/portfolios/${id}/summary${acctParams(accountIds)}`);
-export const getHoldings = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<Holding[]>(tenantId, `/portfolios/${id}/holdings${acctParams(accountIds)}`);
+// `byAccount` requests the UNCOMBINED view — one row per (account, ticker), each tagged
+// with account_id/account_label (metron-ops#114). Default consolidates per ticker.
+export const getHoldings = (tenantId: string, id: string, accountIds?: string[], byAccount?: boolean) => {
+  const base = acctParams(accountIds);
+  const q = byAccount ? (base ? `${base}&by_account=1` : "?by_account=1") : base;
+  return get<Holding[]>(tenantId, `/portfolios/${id}/holdings${q}`);
+};
 // SP1500-broad sector & country median multiples for the Holdings "by sector → country"
 // bands, restricted to the sectors/countries this portfolio holds. Empty off-feed.
 export const getValuationMedians = (tenantId: string, id: string, accountIds?: string[]) =>

@@ -110,6 +110,7 @@ export function GroupedHoldings({
   priced,
   portfolioId,
   visibleMetricGroups,
+  accountColumn,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -118,6 +119,8 @@ export function GroupedHoldings({
   portfolioId?: string;
   /** Column-preset bands threaded to every HoldingsTable (metron-ops#114). */
   visibleMetricGroups?: MetricGroup[];
+  /** Uncombined per-account view — render the Account column (metron-ops#114). */
+  accountColumn?: boolean;
 }) {
   const groups = groupByType(holdings);
 
@@ -126,7 +129,7 @@ export function GroupedHoldings({
     return (
       <div className="space-y-2">
         {priced ? <PricesAsOf holdings={holdings} /> : null}
-        <HoldingsTable holdings={holdings} baseCurrency={baseCurrency} priced={priced} portfolioId={portfolioId} visibleMetricGroups={visibleMetricGroups} />
+        <HoldingsTable holdings={holdings} baseCurrency={baseCurrency} priced={priced} portfolioId={portfolioId} visibleMetricGroups={visibleMetricGroups} accountColumn={accountColumn} />
       </div>
     );
   }
@@ -168,7 +171,7 @@ export function GroupedHoldings({
               {hs.length} {hs.length === 1 ? "holding" : "holdings"}
             </span>
           </h3>
-          <HoldingsTable holdings={hs} baseCurrency={baseCurrency} priced={priced} portfolioId={portfolioId} visibleMetricGroups={visibleMetricGroups} />
+          <HoldingsTable holdings={hs} baseCurrency={baseCurrency} priced={priced} portfolioId={portfolioId} visibleMetricGroups={visibleMetricGroups} accountColumn={accountColumn} />
         </div>
       ))}
     </div>

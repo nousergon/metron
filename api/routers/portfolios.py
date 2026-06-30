@@ -157,6 +157,10 @@ class HoldingOut(BaseModel):
     unrealized_pct: float | None = None
     # Coarse asset class for grouping (cash / bond / equity / etf / fund / option / other).
     security_type: str = "other"
+    # Account attribution — set only on the ?by_account=1 (uncombined) view, where one row
+    # is one (account, ticker). Null on the default consolidated view (metron-ops#114).
+    account_id: uuid.UUID | None = None
+    account_label: str | None = None
     # User-set display label/alias (so a numeric-CUSIP bond is legible). None when unset.
     user_label: str | None = None
     # Per-security period returns (metron-ops#87). Day legs (overnight/intraday/day) need the
@@ -1493,17 +1497,26 @@ def refresh_prices(
 def get_holdings(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
+    by_account: bool = False,
     session: Session = Depends(get_session),
 ) -> list[analytics.Holding]:
     # Valued when a cached close exists for the ticker; cost-basis-only otherwise.
     # ``?account_id=`` (repeatable) scopes to the selected accounts; absent = all.
+    # ``?by_account=1`` returns the UNCOMBINED view — one row per (account, ticker), each
+    # tagged with account_id/account_label (metron-ops#114); default consolidates per ticker.
     # LIVE intraday overlay (metron-ops#79): during trading hours on a feed-entitled build,
     # each position revalues from the intraday last; otherwise this is None → EOD close.
     prices, _ = intraday.for_portfolio(
         session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled, account_ids=account_ids
     )
-    held = analytics.valued_holdings(
-        session, portfolio.tenant_id, portfolio.id, account_ids=account_ids, prices=prices
+    held = (
+        analytics.valued_holdings_by_account_flat(
+            session, portfolio.tenant_id, portfolio.id, account_ids=account_ids, prices=prices
+        )
+        if by_account
+        else analytics.valued_holdings(
+            session, portfolio.tenant_id, portfolio.id, account_ids=account_ids, prices=prices
+        )
     )
     # Per-security Day / YTD / LTM returns for the Holdings table (metron-ops#87).
     held = security_perf.enrich_holdings(
