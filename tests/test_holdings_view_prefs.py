@@ -24,32 +24,48 @@ def _portfolio(client, tenant):
 def test_unset_view_is_all_null(client, tenant):
     pid = _portfolio(client, tenant)
     v = client.get(f"/portfolios/{pid}/holdings-view", headers=_hdr(tenant)).json()
-    assert v == {"grouping": None, "visible_bands": None, "combine_by_account": None}
+    assert v == {"grouping": None, "visible_bands": None, "combine_by_account": None, "hidden_types": None}
 
 
 def test_put_then_get_roundtrips(client, tenant):
     pid = _portfolio(client, tenant)
-    body = {"grouping": "account", "visible_bands": ["Score", "Valuation"], "combine_by_account": True}
+    body = {
+        "grouping": "account",
+        "visible_bands": ["Score", "Valuation"],
+        "combine_by_account": True,
+        "hidden_types": ["cash", "option"],
+    }
     put = client.put(f"/portfolios/{pid}/holdings-view", json=body, headers=_hdr(tenant))
     assert put.status_code == 200
     got = client.get(f"/portfolios/{pid}/holdings-view", headers=_hdr(tenant)).json()
     assert got == body
 
 
+def test_unknown_hidden_type_is_dropped_not_rejected(client, tenant):
+    pid = _portfolio(client, tenant)
+    r = client.put(
+        f"/portfolios/{pid}/holdings-view",
+        json={"hidden_types": ["bond", "crypto"]},  # crypto isn't a known type
+        headers=_hdr(tenant),
+    )
+    assert r.status_code == 200
+    assert r.json()["hidden_types"] == ["bond"]  # unknown silently filtered
+
+
 def test_null_fields_clear_back_to_default(client, tenant):
     pid = _portfolio(client, tenant)
     client.put(
         f"/portfolios/{pid}/holdings-view",
-        json={"grouping": "asset", "visible_bands": ["Score"], "combine_by_account": True},
+        json={"grouping": "asset", "visible_bands": ["Score"], "combine_by_account": True, "hidden_types": ["cash"]},
         headers=_hdr(tenant),
     )
     client.put(
         f"/portfolios/{pid}/holdings-view",
-        json={"grouping": None, "visible_bands": None, "combine_by_account": None},
+        json={"grouping": None, "visible_bands": None, "combine_by_account": None, "hidden_types": None},
         headers=_hdr(tenant),
     )
     got = client.get(f"/portfolios/{pid}/holdings-view", headers=_hdr(tenant)).json()
-    assert got == {"grouping": None, "visible_bands": None, "combine_by_account": None}
+    assert got == {"grouping": None, "visible_bands": None, "combine_by_account": None, "hidden_types": None}
 
 
 def test_invalid_grouping_and_band_rejected(client, tenant):

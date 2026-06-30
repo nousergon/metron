@@ -165,7 +165,7 @@ async function HoldingsSection({
       {holdings.length === 0 ? (
         <Empty>No open positions.</Empty>
       ) : (
-        <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedBands={savedView?.visible_bands ?? null} />
+        <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedBands={savedView?.visible_bands ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} />
       )}
     </Section>
   );

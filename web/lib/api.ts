@@ -1164,6 +1164,7 @@ export type HoldingsViewPrefs = {
   grouping: string | null;
   visible_bands: string[] | null;
   combine_by_account: boolean | null;
+  hidden_types: string[] | null;
 };
 
 export const getHoldingsView = (tenantId: string, id: string) =>
