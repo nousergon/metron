@@ -1,12 +1,8 @@
 import { Suspense } from "react";
-import { acctParams, getAccounts, getHoldings, getHoldingsPerformanceSeries, getIntradayLegs, getSummary, getToday, getValuationMedians, MetronApiError, type Entitlements, type Holding, type HoldingsPerfSeries, type IntradayLegHistory, type Summary, type Today, type ValuationMedians } from "@/lib/api";
-import { Empty, Section, StatCard } from "@/components/ui";
-import { accountingMoneyWhole, percent, signClass } from "@/lib/format";
+import { acctParams, getAccounts, getHoldings, getSummary, getValuationMedians, MetronApiError, type Entitlements, type Holding, type Summary, type ValuationMedians } from "@/lib/api";
+import { Empty, Section } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
-import { AllocationBreakdown } from "@/components/allocation-breakdown";
 import { HoldingsView } from "@/components/holdings-view";
-import { HoldingsPerfChart } from "@/components/holdings-perf-chart";
-import { TopBottomPerformers } from "@/components/top-bottom-performers";
 import { RefreshPrices } from "@/components/refresh-prices";
 import { IntradayRefresher } from "@/components/intraday-refresher";
 import { PortfolioNav } from "@/components/portfolio-nav";
@@ -35,15 +31,16 @@ function SectionSkeleton({ rows = 3 }: { rows?: number }) {
   );
 }
 
-// Holdings — the position-level detail, separated from the Overview dashboard
-// (metron-ops#64). Accounts are (de)activated HERE to see the effect on specific
-// holdings; the selection persists and the Overview's aggregate metrics follow it.
+// Holdings — the position-level data grid, separated from the Overview dashboard
+// (metron-ops#64). The aggregates (performance chart, allocation, performers, today's P&L)
+// moved to the Overview (metron-ops#113); this page is the accounts summary + the holdings
+// table. Accounts default to ALL (the whole portfolio) and can be (de)activated to filter
+// the positions below for this view.
 //
-// Streaming layout (perf): the shell + the fast Today strip paint immediately (Phase A +
-// the two cheap reads, summary/today), then the three expensive sections (Accounts,
-// Performance chart, Holdings table) each stream in behind their own <Suspense> as their
-// data lands, instead of the whole page blocking on the slowest fetch. Each streamed
-// section is an async Server Component that fetches only its own slice and fails soft.
+// Streaming layout (perf): the shell paints immediately from the cheap `summary` read, then
+// the two expensive sections (Accounts, Holdings table) each stream in behind their own
+// <Suspense> as their data lands. Each streamed section is an async Server Component that
+// fetches only its own slice and fails soft.
 export default async function HoldingsPage({
   params,
   searchParams,
@@ -55,25 +52,23 @@ export default async function HoldingsPage({
   const tenantId = await requireTenantId();
 
   // Phase A — everything independent of the resolved account selection, in parallel.
-  const [featureStates, entitlements, legs, accountIds] = await Promise.all([
+  // Holdings defaults to ALL accounts (metron-ops#113): with no explicit ?account_id= the
+  // page anchors on the whole portfolio rather than restoring a saved subset — the account
+  // panel still filters within the session via the URL.
+  const [featureStates, entitlements, accountIds] = await Promise.all([
     navFeatureStates(tenantId),
     loadEntitlements(tenantId),
-    getIntradayLegs(tenantId, id).catch((): IntradayLegHistory | null => null),
-    resolveAccountIds(tenantId, id, `/portfolios/${id}/holdings`, searchParams.account_id),
+    resolveAccountIds(tenantId, id, `/portfolios/${id}/holdings`, searchParams.account_id, { applySaved: false }),
   ]);
   const scoped = accountIds.length > 0;
   const navQuery = acctParams(accountIds);
 
-  // The two CHEAP scoped reads block the shell (≈0.3s): summary gives base currency +
-  // priced state used throughout (and resolves portfolio-not-found), today drives the
-  // P&L strip. The expensive reads (accounts / perf series / holdings) stream below.
+  // The one CHEAP scoped read blocks the shell (≈0.3s): summary gives base currency +
+  // priced state used throughout (and resolves portfolio-not-found). The expensive reads
+  // (accounts / holdings) stream below.
   let summary: Summary;
-  let today: Today | null = null;
   try {
-    [summary, today] = await Promise.all([
-      getSummary(tenantId, id, accountIds),
-      getToday(tenantId, id, accountIds).catch((): Today | null => null),
-    ]);
+    summary = await getSummary(tenantId, id, accountIds);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Portfolio not found.</Empty>;
@@ -83,9 +78,6 @@ export default async function HoldingsPage({
 
   const ccy = summary.base_currency;
   const priced = summary.market_value != null;
-
-  const showToday = !!today?.available && today.rows.length > 0;
-  const showLegs = (legs?.n_days ?? 0) > 0 && legs?.cum_day_pct != null;
 
   return (
     <div>
@@ -97,59 +89,11 @@ export default async function HoldingsPage({
         <IntradayRefresher portfolioId={id} />
       </div>
       <p className="text-sm text-muted">
-        (De)activate accounts to see how they affect the positions below. The selection persists and the Overview
-        metrics follow it.
+        All accounts are included by default. (De)activate accounts below to filter the positions for this view.
       </p>
-
-      {/* Today's P&L (metron-ops#87): Day = Overnight (open vs prior close) + Intraday
-          (latest vs open). Per-holding detail is the Day column in the table below. */}
-      {showToday && today ? (
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <StatCard
-            label="Overnight"
-            value={today.overnight_gain != null ? accountingMoneyWhole(today.overnight_gain, ccy) : "—"}
-            valueClass={signClass(today.overnight_gain ?? 0)}
-            hint={today.overnight_pct != null ? percent(today.overnight_pct) : undefined}
-          />
-          <StatCard
-            label="Intraday"
-            value={today.intraday_gain != null ? accountingMoneyWhole(today.intraday_gain, ccy) : "—"}
-            valueClass={signClass(today.intraday_gain ?? 0)}
-            hint={today.intraday_pct != null ? percent(today.intraday_pct) : undefined}
-          />
-          <StatCard
-            label="Day"
-            value={today.day_gain != null ? accountingMoneyWhole(today.day_gain, ccy) : "—"}
-            valueClass={signClass(today.day_gain ?? 0)}
-            hint={today.day_pct != null ? percent(today.day_pct) : undefined}
-          />
-        </div>
-      ) : null}
-
-      {/* Overnight vs intraday HISTORY (metron-ops#87): cumulative compounded split. */}
-      {showLegs && legs ? (
-        <p className="mt-2 text-xs text-muted">
-          Since tracking ({legs.n_days} day{legs.n_days === 1 ? "" : "s"}), cumulative drift split:{" "}
-          <span className={signClass(legs.cum_overnight_pct ?? 0)}>
-            overnight {legs.cum_overnight_pct != null ? percent(legs.cum_overnight_pct) : "—"}
-          </span>{" "}
-          ·{" "}
-          <span className={signClass(legs.cum_intraday_pct ?? 0)}>
-            intraday {legs.cum_intraday_pct != null ? percent(legs.cum_intraday_pct) : "—"}
-          </span>{" "}
-          ·{" "}
-          <span className={signClass(legs.cum_day_pct ?? 0)}>
-            day {legs.cum_day_pct != null ? percent(legs.cum_day_pct) : "—"}
-          </span>
-        </p>
-      ) : null}
 
       <Suspense fallback={<SectionSkeleton rows={2} />}>
         <AccountsSection tenantId={tenantId} id={id} ccy={ccy} scoped={scoped} nSelected={summary.n_accounts} />
-      </Suspense>
-
-      <Suspense fallback={<SectionSkeleton rows={4} />}>
-        <PerfChartSection tenantId={tenantId} id={id} accountIds={accountIds} />
       </Suspense>
 
       <Suspense fallback={<SectionSkeleton rows={6} />}>
@@ -181,27 +125,6 @@ async function AccountsSection({
   );
 }
 
-async function PerfChartSection({
-  tenantId, id, accountIds,
-}: {
-  tenantId: string; id: string; accountIds: string[];
-}) {
-  const perfSeries = await getHoldingsPerformanceSeries(tenantId, id, accountIds).catch(
-    (): HoldingsPerfSeries | null => null,
-  );
-  // Per-account performance lines (metron-ops#78) — shown once ≥1 account has ≥2 NAV points.
-  if (!perfSeries || perfSeries.accounts.length === 0) return null;
-  return (
-    <Section title="Performance">
-      <HoldingsPerfChart
-        accounts={perfSeries.accounts}
-        benchmarks={perfSeries.benchmarks}
-        benchmarksAvailable={perfSeries.benchmarks_available}
-      />
-    </Section>
-  );
-}
-
 async function HoldingsSection({
   tenantId, id, accountIds, ccy, priced, entitlements,
 }: {
@@ -221,30 +144,15 @@ async function HoldingsSection({
   const medians = await getValuationMedians(tenantId, id, accountIds).catch((): ValuationMedians | null => null);
 
   return (
-    <>
-      {/* Best/worst performers + country/sector allocation, from the holdings loaded here. */}
-      {holdings.length > 0 && priced ? (
-        <Section title="Performers" note="best & worst holdings by return">
-          <TopBottomPerformers holdings={holdings} />
-        </Section>
-      ) : null}
-
-      {holdings.length > 0 ? (
-        <Section title="Allocation" note="by market value">
-          <AllocationBreakdown holdings={holdings} baseCurrency={ccy} />
-        </Section>
-      ) : null}
-
-      <Section title="Holdings" note={priced ? `all values in ${ccy} · market value from last EOD close` : "cost basis — refresh for market value"}>
-        <div className="mb-3">
-          <RefreshPrices portfolioId={id} feedOn={entitlements?.feed_enabled} />
-        </div>
-        {holdings.length === 0 ? (
-          <Empty>No open positions.</Empty>
-        ) : (
-          <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} />
-        )}
-      </Section>
-    </>
+    <Section title="Holdings" note={priced ? `all values in ${ccy} · market value from last EOD close` : "cost basis — refresh for market value"}>
+      <div className="mb-3">
+        <RefreshPrices portfolioId={id} feedOn={entitlements?.feed_enabled} />
+      </div>
+      {holdings.length === 0 ? (
+        <Empty>No open positions.</Empty>
+      ) : (
+        <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} />
+      )}
+    </Section>
   );
 }

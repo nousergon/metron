@@ -6,9 +6,10 @@
 // URL; the (server-rendered) tables + Risk/Attribution below read that selection and
 // re-scope. Empty selection = whole portfolio (never a blank page).
 //
-// The selection also persists server-side (InvestorPreferences): every change is saved
-// fire-and-forget, and pages landing with no ?account_id= apply the saved selection —
-// so the filter survives reloads without the user re-checking boxes.
+// The selection is URL-driven and session-scoped: pages default to the WHOLE portfolio
+// (every box checked) and the URL filters within the session (metron-ops#113). Changes are
+// still saved to InvestorPreferences fire-and-forget, but that value is no longer restored
+// on landing — it's reserved for the Phase 2 saved-view work (metron-ops#114).
 //
 // Accounts are grouped by tax status with per-group subtotals + a grand total
 // (metron-ops#46). The tax-status label is read-only here — editing the 3-way treatment

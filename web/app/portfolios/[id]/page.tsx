@@ -1,8 +1,10 @@
 import { Suspense } from "react";
-import { getAccounts, getIndices, getPerformanceTiles, getPlugins, getPortfolio, getSummary, MetronApiError, type Account, type PeriodTiles, type Portfolio, type PluginNav, type Summary } from "@/lib/api";
-import { accountingMoneyWhole, moneyWhole, signClass, signedMoneyWhole } from "@/lib/format";
+import { getAccounts, getHoldings, getHoldingsPerformanceSeries, getIndices, getIntradayLegs, getPerformanceTiles, getPlugins, getPortfolio, getSummary, getToday, MetronApiError, type Account, type Holding, type HoldingsPerfSeries, type IntradayLegHistory, type PeriodTiles, type Portfolio, type PluginNav, type Summary, type Today } from "@/lib/api";
+import { accountingMoneyWhole, moneyWhole, percent, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard } from "@/components/ui";
-import { AccountPanel } from "@/components/account-panel";
+import { AllocationBreakdown } from "@/components/allocation-breakdown";
+import { HoldingsPerfChart } from "@/components/holdings-perf-chart";
+import { TopBottomPerformers } from "@/components/top-bottom-performers";
 import { PerfTiles } from "@/components/perf-tiles";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { TierSimulator } from "@/components/tier-simulator";
@@ -44,23 +46,20 @@ export default async function PortfolioPage({
   const { id } = params;
   const tenantId = await requireTenantId();
 
-  // The Overview is the WHOLE-PORTFOLIO summary — it never scopes to an account subset.
-  // Account (de)selection is a Holdings concern; the headline Total value here always
-  // anchors on every account, because a partial total reads as misleadingly small for a
-  // "portfolio value" headline. So we ignore any ?account_id= entirely (no checkboxes on
-  // this page) and the nav links carry no scoping — Holdings restores its own saved
-  // selection on arrival.
+  // The Overview is the WHOLE-PORTFOLIO dashboard — it never scopes to an account subset.
+  // Account (de)selection is a Holdings concern, so every aggregate here (headline value,
+  // performance chart, allocation, performers, today's P&L) anchors on ALL accounts. We
+  // ignore any ?account_id= entirely (no checkboxes on this page) and the nav links carry
+  // no scoping — Holdings owns its own selection.
   const accountIds: string[] = [];
   const scoped = false;
   const navQuery = "";
 
   // Streaming layout (perf, metron-ops#108): the headline + the whole-portfolio metrics
   // derive entirely from `summary` (≈0.25s), so the page paints them immediately while the
-  // three accounts-dependent regions stream behind <Suspense>. `getAccounts` is the
-  // ~2.0s-cold per-account-period-returns call, and it's the ONLY thing the streamed
-  // regions need — so cold landing no longer blocks ~2s on it. Each streamed region fetches
-  // `getAccounts` itself; #129's server-side single-flight cache dedupes the parallel reads
-  // into one upstream call (and serves it instantly on repeat visits).
+  // accounts/holdings-dependent regions stream behind <Suspense>. Each streamed region
+  // fetches its own slice; #129's server-side single-flight cache dedupes the parallel
+  // `getAccounts` reads into one upstream call (and serves it instantly on repeat visits).
   let portfolio: Portfolio, summary: Summary;
   try {
     [portfolio, summary] = await Promise.all([
@@ -90,9 +89,9 @@ export default async function PortfolioPage({
   const entitlements = await loadEntitlements(tenantId);
   const featureStates = toFeatureStates(entitlements);
 
-  // Performance-vs-market hero tiles (metron-ops#83) — best-effort + account-scoped to the
-  // active selection. Benchmark columns are feed-gated server-side (portfolio-only in the
-  // no-feed beta). Shown only once ≥2 NAV snapshots make a window computable.
+  // Performance-vs-market hero tiles (metron-ops#83) — best-effort, whole-portfolio.
+  // Benchmark columns are feed-gated server-side (portfolio-only in the no-feed beta).
+  // Shown only once ≥2 NAV snapshots make a window computable.
   let tiles: PeriodTiles | null = null;
   try {
     tiles = await getPerformanceTiles(tenantId, id, accountIds);
@@ -153,9 +152,23 @@ export default async function PortfolioPage({
         </div>
       )}
 
-      {/* Realized YTD — sits directly under unrealized and splits the same way: taxable
-          carries the tax consequence (with the ST/LT breakdown), tax-advantaged is never
-          taxed. Calendar-year scope, matching the Tax page's YTD tag. */}
+      {/* Today's P&L (metron-ops#87, moved here from Holdings #113): Day = Overnight (open
+          vs prior close) + Intraday (latest vs open), whole-portfolio. Per-holding detail is
+          the Day column on the Holdings table. Streams behind the headline. */}
+      {priced ? (
+        <Suspense fallback={<TodaySkeleton />}>
+          <TodaySection tenantId={tenantId} id={id} ccy={ccy} accountIds={accountIds} />
+        </Suspense>
+      ) : null}
+
+      {/* Performance over time (moved here from Holdings #113): per-account NAV lines +
+          feed-gated benchmark overlays. The trend centerpiece of the dashboard. */}
+      <Suspense fallback={<SectionSkeleton rows={4} />}>
+        <PerfChartSection tenantId={tenantId} id={id} accountIds={accountIds} />
+      </Suspense>
+
+      {/* Realized YTD — splits the same way as unrealized: taxable carries the tax
+          consequence (with the ST/LT breakdown), tax-advantaged is never taxed. */}
       <div className="mt-4 rounded-lg border border-line p-5">
         <div className="text-xs uppercase tracking-wide text-muted">Realized YTD</div>
         {/* Values come from `summary`, but the "—"-vs-value gating needs to know whether the
@@ -176,7 +189,13 @@ export default async function PortfolioPage({
         </Suspense>
       </div>
 
-      {/* Holdings / accounts counts → their pages. */}
+      {/* Composition + movers (moved here from Holdings #113): allocation by country/sector
+          and best/worst holdings, whole-portfolio. Fetches holdings once for both. */}
+      <Suspense fallback={<SectionSkeleton rows={4} />}>
+        <HoldingsAggregatesSection tenantId={tenantId} id={id} ccy={ccy} accountIds={accountIds} priced={priced} />
+      </Suspense>
+
+      {/* Holdings / accounts counts → their pages. Accounts are now managed on Holdings. */}
       <div className="mt-4 grid grid-cols-2 gap-3">
         <StatCard
           label="Holdings"
@@ -198,21 +217,13 @@ export default async function PortfolioPage({
           {ccy} totals — no FX rate cached yet. Refresh prices to fetch it.
         </p>
       ) : null}
-
-      {/* Accounts — read-only here (no checkboxes): the Overview always shows the whole
-          portfolio, so every account is listed and contributes to the headline Total value.
-          Account (de)selection / filtering lives on the Holdings page; deletion stays here.
-          Tax-treatment editing lives on Settings (the rows already group by tax status). */}
-      <Suspense fallback={<AccountsSkeleton />}>
-        <AccountsSection tenantId={tenantId} id={id} ccy={ccy} />
-      </Suspense>
     </div>
   );
 }
 
-// --- streamed, accounts-dependent regions ----------------------------------
-// Each fetches `getAccounts` itself; #129's server-side single-flight cache collapses the
-// parallel reads into one upstream call (and is instant on repeat visits).
+// --- streamed, accounts/holdings-dependent regions --------------------------
+// Each fetches its own slice; #129's server-side single-flight cache collapses the
+// parallel `getAccounts` reads into one upstream call (and is instant on repeat visits).
 
 /** Active selection of accounts for this page (empty selection = whole portfolio). */
 async function loadActiveAccounts(
@@ -236,13 +247,26 @@ function SplitCardsSkeleton({ className = "mt-4" }: { className?: string }) {
   );
 }
 
-function AccountsSkeleton() {
+/** Three-card placeholder for the Today P&L strip while it loads. */
+function TodaySkeleton() {
+  return (
+    <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3" aria-busy="true">
+      <div className="h-16 animate-pulse rounded-md bg-line/60" />
+      <div className="h-16 animate-pulse rounded-md bg-line/60" />
+      <div className="h-16 animate-pulse rounded-md bg-line/60" />
+    </div>
+  );
+}
+
+/** Skeleton fallback for a streamed Section (chart / aggregates) while its data loads. */
+function SectionSkeleton({ rows = 3 }: { rows?: number }) {
   return (
     <section className="mt-8 animate-pulse" aria-busy="true">
-      <div className="h-3 w-24 rounded bg-line/60" />
+      <div className="h-3 w-32 rounded bg-line/60" />
       <div className="mt-3 space-y-2">
-        <div className="h-10 w-full rounded bg-line/60" />
-        <div className="h-10 w-full rounded bg-line/60" />
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="h-10 w-full rounded bg-line/60" />
+        ))}
       </div>
     </section>
   );
@@ -280,6 +304,109 @@ async function UnrealizedSplit({
   );
 }
 
+/** Today's P&L strip + the cumulative overnight-vs-intraday drift footnote — whole-portfolio
+ *  (moved here from Holdings #113). Renders nothing when no intraday day is available. */
+async function TodaySection({
+  tenantId, id, ccy, accountIds,
+}: {
+  tenantId: string; id: string; ccy: string; accountIds: string[];
+}) {
+  const [today, legs] = await Promise.all([
+    getToday(tenantId, id, accountIds).catch((): Today | null => null),
+    getIntradayLegs(tenantId, id).catch((): IntradayLegHistory | null => null),
+  ]);
+  const showToday = !!today?.available && today.rows.length > 0;
+  if (!showToday || !today) return null;
+  const showLegs = (legs?.n_days ?? 0) > 0 && legs?.cum_day_pct != null;
+  return (
+    <>
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <StatCard
+          label="Overnight"
+          value={today.overnight_gain != null ? accountingMoneyWhole(today.overnight_gain, ccy) : "—"}
+          valueClass={signClass(today.overnight_gain ?? 0)}
+          hint={today.overnight_pct != null ? percent(today.overnight_pct) : undefined}
+        />
+        <StatCard
+          label="Intraday"
+          value={today.intraday_gain != null ? accountingMoneyWhole(today.intraday_gain, ccy) : "—"}
+          valueClass={signClass(today.intraday_gain ?? 0)}
+          hint={today.intraday_pct != null ? percent(today.intraday_pct) : undefined}
+        />
+        <StatCard
+          label="Day"
+          value={today.day_gain != null ? accountingMoneyWhole(today.day_gain, ccy) : "—"}
+          valueClass={signClass(today.day_gain ?? 0)}
+          hint={today.day_pct != null ? percent(today.day_pct) : undefined}
+        />
+      </div>
+      {showLegs && legs ? (
+        <p className="mt-2 text-xs text-muted">
+          Since tracking ({legs.n_days} day{legs.n_days === 1 ? "" : "s"}), cumulative drift split:{" "}
+          <span className={signClass(legs.cum_overnight_pct ?? 0)}>
+            overnight {legs.cum_overnight_pct != null ? percent(legs.cum_overnight_pct) : "—"}
+          </span>{" "}
+          ·{" "}
+          <span className={signClass(legs.cum_intraday_pct ?? 0)}>
+            intraday {legs.cum_intraday_pct != null ? percent(legs.cum_intraday_pct) : "—"}
+          </span>{" "}
+          ·{" "}
+          <span className={signClass(legs.cum_day_pct ?? 0)}>
+            day {legs.cum_day_pct != null ? percent(legs.cum_day_pct) : "—"}
+          </span>
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+/** Whole-portfolio performance chart (moved here from Holdings #113). Renders nothing until
+ *  ≥1 account has ≥2 NAV points. */
+async function PerfChartSection({
+  tenantId, id, accountIds,
+}: {
+  tenantId: string; id: string; accountIds: string[];
+}) {
+  const perfSeries = await getHoldingsPerformanceSeries(tenantId, id, accountIds).catch(
+    (): HoldingsPerfSeries | null => null,
+  );
+  if (!perfSeries || perfSeries.accounts.length === 0) return null;
+  return (
+    <Section title="Performance">
+      <HoldingsPerfChart
+        accounts={perfSeries.accounts}
+        benchmarks={perfSeries.benchmarks}
+        benchmarksAvailable={perfSeries.benchmarks_available}
+      />
+    </Section>
+  );
+}
+
+/** Allocation (country/sector) + best/worst performers (moved here from Holdings #113),
+ *  whole-portfolio. Fetches holdings once and feeds both. */
+async function HoldingsAggregatesSection({
+  tenantId, id, ccy, accountIds, priced,
+}: {
+  tenantId: string; id: string; ccy: string; accountIds: string[]; priced: boolean;
+}) {
+  const holdings = await getHoldings(tenantId, id, accountIds).catch((): Holding[] | null => null);
+  if (!holdings || holdings.length === 0) return null;
+  return (
+    <>
+      {priced ? (
+        <Section title="Allocation" note="by market value">
+          <AllocationBreakdown holdings={holdings} baseCurrency={ccy} />
+        </Section>
+      ) : null}
+      {priced ? (
+        <Section title="Performers" note="best & worst holdings by return">
+          <TopBottomPerformers holdings={holdings} />
+        </Section>
+      ) : null}
+    </>
+  );
+}
+
 async function RealizedYtdSplit({
   tenantId, id, ccy, accountIds, scoped, navQuery,
   realizedYtdTaxable, realizedStYtd, realizedLtYtd, realizedYtdTaxadv,
@@ -314,19 +441,5 @@ async function RealizedYtdSplit({
         <div className="mt-1 text-xs text-muted/70">IRA / 401(k) / Roth — no tax consequence</div>
       </div>
     </div>
-  );
-}
-
-async function AccountsSection({
-  tenantId, id, ccy,
-}: {
-  tenantId: string; id: string; ccy: string;
-}) {
-  const accounts = await getAccounts(tenantId, id).catch(() => null);
-  if (!accounts) return null;
-  return (
-    <Section title="Accounts">
-      <AccountPanel accounts={accounts} baseCurrency={ccy} portfolioId={id} selectable={false} deletable />
-    </Section>
   );
 }
