@@ -404,7 +404,7 @@ const METRIC_COLUMNS: MetricColumn[] = [
     title:
       "Composite attractiveness (0–100): transparent blend of fwd-P/E vs sector median, " +
       "price-target upside, consensus rating, revision momentum, and news sentiment. " +
-      "Open a holding's tearsheet for the weighted breakdown.",
+      "Click the ticker to open the holding's tearsheet for the weighted breakdown.",
   },
   // ── Valuation ──
   { key: "market_cap", label: "Mkt Cap", group: "Valuation", value: (h) => h.market_cap, render: (v, base) => marketCapShort(v, base) },
@@ -488,6 +488,8 @@ export function HoldingsTable({
   portfolioId,
   visibleBands = BAND_ORDER,
   accountColumn = false,
+  showTotals = true,
+  onRemove,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -500,6 +502,12 @@ export function HoldingsTable({
   /** Render an Account column (the uncombined per-account view, metron-ops#114). The rows
    *  must carry `account_label`; it pins beside Ticker in the frozen spine. */
   accountColumn?: boolean;
+  /** The Position/Value footer totals only mean something for real positions — a
+   *  comparison-only row set (e.g. the watchlist) passes false to drop the row entirely. */
+  showTotals?: boolean;
+  /** When set, renders a trailing "Remove" column (e.g. the watchlist compare table,
+   *  metron-ops#123) — absent for the read-only Holdings view. */
+  onRemove?: (ticker: string) => void;
 }) {
   // Visible columns grouped by band, in canonical order, with priced-only bands dropped in
   // the cost-basis-only view (a band whose every column is priced collapses to nothing).
@@ -610,6 +618,7 @@ export function HoldingsTable({
                   {band}
                 </th>
               ))}
+              {onRemove ? <th className="bg-surface px-3 py-1.5" /> : null}
             </tr>
           ) : null}
           <tr className="border-b border-line bg-surface text-left text-xs uppercase tracking-wide text-muted">
@@ -631,6 +640,7 @@ export function HoldingsTable({
                 </th>
               )),
             )}
+            {onRemove ? <th className="px-3 py-2 text-right font-medium">Remove</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -673,11 +683,23 @@ export function HoldingsTable({
                     </td>
                   )),
                 )}
+                {onRemove ? (
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => onRemove(h.ticker)}
+                      aria-label={`Remove ${h.ticker}`}
+                      className="rounded px-2 py-0.5 text-xs text-muted hover:bg-rose-500/10 hover:text-rose-300"
+                    >
+                      Remove
+                    </button>
+                  </td>
+                ) : null}
               </tr>
             );
           })}
         </tbody>
-        {holdings.length > 0 ? (
+        {holdings.length > 0 && showTotals ? (
           <tfoot>
             <tr className="border-t border-line bg-surface font-medium">
               <td
@@ -697,6 +719,7 @@ export function HoldingsTable({
                   </td>
                 )),
               )}
+              {onRemove ? <td className="px-3 py-2" /> : null}
             </tr>
           </tfoot>
         ) : null}

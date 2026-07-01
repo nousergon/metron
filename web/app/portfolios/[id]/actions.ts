@@ -328,6 +328,7 @@ export async function addWatchlistAction(portfolioId: string, symbol: string, no
     const tenantId = await requireTenantId();
     await addWatchlist(tenantId, portfolioId, sym, note?.trim() || null);
     revalidatePath(`/portfolios/${portfolioId}/watchlist`);
+    revalidatePath(`/portfolios/${portfolioId}/holdings`);
     return { ok: true, message: `Added ${sym} to the watchlist.` };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t add — backend reachable?" };
@@ -339,6 +340,7 @@ export async function removeWatchlistAction(portfolioId: string, symbol: string)
     const tenantId = await requireTenantId();
     await removeWatchlist(tenantId, portfolioId, symbol);
     revalidatePath(`/portfolios/${portfolioId}/watchlist`);
+    revalidatePath(`/portfolios/${portfolioId}/holdings`);
     return { ok: true, message: `Removed ${symbol}.` };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t remove — backend reachable?" };

@@ -7,8 +7,7 @@ Holding field. Pure unit tests (injected readers / monkeypatched yf map — no S
 
 from __future__ import annotations
 
-from api.routers import portfolios
-from api.services import analytics, fundamentals, technicals, valuation_medians
+from api.services import analytics, fundamentals, metrics_enrichment, technicals, valuation_medians
 
 # ── fundamentals v2 ──────────────────────────────────────────────────────────
 
@@ -86,10 +85,10 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
 
     # Capture the real loaders before patching (the patched attr shadows the module fn).
     real_funds, real_techs = fundamentals.load_fundamentals, technicals.load_technicals
-    monkeypatch.setattr(portfolios.tearsheet_service, "_yf_symbol_map",
+    monkeypatch.setattr(metrics_enrichment.tearsheet_service, "_yf_symbol_map",
                         lambda session, syms: {"AAPL": "AAPL", "ZZZ": "ZZZ"})
     monkeypatch.setattr(
-        portfolios.fundamentals_service, "load_fundamentals",
+        metrics_enrichment.fundamentals_service, "load_fundamentals",
         lambda: real_funds(reader=lambda: {
             "fundamentals": {"AAPL": {"trailingPE": 30.0, "forwardPE": 25.0, "priceToBook": 6.0,
                                       "priceToSalesTrailing12Months": 7.5, "marketCap": 3.0e12,
@@ -99,13 +98,13 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
                                       "freeCashflow": 9.0e10, "quickRatio": 0.9}}}),
     )
     monkeypatch.setattr(
-        portfolios.technicals_service, "load_technicals",
+        metrics_enrichment.technicals_service, "load_technicals",
         lambda: real_techs(reader=lambda: {
             "technicals": {"AAPL": {"rsi_14": 61.0, "macd_hist": 1.1, "pct_to_ma_50": 0.05,
                                     "pct_to_ma_200": 0.12, "pct_in_52w_range": 0.8, "mom_20d": 0.03}}}),
     )
 
-    portfolios._enrich_metrics(session=None, held=held)
+    metrics_enrichment.enrich_metrics(session=None, held=held)
 
     aapl = held[0]
     assert aapl.pe == 30.0 and aapl.fwd_pe == 25.0 and aapl.pb == 6.0 and aapl.ps == 7.5

@@ -17,7 +17,8 @@ Design (deliberately NOT a black box):
     is present (honest "—", never a fake 50).
 
 Pure function of already-loaded values — no S3, no DB, no I/O — so it is trivially testable and
-identical between the Holdings list path (`portfolios._enrich_metrics`) and the tearsheet path.
+identical across every consumer of `metrics_enrichment.enrich_metrics` (Holdings, watchlist)
+and the tearsheet path.
 """
 
 from __future__ import annotations

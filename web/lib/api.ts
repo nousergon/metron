@@ -336,15 +336,58 @@ export function acctParams(accountIds?: string[]): string {
 export const getPortfolios = (tenantId: string) => get<Portfolio[]>(tenantId, "/portfolios");
 export const getPortfolio = (tenantId: string, id: string) => get<Portfolio>(tenantId, `/portfolios/${id}`);
 
-// Watchlist — tracked tickers (held or not). Read-only/illustrative in the beta: no live
-// price (un-held tickers have no price source until the Pro feed). (metron-ops#42)
+// Watchlist — tracked tickers (held or not). No live price (un-held tickers have no price
+// source until the Pro feed). On a feed-entitled build carries the SAME Holdings metrics
+// (valuation/fundamentals/balance-sheet/technicals/consensus/attractiveness), keyed purely
+// by ticker, for side-by-side comparison — never quantity/cost/market value/P&L, since a
+// watchlist entry has no position (metron-ops#42, metron-ops#123).
 export type WatchlistEntry = {
   symbol: string;
   name: string | null;
   sector: string | null;
+  country: string | null;
   next_earnings_date: string | null;
   held: boolean;
   note: string | null;
+  market_cap: number | null;
+  pe: number | null;
+  fwd_pe: number | null;
+  pb: number | null;
+  ps: number | null;
+  ev_ebitda: number | null;
+  peg: number | null;
+  div_yield: number | null;
+  rev_growth: number | null;
+  earnings_growth: number | null;
+  gross_margin: number | null;
+  op_margin: number | null;
+  roe: number | null;
+  roa: number | null;
+  beta: number | null;
+  cash: number | null;
+  debt: number | null;
+  net_debt: number | null;
+  debt_to_equity: number | null;
+  net_debt_to_ebitda: number | null;
+  current_ratio: number | null;
+  quick_ratio: number | null;
+  fcf: number | null;
+  rsi_14: number | null;
+  macd_hist: number | null;
+  pct_to_ma_50: number | null;
+  pct_to_ma_200: number | null;
+  pct_in_52w_range: number | null;
+  mom_20d: number | null;
+  consensus_rating: string | null;
+  consensus_score: number | null;
+  price_target_mean: number | null;
+  price_target_median: number | null;
+  price_target_upside: number | null;
+  num_analysts: number | null;
+  news_sentiment: number | null;
+  news_articles: number | null;
+  attractiveness: number | null;
+  attractiveness_coverage: number | null;
 };
 
 export const getWatchlist = (tenantId: string, id: string) =>
