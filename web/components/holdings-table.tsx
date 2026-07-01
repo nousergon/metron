@@ -404,7 +404,7 @@ const METRIC_COLUMNS: MetricColumn[] = [
     title:
       "Composite attractiveness (0–100): transparent blend of fwd-P/E vs sector median, " +
       "price-target upside, consensus rating, revision momentum, and news sentiment. " +
-      "Open a holding's tearsheet for the weighted breakdown.",
+      "Click the ticker to open the holding's tearsheet for the weighted breakdown.",
   },
   // ── Valuation ──
   { key: "market_cap", label: "Mkt Cap", group: "Valuation", value: (h) => h.market_cap, render: (v, base) => marketCapShort(v, base) },
