@@ -19,6 +19,51 @@ vi.mock("@/app/portfolios/[id]/actions", () => ({
 import { WatchlistPanel } from "@/components/watchlist-panel";
 import type { WatchlistEntry } from "@/lib/api";
 
+// Metric fields (metron-ops#123) are irrelevant to this component's read-only reference-data
+// panel — every entry gets the same all-null block, only symbol/name/sector/held/note vary.
+const EMPTY_METRICS = {
+  country: null,
+  market_cap: null,
+  pe: null,
+  fwd_pe: null,
+  pb: null,
+  ps: null,
+  ev_ebitda: null,
+  peg: null,
+  div_yield: null,
+  rev_growth: null,
+  earnings_growth: null,
+  gross_margin: null,
+  op_margin: null,
+  roe: null,
+  roa: null,
+  beta: null,
+  cash: null,
+  debt: null,
+  net_debt: null,
+  debt_to_equity: null,
+  net_debt_to_ebitda: null,
+  current_ratio: null,
+  quick_ratio: null,
+  fcf: null,
+  rsi_14: null,
+  macd_hist: null,
+  pct_to_ma_50: null,
+  pct_to_ma_200: null,
+  pct_in_52w_range: null,
+  mom_20d: null,
+  consensus_rating: null,
+  consensus_score: null,
+  price_target_mean: null,
+  price_target_median: null,
+  price_target_upside: null,
+  num_analysts: null,
+  news_sentiment: null,
+  news_articles: null,
+  attractiveness: null,
+  attractiveness_coverage: null,
+} satisfies Omit<WatchlistEntry, "symbol" | "name" | "sector" | "next_earnings_date" | "held" | "note">;
+
 const entry = (symbol: string, held: boolean): WatchlistEntry => ({
   symbol,
   name: `${symbol} Inc`,
@@ -26,6 +71,7 @@ const entry = (symbol: string, held: boolean): WatchlistEntry => ({
   next_earnings_date: null,
   held,
   note: null,
+  ...EMPTY_METRICS,
 });
 
 beforeEach(() => {
