@@ -558,27 +558,39 @@ export function HoldingsTable({
     return { cost, mv, unreal, unrealPct, excluded };
   }, [holdings, baseCurrency, priced]);
 
-  // Header sort-button (shared by the spine + band column headers).
+  // Header sort-control (shared by the spine + band column headers).
   // `title` is the column's plain-language DEFINITION (when it has one): the header shows a
-  // small ⓘ signpost so the definition is discoverable, not hidden behind a hover-the-label
-  // (metron-ops#115).
+  // small ⓘ signpost so the definition is discoverable via a real click-to-open disclosure —
+  // NOT nested inside the sort <button> (nested buttons are invalid HTML and swallow every
+  // click into `toggle(colKey)`, so the ⓘ was unreachable — metron-ops#115 follow-up, metron#158).
   const SortTh = ({ colKey, label, title }: { colKey: string; label: string; title?: string }) => (
-    <button
-      type="button"
-      onClick={() => toggle(colKey)}
-      className="inline-flex items-center gap-1 uppercase tracking-wide hover:text-ink"
-      title={title ?? `Sort by ${label}`}
-    >
-      {label}
+    <span className="inline-flex items-center gap-1 uppercase tracking-wide">
+      <button
+        type="button"
+        onClick={() => toggle(colKey)}
+        className="inline-flex items-center gap-1 hover:text-ink"
+        title={`Sort by ${label}`}
+      >
+        {label}
+        <span className={sort?.key === colKey ? "" : "invisible"}>{sort?.desc ? "▼" : "▲"}</span>
+      </button>
       {title ? (
-        // Visual signpost only — the definition is already on the button's title (so the
-        // accessible name + existing header-query tests stay unchanged).
-        <span className="cursor-help text-[10px] font-normal text-muted/70 normal-case" title={title} aria-hidden>
-          ⓘ
-        </span>
+        // Native <details> disclosure — click-to-open, keyboard/focus accessible, no
+        // click-outside wiring needed. Same pattern as the Columns "Customize" control
+        // (holdings-column-presets.tsx).
+        <details className="relative inline-block normal-case leading-none">
+          <summary
+            className="cursor-help list-none text-[10px] font-normal text-muted/70 marker:hidden hover:text-ink [&::-webkit-details-marker]:hidden"
+            aria-label={`What is ${label}?`}
+          >
+            ⓘ
+          </summary>
+          <div className="absolute left-0 top-full z-30 mt-1 w-56 rounded-lg border border-line bg-paper p-2 text-[11px] font-normal normal-case leading-snug text-ink shadow-lg">
+            {title}
+          </div>
+        </details>
       ) : null}
-      <span className={sort?.key === colKey ? "" : "invisible"}>{sort?.desc ? "▼" : "▲"}</span>
-    </button>
+    </span>
   );
 
   return (
