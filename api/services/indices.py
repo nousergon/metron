@@ -104,6 +104,39 @@ def _is_stale(as_of_utc: str | None, now: datetime) -> bool:
     return (now - beat).total_seconds() > STALE_AFTER_SECONDS
 
 
+def proxy_day_return(symbol: str, *, reader=None, now: datetime | None = None) -> float | None:
+    """The tracking-proxy ETF's same-day fractional return, read from the intraday
+    artifact's ``fund_proxies`` map — the input to the mutual-fund same-day ESTIMATE
+    (metron-ops#112, ``api/services/fund_proxy.py`` mechanism B). Mirrors
+    ``load_indices``'s "only a quote dated for the live session carries a real today
+    move" discipline exactly: a proxy quote whose ``session_date`` isn't today's NYSE
+    session (pre-open / stale overnight artifact) has no today move to lend the fund, so
+    this returns ``None`` rather than leak yesterday's move in as today's estimate.
+
+    Returns ``None`` when the artifact is unavailable, the proxy symbol is absent from
+    ``fund_proxies``, the quote isn't dated for today's session, or ``prev_close`` is
+    missing/zero (never fabricated)."""
+    from api.services import security_perf
+
+    now = now or datetime.now(UTC)
+    session_today = security_perf.market_today(now).isoformat()
+    art = (reader or _default_reader)()
+    if not art:
+        return None
+    raw = art.get("fund_proxies") or {}
+    q = raw.get(symbol)
+    if not isinstance(q, dict):
+        return None
+    session_date = q.get("session_date")
+    if session_date is None or str(session_date) != session_today:
+        return None
+    last = _f(q, "last")
+    prev = _f(q, "prev_close")
+    if last is None or not prev:
+        return None
+    return (last - prev) / prev
+
+
 def load_indices(*, reader=None, now: datetime | None = None) -> IndicesSnapshot:
     """The latest major-index intraday strip. ``reader`` (a no-arg callable returning the
     raw intraday artifact dict) and ``now`` are injectable for tests; ``reader`` defaults

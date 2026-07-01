@@ -150,6 +150,11 @@ class HoldingOut(BaseModel):
     # feed stalled). Drives the Holdings "prices as of" staleness warning. Always False on
     # the broker-snapshot / intraday-overlay paths (see security_perf.enrich_holdings).
     last_price_stale: bool = False
+    # True when last_price is a same-day ESTIMATE synthesized from a tracking-proxy ETF's
+    # return (metron-ops#112 mechanism B) — a late-striking mutual fund that hasn't struck
+    # its own NAV yet today. Not a problem flag like last_price_stale — an expected,
+    # clearly-labeled estimate, reconciled to the true struck NAV by mechanism A tomorrow.
+    is_estimated: bool = False
     market_value_local: float | None = None
     cost_basis_base: float | None = None
     market_value: float | None = None
@@ -1592,7 +1597,7 @@ def get_holdings(
     # tagged with account_id/account_label (metron-ops#114); default consolidates per ticker.
     # LIVE intraday overlay (metron-ops#79): during trading hours on a feed-entitled build,
     # each position revalues from the intraday last; otherwise this is None → EOD close.
-    prices, _ = intraday.for_portfolio(
+    prices, meta = intraday.for_portfolio(
         session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled, account_ids=account_ids
     )
     held = (
@@ -1604,6 +1609,13 @@ def get_holdings(
             session, portfolio.tenant_id, portfolio.id, account_ids=account_ids, prices=prices
         )
     )
+    # Late-striking-fund same-day ESTIMATE flag (metron-ops#112 mechanism B): a held ticker
+    # whose live price was synthesized from a tracking-proxy ETF (not a real intraday quote)
+    # is flagged so the UI can label it clearly, rather than silently look like a real quote.
+    if meta.estimated_tickers:
+        for h in held:
+            if h.ticker in meta.estimated_tickers:
+                h.is_estimated = True
     # Per-security Day / YTD / LTM returns for the Holdings table (metron-ops#87).
     held = security_perf.enrich_holdings(
         session, portfolio.tenant_id, portfolio.id, held,

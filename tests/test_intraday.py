@@ -12,10 +12,12 @@ import uuid
 from datetime import UTC, date, datetime
 
 import pytest
+from sqlalchemy import select
 
 from api.config import settings
 from api.db import models
 from api.services import analytics, intraday
+from portfolio_analytics.prices import ClosePoint
 
 _AS_OF = "2026-06-12T15:00:00Z"
 _NOW = datetime(2026, 6, 12, 15, 3, tzinfo=UTC)   # 3 min after the write — fresh
@@ -164,6 +166,98 @@ class TestLivePrices:
         assert prices is None and meta.applied is False
 
 
+def _fund_art(fund_proxies: dict, quotes: dict | None = None) -> dict:
+    return {
+        "schema_version": 2,
+        "as_of_utc": _AS_OF,
+        "source": "yfinance_delayed",
+        "quotes": quotes or {},
+        "fund_proxies": fund_proxies,
+    }
+
+
+class TestOverlayFundEstimate:
+    """Late-striking mutual-fund same-day ESTIMATE (metron-ops#112, mechanism B): a held
+    ticker with NO usable intraday quote of its own but known to be a tracked fund
+    (``fund_proxy.FUND_PROXY``) gets ``eod_close * (1 + proxy_return)`` synthesized from
+    its tracking-proxy ETF's same-day return, and is named in the returned estimated set."""
+
+    def test_synthesizes_price_from_proxy_return(self, db_session):
+        tid, pid = _seed_one_holding(db_session, symbol="FNILX", yf_symbol="FNILX", eod_close=20.0)
+        # FNILX has no quote of its own; SPY (its proxy) is +2% today.
+        art = _fund_art({"SPY": {"last": 102.0, "prev_close": 100.0, "session_date": "2026-06-12"}})
+        prices, meta = intraday.live_prices(
+            db_session, ["FNILX"], feed_entitled=True, reader=lambda: art, now=_NOW,
+        )
+        assert meta.applied is True
+        assert "FNILX" in meta.estimated_tickers
+        assert prices["FNILX"].close == pytest.approx(20.0 * 1.02)
+        assert prices["FNILX"].bar_date == date(2026, 6, 12)  # today's session, not the EOD bar_date
+
+    def test_non_fund_ticker_never_estimated(self, db_session):
+        _seed_one_holding(db_session, symbol="AAPL", eod_close=120.0)
+        art = _fund_art({"SPY": {"last": 102.0, "prev_close": 100.0, "session_date": "2026-06-12"}})
+        prices, meta = intraday.live_prices(
+            db_session, ["AAPL"], feed_entitled=True, reader=lambda: art, now=_NOW,
+        )
+        # AAPL has no quote AND isn't a known fund → no estimate, no overlay at all.
+        assert prices is None and meta.applied is False
+        assert meta.estimated_tickers == frozenset()
+
+    def test_real_quote_wins_over_estimate(self, db_session):
+        """A fund ticker WITH a usable intraday quote of its own is never estimated —
+        the real quote always takes priority."""
+        _seed_one_holding(db_session, symbol="FNILX", yf_symbol="FNILX", eod_close=20.0)
+        art = _fund_art(
+            {"SPY": {"last": 102.0, "prev_close": 100.0, "session_date": "2026-06-12"}},
+            quotes={"FNILX": {"last": 21.0, "session_date": "2026-06-12"}},
+        )
+        prices, meta = intraday.live_prices(
+            db_session, ["FNILX"], feed_entitled=True, reader=lambda: art, now=_NOW,
+        )
+        assert prices["FNILX"].close == 21.0  # the real quote, not an estimate
+        assert "FNILX" not in meta.estimated_tickers
+
+    def test_skipped_when_proxy_return_unavailable(self, db_session):
+        """Wrong-session / missing proxy quote → proxy_day_return is None → the fund is
+        left un-overlaid (falls back to EOD close), never a fabricated estimate."""
+        _seed_one_holding(db_session, symbol="FNILX", yf_symbol="FNILX", eod_close=20.0)
+        art = _fund_art({})  # no SPY proxy quote at all
+        prices, meta = intraday.live_prices(
+            db_session, ["FNILX"], feed_entitled=True, reader=lambda: art, now=_NOW,
+        )
+        assert prices is None and meta.applied is False
+        assert "FNILX" not in meta.estimated_tickers
+
+    def test_skipped_when_no_eod_close(self, db_session):
+        """A fund with no cached EOD close has nothing to scale the proxy return off of —
+        skipped, never fabricated from nothing."""
+        tenant = models.Tenant(name="t")
+        db_session.add(tenant)
+        db_session.flush()
+        pf = models.Portfolio(tenant_id=tenant.id, name="P", base_currency="USD")
+        db_session.add(pf)
+        db_session.flush()
+        db_session.add(models.InvestorPreferences(tenant_id=tenant.id, portfolio_id=pf.id, intraday_enabled=True))
+        acct = models.Account(tenant_id=tenant.id, portfolio_id=pf.id, broker="csv", external_id="A1", currency="USD")
+        sec = models.Security(symbol="FNILX", yf_symbol="FNILX", currency="USD")
+        db_session.add_all([acct, sec])
+        db_session.flush()
+        db_session.add(
+            models.Transaction(
+                tenant_id=tenant.id, account_id=acct.id, security_id=sec.id,
+                txn_type="BUY", quantity=5, price=20.0, amount=100.0, currency="USD",
+                trade_date=date(2024, 1, 1), source_key="buy-1",
+            )
+        )
+        db_session.commit()  # no PriceBar seeded — no EOD close cached
+        art = _fund_art({"SPY": {"last": 102.0, "prev_close": 100.0, "session_date": "2026-06-12"}})
+        prices, meta = intraday.for_portfolio(
+            db_session, tenant.id, pf.id, feed_entitled=True, reader=lambda: art, now=_NOW,
+        )
+        assert prices is None and meta.applied is False
+
+
 class TestLiveValuation:
     def test_nav_recomputes_from_intraday(self, db_session):
         tid, pid = _seed_one_holding(db_session, qty=10, eod_close=120.0)
@@ -302,3 +396,75 @@ class TestIntradayStatusEndpoint:
         assert r.status_code == 200
         body = r.json()
         assert body["applied"] is False and body["reason"] == "off"
+
+
+class TestHoldingsEndpointIsEstimated:
+    """``GET .../holdings`` stamps ``is_estimated`` (metron-ops#112) on a late-striking
+    fund's row when its live price came from the tracking-proxy same-day estimate, and
+    leaves every normally-quoted holding False — end-to-end through the router.
+
+    Uses ``client`` + ``db_session`` together so both share the same in-memory engine
+    (see conftest): the API seeds the portfolio/holdings, ``db_session`` seeds the FNILX
+    EOD close bar the estimate scales, and ``now`` is real "today" (the endpoint doesn't
+    take an injectable clock) so the artifact's ``session_date`` must match it."""
+
+    def _seed_portfolio(self, client, db_session, tenant, monkeypatch):
+        import io
+
+        from api.services import indices as indices_service
+        from api.services import security_perf
+
+        monkeypatch.setattr(settings, "feed_entitled", True)
+        # Reset the process-level snapshot TTL cache so each test's reader is honored.
+        monkeypatch.setattr(intraday, "_snapshot_cache", None, raising=False)
+        monkeypatch.setattr(intraday, "_snapshot_fetched_monotonic", 0.0, raising=False)
+
+        pid = client.post("/portfolios", json={"name": "P"}, headers={"X-Tenant-Id": tenant}).json()["id"]
+        client.put(
+            f"/portfolios/{pid}/preferences",
+            json={"intraday_enabled": True}, headers={"X-Tenant-Id": tenant},
+        )
+        csv = (
+            "date,type,symbol,quantity,price,amount,account\n"
+            "2024-01-02,BUY,AAPL,10,100,1000,Brokerage\n"
+            "2024-01-02,BUY,FNILX,10,20,200,Brokerage\n"
+        )
+        r = client.post(
+            f"/portfolios/{pid}/import/csv",
+            files={"file": ("t.csv", io.BytesIO(csv.encode()), "text/csv")},
+            headers={"X-Tenant-Id": tenant},
+        )
+        assert r.status_code == 200
+
+        # Seed FNILX's own cached EOD close directly (the CSV import doesn't fetch prices) —
+        # the estimate scales THIS close by the proxy's same-day return.
+        from api.db import models
+
+        sec = db_session.scalar(select(models.Security).where(models.Security.symbol == "FNILX"))
+        today = security_perf.market_today()
+        db_session.add(models.PriceBar(security_id=sec.id, bar_date=today, close=20.0, currency="USD"))
+        db_session.commit()
+
+        session_today = today.isoformat()
+        art = {
+            "schema_version": 2,
+            "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "quotes": {"AAPL": {"last": 130.0, "session_date": session_today}},
+            "fund_proxies": {"SPY": {"last": 102.0, "prev_close": 100.0, "session_date": session_today}},
+        }
+        monkeypatch.setattr(intraday, "_default_reader", lambda: art)
+        monkeypatch.setattr(indices_service, "_default_reader", lambda: art)
+        return pid
+
+    def test_synthesized_fund_row_flagged_estimated(self, client, db_session, tenant, monkeypatch):
+        pid = self._seed_portfolio(client, db_session, tenant, monkeypatch)
+        rows = client.get(f"/portfolios/{pid}/holdings", headers={"X-Tenant-Id": tenant}).json()
+        by_ticker = {r["ticker"]: r for r in rows}
+        assert by_ticker["FNILX"]["is_estimated"] is True
+        assert by_ticker["FNILX"]["last_price"] == pytest.approx(20.0 * 1.02)
+
+    def test_normally_quoted_holding_not_flagged_estimated(self, client, db_session, tenant, monkeypatch):
+        pid = self._seed_portfolio(client, db_session, tenant, monkeypatch)
+        rows = client.get(f"/portfolios/{pid}/holdings", headers={"X-Tenant-Id": tenant}).json()
+        by_ticker = {r["ticker"]: r for r in rows}
+        assert by_ticker["AAPL"]["is_estimated"] is False

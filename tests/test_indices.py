@@ -180,6 +180,64 @@ class TestIndicesEndpoint:
         assert oneq["ytd_pct"] == pytest.approx(120.0 / 100.0 - 1.0)  # 120 vs the Jan-of-year 100
 
 
+class TestProxyDayReturn:
+    """``fund_proxies`` map (metron-ops#112): the input to the late-striking-fund same-day
+    ESTIMATE (mechanism B, api/services/fund_proxy.py). Mirrors the ``indices`` map's "only
+    a quote dated for the live session carries a real today move" discipline exactly."""
+
+    _ART = {
+        "as_of_utc": _AS_OF,
+        "fund_proxies": {
+            "SPY": {"last": 605.2, "prev_close": 602.4, "session_date": "2026-06-12"},
+            "IXUS": {"last": 68.0, "prev_close": 68.68, "session_date": "2026-06-12"},
+        },
+    }
+
+    def test_same_session_returns_fractional_move(self):
+        r = indices.proxy_day_return("SPY", reader=lambda: self._ART, now=_NOW)
+        assert r == pytest.approx((605.2 - 602.4) / 602.4)
+
+    def test_negative_move_keeps_sign(self):
+        r = indices.proxy_day_return("IXUS", reader=lambda: self._ART, now=_NOW)
+        assert r == pytest.approx((68.0 - 68.68) / 68.68)
+        assert r < 0
+
+    def test_missing_symbol_returns_none(self):
+        assert indices.proxy_day_return("QQQ", reader=lambda: self._ART, now=_NOW) is None
+
+    def test_missing_artifact_returns_none(self):
+        assert indices.proxy_day_return("SPY", reader=lambda: None, now=_NOW) is None
+
+    def test_wrong_session_returns_none(self):
+        """Pre-open the overnight artifact still carries the PRIOR session's quote — no
+        "today" move to lend the fund, so this must be None (never leak yesterday's move
+        in as today's estimate)."""
+        preopen = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)  # next session's pre-open
+        assert indices.proxy_day_return("SPY", reader=lambda: self._ART, now=preopen) is None
+
+    def test_missing_session_date_returns_none(self):
+        art = {"as_of_utc": _AS_OF, "fund_proxies": {"SPY": {"last": 605.2, "prev_close": 602.4}}}
+        assert indices.proxy_day_return("SPY", reader=lambda: art, now=_NOW) is None
+
+    def test_missing_prev_close_returns_none(self):
+        art = {
+            "as_of_utc": _AS_OF,
+            "fund_proxies": {"SPY": {"last": 605.2, "session_date": "2026-06-12"}},
+        }
+        assert indices.proxy_day_return("SPY", reader=lambda: art, now=_NOW) is None
+
+    def test_zero_prev_close_returns_none(self):
+        art = {
+            "as_of_utc": _AS_OF,
+            "fund_proxies": {"SPY": {"last": 605.2, "prev_close": 0, "session_date": "2026-06-12"}},
+        }
+        assert indices.proxy_day_return("SPY", reader=lambda: art, now=_NOW) is None
+
+    def test_absent_fund_proxies_map_returns_none(self):
+        art = {"as_of_utc": _AS_OF, "indices": {}}
+        assert indices.proxy_day_return("SPY", reader=lambda: art, now=_NOW) is None
+
+
 class TestEnsureIndexHistory:
     def test_backfills_only_uncovered_proxies(self, db_session, monkeypatch):
         today = date(2026, 6, 25)

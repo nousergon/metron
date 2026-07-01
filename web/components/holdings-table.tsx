@@ -215,6 +215,15 @@ const POSITION_COLUMNS: ColumnDef[] = [
         >
           {ctx.baseMoney(lastBase, h.last_price)}
           {h.last_price_stale ? <span className="ml-0.5" aria-hidden>⚠</span> : null}
+          {h.is_estimated ? (
+            <span
+              className="ml-0.5 text-sky-500"
+              title="Estimated — this fund hasn't struck its own NAV yet today; its same-day move is estimated from a tracking-proxy ETF and will reconcile to the true NAV after tomorrow's close."
+              aria-label="estimated"
+            >
+              ~
+            </span>
+          ) : null}
         </span>
       );
     },

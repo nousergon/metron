@@ -24,6 +24,11 @@ export type Holding = {
   // stalled). Drives the Holdings "prices as of" warning. False on broker-snapshot /
   // live-intraday paths.
   last_price_stale: boolean;
+  // True when last_price is a same-day ESTIMATE synthesized from a tracking-proxy ETF's
+  // return (metron-ops#112) — a late-striking mutual fund (e.g. FNILX/FZILX/FTIHX) that
+  // hasn't struck its own NAV yet today. Not a problem flag like last_price_stale — an
+  // expected, clearly-labeled estimate, reconciled to the true struck NAV tomorrow.
+  is_estimated: boolean;
   market_value_local: number | null;
   cost_basis_base: number | null;
   market_value: number | null;

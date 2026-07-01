@@ -90,6 +90,14 @@ class Holding:
     # by security_perf.enrich_holdings (Holdings view only); the UI surfaces it loudly so
     # a frozen feed never masquerades as a current price.
     last_price_stale: bool = False
+    # True when last_price is a same-day ESTIMATE synthesized from a tracking-proxy ETF's
+    # return rather than a real quote — the late-striking mutual-fund NAV mechanism B
+    # (metron-ops#112: the fund hasn't struck its own NAV yet today, so its move is
+    # estimated from fund_proxy.proxy_for(ticker) and reconciled to the true struck NAV by
+    # mechanism A next morning). Stamped by the Holdings endpoint from
+    # ``intraday.IntradayMeta.estimated_tickers``. Not a problem flag like
+    # ``last_price_stale`` — an expected, clearly-labeled same-day estimate.
+    is_estimated: bool = False
     # Reference classification — populated only by the Holdings endpoint via
     # security_perf.enrich_holdings (None elsewhere). GICS sector + country of domicile,
     # cached on the global Security row, sourced from the data spine (metron-ops#…).

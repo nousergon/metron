@@ -34,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.db import models
+from api.services import fund_proxy
 from portfolio_analytics.prices import ClosePoint
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,13 @@ class IntradayMeta:
     stale: bool = False
     n_priced: int = 0             # held tickers that got an intraday last-price
     reason: str | None = None     # why not applied ("feed" / "stale" / "unavailable")
+    # Held tickers whose intraday price was SYNTHESIZED from a tracking-proxy ETF's
+    # same-day return rather than read from the ticker's own intraday quote — the
+    # late-striking-fund same-day ESTIMATE (metron-ops#112, mechanism B). Empty unless a
+    # held ticker is a known mutual fund (``fund_proxy.FUND_PROXY``) with no usable
+    # intraday quote of its own. Drives the "estimated" UI badge; restated by mechanism A
+    # once the fund's true NAV lands (next data run).
+    estimated_tickers: frozenset[str] = frozenset()
 
 
 def _bucket() -> str:
@@ -145,33 +153,72 @@ def _yf_symbol_by_ticker(session: Session, tickers: list[str]) -> dict[str, str]
     return out
 
 
-def _overlay(session: Session, tickers: list[str], quotes: dict[str, dict], *, today: date) -> dict[str, ClosePoint]:
-    """``{ticker: ClosePoint(last)}`` for held tickers with a usable intraday quote.
+def _overlay(
+    session: Session,
+    tickers: list[str],
+    quotes: dict[str, dict],
+    *,
+    today: date,
+    eod_closes: dict[str, ClosePoint] | None = None,
+    reader=None,
+    now: datetime | None = None,
+) -> tuple[dict[str, ClosePoint], set[str]]:
+    """``({ticker: ClosePoint(last)}, estimated_tickers)`` for held tickers with a usable
+    intraday quote, PLUS a same-day ESTIMATE for a late-striking mutual fund that has none.
 
     A suspect-flagged quote (producer's >40% move guard) or a missing/None ``last`` is
-    skipped, so that symbol keeps its EOD close — never an intraday outlier."""
+    skipped, so that symbol keeps its EOD close — never an intraday outlier.
+
+    Late-striking-fund estimate (metron-ops#112, mechanism B): a mutual fund prints its
+    NAV once a day, hours after Metron's EOD close run, so on any given session it has NO
+    usable intraday quote of its own and would otherwise read flat all day. For a held
+    ticker with no usable quote AND known to be such a fund (``ticker.upper() in
+    fund_proxy.FUND_PROXY`` — the authoritative signal; no DB security_type lookup), we
+    synthesize ``estimated_price = fund_eod_close * (1 + proxy_return)`` from its own
+    latest EOD close (``eod_closes``) and its tracking-proxy ETF's same-day return
+    (``indices.proxy_day_return``). Skipped (left un-overlaid, falling back to EOD close)
+    if the proxy return or the fund's EOD close isn't available — never fabricated.
+    ``estimated_tickers`` names every ticker that got this synthesized (not real-quote)
+    price, so the caller can flag it "estimated" in the UI."""
+    from api.services import indices as indices_service
+
     yf_by_ticker = _yf_symbol_by_ticker(session, tickers)
+    eod_closes = eod_closes or {}
     out: dict[str, ClosePoint] = {}
+    estimated: set[str] = set()
     for ticker in tickers:
         q = quotes.get(yf_by_ticker.get(ticker, ticker))
-        if not isinstance(q, dict) or q.get("suspect"):
-            continue
-        last = q.get("last")
-        if last is None:
-            continue
-        try:
-            close = float(last)
-        except (TypeError, ValueError):
-            continue
-        when = today
-        sd = q.get("session_date")
-        if sd:
+        usable = isinstance(q, dict) and not q.get("suspect") and q.get("last") is not None
+        if usable:
             try:
-                when = date.fromisoformat(str(sd))
-            except ValueError:
-                pass
-        out[ticker] = ClosePoint(bar_date=when, close=close)
-    return out
+                close = float(q["last"])
+            except (TypeError, ValueError):
+                usable = False
+        if usable:
+            when = today
+            sd = q.get("session_date")
+            if sd:
+                try:
+                    when = date.fromisoformat(str(sd))
+                except ValueError:
+                    pass
+            out[ticker] = ClosePoint(bar_date=when, close=close)
+            continue
+        # No usable intraday quote of its own — estimate iff it's a known late-striking fund.
+        if ticker.upper() not in fund_proxy.FUND_PROXY:
+            continue
+        eod = eod_closes.get(ticker)
+        if eod is None or eod.close is None:
+            continue
+        proxy_return = indices_service.proxy_day_return(
+            fund_proxy.proxy_for(ticker), reader=reader, now=now
+        )
+        if proxy_return is None:
+            continue
+        estimated_price = eod.close * (1 + proxy_return)
+        out[ticker] = ClosePoint(bar_date=today, close=estimated_price)
+        estimated.add(ticker)
+    return out, estimated
 
 
 def intraday_enabled(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> bool:
@@ -212,20 +259,30 @@ def live_prices(
     if not tickers:
         return None, IntradayMeta(applied=False, reason="unavailable")
     quotes, as_of, stale = load_quotes(reader=reader, now=now)
-    if not quotes:
+    # An empty `quotes` map alone isn't fatal: a portfolio holding ONLY late-striking funds
+    # (metron-ops#112) never gets a real per-ticker quote for them, yet the SAME artifact's
+    # `fund_proxies` map can still drive a same-day estimate for every one of them. Only bail
+    # here when there's neither a real quote NOR any held ticker `_overlay` could estimate.
+    if not quotes and not any(t.upper() in fund_proxy.FUND_PROXY for t in tickers):
         return None, IntradayMeta(applied=False, as_of_utc=as_of, stale=stale, reason="unavailable")
     if stale:
         return None, IntradayMeta(applied=False, as_of_utc=as_of, stale=True, reason="stale")
-    overlay = _overlay(session, tickers, quotes, today=today)
-    if not overlay:
-        return None, IntradayMeta(applied=False, as_of_utc=as_of, stale=stale, reason="unavailable")
-    # EOD close is the baseline; the fresh intraday last overrides it per symbol. Symbols
-    # without an intraday quote keep their close (or the broker-native fallback downstream).
+    # EOD close is the baseline; the fresh intraday last overrides it per symbol (also the
+    # source ``fund_eod_close`` for a late-striking-fund same-day estimate — metron-ops#112).
     from api.services import prices as price_service
 
-    merged = dict(price_service.latest_close_by_symbol(session, tickers))
+    eod_closes = price_service.latest_close_by_symbol(session, tickers)
+    overlay, estimated = _overlay(
+        session, tickers, quotes, today=today, eod_closes=eod_closes, reader=reader, now=now
+    )
+    if not overlay:
+        return None, IntradayMeta(applied=False, as_of_utc=as_of, stale=stale, reason="unavailable")
+    merged = dict(eod_closes)
     merged.update(overlay)
-    return merged, IntradayMeta(applied=True, as_of_utc=as_of, stale=False, n_priced=len(overlay))
+    return merged, IntradayMeta(
+        applied=True, as_of_utc=as_of, stale=False, n_priced=len(overlay),
+        estimated_tickers=frozenset(estimated),
+    )
 
 
 def for_portfolio(
