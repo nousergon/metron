@@ -8,6 +8,7 @@ analytics endpoints land in PH1–PH3 per the commercialization plan.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager
 
@@ -20,7 +21,7 @@ from api.config import settings
 from api.db.session import create_all
 from api.plugins import active_plugins
 from api.routers import indices, macro, meta, portfolios
-from api.services.demo import DEMO_TENANT_ID
+from api.services.demo import DEMO_TENANT_ID, REFERENCE_PORTFOLIO_ID
 
 # Structured logging + flow-doctor. Passing a flow-doctor.yaml attaches a
 # FlowDoctorHandler at ERROR (off under pytest), so every log.error() in a
@@ -85,15 +86,27 @@ app.add_middleware(
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+# The Reference Rate showcase is now readable by every real tenant (not just the demo
+# tenant that owns it — see api/routers/portfolios.py::_owned_portfolio), so a real
+# tenant's own X-Tenant-Id header will never match DEMO_TENANT_ID below. This path-based
+# check is the second, independent leg of the same read-only guard: it keys off the fixed
+# portfolio id instead of the caller's tenant, so it protects the showcase regardless of
+# who's asking. Every mutating route in api/routers/portfolios.py is `/portfolios/{id}/...`
+# with no extra prefix, so a plain anchored match against the fixed id is reliable without
+# needing real path-param parsing (unavailable at this layer, before routing).
+_REFERENCE_PORTFOLIO_PATH = re.compile(rf"^/portfolios/{re.escape(str(REFERENCE_PORTFOLIO_ID))}(?:/|$)")
+
 
 @app.middleware("http")
 async def _demo_read_only(request: Request, call_next):
-    """The demo portfolio (metron-ops#42) is READ-ONLY — refuse any mutating request
-    (anything but GET/HEAD/OPTIONS) addressed to the demo tenant, so a visitor exploring
-    the sample can never edit, import into, delete, or refresh the shared fixture. One
-    HTTP-layer chokepoint covers every mutation route uniformly. The server-side seed
-    runs in-process (not over HTTP), so it is unaffected."""
+    """The demo portfolio (metron-ops#42) and the Reference Rate showcase are READ-ONLY —
+    refuse any mutating request (anything but GET/HEAD/OPTIONS) addressed to either, so no
+    tenant can ever edit, import into, delete, or refresh a shared fixture. One HTTP-layer
+    chokepoint covers every mutation route uniformly. The server-side seed/sync runs
+    in-process (not over HTTP), so it is unaffected."""
     if request.method not in _SAFE_METHODS:
+        if _REFERENCE_PORTFOLIO_PATH.match(request.url.path):
+            return JSONResponse(status_code=403, content={"detail": "The demo portfolio is read-only."})
         raw = request.headers.get("x-tenant-id")
         if raw:
             try:

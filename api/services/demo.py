@@ -32,12 +32,17 @@ from portfolio_analytics.ingestion import reference_connector
 DEMO_TENANT_ID = uuid.UUID("00000000-0000-0000-0000-00000000de60")
 DEMO_PORTFOLIO_ID = uuid.UUID("00000000-0000-0000-0000-00000000de61")
 
-# A second, LIVE read-only showcase under the same demo tenant: the "Reference Rate" —
-# an illustrative reference portfolio synced daily from the engine's published artifact
+# A second, LIVE read-only showcase seeded under the demo tenant but VISIBLE ON EVERY
+# TENANT'S dashboard (api/routers/portfolios.py::list_portfolios + _owned_portfolio carve
+# a narrow, named exception for this one fixed id): the "Reference Rate" — an illustrative
+# reference portfolio synced daily from the engine's published artifact
 # (``metron/reference_rate.json``). It carries no claims and states no objective; it is
-# demo/illustrative only. Read-only is enforced by the shared demo-tenant guard
-# (``assert_writable`` + the HTTP ``_demo_read_only`` middleware); the daily sync runs
-# in-process (``api.maintenance`` / startup), bypassing the HTTP layer.
+# demo/illustrative only, meant to let a prospect explore real product behavior before
+# linking their own accounts. Read-only for every tenant (not just the demo tenant) is
+# enforced by the HTTP ``_demo_read_only`` middleware's path-based check in api/main.py —
+# a fixed constant, so a real tenant's own portfolio can never collide with this id
+# (``create_portfolio`` always assigns a random uuid4, never a client-supplied id). The
+# daily sync runs in-process (``api.maintenance`` / startup), bypassing the HTTP layer.
 REFERENCE_PORTFOLIO_ID = uuid.UUID("00000000-0000-0000-0000-00000000de62")
 REFERENCE_PORTFOLIO_NAME = "Reference Rate"
 

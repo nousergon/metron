@@ -34,6 +34,7 @@ from api.services import (
     calendar,
     crypto,
     data_spine,
+    demo,
     indices,
     intraday,
     labels,
@@ -712,8 +713,16 @@ def list_portfolios(
     tenant_id: uuid.UUID = Depends(_tenant_id),
     session: Session = Depends(get_session),
 ) -> list[models.Portfolio]:
-    rows = session.scalars(select(models.Portfolio).where(models.Portfolio.tenant_id == tenant_id)).all()
-    return list(rows)
+    rows = list(session.scalars(select(models.Portfolio).where(models.Portfolio.tenant_id == tenant_id)).all())
+    # The Reference Rate showcase is visible on every real tenant's dashboard (not just the
+    # isolated demo tenant, which already owns it and gets it via the query above) — lets a
+    # prospect see live product behavior before linking their own accounts. Fail-soft: on a
+    # DB where the daily sync hasn't run yet, `session.get` returns None and we just omit it.
+    if tenant_id != demo.DEMO_TENANT_ID:
+        reference = session.get(models.Portfolio, demo.REFERENCE_PORTFOLIO_ID)
+        if reference is not None:
+            rows.append(reference)
+    return rows
 
 
 @router.post("", response_model=PortfolioOut, status_code=201)
@@ -738,21 +747,33 @@ def _owned_portfolio(
     session: Session = Depends(get_session),
 ) -> models.Portfolio:
     """Resolve a portfolio the caller's tenant owns, or 404 (never leak cross-tenant
-    existence — a portfolio of another tenant is indistinguishable from a missing one)."""
-    portfolio = session.scalars(
-        select(models.Portfolio).where(
-            models.Portfolio.id == portfolio_id,
-            models.Portfolio.tenant_id == tenant_id,
-        )
-    ).first()
+    existence — a portfolio of another tenant is indistinguishable from a missing one).
+
+    ONE explicit exception: the fixed Reference Rate showcase (demo.REFERENCE_PORTFOLIO_ID)
+    resolves for ANY caller tenant, read-only — it's designed to be visible on every real
+    user's dashboard (see list_portfolios). This is a single named-constant carve-out, not
+    a general cross-tenant widening; writes to it are still refused regardless of the
+    caller's tenant by the `_demo_read_only` middleware's path-based check (api/main.py)."""
+    if portfolio_id == demo.REFERENCE_PORTFOLIO_ID:
+        portfolio = session.get(models.Portfolio, demo.REFERENCE_PORTFOLIO_ID)
+    else:
+        portfolio = session.scalars(
+            select(models.Portfolio).where(
+                models.Portfolio.id == portfolio_id,
+                models.Portfolio.tenant_id == tenant_id,
+            )
+        ).first()
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     # The app is being actively used — touch the data-spine UI heartbeat (throttled,
     # fail-soft, flag-gated) so the intraday quote producer runs only while someone
     # is actually looking AND has the intraday overlay enabled. Every authenticated
     # portfolio request flows through this dependency, making it the one natural
-    # chokepoint for "Metron is open".
-    data_spine.touch_ui_heartbeat(session=session, tenant_id=tenant_id, portfolio_id=portfolio.id)
+    # chokepoint for "Metron is open". Keyed by the portfolio's OWN tenant_id (not the
+    # caller's) — for the Reference Rate carve-out above those differ, and every other
+    # tenant-scoped lookup in this file (preferences, snaptrade exclusions, ...) already
+    # keys off portfolio.tenant_id for exactly this reason.
+    data_spine.touch_ui_heartbeat(session=session, tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id)
     return portfolio
 
 
