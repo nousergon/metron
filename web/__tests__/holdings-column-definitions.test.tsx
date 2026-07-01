@@ -1,5 +1,7 @@
 // Column-definition ⓘ signposts (metron-ops#115): an ambiguously-named column carries a
-// plain-language definition surfaced as an ⓘ in its header (the title attr holds the text).
+// plain-language definition surfaced as a click-to-open ⓘ disclosure in its header, separate
+// from the sort control (a nested-button design previously swallowed every click on the ⓘ
+// into the column's sort toggle — metron#158 follow-up).
 
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -37,13 +39,20 @@ const h = (ticker: string): Holding =>
   }) as Holding;
 
 describe("column definitions", () => {
-  it("shows an ⓘ signpost on a column that carries a definition (Unrealized %)", () => {
+  it("shows a click-to-open ⓘ disclosure on a column that carries a definition (Unrealized %)", () => {
     render(<HoldingsTable baseCurrency="USD" priced holdings={[h("AAPL")]} />);
-    // The Unrealized % header button carries the definition in its title.
+    // The sort button itself no longer carries the definition — just the sort affordance.
     const header = screen.getByRole("button", { name: /Unrealized %/ });
-    expect(header.getAttribute("title")).toMatch(/cost basis/i);
-    // A visible ⓘ glyph sits in the header.
-    expect(header.textContent).toContain("ⓘ");
+    expect(header).toHaveAttribute("title", "Sort by Unrealized %");
+    expect(header).not.toHaveTextContent("ⓘ");
+    // A separate, independently-clickable ⓘ disclosure sits beside the sort button and
+    // reveals the definition text — it is NOT nested inside the sort button (nested buttons
+    // are invalid HTML and would swallow the click into the sort toggle).
+    const info = screen.getByLabelText("What is Unrealized %?");
+    expect(info.tagName).toBe("SUMMARY");
+    expect(header.contains(info)).toBe(false);
+    expect(info.closest("button")).toBeNull();
+    expect(info.closest("details")).toHaveTextContent(/cost basis/i);
   });
 
   it("self-evident columns carry no definition (no ⓘ in the Ticker header)", () => {
@@ -51,11 +60,15 @@ describe("column definitions", () => {
     const ticker = screen.getByRole("button", { name: /Ticker/ });
     expect(ticker.textContent).not.toContain("ⓘ");
     expect(ticker).toHaveAttribute("title", "Sort by Ticker");
+    expect(screen.queryByLabelText("What is Ticker?")).not.toBeInTheDocument();
   });
 
-  it("the Score column is defined (attractiveness composite)", () => {
+  it("the Score column is defined (attractiveness composite), reachable independent of sort", () => {
     render(<HoldingsTable baseCurrency="USD" priced holdings={[h("AAPL")]} />);
     const score = screen.getByRole("button", { name: /Score/ });
-    expect(score.getAttribute("title")).toMatch(/attractiveness/i);
+    expect(score).toHaveAttribute("title", "Sort by Score");
+    const info = screen.getByLabelText("What is Score?");
+    expect(score.contains(info)).toBe(false);
+    expect(info.closest("details")).toHaveTextContent(/attractiveness/i);
   });
 });
