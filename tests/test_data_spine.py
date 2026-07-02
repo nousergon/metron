@@ -79,6 +79,41 @@ class TestBuildUniverse:
         payload = data_spine.build_holdings_universe(db_session, today=date(2024, 6, 3))
         assert payload["holdings"] == []
         assert payload["currencies"] == []
+        assert payload["tickers"] == []
+
+    def test_tickers_are_symbols_only_deduped_sorted_broker_symbol(self, db_session):
+        """The ``tickers`` slice is the nousergon-data daily-news union's source
+        (config#1506): a symbols-only, deduped, sorted list of the BROKER symbols
+        (not the exchange-suffixed yf_symbol) — the exact ``{"tickers": [...]}``
+        shape the retired robodashboard producer fed the union."""
+        # AAPL held in two portfolios (must appear once), plus a foreign listing whose
+        # broker symbol (1299) differs from its yf_symbol (1299.HK).
+        _seed_holding(db_session, pf_name="P1", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        _seed_holding(db_session, pf_name="P2", symbol="AAPL", currency="USD", yf_symbol="AAPL", external_id="A2")
+        _seed_holding(db_session, pf_name="P3", symbol="1299", currency="HKD", yf_symbol="1299.HK", external_id="A3")
+
+        payload = data_spine.build_holdings_universe(db_session, today=date(2024, 6, 3))
+
+        # Symbols-only list of the BROKER ticker (1299, not 1299.HK), deduped + sorted.
+        assert payload["tickers"] == ["1299", "AAPL"]
+        # Every entry is a bare string (the consumer does str(t).upper()).
+        assert all(isinstance(t, str) for t in payload["tickers"])
+        # tickers ⊆ the same held set as holdings — two views, never drifting.
+        assert {"AAPL"} <= {h["yf_symbol"] for h in payload["holdings"]}
+
+    def test_tickers_exclude_unlisted(self, db_session):
+        """An unlisted broker-priced instrument (no public listing → no news feed)
+        stays out of the news-universe ``tickers`` just as it does the yf holdings."""
+        _seed_holding(db_session, pf_name="P1", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        _seed_holding(db_session, pf_name="P1b", symbol="PCKM", currency="USD",
+                      yf_symbol="PCKM", external_id="A9")
+        sec = db_session.query(models.Security).filter_by(symbol="PCKM").one()
+        sec.yf_unlisted = True
+        db_session.commit()
+
+        payload = data_spine.build_holdings_universe(db_session, today=date(2024, 6, 3))
+
+        assert payload["tickers"] == ["AAPL"]
 
 
 class TestPublish:
