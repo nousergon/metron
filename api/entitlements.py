@@ -73,6 +73,13 @@ FEATURES: tuple[Feature, ...] = (
     Feature("agentic_research", "Agentic quant research", ("feed",)),
     Feature("ai_advisor", "AI Advisor", ()),
     Feature("alpha_engine", "Alpha Engine signals", ()),
+    # Neutral research intel (regime + narrative, sector ratings/modifiers, market
+    # breadth, per-holding attractiveness + generic thesis) read from the crucible-research
+    # `research_intel/latest.json` artifact (EPIC config#1499 / metron-ops#117). Sibling of
+    # ai_advisor/alpha_engine: paid AI-Advisor-tier packaging, tier-gated only (the artifact
+    # read is fail-soft, so availability is a tier decision, not a data-provisioning one —
+    # free/Beta sees the quant spine only, never this edge OUTPUT).
+    Feature("research_intel", "Research intel (regime · sector ratings · attractiveness)", ()),
 )
 FEATURE_BY_KEY: dict[str, Feature] = {f.key: f for f in FEATURES}
 
@@ -94,7 +101,7 @@ _BETA = frozenset({
 })
 _PRO = _BETA | {"auto_sync", "benchmark", "risk", "attribution", "scenarios", "calendar", "etf_lookthrough", "indices"}
 _AGENTIC = _PRO | {"agentic_research"}
-_PERSONAL = _AGENTIC | {"ai_advisor", "alpha_engine"}
+_PERSONAL = _AGENTIC | {"ai_advisor", "alpha_engine", "research_intel"}
 
 # Two exposed options for now (metron-ops): "Beta" — everything legally releasable to the
 # public pre-SEC-approval (no advice) — and "AI Advisor (demo)" — the full product, advice

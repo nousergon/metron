@@ -841,6 +841,56 @@ export type Macro = {
 export const getMacro = (tenantId: string, opts?: { full?: boolean }) =>
   get<Macro>(tenantId, `/macro${opts?.full ? "?full=true" : ""}`);
 
+// ── Research intel (neutral market intel from crucible-research; paid AI-Advisor tier) ──
+// EPIC config#1499 Phase 1 / metron-ops#117. Global, read-only intel: regime + narrative,
+// sector ratings/modifiers, market breadth, per-ticker attractiveness + generic thesis.
+export type ResearchIntelSectorRating = { rating: string | null; rationale: string | null };
+export type ResearchIntelBreakdown = {
+  quant_score: number | null;
+  qual_score: number | null;
+  factor_subscore: number | null;
+  weighted_base: number | null;
+  macro_shift: number | null;
+};
+export type ResearchIntelThesis = { bull_case: string | null; sector: string | null };
+export type ResearchIntelAttractiveness = {
+  ticker: string;
+  score: number | null;
+  sector: string | null;
+  breakdown: ResearchIntelBreakdown | null;
+  thesis: ResearchIntelThesis | null;
+};
+export type ResearchIntelSnapshot = {
+  schema_version: number | null;
+  date: string | null;
+  generated_at: string | null;
+  market_regime: string | null;
+  regime_narrative: string | null;
+  sector_ratings: Record<string, ResearchIntelSectorRating>;
+  sector_modifiers: Record<string, number>;
+  market_breadth: {
+    pct_above_50d_ma: number | null;
+    pct_above_200d_ma: number | null;
+    advance_decline_ratio: number | null;
+  };
+  attractiveness: Record<string, ResearchIntelAttractiveness>;
+};
+export type ResearchIntel = {
+  available: boolean;
+  reason: string | null;
+  required_tier: string | null;
+  // null until the first weekly artifact is cached (available-but-stale); null intel
+  // when not entitled either — the surface never blanks and never leaks intel.
+  stale: boolean | null;
+  intel: ResearchIntelSnapshot | null;
+};
+
+// `tickers` scopes the attractiveness map to the caller's holdings (empty ⇒ full universe).
+export const getResearchIntel = (tenantId: string, opts?: { tickers?: string[] }) => {
+  const q = opts?.tickers && opts.tickers.length > 0 ? `?tickers=${encodeURIComponent(opts.tickers.join(","))}` : "";
+  return get<ResearchIntel>(tenantId, `/research-intel${q}`);
+};
+
 export type CalendarEvent = { event_date: string; kind: string; ticker: string; label: string };
 
 export type Calendar = {
