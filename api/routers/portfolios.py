@@ -222,6 +222,13 @@ class HoldingOut(BaseModel):
     # fields above. None off-feed or on a total coverage gap, never fabricated.
     attractiveness: float | None = None
     attractiveness_coverage: int | None = None
+    # Unit sub-scores ∈ [0, 1] behind the composite — the same breakdown the tearsheet gauge
+    # shows. None when that component's input was missing and dropped from the blend.
+    attractiveness_valuation: float | None = None
+    attractiveness_upside: float | None = None
+    attractiveness_rating: float | None = None
+    attractiveness_revision: float | None = None
+    attractiveness_sentiment: float | None = None
 
 
 class GroupMediansOut(BaseModel):
@@ -612,6 +619,11 @@ class WatchlistEntryOut(BaseModel):
     news_articles: int | None = None
     attractiveness: float | None = None
     attractiveness_coverage: int | None = None
+    attractiveness_valuation: float | None = None
+    attractiveness_upside: float | None = None
+    attractiveness_rating: float | None = None
+    attractiveness_revision: float | None = None
+    attractiveness_sentiment: float | None = None
 
 
 class WatchlistIn(BaseModel):
@@ -1143,7 +1155,7 @@ def put_account_selection(
 # Saved Holdings-table view (metron-ops#114). Valid grouping modes + metric bands — a saved
 # value outside these sets is ignored on read (degrades to the default) and rejected on write.
 _HOLDINGS_GROUPINGS = {"asset", "classification", "account"}
-_HOLDINGS_BANDS = {"Score", "Valuation", "Fundamentals", "Balance Sheet", "Technicals", "Consensus"}
+_HOLDINGS_BANDS = {"Attractiveness", "Valuation", "Fundamentals", "Balance Sheet", "Technicals", "Consensus"}
 # Valid instrument-type override values — the set classify_security_type emits (metron-ops#115).
 _INSTRUMENT_TYPES = {"cash", "treasury", "cd", "bond", "equity", "etf", "fund", "option", "other"}
 

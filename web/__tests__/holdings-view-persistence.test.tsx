@@ -54,7 +54,7 @@ describe("HoldingsView saved-view hydration", () => {
         medians={null}
         portfolioId="p1"
         savedGrouping="classification"
-        savedBands={["Score", "Valuation"]}
+        savedBands={["Attractiveness", "Valuation"]}
       />,
     );
     // Saved grouping is active...

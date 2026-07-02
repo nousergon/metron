@@ -22,10 +22,10 @@ export type PresetKey =
 export const COLUMN_PRESETS: { key: PresetKey; label: string; groups: ColumnBand[] }[] = [
   { key: "overview", label: "Overview", groups: ["Position", "Value"] },
   { key: "returns", label: "Returns", groups: ["Position", "Value", "Returns"] },
-  { key: "valuation", label: "Valuation", groups: ["Position", "Value", "Score", "Valuation"] },
-  { key: "fundamentals", label: "Fundamentals", groups: ["Position", "Value", "Score", "Fundamentals", "Balance Sheet"] },
-  { key: "technicals", label: "Technicals", groups: ["Position", "Value", "Score", "Technicals"] },
-  { key: "consensus", label: "Consensus", groups: ["Position", "Value", "Score", "Consensus"] },
+  { key: "valuation", label: "Valuation", groups: ["Position", "Value", "Valuation"] },
+  { key: "fundamentals", label: "Fundamentals", groups: ["Position", "Value", "Attractiveness", "Fundamentals", "Balance Sheet"] },
+  { key: "technicals", label: "Technicals", groups: ["Position", "Value", "Attractiveness", "Technicals"] },
+  { key: "consensus", label: "Consensus", groups: ["Position", "Value", "Attractiveness", "Consensus"] },
   { key: "classification", label: "Classify", groups: ["Class"] },
   { key: "all", label: "All", groups: [...BAND_ORDER] },
 ];

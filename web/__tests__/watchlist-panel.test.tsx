@@ -62,6 +62,11 @@ const EMPTY_METRICS = {
   news_articles: null,
   attractiveness: null,
   attractiveness_coverage: null,
+  attractiveness_valuation: null,
+  attractiveness_upside: null,
+  attractiveness_rating: null,
+  attractiveness_revision: null,
+  attractiveness_sentiment: null,
 } satisfies Omit<WatchlistEntry, "symbol" | "name" | "sector" | "next_earnings_date" | "held" | "note">;
 
 const entry = (symbol: string, held: boolean): WatchlistEntry => ({

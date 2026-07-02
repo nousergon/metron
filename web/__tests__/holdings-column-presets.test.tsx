@@ -42,16 +42,19 @@ const h = (ticker: string, over: Partial<Holding> = {}): Holding =>
   }) as Holding;
 
 describe("HoldingsTable visibleBands", () => {
-  it("shows only the requested bands (Score-only hides Valuation/Technicals)", () => {
-    render(<HoldingsTable baseCurrency="USD" priced holdings={[h("AAPL")]} visibleBands={["Score"]} />);
-    expect(screen.getAllByText("Score").length).toBeGreaterThan(0); // band header + column label
+  it("shows only the requested bands (Attractiveness-only hides Valuation/Technicals)", () => {
+    render(<HoldingsTable baseCurrency="USD" priced holdings={[h("AAPL")]} visibleBands={["Attractiveness"]} />);
+    expect(screen.getAllByText("Attractiveness").length).toBeGreaterThan(0); // band header
+    expect(screen.getByText("Score")).toBeInTheDocument(); // headline column label
     expect(screen.queryByText("Valuation")).not.toBeInTheDocument();
     expect(screen.queryByText("Technicals")).not.toBeInTheDocument();
     expect(screen.queryByText("30.2×")).not.toBeInTheDocument(); // P/E (Valuation) hidden
   });
 
   it("shows a band when it's in the visible set", () => {
-    render(<HoldingsTable baseCurrency="USD" priced holdings={[h("AAPL")]} visibleBands={["Score", "Valuation"]} />);
+    render(
+      <HoldingsTable baseCurrency="USD" priced holdings={[h("AAPL")]} visibleBands={["Attractiveness", "Valuation"]} />,
+    );
     expect(screen.getByText("Valuation")).toBeInTheDocument();
     expect(screen.getByText("30.2×")).toBeInTheDocument(); // P/E now visible
     expect(screen.queryByText("Technicals")).not.toBeInTheDocument(); // still hidden
@@ -74,7 +77,7 @@ describe("ColumnPresetControl", () => {
     const onChange = vi.fn();
     render(<ColumnPresetControl value={["Position", "Value"]} onChange={onChange} />);
     fireEvent.click(screen.getByRole("button", { name: "Fundamentals" }));
-    expect(onChange).toHaveBeenCalledWith(["Position", "Value", "Score", "Fundamentals", "Balance Sheet"]);
+    expect(onChange).toHaveBeenCalledWith(["Position", "Value", "Attractiveness", "Fundamentals", "Balance Sheet"]);
   });
 
   it("toggling a Customize band adds it in canonical order", () => {
@@ -88,7 +91,7 @@ describe("ColumnPresetControl", () => {
   });
 
   it("marks the active preset via aria-pressed", () => {
-    render(<ColumnPresetControl value={["Position", "Value", "Score", "Valuation"]} onChange={vi.fn()} />);
+    render(<ColumnPresetControl value={["Position", "Value", "Valuation"]} onChange={vi.fn()} />);
     expect(screen.getByRole("button", { name: "Valuation" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Overview" })).toHaveAttribute("aria-pressed", "false");
   });

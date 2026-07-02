@@ -99,6 +99,13 @@ export type Holding = {
   // fields above. null off-feed or on a total coverage gap, never fabricated.
   attractiveness: number | null;
   attractiveness_coverage: number | null; // # of components that contributed
+  // Unit sub-scores ∈ [0, 1] behind the composite — the same breakdown the tearsheet gauge
+  // shows. null when that component's input was missing and dropped from the blend.
+  attractiveness_valuation: number | null;
+  attractiveness_upside: number | null;
+  attractiveness_rating: number | null;
+  attractiveness_revision: number | null;
+  attractiveness_sentiment: number | null;
 };
 
 // Sector- / country-level median multiples (SP1500-broad peer benchmark) for the Holdings
@@ -388,6 +395,11 @@ export type WatchlistEntry = {
   news_articles: number | null;
   attractiveness: number | null;
   attractiveness_coverage: number | null;
+  attractiveness_valuation: number | null;
+  attractiveness_upside: number | null;
+  attractiveness_rating: number | null;
+  attractiveness_revision: number | null;
+  attractiveness_sentiment: number | null;
 };
 
 export const getWatchlist = (tenantId: string, id: string) =>

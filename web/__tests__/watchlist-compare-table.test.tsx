@@ -64,6 +64,11 @@ const EMPTY_METRICS = {
   news_articles: null,
   attractiveness: null,
   attractiveness_coverage: null,
+  attractiveness_valuation: null,
+  attractiveness_upside: null,
+  attractiveness_rating: null,
+  attractiveness_revision: null,
+  attractiveness_sentiment: null,
 } satisfies Omit<WatchlistEntry, "symbol" | "name" | "sector" | "next_earnings_date" | "held" | "note">;
 
 const entry = (symbol: string, over: Partial<WatchlistEntry> = {}): WatchlistEntry => ({
@@ -89,7 +94,7 @@ describe("WatchlistCompareTable", () => {
     expect(screen.getByText(/never affects NAV, performance/)).toBeInTheDocument();
   });
 
-  it("renders entries with their metrics through the Score/Valuation bands", () => {
+  it("renders entries with their metrics through the Attractiveness/Valuation bands", () => {
     const { container } = render(
       <WatchlistCompareTable
         portfolioId="p"
