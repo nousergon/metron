@@ -1048,6 +1048,14 @@ def _load_perf_points(
     ]
 
 
+def _index_bench_return(bench: dict[str, tuple[float | None, float | None]], sym: str) -> float | None:
+    """A benchmark's TODAY return from a live index-strip ``(last, prev_close)`` quote —
+    the same source (and the same "only a live-session quote" freshness guard, applied by
+    the caller) the Markets strip itself displays. None when the symbol has no live quote."""
+    last, prev = bench.get(sym, (None, None))
+    return (last / prev - 1.0) if (last is not None and prev) else None
+
+
 def _live_today_tile(
     session: Session,
     tenant_id: uuid.UUID,
@@ -1080,8 +1088,7 @@ def _live_today_tile(
     benches: list[BenchmarkReturn] = []
     if with_benchmarks:
         for sym, blabel in BENCHMARKS:
-            last, prev = live.bench.get(sym, (None, None))
-            ret = (last / prev - 1.0) if (last is not None and prev) else None
+            ret = _index_bench_return(live.bench, sym)
             alpha = (twr - ret) if ret is not None else None
             benches.append(BenchmarkReturn(symbol=sym, label=blabel, ret=ret, alpha=alpha))
     return PeriodTile("today", "Today", prior.snap_date, today, gain, twr, benches, intraday=True)
@@ -1097,19 +1104,31 @@ def period_tiles(
     with_benchmarks: bool = True,
     benchmark_source: HistorySource | None = None,
     live: LiveToday | None = None,
+    today_bench: dict[str, tuple[float | None, float | None]] | None = None,
 ) -> PeriodTilesResult:
     """Overview hero tiles (metron-ops#83): aggregate holdings performance over Today / YTD
     / LTM, each as $ investment gain + %TWR, plus the per-benchmark return and alpha.
 
     Benchmark comparison is FEED-GATED: ``with_benchmarks=False`` (the no-feed beta) yields
-    portfolio-only tiles (no benchmark columns). When enabled, benchmark returns come from
-    the price_bars close cache (SPY/QQQ/IWM ETF proxies); ``benchmark_source`` (passed only
-    when feed-entitled) backfills any window the cache doesn't already span.
+    portfolio-only tiles (no benchmark columns). YTD/LTM benchmark returns come from the
+    price_bars close cache (SPY/QQQ/IWM ETF proxies); ``benchmark_source`` (passed only when
+    feed-entitled) backfills any window the cache doesn't already span — a multi-day cache
+    slack is immaterial over a months-wide window.
 
     ``live`` (metron-ops#95) makes the TODAY tile a true intraday number — the prior trading
     session's close → the current LIVE NAV — whenever the intraday overlay is in effect.
     Without it (pre-open / stale feed / no-feed beta) TODAY falls back to the date-guarded
-    snapshot-to-snapshot path (metron#119), so a prior session is never relabeled as today."""
+    snapshot-to-snapshot path (metron#119), so a prior session is never relabeled as today.
+
+    ``today_bench`` (metron-ops#131) is the SAME live index-strip ``(last, prev_close)`` quotes
+    ``live.bench`` carries, sourced independently of whether the intraday NAV overlay applies.
+    TODAY's benchmark return — in EITHER the live-intraday tile or this settled-snapshot path
+    — always prefers it over the multi-day-tolerant price_bars cache: QQQ/IWM are pure
+    comparison proxies never held as a position, so price_bars only refreshes them on a lenient
+    multi-day slack that's fine for YTD/LTM but can silently serve a several-day-stale close for
+    a 1-day TODAY window (b_start == b_end → a fabricated-looking 0% return). Falls back to
+    price_bars only when the settled TODAY window isn't actually today (stale/pre-open "as of
+    <date>" tile) or the index-strip quote itself isn't available."""
     points = _load_perf_points(session, tenant_id, portfolio_id, account_ids)
     result = PeriodTilesResult(last_date=points[-1].snap_date if points else None)
     if len(points) < 2:
@@ -1152,13 +1171,20 @@ def period_tiles(
         base, end = window[0], window[-1]
         twr = _window_twr(window)
         gain = end.nav - base.nav - sum(p.external_flow for p in window[1:])
+        # TODAY's benchmark is only genuinely "today" when the settled snapshot itself is
+        # dated today (else it's the "as of <date>" completed-session case below, which the
+        # index strip's TODAY quote doesn't describe — price_bars is correct there).
+        use_today_bench = period == "today" and end.snap_date == today and today_bench is not None
         benches: list[BenchmarkReturn] = []
         if with_benchmarks:
             for sym, blabel in BENCHMARKS:
-                series = bench_history.get(sym)
-                b_start = _asof_close(series, base.snap_date)
-                b_end = _asof_close(series, end.snap_date)
-                ret = (b_end / b_start - 1.0) if (b_start and b_end and b_start > 0) else None
+                if use_today_bench:
+                    ret = _index_bench_return(today_bench, sym)
+                else:
+                    series = bench_history.get(sym)
+                    b_start = _asof_close(series, base.snap_date)
+                    b_end = _asof_close(series, end.snap_date)
+                    ret = (b_end / b_start - 1.0) if (b_start and b_end and b_start > 0) else None
                 alpha = (twr - ret) if (twr is not None and ret is not None) else None
                 benches.append(BenchmarkReturn(symbol=sym, label=blabel, ret=ret, alpha=alpha))
         # TODAY whose freshest snapshot predates today (pre-open / intraday-off) carries an

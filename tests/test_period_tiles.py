@@ -10,7 +10,7 @@ backfill fetch is monkeypatched to a no-op so a coverage gap can't reach out.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -284,6 +284,65 @@ class TestLiveIntradayToday:
         assert today.gain == pytest.approx(20.0)
 
 
+class TestTodaySettledBenchmarkFromIndexStrip:
+    """When the intraday NAV overlay isn't in effect but a snapshot IS already dated today
+    (metron-ops#131), TODAY's benchmark return must come from the live index-strip quote
+    (``today_bench``), NOT the multi-day-tolerant ``price_bars`` cache — QQQ/IWM are pure
+    comparison proxies that only get a fresh same-day `price_bars` row when SOMETHING backfills
+    it, unlike SPY which is usually also a held position. A stale cached close (b_start ==
+    b_end) silently computes ret=0.0, which reads as "portfolio matched the benchmark exactly"
+    when in fact the benchmark moved and the cache just hadn't caught up."""
+
+    def test_uses_index_strip_quote_over_a_stale_price_bars_cache(self, db_session, tenant):
+        pid = uuid.uuid4()
+        for when, nav in _SERIES:  # last snapshot 2024-06-30 @ 1320 (prior 2024-06-29 @ 1300)
+            _snap(db_session, tenant, pid, when, nav)
+        # SPY's cache is genuinely fresh (as if it's also a held position, refreshed daily).
+        # QQQ/IWM are stale by 3 days (latest bar 6/27) — within the 4-day coverage slack, so
+        # no backfill triggers, but it reproduces the exact b_start == b_end bug for a naive
+        # price_bars TODAY read: _asof_close carries the same 6/27 bar forward for BOTH the
+        # 6/29 window-start and the 6/30 window-end lookups → a fabricated-looking ret=0.0.
+        _bars(db_session, "SPY", [(date(2023, 6, 1), 400.0), (date(2023, 12, 31), 440.0),
+                                  (date(2024, 6, 29), 480.0), (date(2024, 6, 30), 470.0)])
+        for sym in ("QQQ", "IWM"):
+            _bars(db_session, sym, [(date(2023, 6, 1), 300.0), (date(2023, 12, 31), 330.0),
+                                    (date(2024, 6, 27), 300.0)])  # nothing newer cached
+        today_bench = {"SPY": (99.0, 100.0), "QQQ": (95.0, 100.0), "IWM": (98.0, 100.0)}
+        res = perf.period_tiles(
+            db_session, uuid.UUID(tenant), pid, today=_TODAY, with_benchmarks=True, today_bench=today_bench,
+        )
+        today = next(t for t in res.tiles if t.period == "today")
+        assert today.note is None  # snapshot IS dated today — not the "as of" case
+        # Every symbol reads from the fresh index-strip quote, including SPY (whose own
+        # price_bars cache would otherwise disagree: 470/480 − 1 ≈ −0.0208 vs −0.01 here) —
+        # and QQQ/IWM in particular are NOT the stale-cache fabricated ret=0.0.
+        assert next(b for b in today.benchmarks if b.symbol == "SPY").ret == pytest.approx(-0.01)
+        assert next(b for b in today.benchmarks if b.symbol == "QQQ").ret == pytest.approx(-0.05)
+        assert next(b for b in today.benchmarks if b.symbol == "IWM").ret == pytest.approx(-0.02)
+        # YTD is untouched — still sourced from price_bars (a multi-day slack there is
+        # immaterial over a months-wide window): 300/330 − 1, carrying the 6/27 bar forward.
+        ytd = next(t for t in res.tiles if t.period == "ytd")
+        assert next(b for b in ytd.benchmarks if b.symbol == "QQQ").ret == pytest.approx(300 / 330 - 1)
+
+    def test_falls_back_to_price_bars_when_the_settled_today_tile_predates_today(self, db_session, tenant):
+        # The "as of <date>" case (metron#119): no snapshot dated today yet, so the index
+        # strip's TODAY quote doesn't describe this window — price_bars must still be used.
+        pid = uuid.uuid4()
+        for when, nav in _SERIES:
+            _snap(db_session, tenant, pid, when, nav)
+        spy_bars = [(date(2024, 6, 29), 480.0), (date(2024, 6, 30), 484.0)]
+        _bars(db_session, "SPY", spy_bars)
+        today_bench = {"SPY": (99.0, 100.0)}  # must be ignored — would give ret=-0.01 if used
+        res = perf.period_tiles(
+            db_session, uuid.UUID(tenant), pid, today=date(2024, 7, 1), with_benchmarks=True,
+            today_bench=today_bench,
+        )
+        today = next(t for t in res.tiles if t.period == "today")
+        assert today.note == "as of 2024-06-30"
+        spy = next(b for b in today.benchmarks if b.symbol == "SPY")
+        assert spy.ret == pytest.approx(484 / 480 - 1)  # from price_bars, not today_bench
+
+
 class TestEmpty:
     def test_no_tiles_until_two_snapshots(self, db_session, tenant):
         pid = uuid.uuid4()
@@ -309,3 +368,37 @@ class TestEndpoint:
         assert [t["period"] for t in body["tiles"]] == ["today", "ytd", "ltm"]
         # Feed is entitled by default (owner build) → benchmark columns populated.
         assert body["benchmarks_available"] is True
+
+    def test_endpoint_wires_index_strip_into_the_settled_today_tile(self, client, db_session, tenant, monkeypatch):
+        """Router-level regression for metron-ops#131: a snapshot dated TODAY with no live
+        intraday overlay in effect still gets TODAY's benchmark from ``indices.load_indices``
+        (mirroring the Markets strip), not a possibly-stale ``price_bars`` cache."""
+        from api.services import indices as indices_service
+
+        monkeypatch.setattr("api.services.prices.fetch_close_history", lambda *a, **k: {})
+        today = date.today()
+        monkeypatch.setattr(
+            indices_service, "load_indices",
+            lambda: indices_service.IndicesSnapshot(
+                True, as_of_utc="2024-01-01T00:00:00Z",
+                indices=[
+                    indices_service.IndexQuote(
+                        "QQQ", "Nasdaq 100", last=95.0, prev_close=100.0, open=100.0,
+                        change=-5.0, change_pct=-0.05, session_date=today.isoformat(), suspect=False,
+                    ),
+                ],
+            ),
+        )
+        pid = client.post("/portfolios", json={"name": "P"}, headers={"X-Tenant-Id": tenant}).json()["id"]
+        puid = uuid.UUID(pid)
+        _snap(db_session, tenant, puid, today - timedelta(days=30), 1000.0)
+        _snap(db_session, tenant, puid, today, 1000.0)  # flat NAV — isolates the benchmark read
+        # QQQ's cache is stale-but-within-slack: same close cached for both window endpoints
+        # → a naive price_bars read would compute ret=0.0 (the metron-ops#131 bug).
+        _bars(db_session, "QQQ", [(today - timedelta(days=3), 300.0)])
+
+        r = client.get(f"/portfolios/{pid}/performance/tiles", headers={"X-Tenant-Id": tenant})
+        assert r.status_code == 200
+        today_tile = next(t for t in r.json()["tiles"] if t["period"] == "today")
+        qqq = next(b for b in today_tile["benchmarks"] if b["symbol"] == "QQQ")
+        assert qqq["ret"] == pytest.approx(-0.05)  # from the index strip, not a fabricated 0.0
