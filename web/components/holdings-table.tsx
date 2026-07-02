@@ -123,7 +123,7 @@ export type ColumnBand =
   | "Value"
   | "Returns"
   | "Class"
-  | "Score"
+  | "Attractiveness"
   | "Valuation"
   | "Fundamentals"
   | "Balance Sheet"
@@ -135,7 +135,7 @@ export const BAND_ORDER: ColumnBand[] = [
   "Value",
   "Returns",
   "Class",
-  "Score",
+  "Attractiveness",
   "Valuation",
   "Fundamentals",
   "Balance Sheet",
@@ -391,13 +391,19 @@ const RATING_LABEL: Record<string, string> = {
 const attractivenessTone = (v: number): string =>
   v >= 60 ? "text-positive" : v <= 40 ? "text-negative" : "";
 
+// Unit sub-scores ∈ [0, 1] band around the 0.5 neutral midpoint (matches the tearsheet gauge
+// breakdown's convention — see ATTRACTIVENESS_COMPONENT_LABELS in the tearsheet page).
+const subScoreTone = (v: number): string =>
+  v >= 0.6 ? "text-positive" : v <= 0.4 ? "text-negative" : "";
+
 const METRIC_COLUMNS: MetricColumn[] = [
-  // ── Score (headline) — composite attractiveness (metron-ops#106, Phase 2). A transparent
-  // 0–100 blend of the columns that follow. ──
+  // ── Attractiveness — composite score (metron-ops#106, Phase 2) plus its full component
+  // breakdown, the same inspectable sub-scores the tearsheet gauge shows (metron-ops#130). A
+  // component is "—" when its input was missing and dropped from the renormalized blend. ──
   {
     key: "attractiveness",
     label: "Score",
-    group: "Score",
+    group: "Attractiveness",
     value: (h) => h.attractiveness,
     render: (v) => decimal(v, 1),
     tone: attractivenessTone,
@@ -405,6 +411,51 @@ const METRIC_COLUMNS: MetricColumn[] = [
       "Composite attractiveness (0–100): transparent blend of fwd-P/E vs sector median, " +
       "price-target upside, consensus rating, revision momentum, and news sentiment. " +
       "Click the ticker to open the holding's tearsheet for the weighted breakdown.",
+  },
+  {
+    key: "attractiveness_valuation",
+    label: "Val",
+    group: "Attractiveness",
+    value: (h) => h.attractiveness_valuation,
+    render: (v) => decimal(v, 2),
+    tone: subScoreTone,
+    title: "Valuation sub-score (0–1): forward P/E vs the sector/country median — cheaper is more attractive.",
+  },
+  {
+    key: "attractiveness_upside",
+    label: "Ups",
+    group: "Attractiveness",
+    value: (h) => h.attractiveness_upside,
+    render: (v) => decimal(v, 2),
+    tone: subScoreTone,
+    title: "Upside sub-score (0–1): mean analyst price target vs the live price.",
+  },
+  {
+    key: "attractiveness_rating",
+    label: "Rtg",
+    group: "Attractiveness",
+    value: (h) => h.attractiveness_rating,
+    render: (v) => decimal(v, 2),
+    tone: subScoreTone,
+    title: "Rating sub-score (0–1): analyst consensus rating (strongBuy…strongSell) remapped to unit scale.",
+  },
+  {
+    key: "attractiveness_revision",
+    label: "Rev",
+    group: "Attractiveness",
+    value: (h) => h.attractiveness_revision,
+    render: (v) => decimal(v, 2),
+    tone: subScoreTone,
+    title: "Revision sub-score (0–1): estimate-revision momentum. Paid feed — dropped until it lands (metron-ops#107).",
+  },
+  {
+    key: "attractiveness_sentiment",
+    label: "Sent",
+    group: "Attractiveness",
+    value: (h) => h.attractiveness_sentiment,
+    render: (v) => decimal(v, 2),
+    tone: subScoreTone,
+    title: "Sentiment sub-score (0–1): news sentiment, trust-weighted Loughran-McDonald composite.",
   },
   // ── Valuation ──
   { key: "market_cap", label: "Mkt Cap", group: "Valuation", value: (h) => h.market_cap, render: (v, base) => marketCapShort(v, base) },
