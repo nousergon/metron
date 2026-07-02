@@ -160,6 +160,15 @@ class Holding:
     # off-feed or when no component is present, never fabricated.
     attractiveness: float | None = None
     attractiveness_coverage: int | None = None  # # of components that contributed to the score
+    # Unit sub-scores ∈ [0, 1] behind the composite (api.services.attractiveness.compute) — the
+    # same breakdown the tearsheet gauge shows, surfaced on the Holdings/watchlist rows too so
+    # the "Attractiveness" band doesn't require a tearsheet click. None when that component's
+    # input was missing and dropped from the renormalized blend (never fabricated).
+    attractiveness_valuation: float | None = None
+    attractiveness_upside: float | None = None
+    attractiveness_rating: float | None = None
+    attractiveness_revision: float | None = None
+    attractiveness_sentiment: float | None = None
 
 
 @dataclass

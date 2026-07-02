@@ -117,3 +117,76 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
     # A holding absent from both artifacts keeps all metrics None (coverage gap, not zeros).
     zzz = held[1]
     assert zzz.pe is None and zzz.rsi_14 is None and zzz.market_cap is None
+
+
+# ── attractiveness component sub-scores (metron-ops#130) ────────────────────
+
+def test_enrich_metrics_maps_attractiveness_component_sub_scores(monkeypatch):
+    """The Holdings "Attractiveness" band shows each component sub-score, not just the
+    composite — pin that `enrich_metrics` copies `Attractiveness.components` onto the
+    holding's `attractiveness_*` fields, matching `attractiveness_service.compute` exactly."""
+    from api.services import attractiveness as attractiveness_service
+    from api.services import valuation_medians
+
+    held = [analytics.Holding(
+        ticker="AAPL", quantity=1, avg_cost=1, cost_basis=1,
+        last_price=100.0, sector="Technology",
+    )]
+
+    real_funds = fundamentals.load_fundamentals
+    real_techs = technicals.load_technicals
+    real_medians = valuation_medians.load_valuation_medians
+    monkeypatch.setattr(metrics_enrichment.tearsheet_service, "_yf_symbol_map",
+                        lambda session, syms: {"AAPL": "AAPL"})
+    monkeypatch.setattr(
+        metrics_enrichment.fundamentals_service, "load_fundamentals",
+        lambda: real_funds(reader=lambda: {"fundamentals": {"AAPL": {"forwardPE": 25.0}}}),
+    )
+    monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals", lambda: real_techs(reader=lambda: None))
+    monkeypatch.setattr(
+        metrics_enrichment.valuation_medians_service, "load_valuation_medians",
+        lambda: real_medians(reader=lambda: {"by_sector": {"Technology": {"n": 100, "forward_pe": 40.0}}}),
+    )
+
+    class _Analyst:
+        consensus_rating = "buy"
+        rating_score = 0.6
+        mean_target = 115.0
+        median_target = 115.0
+        num_analysts = 20
+        estimate_revision_trend = None
+
+        def target_upside(self, price):
+            return 0.15 if price else None
+
+    class _AnalystSnap:
+        by_symbol = {"AAPL": _Analyst()}
+
+    monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst", lambda: _AnalystSnap())
+
+    class _Sent:
+        sentiment = 0.2
+        n_articles = 5
+
+    class _SentSnap:
+        by_symbol = {"AAPL": _Sent()}
+
+    monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment", lambda: _SentSnap())
+
+    metrics_enrichment.enrich_metrics(session=None, held=held)
+
+    aapl = held[0]
+    expected = attractiveness_service.compute(
+        fwd_pe=25.0, median_fwd_pe=40.0, price_target_upside=0.15,
+        consensus_score=0.6, estimate_revision_trend=None, news_sentiment=0.2,
+    )
+    by_key = {c.key: c.sub_score for c in expected.components}
+    assert aapl.attractiveness == expected.score
+    assert aapl.attractiveness_coverage == expected.coverage
+    assert aapl.attractiveness_valuation == by_key["valuation"]
+    assert aapl.attractiveness_upside == by_key["upside"]
+    assert aapl.attractiveness_rating == by_key["rating"]
+    assert aapl.attractiveness_sentiment == by_key["sentiment"]
+    # Revision input was missing (paid feed) → dropped from the blend, never fabricated.
+    assert aapl.attractiveness_revision is None
+    assert "revision" not in by_key

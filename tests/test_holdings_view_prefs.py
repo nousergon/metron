@@ -31,7 +31,7 @@ def test_put_then_get_roundtrips(client, tenant):
     pid = _portfolio(client, tenant)
     body = {
         "grouping": "account",
-        "visible_bands": ["Score", "Valuation"],
+        "visible_bands": ["Attractiveness", "Valuation"],
         "combine_by_account": True,
         "hidden_types": ["cash", "option"],
     }
@@ -56,7 +56,7 @@ def test_null_fields_clear_back_to_default(client, tenant):
     pid = _portfolio(client, tenant)
     client.put(
         f"/portfolios/{pid}/holdings-view",
-        json={"grouping": "asset", "visible_bands": ["Score"], "combine_by_account": True, "hidden_types": ["cash"]},
+        json={"grouping": "asset", "visible_bands": ["Attractiveness"], "combine_by_account": True, "hidden_types": ["cash"]},
         headers=_hdr(tenant),
     )
     client.put(

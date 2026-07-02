@@ -20,7 +20,7 @@ import { addWatchlistAction, removeWatchlistAction } from "@/app/portfolios/[id]
 
 const WATCHLIST_BANDS: ColumnBand[] = [
   "Class",
-  "Score",
+  "Attractiveness",
   "Valuation",
   "Fundamentals",
   "Balance Sheet",
@@ -95,6 +95,11 @@ function toShellHolding(e: WatchlistEntry): Holding {
     news_articles: e.news_articles,
     attractiveness: e.attractiveness,
     attractiveness_coverage: e.attractiveness_coverage,
+    attractiveness_valuation: e.attractiveness_valuation,
+    attractiveness_upside: e.attractiveness_upside,
+    attractiveness_rating: e.attractiveness_rating,
+    attractiveness_revision: e.attractiveness_revision,
+    attractiveness_sentiment: e.attractiveness_sentiment,
   };
 }
 

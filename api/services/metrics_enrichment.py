@@ -111,3 +111,13 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
         if att is not None:
             h.attractiveness = att.score
             h.attractiveness_coverage = att.coverage
+            # Surface the same component sub-scores the tearsheet gauge shows onto the
+            # Holdings/watchlist row too, so the "Attractiveness" band doesn't require a
+            # tearsheet click. A component absent from `att.components` (input missing,
+            # dropped from the renormalized blend) leaves its field None — never fabricated.
+            by_key = {c.key: c.sub_score for c in att.components}
+            h.attractiveness_valuation = by_key.get("valuation")
+            h.attractiveness_upside = by_key.get("upside")
+            h.attractiveness_rating = by_key.get("rating")
+            h.attractiveness_revision = by_key.get("revision")
+            h.attractiveness_sentiment = by_key.get("sentiment")
