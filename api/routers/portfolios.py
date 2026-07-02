@@ -34,9 +34,11 @@ from api.services import (
     calendar,
     crypto,
     data_spine,
+    demo,
     indices,
     intraday,
     labels,
+    metrics_enrichment,
     performance,
     persistence,
     risk,
@@ -44,25 +46,20 @@ from api.services import (
     tax,
     watchlist,
 )
-from api.services import analyst as analyst_service
-from api.services import attractiveness as attractiveness_service
 from api.services import (
     classifications as classifications_service,
 )
 from api.services import (
     countries as countries_service,
 )
-from api.services import fundamentals as fundamentals_service
 from api.services import fx as fx_service
 from api.services import prices as price_service
 from api.services import (
     sectors as sectors_service,
 )
-from api.services import sentiment as sentiment_service
 from api.services import (
     tearsheet as tearsheet_service,
 )
-from api.services import technicals as technicals_service
 from api.services import valuation_medians as valuation_medians_service
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult
@@ -150,6 +147,11 @@ class HoldingOut(BaseModel):
     # feed stalled). Drives the Holdings "prices as of" staleness warning. Always False on
     # the broker-snapshot / intraday-overlay paths (see security_perf.enrich_holdings).
     last_price_stale: bool = False
+    # True when last_price is a same-day ESTIMATE synthesized from a tracking-proxy ETF's
+    # return (metron-ops#112 mechanism B) — a late-striking mutual fund that hasn't struck
+    # its own NAV yet today. Not a problem flag like last_price_stale — an expected,
+    # clearly-labeled estimate, reconciled to the true struck NAV by mechanism A tomorrow.
+    is_estimated: bool = False
     market_value_local: float | None = None
     cost_basis_base: float | None = None
     market_value: float | None = None
@@ -220,6 +222,13 @@ class HoldingOut(BaseModel):
     # fields above. None off-feed or on a total coverage gap, never fabricated.
     attractiveness: float | None = None
     attractiveness_coverage: int | None = None
+    # Unit sub-scores ∈ [0, 1] behind the composite — the same breakdown the tearsheet gauge
+    # shows. None when that component's input was missing and dropped from the blend.
+    attractiveness_valuation: float | None = None
+    attractiveness_upside: float | None = None
+    attractiveness_rating: float | None = None
+    attractiveness_revision: float | None = None
+    attractiveness_sentiment: float | None = None
 
 
 class GroupMediansOut(BaseModel):
@@ -564,9 +573,57 @@ class WatchlistEntryOut(BaseModel):
     symbol: str
     name: str | None = None
     sector: str | None = None
+    country: str | None = None
     next_earnings_date: date | None = None
     held: bool = False
     note: str | None = None
+    # Same Holdings-metrics fields as HoldingOut (metron-ops#121) — populated only on a
+    # feed-entitled build; None off-feed or on a coverage gap, never fabricated. No
+    # quantity/avg_cost/market_value/P&L fields — a watchlist entry has no position.
+    market_cap: float | None = None
+    pe: float | None = None
+    fwd_pe: float | None = None
+    pb: float | None = None
+    ps: float | None = None
+    ev_ebitda: float | None = None
+    peg: float | None = None
+    div_yield: float | None = None
+    rev_growth: float | None = None
+    earnings_growth: float | None = None
+    gross_margin: float | None = None
+    op_margin: float | None = None
+    roe: float | None = None
+    roa: float | None = None
+    beta: float | None = None
+    cash: float | None = None
+    debt: float | None = None
+    net_debt: float | None = None
+    debt_to_equity: float | None = None
+    net_debt_to_ebitda: float | None = None
+    current_ratio: float | None = None
+    quick_ratio: float | None = None
+    fcf: float | None = None
+    rsi_14: float | None = None
+    macd_hist: float | None = None
+    pct_to_ma_50: float | None = None
+    pct_to_ma_200: float | None = None
+    pct_in_52w_range: float | None = None
+    mom_20d: float | None = None
+    consensus_rating: str | None = None
+    consensus_score: float | None = None
+    price_target_mean: float | None = None
+    price_target_median: float | None = None
+    price_target_upside: float | None = None
+    num_analysts: int | None = None
+    news_sentiment: float | None = None
+    news_articles: int | None = None
+    attractiveness: float | None = None
+    attractiveness_coverage: int | None = None
+    attractiveness_valuation: float | None = None
+    attractiveness_upside: float | None = None
+    attractiveness_rating: float | None = None
+    attractiveness_revision: float | None = None
+    attractiveness_sentiment: float | None = None
 
 
 class WatchlistIn(BaseModel):
@@ -707,8 +764,16 @@ def list_portfolios(
     tenant_id: uuid.UUID = Depends(_tenant_id),
     session: Session = Depends(get_session),
 ) -> list[models.Portfolio]:
-    rows = session.scalars(select(models.Portfolio).where(models.Portfolio.tenant_id == tenant_id)).all()
-    return list(rows)
+    rows = list(session.scalars(select(models.Portfolio).where(models.Portfolio.tenant_id == tenant_id)).all())
+    # The Reference Rate showcase is visible on every real tenant's dashboard (not just the
+    # isolated demo tenant, which already owns it and gets it via the query above) — lets a
+    # prospect see live product behavior before linking their own accounts. Fail-soft: on a
+    # DB where the daily sync hasn't run yet, `session.get` returns None and we just omit it.
+    if tenant_id != demo.DEMO_TENANT_ID:
+        reference = session.get(models.Portfolio, demo.REFERENCE_PORTFOLIO_ID)
+        if reference is not None:
+            rows.append(reference)
+    return rows
 
 
 @router.post("", response_model=PortfolioOut, status_code=201)
@@ -733,21 +798,33 @@ def _owned_portfolio(
     session: Session = Depends(get_session),
 ) -> models.Portfolio:
     """Resolve a portfolio the caller's tenant owns, or 404 (never leak cross-tenant
-    existence — a portfolio of another tenant is indistinguishable from a missing one)."""
-    portfolio = session.scalars(
-        select(models.Portfolio).where(
-            models.Portfolio.id == portfolio_id,
-            models.Portfolio.tenant_id == tenant_id,
-        )
-    ).first()
+    existence — a portfolio of another tenant is indistinguishable from a missing one).
+
+    ONE explicit exception: the fixed Reference Rate showcase (demo.REFERENCE_PORTFOLIO_ID)
+    resolves for ANY caller tenant, read-only — it's designed to be visible on every real
+    user's dashboard (see list_portfolios). This is a single named-constant carve-out, not
+    a general cross-tenant widening; writes to it are still refused regardless of the
+    caller's tenant by the `_demo_read_only` middleware's path-based check (api/main.py)."""
+    if portfolio_id == demo.REFERENCE_PORTFOLIO_ID:
+        portfolio = session.get(models.Portfolio, demo.REFERENCE_PORTFOLIO_ID)
+    else:
+        portfolio = session.scalars(
+            select(models.Portfolio).where(
+                models.Portfolio.id == portfolio_id,
+                models.Portfolio.tenant_id == tenant_id,
+            )
+        ).first()
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     # The app is being actively used — touch the data-spine UI heartbeat (throttled,
     # fail-soft, flag-gated) so the intraday quote producer runs only while someone
     # is actually looking AND has the intraday overlay enabled. Every authenticated
     # portfolio request flows through this dependency, making it the one natural
-    # chokepoint for "Metron is open".
-    data_spine.touch_ui_heartbeat(session=session, tenant_id=tenant_id, portfolio_id=portfolio.id)
+    # chokepoint for "Metron is open". Keyed by the portfolio's OWN tenant_id (not the
+    # caller's) — for the Reference Rate carve-out above those differ, and every other
+    # tenant-scoped lookup in this file (preferences, snaptrade exclusions, ...) already
+    # keys off portfolio.tenant_id for exactly this reason.
+    data_spine.touch_ui_heartbeat(session=session, tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id)
     return portfolio
 
 
@@ -1078,7 +1155,7 @@ def put_account_selection(
 # Saved Holdings-table view (metron-ops#114). Valid grouping modes + metric bands — a saved
 # value outside these sets is ignored on read (degrades to the default) and rejected on write.
 _HOLDINGS_GROUPINGS = {"asset", "classification", "account"}
-_HOLDINGS_BANDS = {"Score", "Valuation", "Fundamentals", "Balance Sheet", "Technicals", "Consensus"}
+_HOLDINGS_BANDS = {"Attractiveness", "Valuation", "Fundamentals", "Balance Sheet", "Technicals", "Consensus"}
 # Valid instrument-type override values — the set classify_security_type emits (metron-ops#115).
 _INSTRUMENT_TYPES = {"cash", "treasury", "cd", "bond", "equity", "etf", "fund", "option", "other"}
 
@@ -1592,7 +1669,7 @@ def get_holdings(
     # tagged with account_id/account_label (metron-ops#114); default consolidates per ticker.
     # LIVE intraday overlay (metron-ops#79): during trading hours on a feed-entitled build,
     # each position revalues from the intraday last; otherwise this is None → EOD close.
-    prices, _ = intraday.for_portfolio(
+    prices, meta = intraday.for_portfolio(
         session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled, account_ids=account_ids
     )
     held = (
@@ -1604,6 +1681,13 @@ def get_holdings(
             session, portfolio.tenant_id, portfolio.id, account_ids=account_ids, prices=prices
         )
     )
+    # Late-striking-fund same-day ESTIMATE flag (metron-ops#112 mechanism B): a held ticker
+    # whose live price was synthesized from a tracking-proxy ETF (not a real intraday quote)
+    # is flagged so the UI can label it clearly, rather than silently look like a real quote.
+    if meta.estimated_tickers:
+        for h in held:
+            if h.ticker in meta.estimated_tickers:
+                h.is_estimated = True
     # Per-security Day / YTD / LTM returns for the Holdings table (metron-ops#87).
     held = security_perf.enrich_holdings(
         session, portfolio.tenant_id, portfolio.id, held,
@@ -1633,96 +1717,8 @@ def get_holdings(
     # the Day legs above: yfinance-derived spine artifacts (licensed) populate only on a
     # feed-entitled build; off-feed each metric stays None and the table shows "—".
     if settings.feed_entitled:
-        _enrich_metrics(session, held)
+        metrics_enrichment.enrich_metrics(session, held)
     return held
-
-
-def _enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
-    """Fill each holding's valuation/fundamentals/technicals + consensus/sentiment fields
-    from the data-spine fundamentals + technicals + analyst + sentiment artifacts (keyed by
-    yf_symbol). Fail-soft: a missing artifact or absent symbol leaves the fields None
-    (coverage gap, never fabricated)."""
-    yf_map = tearsheet_service._yf_symbol_map(session, [h.ticker for h in held])
-    funds = fundamentals_service.load_fundamentals().by_symbol
-    techs = technicals_service.load_technicals().by_symbol
-    analysts = analyst_service.load_analyst().by_symbol
-    sentiments = sentiment_service.load_sentiment().by_symbol
-    # Sector/country median multiples — the peer benchmark for the attractiveness valuation
-    # component (metron-ops#106). Fail-soft: a missing artifact leaves medians empty → the
-    # valuation component is simply dropped from the renormalized blend.
-    medians = valuation_medians_service.load_valuation_medians()
-    for h in held:
-        yf = yf_map.get(h.ticker, h.ticker)
-        f = funds.get(yf)
-        if f is not None:
-            h.market_cap = f.market_cap
-            h.pe = f.trailing_pe
-            h.fwd_pe = f.forward_pe
-            h.pb = f.price_to_book
-            h.ps = f.price_to_sales
-            h.ev_ebitda = f.ev_ebitda
-            h.peg = f.peg
-            h.div_yield = f.dividend_yield
-            h.rev_growth = f.revenue_growth
-            h.earnings_growth = f.earnings_growth
-            h.gross_margin = f.gross_margins
-            h.op_margin = f.operating_margins
-            h.roe = f.roe
-            h.roa = f.roa
-            h.beta = f.beta
-            # Balance sheet: absolute balances + derived net debt / leverage.
-            h.cash = f.total_cash
-            h.debt = f.total_debt
-            h.debt_to_equity = f.debt_to_equity
-            h.current_ratio = f.current_ratio
-            h.quick_ratio = f.quick_ratio
-            h.fcf = f.free_cashflow
-            if f.total_debt is not None and f.total_cash is not None:
-                h.net_debt = f.total_debt - f.total_cash
-                if f.ebitda not in (None, 0):
-                    h.net_debt_to_ebitda = h.net_debt / f.ebitda
-        t = techs.get(yf)
-        if t is not None:
-            h.rsi_14 = t.rsi_14
-            h.macd_hist = t.macd_hist
-            h.pct_to_ma_50 = t.pct_to_ma_50
-            h.pct_to_ma_200 = t.pct_to_ma_200
-            h.pct_in_52w_range = t.pct_in_52w_range
-            h.mom_20d = t.mom_20d
-        # Consensus research (metron-ops#105) — price-target upside derived vs the live price.
-        a = analysts.get(yf)
-        if a is not None:
-            h.consensus_rating = a.consensus_rating
-            h.consensus_score = a.rating_score
-            h.price_target_mean = a.mean_target
-            h.price_target_median = a.median_target
-            h.num_analysts = a.num_analysts
-            h.price_target_upside = a.target_upside(h.last_price)
-        # News sentiment (metron-ops#105).
-        s = sentiments.get(yf)
-        if s is not None:
-            h.news_sentiment = s.sentiment
-            h.news_articles = s.n_articles
-        # Composite attractiveness score (metron-ops#106, Phase 2) — a transparent blend of the
-        # fields just set. The valuation leg bands fwd-P/E against the holding's sector median
-        # (country median as a fallback), exactly as the Holdings "by sector → country" view
-        # does. Components with no input drop out and the weights renormalize (never fabricated).
-        sec_grp = medians.by_sector.get(h.sector) if h.sector else None
-        cty_grp = medians.by_country.get(h.country) if h.country else None
-        median_fwd_pe = (sec_grp.forward_pe if sec_grp else None)
-        if median_fwd_pe is None and cty_grp is not None:
-            median_fwd_pe = cty_grp.forward_pe
-        att = attractiveness_service.compute(
-            fwd_pe=h.fwd_pe,
-            median_fwd_pe=median_fwd_pe,
-            price_target_upside=h.price_target_upside,
-            consensus_score=h.consensus_score,
-            estimate_revision_trend=(a.estimate_revision_trend if a is not None else None),
-            news_sentiment=h.news_sentiment,
-        )
-        if att is not None:
-            h.attractiveness = att.score
-            h.attractiveness_coverage = att.coverage
 
 
 @router.get("/{portfolio_id}/valuation-medians", response_model=ValuationMediansOut)
@@ -2395,9 +2391,14 @@ def get_watchlist(
     session: Session = Depends(get_session),
 ) -> list[watchlist.WatchlistEntry]:
     """The portfolio's watchlist — tracked tickers (held or not) with reference data
-    (name / sector / next earnings) + a held flag. Read-only/illustrative in the no-feed
-    beta: no live price, since un-held tickers have no price source (metron-ops#42)."""
-    return watchlist.list_watchlist(session, portfolio.tenant_id, portfolio.id)
+    (name / sector / country / next earnings) + a held flag, plus — on a feed-entitled
+    build — the same Holdings metrics (valuation/fundamentals/technicals/consensus/
+    attractiveness) for side-by-side comparison against real holdings (metron-ops#42,
+    metron-ops#121). No live price: un-held tickers have no price source until the
+    licensed Pro feed lands."""
+    return watchlist.list_watchlist(
+        session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled
+    )
 
 
 @router.post("/{portfolio_id}/watchlist", response_model=WatchlistEntryOut, status_code=201)
@@ -2412,9 +2413,15 @@ def add_watchlist(
     if not symbol:
         raise HTTPException(status_code=422, detail="symbol is required")
     watchlist.add_to_watchlist(session, portfolio.tenant_id, portfolio.id, symbol, note=body.note)
-    # Return the enriched entry (held flag + reference data), not the bare row.
+    # Return the enriched entry (held flag + reference data + metrics), not the bare row.
     entry = next(
-        (e for e in watchlist.list_watchlist(session, portfolio.tenant_id, portfolio.id) if e.symbol == symbol),
+        (
+            e
+            for e in watchlist.list_watchlist(
+                session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled
+            )
+            if e.symbol == symbol
+        ),
         None,
     )
     if entry is None:  # pragma: no cover - just-added row must be present

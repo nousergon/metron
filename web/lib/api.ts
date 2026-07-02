@@ -24,6 +24,11 @@ export type Holding = {
   // stalled). Drives the Holdings "prices as of" warning. False on broker-snapshot /
   // live-intraday paths.
   last_price_stale: boolean;
+  // True when last_price is a same-day ESTIMATE synthesized from a tracking-proxy ETF's
+  // return (metron-ops#112) — a late-striking mutual fund (e.g. FNILX/FZILX/FTIHX) that
+  // hasn't struck its own NAV yet today. Not a problem flag like last_price_stale — an
+  // expected, clearly-labeled estimate, reconciled to the true struck NAV tomorrow.
+  is_estimated: boolean;
   market_value_local: number | null;
   cost_basis_base: number | null;
   market_value: number | null;
@@ -94,6 +99,13 @@ export type Holding = {
   // fields above. null off-feed or on a total coverage gap, never fabricated.
   attractiveness: number | null;
   attractiveness_coverage: number | null; // # of components that contributed
+  // Unit sub-scores ∈ [0, 1] behind the composite — the same breakdown the tearsheet gauge
+  // shows. null when that component's input was missing and dropped from the blend.
+  attractiveness_valuation: number | null;
+  attractiveness_upside: number | null;
+  attractiveness_rating: number | null;
+  attractiveness_revision: number | null;
+  attractiveness_sentiment: number | null;
 };
 
 // Sector- / country-level median multiples (SP1500-broad peer benchmark) for the Holdings
@@ -331,15 +343,63 @@ export function acctParams(accountIds?: string[]): string {
 export const getPortfolios = (tenantId: string) => get<Portfolio[]>(tenantId, "/portfolios");
 export const getPortfolio = (tenantId: string, id: string) => get<Portfolio>(tenantId, `/portfolios/${id}`);
 
-// Watchlist — tracked tickers (held or not). Read-only/illustrative in the beta: no live
-// price (un-held tickers have no price source until the Pro feed). (metron-ops#42)
+// Watchlist — tracked tickers (held or not). No live price (un-held tickers have no price
+// source until the Pro feed). On a feed-entitled build carries the SAME Holdings metrics
+// (valuation/fundamentals/balance-sheet/technicals/consensus/attractiveness), keyed purely
+// by ticker, for side-by-side comparison — never quantity/cost/market value/P&L, since a
+// watchlist entry has no position (metron-ops#42, metron-ops#121).
 export type WatchlistEntry = {
   symbol: string;
   name: string | null;
   sector: string | null;
+  country: string | null;
   next_earnings_date: string | null;
   held: boolean;
   note: string | null;
+  market_cap: number | null;
+  pe: number | null;
+  fwd_pe: number | null;
+  pb: number | null;
+  ps: number | null;
+  ev_ebitda: number | null;
+  peg: number | null;
+  div_yield: number | null;
+  rev_growth: number | null;
+  earnings_growth: number | null;
+  gross_margin: number | null;
+  op_margin: number | null;
+  roe: number | null;
+  roa: number | null;
+  beta: number | null;
+  cash: number | null;
+  debt: number | null;
+  net_debt: number | null;
+  debt_to_equity: number | null;
+  net_debt_to_ebitda: number | null;
+  current_ratio: number | null;
+  quick_ratio: number | null;
+  fcf: number | null;
+  rsi_14: number | null;
+  macd_hist: number | null;
+  pct_to_ma_50: number | null;
+  pct_to_ma_200: number | null;
+  pct_in_52w_range: number | null;
+  mom_20d: number | null;
+  consensus_rating: string | null;
+  consensus_score: number | null;
+  price_target_mean: number | null;
+  price_target_median: number | null;
+  price_target_upside: number | null;
+  num_analysts: number | null;
+  news_sentiment: number | null;
+  news_articles: number | null;
+  attractiveness: number | null;
+  attractiveness_coverage: number | null;
+  attractiveness_valuation: number | null;
+  attractiveness_upside: number | null;
+  attractiveness_rating: number | null;
+  attractiveness_revision: number | null;
+  attractiveness_sentiment: number | null;
 };
 
 export const getWatchlist = (tenantId: string, id: string) =>
@@ -792,6 +852,56 @@ export type Macro = {
 // detail-page charts (~1y); the default lean window powers the Overview strip.
 export const getMacro = (tenantId: string, opts?: { full?: boolean }) =>
   get<Macro>(tenantId, `/macro${opts?.full ? "?full=true" : ""}`);
+
+// ── Research intel (neutral market intel from crucible-research; paid AI-Advisor tier) ──
+// EPIC config#1499 Phase 1 / metron-ops#117. Global, read-only intel: regime + narrative,
+// sector ratings/modifiers, market breadth, per-ticker attractiveness + generic thesis.
+export type ResearchIntelSectorRating = { rating: string | null; rationale: string | null };
+export type ResearchIntelBreakdown = {
+  quant_score: number | null;
+  qual_score: number | null;
+  factor_subscore: number | null;
+  weighted_base: number | null;
+  macro_shift: number | null;
+};
+export type ResearchIntelThesis = { bull_case: string | null; sector: string | null };
+export type ResearchIntelAttractiveness = {
+  ticker: string;
+  score: number | null;
+  sector: string | null;
+  breakdown: ResearchIntelBreakdown | null;
+  thesis: ResearchIntelThesis | null;
+};
+export type ResearchIntelSnapshot = {
+  schema_version: number | null;
+  date: string | null;
+  generated_at: string | null;
+  market_regime: string | null;
+  regime_narrative: string | null;
+  sector_ratings: Record<string, ResearchIntelSectorRating>;
+  sector_modifiers: Record<string, number>;
+  market_breadth: {
+    pct_above_50d_ma: number | null;
+    pct_above_200d_ma: number | null;
+    advance_decline_ratio: number | null;
+  };
+  attractiveness: Record<string, ResearchIntelAttractiveness>;
+};
+export type ResearchIntel = {
+  available: boolean;
+  reason: string | null;
+  required_tier: string | null;
+  // null until the first weekly artifact is cached (available-but-stale); null intel
+  // when not entitled either — the surface never blanks and never leaks intel.
+  stale: boolean | null;
+  intel: ResearchIntelSnapshot | null;
+};
+
+// `tickers` scopes the attractiveness map to the caller's holdings (empty ⇒ full universe).
+export const getResearchIntel = (tenantId: string, opts?: { tickers?: string[] }) => {
+  const q = opts?.tickers && opts.tickers.length > 0 ? `?tickers=${encodeURIComponent(opts.tickers.join(","))}` : "";
+  return get<ResearchIntel>(tenantId, `/research-intel${q}`);
+};
 
 export type CalendarEvent = { event_date: string; kind: string; ticker: string; label: string };
 

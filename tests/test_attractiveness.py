@@ -11,8 +11,7 @@ from __future__ import annotations
 from datetime import date
 
 from api.db import models
-from api.routers import portfolios
-from api.services import analytics, attractiveness, tearsheet
+from api.services import analytics, attractiveness, metrics_enrichment, tearsheet
 
 # ── component transforms ─────────────────────────────────────────────────────
 
@@ -103,7 +102,7 @@ def _holding(ticker="AAPL"):
 def test_enrich_metrics_attaches_attractiveness(db_session, monkeypatch):
     held = [_holding()]
     monkeypatch.setattr(
-        portfolios.tearsheet_service, "_yf_symbol_map", lambda s, t: {"AAPL": "AAPL"}
+        metrics_enrichment.tearsheet_service, "_yf_symbol_map", lambda s, t: {"AAPL": "AAPL"}
     )
 
     class _Snap:
@@ -120,10 +119,10 @@ def test_enrich_metrics_attaches_attractiveness(db_session, monkeypatch):
             return None
 
     monkeypatch.setattr(
-        portfolios.fundamentals_service, "load_fundamentals",
+        metrics_enrichment.fundamentals_service, "load_fundamentals",
         lambda: _Snap({"AAPL": _Fund()}),
     )
-    monkeypatch.setattr(portfolios.technicals_service, "load_technicals", lambda: _Snap({}))
+    monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals", lambda: _Snap({}))
 
     class _Analyst:
         consensus_rating = "buy"
@@ -136,7 +135,7 @@ def test_enrich_metrics_attaches_attractiveness(db_session, monkeypatch):
             return self.mean_target / price - 1.0
 
     monkeypatch.setattr(
-        portfolios.analyst_service, "load_analyst", lambda: _Snap({"AAPL": _Analyst()})
+        metrics_enrichment.analyst_service, "load_analyst", lambda: _Snap({"AAPL": _Analyst()})
     )
 
     class _Sent:
@@ -144,18 +143,18 @@ def test_enrich_metrics_attaches_attractiveness(db_session, monkeypatch):
         n_articles = 10
 
     monkeypatch.setattr(
-        portfolios.sentiment_service, "load_sentiment", lambda: _Snap({"AAPL": _Sent()})
+        metrics_enrichment.sentiment_service, "load_sentiment", lambda: _Snap({"AAPL": _Sent()})
     )
 
     class _Median:
         forward_pe = 20.0
 
     monkeypatch.setattr(
-        portfolios.valuation_medians_service, "load_valuation_medians",
+        metrics_enrichment.valuation_medians_service, "load_valuation_medians",
         lambda: _Snap({"Technology": _Median()}),
     )
 
-    portfolios._enrich_metrics(db_session, held)
+    metrics_enrichment.enrich_metrics(db_session, held)
     h = held[0]
     assert h.attractiveness is not None
     assert h.attractiveness_coverage == 4  # valuation+upside+rating+sentiment, revision absent

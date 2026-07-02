@@ -6,6 +6,8 @@
 
 import { useState, useTransition } from "react";
 import { renamePortfolioAction } from "@/app/portfolios/[id]/actions";
+import { ReadOnlyNotice } from "@/components/ui";
+import { isReferencePortfolio } from "@/lib/demo";
 
 export function RenamePortfolio({ portfolioId, name }: { portfolioId: string; name: string }) {
   const [editing, setEditing] = useState(false);
@@ -20,6 +22,17 @@ export function RenamePortfolio({ portfolioId, name }: { portfolioId: string; na
       if (r.ok) setEditing(false);
       else setError(r.message);
     });
+  }
+
+  // The Reference Rate showcase (metron-ops#120) is a fixed-name read-only mirror — the
+  // API 403s the rename route regardless of caller tenant (api/main.py::_demo_read_only).
+  if (isReferencePortfolio(portfolioId)) {
+    return (
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight">{name}</h1>
+        <ReadOnlyNotice>Illustrative — read-only, can&apos;t be renamed.</ReadOnlyNotice>
+      </div>
+    );
   }
 
   if (!editing) {

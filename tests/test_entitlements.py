@@ -54,6 +54,10 @@ def test_beta_no_feed_is_the_free_derivable_set():
         assert feats[k]["required_tier"] == "personal"
     assert not feats["ai_advisor"]["available"]
     assert feats["ai_advisor"]["reason"] == "tier"
+    # research_intel (paid AI-Advisor edge output) is not in the beta tier either.
+    assert not feats["research_intel"]["available"]
+    assert feats["research_intel"]["reason"] == "tier"
+    assert feats["research_intel"]["required_tier"] == "personal"
 
 
 def test_full_tier_without_feed_blocks_the_wedge_on_data_not_tier():
@@ -73,6 +77,8 @@ def test_full_tier_without_feed_blocks_the_wedge_on_data_not_tier():
     # (agentic_research still needs the feed, so it stays unavailable).
     assert feats["ai_advisor"]["available"]
     assert feats["alpha_engine"]["available"]
+    # research_intel is tier-gated only (no data source) → available even with the feed off.
+    assert feats["research_intel"]["available"]
     assert not feats["agentic_research"]["available"]
     assert feats["agentic_research"]["reason"] == "feed"
 

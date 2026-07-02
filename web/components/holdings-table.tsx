@@ -123,7 +123,7 @@ export type ColumnBand =
   | "Value"
   | "Returns"
   | "Class"
-  | "Score"
+  | "Attractiveness"
   | "Valuation"
   | "Fundamentals"
   | "Balance Sheet"
@@ -135,7 +135,7 @@ export const BAND_ORDER: ColumnBand[] = [
   "Value",
   "Returns",
   "Class",
-  "Score",
+  "Attractiveness",
   "Valuation",
   "Fundamentals",
   "Balance Sheet",
@@ -215,6 +215,15 @@ const POSITION_COLUMNS: ColumnDef[] = [
         >
           {ctx.baseMoney(lastBase, h.last_price)}
           {h.last_price_stale ? <span className="ml-0.5" aria-hidden>⚠</span> : null}
+          {h.is_estimated ? (
+            <span
+              className="ml-0.5 text-sky-500"
+              title="Estimated — this fund hasn't struck its own NAV yet today; its same-day move is estimated from a tracking-proxy ETF and will reconcile to the true NAV after tomorrow's close."
+              aria-label="estimated"
+            >
+              ~
+            </span>
+          ) : null}
         </span>
       );
     },
@@ -382,20 +391,71 @@ const RATING_LABEL: Record<string, string> = {
 const attractivenessTone = (v: number): string =>
   v >= 60 ? "text-positive" : v <= 40 ? "text-negative" : "";
 
+// Unit sub-scores ∈ [0, 1] band around the 0.5 neutral midpoint (matches the tearsheet gauge
+// breakdown's convention — see ATTRACTIVENESS_COMPONENT_LABELS in the tearsheet page).
+const subScoreTone = (v: number): string =>
+  v >= 0.6 ? "text-positive" : v <= 0.4 ? "text-negative" : "";
+
 const METRIC_COLUMNS: MetricColumn[] = [
-  // ── Score (headline) — composite attractiveness (metron-ops#106, Phase 2). A transparent
-  // 0–100 blend of the columns that follow. ──
+  // ── Attractiveness — composite score (metron-ops#106, Phase 2) plus its full component
+  // breakdown, the same inspectable sub-scores the tearsheet gauge shows (metron-ops#130). A
+  // component is "—" when its input was missing and dropped from the renormalized blend. ──
   {
     key: "attractiveness",
     label: "Score",
-    group: "Score",
+    group: "Attractiveness",
     value: (h) => h.attractiveness,
     render: (v) => decimal(v, 1),
     tone: attractivenessTone,
     title:
       "Composite attractiveness (0–100): transparent blend of fwd-P/E vs sector median, " +
       "price-target upside, consensus rating, revision momentum, and news sentiment. " +
-      "Open a holding's tearsheet for the weighted breakdown.",
+      "Click the ticker to open the holding's tearsheet for the weighted breakdown.",
+  },
+  {
+    key: "attractiveness_valuation",
+    label: "Val",
+    group: "Attractiveness",
+    value: (h) => h.attractiveness_valuation,
+    render: (v) => decimal(v, 2),
+    tone: subScoreTone,
+    title: "Valuation sub-score (0–1): forward P/E vs the sector/country median — cheaper is more attractive.",
+  },
+  {
+    key: "attractiveness_upside",
+    label: "Ups",
+    group: "Attractiveness",
+    value: (h) => h.attractiveness_upside,
+    render: (v) => decimal(v, 2),
+    tone: subScoreTone,
+    title: "Upside sub-score (0–1): mean analyst price target vs the live price.",
+  },
+  {
+    key: "attractiveness_rating",
+    label: "Rtg",
+    group: "Attractiveness",
+    value: (h) => h.attractiveness_rating,
+    render: (v) => decimal(v, 2),
+    tone: subScoreTone,
+    title: "Rating sub-score (0–1): analyst consensus rating (strongBuy…strongSell) remapped to unit scale.",
+  },
+  {
+    key: "attractiveness_revision",
+    label: "Rev",
+    group: "Attractiveness",
+    value: (h) => h.attractiveness_revision,
+    render: (v) => decimal(v, 2),
+    tone: subScoreTone,
+    title: "Revision sub-score (0–1): estimate-revision momentum. Paid feed — dropped until it lands (metron-ops#107).",
+  },
+  {
+    key: "attractiveness_sentiment",
+    label: "Sent",
+    group: "Attractiveness",
+    value: (h) => h.attractiveness_sentiment,
+    render: (v) => decimal(v, 2),
+    tone: subScoreTone,
+    title: "Sentiment sub-score (0–1): news sentiment, trust-weighted Loughran-McDonald composite.",
   },
   // ── Valuation ──
   { key: "market_cap", label: "Mkt Cap", group: "Valuation", value: (h) => h.market_cap, render: (v, base) => marketCapShort(v, base) },
@@ -479,6 +539,8 @@ export function HoldingsTable({
   portfolioId,
   visibleBands = BAND_ORDER,
   accountColumn = false,
+  showTotals = true,
+  onRemove,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -491,6 +553,12 @@ export function HoldingsTable({
   /** Render an Account column (the uncombined per-account view, metron-ops#114). The rows
    *  must carry `account_label`; it pins beside Ticker in the frozen spine. */
   accountColumn?: boolean;
+  /** The Position/Value footer totals only mean something for real positions — a
+   *  comparison-only row set (e.g. the watchlist) passes false to drop the row entirely. */
+  showTotals?: boolean;
+  /** When set, renders a trailing "Remove" column (e.g. the watchlist compare table,
+   *  metron-ops#121) — absent for the read-only Holdings view. */
+  onRemove?: (ticker: string) => void;
 }) {
   // Visible columns grouped by band, in canonical order, with priced-only bands dropped in
   // the cost-basis-only view (a band whose every column is priced collapses to nothing).
@@ -549,27 +617,39 @@ export function HoldingsTable({
     return { cost, mv, unreal, unrealPct, excluded };
   }, [holdings, baseCurrency, priced]);
 
-  // Header sort-button (shared by the spine + band column headers).
+  // Header sort-control (shared by the spine + band column headers).
   // `title` is the column's plain-language DEFINITION (when it has one): the header shows a
-  // small ⓘ signpost so the definition is discoverable, not hidden behind a hover-the-label
-  // (metron-ops#115).
+  // small ⓘ signpost so the definition is discoverable via a real click-to-open disclosure —
+  // NOT nested inside the sort <button> (nested buttons are invalid HTML and swallow every
+  // click into `toggle(colKey)`, so the ⓘ was unreachable — metron-ops#115 follow-up, metron#158).
   const SortTh = ({ colKey, label, title }: { colKey: string; label: string; title?: string }) => (
-    <button
-      type="button"
-      onClick={() => toggle(colKey)}
-      className="inline-flex items-center gap-1 uppercase tracking-wide hover:text-ink"
-      title={title ?? `Sort by ${label}`}
-    >
-      {label}
+    <span className="inline-flex items-center gap-1 uppercase tracking-wide">
+      <button
+        type="button"
+        onClick={() => toggle(colKey)}
+        className="inline-flex items-center gap-1 hover:text-ink"
+        title={`Sort by ${label}`}
+      >
+        {label}
+        <span className={sort?.key === colKey ? "" : "invisible"}>{sort?.desc ? "▼" : "▲"}</span>
+      </button>
       {title ? (
-        // Visual signpost only — the definition is already on the button's title (so the
-        // accessible name + existing header-query tests stay unchanged).
-        <span className="cursor-help text-[10px] font-normal text-muted/70 normal-case" title={title} aria-hidden>
-          ⓘ
-        </span>
+        // Native <details> disclosure — click-to-open, keyboard/focus accessible, no
+        // click-outside wiring needed. Same pattern as the Columns "Customize" control
+        // (holdings-column-presets.tsx).
+        <details className="relative inline-block normal-case leading-none">
+          <summary
+            className="cursor-help list-none text-[10px] font-normal text-muted/70 marker:hidden hover:text-ink [&::-webkit-details-marker]:hidden"
+            aria-label={`What is ${label}?`}
+          >
+            ⓘ
+          </summary>
+          <div className="absolute left-0 top-full z-30 mt-1 w-56 rounded-lg border border-line bg-paper p-2 text-[11px] font-normal normal-case leading-snug text-ink shadow-lg">
+            {title}
+          </div>
+        </details>
       ) : null}
-      <span className={sort?.key === colKey ? "" : "invisible"}>{sort?.desc ? "▼" : "▲"}</span>
-    </button>
+    </span>
   );
 
   return (
@@ -589,6 +669,7 @@ export function HoldingsTable({
                   {band}
                 </th>
               ))}
+              {onRemove ? <th className="bg-surface px-3 py-1.5" /> : null}
             </tr>
           ) : null}
           <tr className="border-b border-line bg-surface text-left text-xs uppercase tracking-wide text-muted">
@@ -610,6 +691,7 @@ export function HoldingsTable({
                 </th>
               )),
             )}
+            {onRemove ? <th className="px-3 py-2 text-right font-medium">Remove</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -652,11 +734,23 @@ export function HoldingsTable({
                     </td>
                   )),
                 )}
+                {onRemove ? (
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => onRemove(h.ticker)}
+                      aria-label={`Remove ${h.ticker}`}
+                      className="rounded px-2 py-0.5 text-xs text-muted hover:bg-rose-500/10 hover:text-rose-300"
+                    >
+                      Remove
+                    </button>
+                  </td>
+                ) : null}
               </tr>
             );
           })}
         </tbody>
-        {holdings.length > 0 ? (
+        {holdings.length > 0 && showTotals ? (
           <tfoot>
             <tr className="border-t border-line bg-surface font-medium">
               <td
@@ -676,6 +770,7 @@ export function HoldingsTable({
                   </td>
                 )),
               )}
+              {onRemove ? <td className="px-3 py-2" /> : null}
             </tr>
           </tfoot>
         ) : null}

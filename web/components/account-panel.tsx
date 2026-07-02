@@ -22,6 +22,8 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { deleteAccountAction, saveAccountSelectionAction } from "@/app/portfolios/[id]/actions";
 import type { Account } from "@/lib/api";
 import { accountingMoneyWhole, accountingPercent, moneyWhole, signClass } from "@/lib/format";
+import { isReferencePortfolio } from "@/lib/demo";
+import { ReadOnlyNotice } from "@/components/ui";
 
 /** Human label for the 3-way tax treatment, falling back to the derived taxable flag. */
 function typeLabel(a: Account): string {
@@ -165,6 +167,11 @@ export function AccountPanel({
    *  editing lives on the Settings page, not here. */
   deletable?: boolean;
 }) {
+  // The Reference Rate showcase (metron-ops#120) is a live, real-tenant-visible read-only
+  // mirror (metron#162) — the API 403s account delete for it regardless of caller tenant
+  // (api/main.py::_demo_read_only). Only relevant in `deletable` mode (the Overview); the
+  // Holdings filter view never renders a delete affordance in the first place.
+  const readOnly = deletable && isReferencePortfolio(portfolioId);
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
@@ -364,7 +371,7 @@ export function AccountPanel({
           ytdPct={a.ytd_pct}
           ltmPct={a.ltm_pct}
         />
-        {deletable ? (
+        {deletable && !readOnly ? (
           <button
             type="button"
             onClick={() => remove(a)}
@@ -405,6 +412,11 @@ export function AccountPanel({
       ) : null}
       {deleteError ? (
         <div className="border-b border-line bg-rose-500/10 px-4 py-2 text-xs text-rose-300">{deleteError}</div>
+      ) : null}
+      {readOnly ? (
+        <div className="border-b border-line bg-surface px-4 py-2">
+          <ReadOnlyNotice>Illustrative — read-only. Accounts on this showcase portfolio can&apos;t be deleted.</ReadOnlyNotice>
+        </div>
       ) : null}
       {/* One column header for the whole panel — the metric labels no longer repeat per
           row (metron-ops). The 16px lead + w-6 trail spacers mirror the row layout so the

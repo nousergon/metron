@@ -3,6 +3,8 @@ and the seeded read-only live portfolio under the demo tenant."""
 
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy import select
 
 from api.db import models
@@ -158,3 +160,65 @@ def test_reference_portfolio_is_read_only(client, db_session):
         files={"file": ("t.csv", b"date,type,symbol,quantity,price,amount,account\n", "text/csv")},
     )
     assert r.status_code == 403
+
+
+# ── Cross-tenant visibility (metron-ops: "Reference Rate on every dashboard") ───────────
+
+
+def _real_headers() -> dict[str, str]:
+    return {"X-Tenant-Id": str(uuid.uuid4())}
+
+
+def test_reference_portfolio_visible_to_real_tenant_list(client, db_session):
+    demo.sync_reference_holdings(db_session, reader=_reader)
+    real = _real_headers()
+    own = client.post("/portfolios", json={"name": "My Portfolio"}, headers=real).json()
+    ids = {p["id"] for p in client.get("/portfolios", headers=real).json()}
+    assert own["id"] in ids
+    assert str(demo.REFERENCE_PORTFOLIO_ID) in ids
+
+
+def test_reference_portfolio_not_duplicated_for_demo_tenant(client, db_session):
+    demo.sync_reference_holdings(db_session, reader=_reader)
+    ids = [p["id"] for p in client.get("/portfolios", headers=REFERENCE_HEADERS).json()]
+    assert ids.count(str(demo.REFERENCE_PORTFOLIO_ID)) == 1
+
+
+def test_reference_portfolio_readable_by_real_tenant(client, db_session):
+    demo.sync_reference_holdings(db_session, reader=_reader)
+    r = client.get(f"/portfolios/{demo.REFERENCE_PORTFOLIO_ID}/holdings", headers=_real_headers())
+    assert r.status_code == 200
+    assert {h["ticker"] for h in r.json()} == {"AMD", "SPY"}
+
+
+def test_reference_portfolio_still_read_only_for_real_tenant(client, db_session):
+    demo.sync_reference_holdings(db_session, reader=_reader)
+    real = _real_headers()
+    # A real tenant's OWN header never equals DEMO_TENANT_ID — this is the case the
+    # tenant-header check alone can't catch; the middleware's path-based check must.
+    r = client.post(
+        f"/portfolios/{demo.REFERENCE_PORTFOLIO_ID}/import/csv",
+        headers=real,
+        files={"file": ("t.csv", b"date,type,symbol,quantity,price,amount,account\n", "text/csv")},
+    )
+    assert r.status_code == 403
+
+    r = client.patch(f"/portfolios/{demo.REFERENCE_PORTFOLIO_ID}", json={"name": "Hijacked"}, headers=real)
+    assert r.status_code == 403
+
+    account_id = client.get(f"/portfolios/{demo.REFERENCE_PORTFOLIO_ID}/accounts/excluded", headers=real)
+    assert account_id.status_code == 200  # reads still work — sanity check on the same portfolio
+    acct_ids = db_session.scalars(
+        select(models.Account.id).where(models.Account.portfolio_id == demo.REFERENCE_PORTFOLIO_ID)
+    ).all()
+    r = client.delete(f"/portfolios/{demo.REFERENCE_PORTFOLIO_ID}/accounts/{acct_ids[0]}", headers=real)
+    assert r.status_code == 403
+
+
+def test_reference_portfolio_absent_from_list_when_unseeded(client):
+    # No sync ran — the showcase hasn't been seeded — a real tenant's list must not 500
+    # and must simply omit it.
+    real = _real_headers()
+    r = client.get("/portfolios", headers=real)
+    assert r.status_code == 200
+    assert str(demo.REFERENCE_PORTFOLIO_ID) not in {p["id"] for p in r.json()}

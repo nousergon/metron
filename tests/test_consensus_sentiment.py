@@ -14,8 +14,7 @@ from __future__ import annotations
 from datetime import date
 
 from api.db import models
-from api.routers import portfolios
-from api.services import analyst, analytics, sentiment, tearsheet
+from api.services import analyst, analytics, metrics_enrichment, sentiment, tearsheet
 
 # Artifact shapes mirror exactly what alpha-engine-data's collect_analyst / collect_sentiment
 # write (the envelope is {schema_version, as_of, source, <map>}; per-symbol sub-dicts omit
@@ -107,17 +106,17 @@ def test_sentiment_missing_artifact_is_empty():
 
 def _patch_loaders(monkeypatch, *, analyst_art, sentiment_art):
     """Wire the spine loaders to injected artifacts; stub fundamentals/technicals empty so
-    _enrich_metrics exercises only the consensus/sentiment path."""
+    enrich_metrics exercises only the consensus/sentiment path."""
     real_analyst, real_sentiment = analyst.load_analyst, sentiment.load_sentiment
-    monkeypatch.setattr(portfolios.tearsheet_service, "_yf_symbol_map",
+    monkeypatch.setattr(metrics_enrichment.tearsheet_service, "_yf_symbol_map",
                         lambda session, syms: {s: s for s in syms})
-    monkeypatch.setattr(portfolios.fundamentals_service, "load_fundamentals",
+    monkeypatch.setattr(metrics_enrichment.fundamentals_service, "load_fundamentals",
                         lambda: type("S", (), {"by_symbol": {}})())
-    monkeypatch.setattr(portfolios.technicals_service, "load_technicals",
+    monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals",
                         lambda: type("S", (), {"by_symbol": {}})())
-    monkeypatch.setattr(portfolios.analyst_service, "load_analyst",
+    monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst",
                         lambda: real_analyst(reader=lambda: analyst_art))
-    monkeypatch.setattr(portfolios.sentiment_service, "load_sentiment",
+    monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment",
                         lambda: real_sentiment(reader=lambda: sentiment_art))
 
 
@@ -128,7 +127,7 @@ def test_enrich_metrics_maps_consensus_and_sentiment(monkeypatch):
     ]
     _patch_loaders(monkeypatch, analyst_art=_ANALYST_ART, sentiment_art=_SENTIMENT_ART)
 
-    portfolios._enrich_metrics(session=None, held=held)
+    metrics_enrichment.enrich_metrics(session=None, held=held)
 
     aapl = held[0]
     assert aapl.consensus_rating == "buy" and aapl.consensus_score == 0.5
@@ -148,7 +147,7 @@ def test_enrich_metrics_fail_soft_on_missing_artifacts(monkeypatch):
     held = [analytics.Holding(ticker="AAPL", quantity=1, avg_cost=1, cost_basis=1, last_price=200.0)]
     _patch_loaders(monkeypatch, analyst_art=None, sentiment_art=None)
 
-    portfolios._enrich_metrics(session=None, held=held)
+    metrics_enrichment.enrich_metrics(session=None, held=held)
 
     h = held[0]
     assert h.consensus_rating is None and h.consensus_score is None

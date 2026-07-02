@@ -1,11 +1,12 @@
 import { Suspense } from "react";
-import { acctParams, getAccounts, getHoldings, getHoldingsView, getSummary, getValuationMedians, MetronApiError, type Entitlements, type Holding, type HoldingsViewPrefs, type Summary, type ValuationMedians } from "@/lib/api";
+import { acctParams, getAccounts, getHoldings, getHoldingsView, getSummary, getValuationMedians, getWatchlist, MetronApiError, type Entitlements, type Holding, type HoldingsViewPrefs, type Summary, type ValuationMedians, type WatchlistEntry } from "@/lib/api";
 import { Empty, Section } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { HoldingsView } from "@/components/holdings-view";
 import { RefreshPrices } from "@/components/refresh-prices";
 import { IntradayRefresher } from "@/components/intraday-refresher";
 import { PortfolioNav } from "@/components/portfolio-nav";
+import { WatchlistCompareTable } from "@/components/watchlist-compare-table";
 import { loadEntitlements, navFeatureStates } from "@/lib/entitlements";
 import { requireTenantId } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
@@ -113,6 +114,10 @@ export default async function HoldingsPage({
       <Suspense fallback={<SectionSkeleton rows={6} />}>
         <HoldingsSection tenantId={tenantId} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} savedView={savedView} />
       </Suspense>
+
+      <Suspense fallback={<SectionSkeleton rows={3} />}>
+        <WatchlistSection tenantId={tenantId} id={id} ccy={ccy} />
+      </Suspense>
     </div>
   );
 }
@@ -167,6 +172,23 @@ async function HoldingsSection({
       ) : (
         <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedBands={savedView?.visible_bands ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} />
       )}
+    </Section>
+  );
+}
+
+// Watchlist (metron-ops#42/#121) — a comparison-only table of tracked tickers you don't
+// (necessarily) hold, sortable on the same metrics as the Holdings table above. Always
+// scoped to the whole portfolio (not account-filtered — a watchlist entry has no account).
+async function WatchlistSection({ tenantId, id, ccy }: { tenantId: string; id: string; ccy: string }) {
+  let entries: WatchlistEntry[];
+  try {
+    entries = await getWatchlist(tenantId, id);
+  } catch {
+    return null; // best-effort — the Holdings table above already rendered
+  }
+  return (
+    <Section title="Watchlist" note="tracked tickers, compared side-by-side — never affects NAV or performance">
+      <WatchlistCompareTable portfolioId={id} baseCurrency={ccy} entries={entries} />
     </Section>
   );
 }

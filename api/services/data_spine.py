@@ -5,11 +5,19 @@ system — every product reads prices / FX / news from its S3 artifacts and make
 direct market-data API calls. This module owns Metron's side of that contract.
 
 Today it PUBLISHES the held-ticker universe (which instruments + currencies Metron
-holds) so `data` knows what EOD closes + FX rates to pull — mirroring how the existing
-daily-news producer reads `robodashboard/holdings_universe.json`. The CONSUMER side
-(reading `data`'s `market_data/eod_closes` + `market_data/fx` artifacts into
+holds) so `data` knows what EOD closes + FX rates to pull — succeeding robodashboard's
+retired `robodashboard/holdings_universe.json` (nousergon/metron-ops#119). The CONSUMER
+side (reading `data`'s `market_data/eod_closes` + `market_data/fx` artifacts into
 `price_bars` / `fx_rates`) lands in the cutover PR; the symmetry lives here so the
 schema versions stay paired.
+
+The payload also carries a symbols-only ``tickers`` list (the deduped broker symbols)
+so `nousergon-data`'s weekday ``RunDailyNews`` union step can re-source Brian's held
+tickers here — the exact ``{"tickers": [...]}`` slice the retired robodashboard producer
+fed it (config#1506). ``holdings``/``currencies`` (yf-priced instruments) and ``tickers``
+(news-universe symbols) are two views of the SAME held set, published together on the
+same nightly ``daily-refresh`` (metron-refresh.timer, 21:30 UTC among the post-close
+window) so they never drift.
 
 S3 access uses the ambient AWS credentials (the deploy box's instance role). The
 publish is wired into `daily-refresh` as a best-effort step — a failure WARNs and never
@@ -34,7 +42,11 @@ from api.services import analytics
 logger = logging.getLogger(__name__)
 
 # Bump when the published shape changes; `data`'s consumer pins on it.
-HOLDINGS_UNIVERSE_SCHEMA_VERSION = 1
+# v2 (config#1506): added the symbols-only ``tickers`` list — the deduped broker symbols
+# nousergon-data's daily-news union re-sources here (robodashboard successor). Purely
+# additive: the existing ``holdings``/``currencies`` fields are unchanged, so the
+# market-data producer that pins v1 keeps working.
+HOLDINGS_UNIVERSE_SCHEMA_VERSION = 2
 # S3 key under the shared bucket. `data` reads this to assemble its pull universe.
 HOLDINGS_UNIVERSE_KEY = "metron/holdings_universe.json"
 
@@ -141,10 +153,12 @@ def build_holdings_universe(session: Session, *, today: date | None = None) -> d
     Returns the publishable payload: each held instrument under the symbol `data` should
     price it by (``yf_symbol``, foreign listings exchange-suffixed) with its native
     currency, plus the distinct non-USD currencies held (so `data` knows which FX pairs
-    to fetch). Deterministic + deduped — a ticker held in multiple portfolios/accounts
-    appears once."""
+    to fetch), plus a symbols-only ``tickers`` list (the broker symbols) that
+    nousergon-data's daily-news union consumes (config#1506). Deterministic + deduped —
+    a ticker held in multiple portfolios/accounts appears once."""
     today = today or date.today()
     by_yf: dict[str, str] = {}  # yf_symbol → native currency
+    broker_symbols: set[str] = set()  # deduped broker symbols → the news-universe `tickers`
     skipped_unlisted: set[str] = set()
     for p in session.scalars(select(models.Portfolio)).all():
         held = analytics.holdings(session, p.tenant_id, p.id)
@@ -157,11 +171,18 @@ def build_holdings_universe(session: Session, *, today: date | None = None) -> d
             if sec.yf_unlisted:
                 # No public listing to price (e.g. a 401(k) plan-level CIT) — the
                 # broker snapshot is the price authority, so publishing it would only
-                # make the data spine's yfinance pull fail every run (config#1029).
+                # make the data spine's yfinance pull fail every run (config#1029). Such
+                # instruments also have no tradable news feed, so they're excluded from
+                # the news-universe `tickers` for the same reason.
                 skipped_unlisted.add(sec.symbol)
                 continue
             yf = sec.yf_symbol or sec.symbol
             by_yf.setdefault(yf, sec.currency or h.currency or "USD")
+            # News universe uses the plain BROKER symbol (e.g. `1299`), not the
+            # exchange-suffixed yf_symbol (`1299.HK`) — news APIs key off the bare
+            # ticker, matching what the retired robodashboard producer published.
+            if sec.symbol:
+                broker_symbols.add(sec.symbol.strip().upper())
     if skipped_unlisted:
         logger.info(
             "holdings universe: %d unlisted instrument(s) excluded (broker-snapshot-priced): %s",
@@ -169,12 +190,14 @@ def build_holdings_universe(session: Session, *, today: date | None = None) -> d
         )
     holdings = [{"yf_symbol": yf, "currency": ccy} for yf, ccy in sorted(by_yf.items())]
     currencies = sorted({ccy for ccy in by_yf.values() if ccy and ccy != "USD"})
+    tickers = sorted(broker_symbols)
     return {
         "schema_version": HOLDINGS_UNIVERSE_SCHEMA_VERSION,
         "as_of": today.isoformat(),
         "source": "metron",
         "holdings": holdings,
         "currencies": currencies,
+        "tickers": tickers,
     }
 
 
@@ -186,8 +209,9 @@ def publish_holdings_universe(
     payload = build_holdings_universe(session, today=today)
     _write_s3_json(bucket or settings.market_data_bucket, HOLDINGS_UNIVERSE_KEY, payload, s3_client=s3_client)
     logger.info(
-        "published holdings universe: %d instruments, %d non-USD currencies → s3://%s/%s",
-        len(payload["holdings"]), len(payload["currencies"]),
+        "published holdings universe: %d instruments, %d non-USD currencies, "
+        "%d news tickers → s3://%s/%s",
+        len(payload["holdings"]), len(payload["currencies"]), len(payload["tickers"]),
         bucket or settings.market_data_bucket, HOLDINGS_UNIVERSE_KEY,
     )
     return payload
