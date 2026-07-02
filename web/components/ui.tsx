@@ -77,6 +77,18 @@ export function Empty({ children }: { children: ReactNode }) {
   return <div className="rounded-lg border border-dashed border-line p-6 text-sm text-muted">{children}</div>;
 }
 
+/** Short inline explanation shown in place of a write-affordance (Import, rename, delete,
+ * SnapTrade connect, price refresh…) on the Reference Rate showcase portfolio
+ * (`isReferencePortfolio`, metron-ops#120). The portfolio is a live, real-tenant-visible
+ * read-only mirror (metron#162) — the API already 403s every mutating route for it
+ * (`api/main.py::_demo_read_only`), so this just replaces the dead-end click with a short
+ * explanation instead of duplicating that check with clickable-but-broken buttons. */
+export function ReadOnlyNotice({ children }: { children?: ReactNode }) {
+  return (
+    <p className="text-xs text-muted">{children ?? "Illustrative — read-only. This showcase portfolio can't be edited."}</p>
+  );
+}
+
 // Upsell labels for a required tier (matches PortfolioNav's lock badge). Two exposed tiers
 // now (metron-ops): a beta-excluded feature upsells to the full "AI Advisor" build.
 const TIER_LABEL: Record<string, string> = { personal: "AI Advisor" };

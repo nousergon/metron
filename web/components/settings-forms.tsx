@@ -13,6 +13,8 @@ import {
   updateBaseCurrencyAction,
 } from "@/app/portfolios/[id]/actions";
 import type { Account, ExcludedAccount, Preferences } from "@/lib/api";
+import { ReadOnlyNotice } from "@/components/ui";
+import { isReferencePortfolio } from "@/lib/demo";
 
 const CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "HKD", "JPY", "SGD", "CHF"];
 
@@ -79,6 +81,11 @@ export function AccountTagRow({ portfolioId, account }: { portfolioId: string; a
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // The Reference Rate showcase (metron-ops#120) is a live, real-tenant-visible read-only
+  // mirror (metron#162) — the API 403s account-tag edits for it regardless of caller tenant
+  // (api/main.py::_demo_read_only).
+  const readOnly = isReferencePortfolio(portfolioId);
+
   function save() {
     setMsg(null);
     start(async () => {
@@ -97,33 +104,37 @@ export function AccountTagRow({ portfolioId, account }: { portfolioId: string; a
       <td className="px-4 py-2 font-medium text-muted">{account.name || account.external_id}</td>
       <td className="px-4 py-2">
         <input
-          className="w-36 rounded border border-line px-2 py-1 text-sm"
+          className="w-36 rounded border border-line px-2 py-1 text-sm disabled:opacity-50"
           value={nickname}
           placeholder="e.g. My Roth"
           onChange={(e) => setNickname(e.target.value)}
+          disabled={readOnly}
         />
       </td>
       <td className="px-4 py-2">
         <input
-          className="w-36 rounded border border-line px-2 py-1 text-sm"
+          className="w-36 rounded border border-line px-2 py-1 text-sm disabled:opacity-50"
           value={institution}
           placeholder="e.g. Fidelity"
           onChange={(e) => setInstitution(e.target.value)}
+          disabled={readOnly}
         />
       </td>
       <td className="px-4 py-2">
         <input
-          className="w-36 rounded border border-line px-2 py-1 text-sm"
+          className="w-36 rounded border border-line px-2 py-1 text-sm disabled:opacity-50"
           value={accountType}
           placeholder="e.g. Roth IRA"
           onChange={(e) => setAccountType(e.target.value)}
+          disabled={readOnly}
         />
       </td>
       <td className="px-4 py-2">
         <select
-          className="rounded border border-line px-2 py-1 text-sm"
+          className="rounded border border-line px-2 py-1 text-sm disabled:opacity-50"
           value={treatment}
           onChange={(e) => setTreatment(e.target.value)}
+          disabled={readOnly}
         >
           {TAX_TREATMENTS.map((t) => (
             <option key={t.value} value={t.value}>
@@ -133,17 +144,21 @@ export function AccountTagRow({ portfolioId, account }: { portfolioId: string; a
         </select>
       </td>
       <td className="px-4 py-2">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            disabled={pending}
-            onClick={save}
-            className="rounded bg-ink px-3 py-1 text-sm font-medium text-paper hover:bg-white disabled:opacity-50"
-          >
-            {pending ? "Saving…" : "Save"}
-          </button>
-          <Status msg={msg} />
-        </div>
+        {readOnly ? (
+          <ReadOnlyNotice>Illustrative — read-only.</ReadOnlyNotice>
+        ) : (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={pending}
+              onClick={save}
+              className="rounded bg-ink px-3 py-1 text-sm font-medium text-paper hover:bg-white disabled:opacity-50"
+            >
+              {pending ? "Saving…" : "Save"}
+            </button>
+            <Status msg={msg} />
+          </div>
+        )}
       </td>
     </tr>
   );
@@ -243,6 +258,11 @@ export function ExcludedAccountRow({ portfolioId, excluded }: { portfolioId: str
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const router = useRouter();
 
+  // The Reference Rate showcase (metron-ops#120) is a live, real-tenant-visible read-only
+  // mirror (metron#162) — the API 403s account restore for it regardless of caller tenant
+  // (api/main.py::_demo_read_only).
+  const readOnly = isReferencePortfolio(portfolioId);
+
   function restore() {
     setMsg(null);
     start(async () => {
@@ -257,17 +277,21 @@ export function ExcludedAccountRow({ portfolioId, excluded }: { portfolioId: str
       <td className="px-3 py-2 font-mono text-xs">{excluded.external_id}</td>
       <td className="px-3 py-2 text-sm">{excluded.broker}</td>
       <td className="px-3 py-2">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            disabled={pending}
-            onClick={restore}
-            className="rounded border border-line px-2 py-0.5 text-xs hover:bg-white/5 disabled:opacity-50"
-          >
-            {pending ? "Restoring…" : "Restore"}
-          </button>
-          <Status msg={msg} />
-        </div>
+        {readOnly ? (
+          <ReadOnlyNotice>Illustrative — read-only.</ReadOnlyNotice>
+        ) : (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={pending}
+              onClick={restore}
+              className="rounded border border-line px-2 py-0.5 text-xs hover:bg-white/5 disabled:opacity-50"
+            >
+              {pending ? "Restoring…" : "Restore"}
+            </button>
+            <Status msg={msg} />
+          </div>
+        )}
       </td>
     </tr>
   );
