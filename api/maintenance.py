@@ -79,6 +79,7 @@ class RefreshResult:
     attribution_computed: int = 0   # portfolios whose sector attribution backfilled + ran
     earnings_refreshed: int = 0     # securities whose next earnings date refreshed from the spine
     universe_published: bool = False  # held-ticker universe published to the data spine
+    watchlist_universe_published: bool = False  # watchlist-only-ticker universe published (metron-ops#132)
 
 
 def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResult:
@@ -241,12 +242,20 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     # surface = this WARN (+ the data-spine freshness monitor once ARTIFACT_REGISTRY
     # tracks it). Gated off by default so dev/tests never reach S3.
     universe_published = False
+    watchlist_universe_published = False
     if settings.market_data_sync_enabled:
         try:
             data_spine.publish_holdings_universe(session, today=today)
             universe_published = True
         except Exception as e:  # noqa: BLE001 - best-effort secondary path; never fatal
             logger.warning("holdings-universe publish failed (non-fatal): %s", e)
+        # Watchlist-only-ticker universe (metron-ops#132) — same best-effort posture, its
+        # own try/except so a failure here never blocks the held-universe publish above.
+        try:
+            data_spine.publish_watchlist_universe(session, today=today)
+            watchlist_universe_published = True
+        except Exception as e:  # noqa: BLE001 - best-effort secondary path; never fatal
+            logger.warning("watchlist-universe publish failed (non-fatal): %s", e)
 
     return RefreshResult(
         portfolios=len(portfolios),
@@ -262,6 +271,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         attribution_computed=total_attr,
         earnings_refreshed=total_earnings,
         universe_published=universe_published,
+        watchlist_universe_published=watchlist_universe_published,
     )
 
 

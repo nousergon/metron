@@ -217,6 +217,68 @@ def publish_holdings_universe(
     return payload
 
 
+# `alpha-engine-data`'s per-ticker Holdings-metrics collectors (fundamentals / technicals /
+# analyst / sentiment — Holdings metrics) fetch ONLY over the held-ticker universe above, so a
+# watchlist-only ticker (tracked but never bought — metron-ops#42/#121) got no metrics at all
+# on the Holdings/watchlist comparison table (metron-ops#132 — Brian's MU report). This second
+# artifact mirrors the same shape so the collectors can union it in without touching their own
+# schema; a symbol already in the held universe is naturally deduped downstream (a set union).
+WATCHLIST_UNIVERSE_SCHEMA_VERSION = 1
+WATCHLIST_UNIVERSE_KEY = "metron/watchlist_universe.json"
+
+
+def build_watchlist_universe(session: Session, *, today: date | None = None) -> dict:
+    """Assemble the watchlist-only-ticker universe across EVERY portfolio in the DB — the
+    SAME publishable shape as ``build_holdings_universe`` (``holdings``/``currencies``/
+    ``tickers``), so `alpha-engine-data` can union the two without a schema branch.
+    Deterministic + deduped — a ticker watchlisted in multiple portfolios appears once, and a
+    ticker that's ALSO held is naturally re-deduped by the union on the consumer side."""
+    today = today or date.today()
+    by_yf: dict[str, str] = {}  # yf_symbol → native currency
+    broker_symbols: set[str] = set()
+    symbols: set[str] = set()
+    for row in session.scalars(select(models.WatchlistItem)).all():
+        sym = (row.symbol or "").strip().upper()
+        if sym:
+            symbols.add(sym)
+    secs = _securities_by_symbol(session, sorted(symbols))
+    for sym in symbols:
+        sec = secs.get(sym)
+        if sec is None or sec.yf_unlisted:
+            continue  # no cached Security yet, or no public listing to price — never fabricated
+        yf = sec.yf_symbol or sec.symbol
+        by_yf.setdefault(yf, sec.currency or "USD")
+        if sec.symbol:
+            broker_symbols.add(sec.symbol.strip().upper())
+    holdings = [{"yf_symbol": yf, "currency": ccy} for yf, ccy in sorted(by_yf.items())]
+    currencies = sorted({ccy for ccy in by_yf.values() if ccy and ccy != "USD"})
+    tickers = sorted(broker_symbols)
+    return {
+        "schema_version": WATCHLIST_UNIVERSE_SCHEMA_VERSION,
+        "as_of": today.isoformat(),
+        "source": "metron",
+        "holdings": holdings,
+        "currencies": currencies,
+        "tickers": tickers,
+    }
+
+
+def publish_watchlist_universe(
+    session: Session, *, s3_client=None, today: date | None = None, bucket: str | None = None
+) -> dict:
+    """Publish the watchlist-only-ticker universe to S3 for `alpha-engine-data` to consume.
+    Returns the published payload. Raises ``DataSpineUnavailable`` on S3 failure."""
+    payload = build_watchlist_universe(session, today=today)
+    _write_s3_json(bucket or settings.market_data_bucket, WATCHLIST_UNIVERSE_KEY, payload, s3_client=s3_client)
+    logger.info(
+        "published watchlist universe: %d instruments, %d non-USD currencies, "
+        "%d tickers → s3://%s/%s",
+        len(payload["holdings"]), len(payload["currencies"]), len(payload["tickers"]),
+        bucket or settings.market_data_bucket, WATCHLIST_UNIVERSE_KEY,
+    )
+    return payload
+
+
 # Crypto wallet addresses → S3 for `nousergon-data`'s crypto-balances producer to consume
 # (metron-ops#111). Metron publishes the deduped (chain, address) set; the producer queries
 # the chain for balances and writes `crypto/holdings.json` back. Metron makes NO chain calls.

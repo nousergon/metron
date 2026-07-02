@@ -116,6 +116,71 @@ class TestBuildUniverse:
         assert payload["tickers"] == ["AAPL"]
 
 
+def _seed_watchlist(session, *, pf_name, symbol, currency="USD", yf_symbol=None):
+    """A watchlist item (position-optional, no Position/Account row) plus the cached
+    Security row `build_watchlist_universe` resolves it through — mirroring what
+    `price_service.ensure_security` writes on a real watchlist add."""
+    tenant = models.Tenant(name=pf_name)
+    session.add(tenant)
+    session.flush()
+    pf = models.Portfolio(tenant_id=tenant.id, name=pf_name, base_currency="USD")
+    session.add(pf)
+    session.flush()
+    sec = session.query(models.Security).filter_by(symbol=symbol, currency=currency).first()
+    if sec is None:
+        sec = models.Security(symbol=symbol, currency=currency, yf_symbol=yf_symbol or symbol)
+        session.add(sec)
+        session.flush()
+    session.add(models.WatchlistItem(tenant_id=tenant.id, portfolio_id=pf.id, symbol=symbol))
+    session.commit()
+    return pf
+
+
+class TestBuildWatchlistUniverse:
+    """metron-ops#132: a watchlist-only ticker (never held) must still be published so
+    `alpha-engine-data` fetches its fundamentals/technicals/analyst/sentiment."""
+
+    def test_dedupes_across_portfolios_and_resolves_yf_symbol(self, db_session):
+        _seed_watchlist(db_session, pf_name="P1", symbol="MU", currency="USD", yf_symbol="MU")
+        _seed_watchlist(db_session, pf_name="P2", symbol="MU", currency="USD", yf_symbol="MU")
+
+        payload = data_spine.build_watchlist_universe(db_session, today=date(2024, 6, 3))
+
+        assert payload["schema_version"] == data_spine.WATCHLIST_UNIVERSE_SCHEMA_VERSION
+        assert payload["as_of"] == "2024-06-03"
+        assert payload["source"] == "metron"
+        assert payload["holdings"] == [{"yf_symbol": "MU", "currency": "USD"}]
+        assert payload["tickers"] == ["MU"]
+
+    def test_empty_when_no_watchlist_items(self, db_session):
+        payload = data_spine.build_watchlist_universe(db_session, today=date(2024, 6, 3))
+        assert payload["holdings"] == [] and payload["currencies"] == [] and payload["tickers"] == []
+
+    def test_symbol_with_no_cached_security_yet_is_skipped_not_fabricated(self, db_session):
+        # A watchlist add that hasn't resolved a Security row yet (e.g. a raced first
+        # request) never fabricates a yf_symbol/currency — it's just absent this cycle.
+        tenant = models.Tenant(name="P1")
+        db_session.add(tenant)
+        db_session.flush()
+        pf = models.Portfolio(tenant_id=tenant.id, name="P1", base_currency="USD")
+        db_session.add(pf)
+        db_session.flush()
+        db_session.add(models.WatchlistItem(tenant_id=tenant.id, portfolio_id=pf.id, symbol="ZZZZ"))
+        db_session.commit()
+
+        payload = data_spine.build_watchlist_universe(db_session, today=date(2024, 6, 3))
+        assert payload["holdings"] == []
+
+    def test_excludes_unlisted(self, db_session):
+        _seed_watchlist(db_session, pf_name="P1", symbol="PCKM", currency="USD", yf_symbol="PCKM")
+        sec = db_session.query(models.Security).filter_by(symbol="PCKM").one()
+        sec.yf_unlisted = True
+        db_session.commit()
+
+        payload = data_spine.build_watchlist_universe(db_session, today=date(2024, 6, 3))
+        assert payload["holdings"] == []
+
+
 class TestPublish:
     def test_publish_writes_compact_json_at_pinned_key(self, db_session):
         _seed_holding(db_session, pf_name="P1", symbol="NVDA", currency="USD", yf_symbol="NVDA")
@@ -134,6 +199,22 @@ class TestPublish:
         assert json.loads(put["Body"].decode()) == payload
         assert payload["holdings"] == [{"yf_symbol": "NVDA", "currency": "USD"}]
 
+    def test_publish_watchlist_writes_compact_json_at_pinned_key(self, db_session):
+        _seed_watchlist(db_session, pf_name="P1", symbol="MU", currency="USD", yf_symbol="MU")
+        fake = _FakeS3()
+
+        payload = data_spine.publish_watchlist_universe(
+            db_session, s3_client=fake, today=date(2024, 6, 3), bucket="test-bucket"
+        )
+
+        assert len(fake.puts) == 1
+        put = fake.puts[0]
+        assert put["Bucket"] == "test-bucket"
+        assert put["Key"] == data_spine.WATCHLIST_UNIVERSE_KEY == "metron/watchlist_universe.json"
+        assert put["ContentType"] == "application/json"
+        assert json.loads(put["Body"].decode()) == payload
+        assert payload["holdings"] == [{"yf_symbol": "MU", "currency": "USD"}]
+
 
 class TestDailyRefreshGate:
     def test_refresh_does_not_publish_when_disabled(self, db_session, monkeypatch):
@@ -145,10 +226,16 @@ class TestDailyRefreshGate:
             data_spine, "publish_holdings_universe",
             lambda *a, **k: called.__setitem__("n", called["n"] + 1),
         )
+        watchlist_called = {"n": 0}
+        monkeypatch.setattr(
+            data_spine, "publish_watchlist_universe",
+            lambda *a, **k: watchlist_called.__setitem__("n", watchlist_called["n"] + 1),
+        )
         # No price source → prices skipped, but the publish gate is what we assert.
         result = maintenance.daily_refresh(db_session, today=date(2024, 6, 3))
-        assert called["n"] == 0
+        assert called["n"] == 0 and watchlist_called["n"] == 0
         assert result.universe_published is False
+        assert result.watchlist_universe_published is False
 
     def test_refresh_publishes_when_enabled(self, db_session, monkeypatch):
         _seed_holding(db_session, pf_name="P1", symbol="AAPL", currency="USD", yf_symbol="AAPL")
@@ -158,9 +245,15 @@ class TestDailyRefreshGate:
             data_spine, "publish_holdings_universe",
             lambda *a, **k: called.__setitem__("n", called["n"] + 1),
         )
+        watchlist_called = {"n": 0}
+        monkeypatch.setattr(
+            data_spine, "publish_watchlist_universe",
+            lambda *a, **k: watchlist_called.__setitem__("n", watchlist_called["n"] + 1),
+        )
         result = maintenance.daily_refresh(db_session, today=date(2024, 6, 3))
-        assert called["n"] == 1
+        assert called["n"] == 1 and watchlist_called["n"] == 1
         assert result.universe_published is True
+        assert result.watchlist_universe_published is True
 
     def test_publish_failure_is_non_fatal(self, db_session, monkeypatch):
         """A data-spine S3 failure must WARN and let daily-refresh complete."""
@@ -171,8 +264,10 @@ class TestDailyRefreshGate:
             raise data_spine.DataSpineUnavailable("s3 down")
 
         monkeypatch.setattr(data_spine, "publish_holdings_universe", _boom)
+        monkeypatch.setattr(data_spine, "publish_watchlist_universe", _boom)
         result = maintenance.daily_refresh(db_session, today=date(2024, 6, 3))
         assert result.universe_published is False
+        assert result.watchlist_universe_published is False
         assert result.portfolios == 1  # the rest of the refresh still completed
 
 
