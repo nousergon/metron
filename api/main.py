@@ -20,7 +20,7 @@ from krepis.logging import setup_logging
 from api.config import settings
 from api.db.session import create_all
 from api.plugins import active_plugins
-from api.routers import indices, macro, meta, portfolios
+from api.routers import indices, macro, meta, portfolios, research_intel
 from api.services.demo import DEMO_TENANT_ID, REFERENCE_PORTFOLIO_ID
 
 # Structured logging + flow-doctor. Passing a flow-doctor.yaml attaches a
@@ -126,6 +126,7 @@ app.include_router(meta.router)
 app.include_router(portfolios.router)
 app.include_router(macro.router)
 app.include_router(indices.router)
+app.include_router(research_intel.router)
 
 # Mount any out-of-tree premium plugins (metron-ops). Importing them here registers
 # their ORM models on the shared Base *before* lifespan's create_all runs, so a
