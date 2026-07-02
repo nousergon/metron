@@ -176,7 +176,7 @@ async function HoldingsSection({
   );
 }
 
-// Watchlist (metron-ops#42/#123) — a comparison-only table of tracked tickers you don't
+// Watchlist (metron-ops#42/#121) — a comparison-only table of tracked tickers you don't
 // (necessarily) hold, sortable on the same metrics as the Holdings table above. Always
 // scoped to the whole portfolio (not account-filtered — a watchlist entry has no account).
 async function WatchlistSection({ tenantId, id, ccy }: { tenantId: string; id: string; ccy: string }) {
