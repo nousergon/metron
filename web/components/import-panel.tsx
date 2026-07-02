@@ -18,6 +18,8 @@ import {
   type ActionResult,
 } from "@/app/portfolios/[id]/actions";
 import type { SnapTradeConnections } from "@/lib/api";
+import { ReadOnlyNotice } from "@/components/ui";
+import { isReferencePortfolio } from "@/lib/demo";
 
 type ActionFn = (portfolioId: string, formData: FormData) => Promise<ActionResult>;
 
@@ -320,6 +322,17 @@ function SnapTradeCard({ portfolioId }: { portfolioId: string }) {
 }
 
 export function ImportPanel({ portfolioId, flexStored = false }: { portfolioId: string; flexStored?: boolean }) {
+  // The Reference Rate showcase (metron-ops#120) is a live, real-tenant-visible read-only
+  // mirror (metron#162) — the API 403s every import/sync route for it regardless of caller
+  // tenant. Hide the (dead-end) import/connect controls here rather than let a real user
+  // click one and get a raw API error.
+  if (isReferencePortfolio(portfolioId)) {
+    return (
+      <div className="rounded-lg border border-dashed border-line p-4">
+        <ReadOnlyNotice>Illustrative — read-only. Imports and broker connections aren&apos;t available on this showcase portfolio.</ReadOnlyNotice>
+      </div>
+    );
+  }
   return (
     <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
       <FileImport portfolioId={portfolioId} action={importCsvAction} label="Import CSV" accept=".csv,text/csv" />
