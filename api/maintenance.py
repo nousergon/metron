@@ -104,6 +104,18 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
             logger.warning("reference-rate sync failed (non-fatal): %s", e)
             session.rollback()
 
+    # Refresh the neutral research-intel snapshot from the crucible-research artifact
+    # (config#1499 Phase 1). Global, DB-free last-good cache; same S3-toggle gate + best-
+    # effort posture as the showcase above — a missing/unreadable artifact keeps last-good.
+    if settings.market_data_sync_enabled:
+        from portfolio_analytics.ingestion import research_intel_store
+
+        try:
+            updated = research_intel_store.sync_research_intel()
+            logger.info("research-intel sync: %s", "updated" if updated else "no artifact (kept last-good)")
+        except Exception as e:  # noqa: BLE001 - best-effort intel sync; never fatal
+            logger.warning("research-intel sync failed (non-fatal): %s", e)
+
     def _best_effort(label: str, portfolio_id, fn):
         """Run a derived backfill; on failure log a WARN and roll back its partial work
         so the next portfolio (and the already-committed price refresh) is unaffected.
