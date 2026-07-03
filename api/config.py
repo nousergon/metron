@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # an INFRA toggle ONLY — it does NOT gate the entitlement feed axis (see feed_entitled).
     market_data_bucket: str = "alpha-engine-research"
     market_data_sync_enabled: bool = False
+    # Where the telos TaxProjection artifact is cached (metron-ops#133). Produced
+    # OUTSIDE Metron by `python -m telos.planning`; delivered here by the operator/ops
+    # sync. Relative paths resolve from the API's working dir — the gitignored cache/
+    # survives deploys, matching research_intel.
+    tax_projection_path: str = "cache/tax_projection.json"
     # Feed entitlement (entitlement axis 2): does this deployment OFFER the feed-dependent
     # wedge (risk / attribution / scenarios / benchmark)? DECOUPLED from
     # market_data_sync_enabled (the S3 data-spine infra toggle above) so the owner build
