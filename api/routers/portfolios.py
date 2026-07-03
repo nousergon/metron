@@ -1918,9 +1918,26 @@ def get_performance_tiles(
     The TODAY tile is a LIVE intraday number (metron-ops#95) when the intraday overlay is in
     effect — its endpoint is the same live NAV the headline TOTAL VALUE shows, valued off
     the same overlay, with benchmark TODAY taken from the Markets-strip index quotes. When
-    the overlay is absent (pre-open / stale / no feed) it falls back to the date-guarded
-    snapshot path (metron#119)."""
+    the overlay is absent (pre-open / stale / no feed) TODAY falls back to the date-guarded
+    snapshot path (metron#119) for the portfolio side, but its benchmark comparison is STILL
+    sourced from the same live index-strip quotes (metron-ops#131) — the multi-day-tolerant
+    `price_bars` benchmark cache (correct for YTD/LTM) is fresh enough for QQQ/IWM only within
+    a several-day slack, since they're pure comparison proxies never held as a position (only
+    a genuinely-held ticker like SPY gets a same-day cache refresh for free). Reading TODAY's
+    return from the SAME index-strip artifact the Markets strip already displays correctly
+    keeps the two panels consistent and immune to that cache-staleness gap."""
     with_benchmarks = _external_market_data_allowed(x_preview_feed)
+    # A benchmark quote only carries a real "today" move when it's dated for the live NYSE
+    # session (indices.load_indices already suppresses change_pct off-session) — reused as
+    # both the live-overlay TODAY benchmark AND the settled-snapshot TODAY benchmark below,
+    # so a genuinely-today TODAY tile never reads a stale/off-session index quote as today's.
+    today_bench: dict[str, tuple[float | None, float | None]] = {}
+    if with_benchmarks:
+        idx_snap = indices.load_indices()
+        if idx_snap.available:
+            today_bench = {
+                q.symbol: (q.last, q.prev_close) for q in idx_snap.indices if q.change_pct is not None
+            }
     # LIVE intraday endpoint for the TODAY tile: the same overlay + valuation the headline
     # NAV uses (metron-ops#79/#95), so the tile and TOTAL VALUE move together. None when the
     # overlay isn't applied → the snapshot path takes over inside period_tiles.
@@ -1935,14 +1952,8 @@ def get_performance_tiles(
         )
         priced = [h.market_value for h in held if h.market_value is not None]
         live_nav = sum(priced) if priced else None
-        bench: dict[str, tuple[float | None, float | None]] = {}
-        if with_benchmarks:
-            snap = indices.load_indices()
-            if snap.available:
-                for q in snap.indices:
-                    bench[q.symbol] = (q.last, q.prev_close)
         live = performance.LiveToday(
-            nav=live_nav, intraday_applied=True, as_of_utc=meta.as_of_utc, bench=bench
+            nav=live_nav, intraday_applied=True, as_of_utc=meta.as_of_utc, bench=today_bench
         )
     return performance.period_tiles(
         session,
@@ -1952,6 +1963,7 @@ def get_performance_tiles(
         account_ids=account_ids,
         with_benchmarks=with_benchmarks,
         live=live,
+        today_bench=today_bench,
     )
 
 

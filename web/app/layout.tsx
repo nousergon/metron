@@ -42,8 +42,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </header>
           <main className="py-8">{children}</main>
           <footer className="border-t border-line py-6 text-xs leading-relaxed text-muted">
-            Read-only analytics. No ads, no trackers, no investment advice — we compute the numbers; what you do
-            with them is up to you.
+            <p>
+              Read-only analytics. No ads, no trackers, no investment advice — we compute the numbers; what you do
+              with them is up to you.
+            </p>
+            <p className="mt-2 flex gap-4">
+              <Link href="/terms" className="hover:text-fg">
+                Terms
+              </Link>
+              <Link href="/privacy" className="hover:text-fg">
+                Privacy
+              </Link>
+            </p>
           </footer>
         </div>
       </body>
