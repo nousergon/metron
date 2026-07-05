@@ -4,12 +4,10 @@ import {
   getRealized,
   getSummary,
   getTax,
-  getTaxPlanning,
   getTransactions,
   MetronApiError,
-  type TaxPlanning,
 } from "@/lib/api";
-import { accountingMoney, accountingMoneyWhole, isoDate, money, moneyWhole, percent, quantity, signClass, signedMoneyWhole } from "@/lib/format";
+import { accountingMoney, accountingMoneyWhole, isoDate, money, moneyWhole, quantity, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { navFeatureStates } from "@/lib/entitlements";
@@ -47,14 +45,6 @@ export default async function TaxPage({
       return <Empty>Portfolio not found.</Empty>;
     }
     return <Empty>Couldn&apos;t load tax. Is the backend running?</Empty>;
-  }
-
-  // Fetched separately fail-soft: a planning hiccup must never blank the tax page.
-  let planning: TaxPlanning | null = null;
-  try {
-    planning = await getTaxPlanning(tenantId);
-  } catch {
-    planning = null;
   }
 
   const ccy = summary.base_currency;
@@ -103,109 +93,6 @@ export default async function TaxPage({
           {taxData.n_accounts_excluded} tax-advantaged account{taxData.n_accounts_excluded === 1 ? "" : "s"} (IRA /
           401(k) / Roth …) excluded — gains there are never taxed.
         </p>
-      ) : null}
-
-      {planning !== null && planning.available ? (
-        <Section
-          title="Tax planning"
-          note={
-            planning.projection
-              ? `TY${planning.projection.tax_year} projection · as of ${isoDate(planning.projection.as_of)} · ${planning.projection.pack_status} parameters`
-              : "year-round projection from the telos engine"
-          }
-        >
-          {planning.schema_error ? (
-            <Empty>{planning.schema_error}</Empty>
-          ) : !planning.projection ? (
-            <Empty>
-              No tax projection yet — run <code>python -m telos.planning</code> against your income
-              scenario and sync the artifact to the server.
-            </Empty>
-          ) : (
-            <>
-              <div
-                className={`mb-3 rounded-md border px-4 py-3 text-sm ${
-                  planning.projection.headline.payment_recommended
-                    ? "border-negative/40 bg-negative/5"
-                    : "border-line bg-surface"
-                }`}
-              >
-                <span className="font-medium">
-                  {planning.projection.headline.payment_recommended
-                    ? `Estimated payment recommended: ${moneyWhole(Number(planning.projection.headline.recommended_amount), ccy)}`
-                    : "No estimated payment needed right now"}
-                </span>
-                {planning.projection.headline.next_due_date ? (
-                  <span className="text-muted"> · next due {isoDate(planning.projection.headline.next_due_date)}</span>
-                ) : null}
-                <p className="mt-1 text-xs text-muted">{planning.projection.headline.message}</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <StatCard
-                  label="Projected total tax"
-                  value={moneyWhole(Number(planning.projection.projected.total_tax), ccy)}
-                  hint={`on ${moneyWhole(Number(planning.projection.projected.agi), ccy)} AGI`}
-                />
-                <StatCard
-                  label="Effective / marginal rate"
-                  value={`${percent(Number(planning.projection.projected.effective_rate_on_agi))} / ${percent(Number(planning.projection.projected.marginal_ordinary_rate))}`}
-                  hint="on AGI / ordinary bracket"
-                />
-                <StatCard
-                  label="Safe harbor required"
-                  value={moneyWhole(Number(planning.projection.safe_harbor.required_annual_payment), ccy)}
-                  hint={planning.projection.safe_harbor.basis.replaceAll("_", " ")}
-                />
-                <StatCard
-                  label="Balance due at filing"
-                  value={accountingMoneyWhole(Number(planning.projection.projected.balance_due), ccy)}
-                  valueClass={signClass(-Number(planning.projection.projected.balance_due))}
-                  hint="after withholding + payments"
-                />
-              </div>
-              {planning.projection.quarters.length > 0 ? (
-                <div className="mt-3">
-                  <Table head={["Installment", "Due", "Required", "Paid", "Shortfall", "Status"]}>
-                    {planning.projection.quarters.map((q) => (
-                      <tr key={q.quarter} className="border-b border-line last:border-0">
-                        <td className="px-4 py-2 font-medium">Q{q.quarter}</td>
-                        <td className="px-4 py-2 text-right text-muted">{isoDate(q.due_date)}</td>
-                        <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(Number(q.required), ccy)}</td>
-                        <td className="px-4 py-2 text-right tabular-nums">{moneyWhole(Number(q.paid), ccy)}</td>
-                        <td className={`px-4 py-2 text-right tabular-nums ${Number(q.shortfall) > 0 ? "text-negative" : ""}`}>
-                          {Number(q.shortfall) > 0 ? moneyWhole(Number(q.shortfall), ccy) : "—"}
-                        </td>
-                        <td className="px-4 py-2 text-right">
-                          <span
-                            className={`text-xs uppercase tracking-wide ${
-                              q.status === "overdue"
-                                ? "font-medium text-negative"
-                                : q.status === "paid"
-                                  ? "text-muted"
-                                  : ""
-                            }`}
-                          >
-                            {q.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </Table>
-                </div>
-              ) : (
-                <p className="mt-2 text-xs text-muted">
-                  Withholding meets the required annual payment — no 1040-ES installments due.
-                </p>
-              )}
-              <p className="mt-2 text-xs text-muted">
-                Deterministic projection from the telos engine ({planning.projection.filing_status.replaceAll("_", " ")},
-                withholding {moneyWhole(Number(planning.projection.projected.total_withholding), ccy)}, estimated payments
-                made {moneyWhole(Number(planning.projection.projected.estimated_payments_made), ccy)}). §6654 safe-harbor
-                math; statutory due dates. Descriptive, not advice.
-              </p>
-            </>
-          )}
-        </Section>
       ) : null}
 
       <Section
