@@ -9,7 +9,8 @@ import { ThemeToggle } from "@/components/theme-toggle";
 
 export const dynamic = "force-dynamic";
 
-export default async function SettingsPage({ params }: { params: { id: string } }) {
+export default async function SettingsPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const { id } = params;
   const tenantId = await requireTenantId();
   const featureStates = await navFeatureStates(tenantId);

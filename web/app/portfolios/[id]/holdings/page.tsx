@@ -42,13 +42,14 @@ function SectionSkeleton({ rows = 3 }: { rows?: number }) {
 // the two expensive sections (Accounts, Holdings table) each stream in behind their own
 // <Suspense> as their data lands. Each streamed section is an async Server Component that
 // fetches only its own slice and fails soft.
-export default async function HoldingsPage({
-  params,
-  searchParams,
-}: {
-  params: { id: string };
-  searchParams: { account_id?: string | string[]; combine?: string };
-}) {
+export default async function HoldingsPage(
+  props: {
+    params: Promise<{ id: string }>;
+    searchParams: Promise<{ account_id?: string | string[]; combine?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const { id } = params;
   const tenantId = await requireTenantId();
 

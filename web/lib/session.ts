@@ -7,7 +7,7 @@ import { DEMO_COOKIE, DEMO_TENANT_ID } from "@/lib/demo";
 // signed-in user's workspace (tenant) — or get redirected to /login.
 
 export async function getSession() {
-  return auth.api.getSession({ headers: headers() });
+  return auth.api.getSession({ headers: await headers() });
 }
 
 /** The signed-in user's tenant id. Falls back to the READ-ONLY demo tenant when the
@@ -17,6 +17,6 @@ export async function requireTenantId(): Promise<string> {
   const session = await getSession();
   const tenantId = (session?.user as { tenantId?: string } | undefined)?.tenantId;
   if (tenantId) return tenantId;
-  if (cookies().get(DEMO_COOKIE)?.value === "1") return DEMO_TENANT_ID;
+  if ((await cookies()).get(DEMO_COOKIE)?.value === "1") return DEMO_TENANT_ID;
   redirect("/login");
 }

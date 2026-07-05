@@ -38,11 +38,12 @@ function sumOrNull(accts: Account[], pick: (a: Account) => number | null): numbe
   return any ? total : null;
 }
 
-export default async function PortfolioPage({
-  params,
-}: {
-  params: { id: string };
-}) {
+export default async function PortfolioPage(
+  props: {
+    params: Promise<{ id: string }>;
+  }
+) {
+  const params = await props.params;
   const { id } = params;
   const tenantId = await requireTenantId();
 
@@ -105,7 +106,7 @@ export default async function PortfolioPage({
   // the client component then polls every ~5 min. Best-effort — never blocks the page.
   const indicesEnt = featureEntitlement(entitlements, "indices");
   const indices = indicesEnt?.available
-    ? await getIndices(tenantId, previewFromCookies()).catch(() => null)
+    ? await getIndices(tenantId, await previewFromCookies()).catch(() => null)
     : null;
 
   return (

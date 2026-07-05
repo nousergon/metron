@@ -37,7 +37,8 @@ function score(a: ResearchIntelAttractiveness): string {
   return a.score == null ? "—" : a.score.toFixed(0);
 }
 
-export default async function ResearchIntelPage({ params }: { params: { id: string } }) {
+export default async function ResearchIntelPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const { id } = params;
   const tenantId = await requireTenantId();
 

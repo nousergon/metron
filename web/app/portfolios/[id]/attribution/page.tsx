@@ -18,13 +18,14 @@ function ret(v: number | null): string {
   return v != null ? percent(v) : "—";
 }
 
-export default async function AttributionPage({
-  params,
-  searchParams,
-}: {
-  params: { id: string };
-  searchParams: { account_id?: string | string[] };
-}) {
+export default async function AttributionPage(
+  props: {
+    params: Promise<{ id: string }>;
+    searchParams: Promise<{ account_id?: string | string[] }>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const { id } = params;
   const tenantId = await requireTenantId();
 

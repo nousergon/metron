@@ -14,13 +14,14 @@ import { resolveAccountIds } from "@/lib/selection";
 
 export const dynamic = "force-dynamic";
 
-export default async function PerformancePage({
-  params,
-  searchParams,
-}: {
-  params: { id: string };
-  searchParams: { account_id?: string | string[] };
-}) {
+export default async function PerformancePage(
+  props: {
+    params: Promise<{ id: string }>;
+    searchParams: Promise<{ account_id?: string | string[] }>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const { id } = params;
   const tenantId = await requireTenantId();
 

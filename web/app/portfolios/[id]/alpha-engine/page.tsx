@@ -11,7 +11,8 @@ const DIR_CLASS: Record<string, string> = {
   DOWN: "text-negative",
 };
 
-export default async function AlphaEnginePage({ params }: { params: { id: string } }) {
+export default async function AlphaEnginePage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const { id } = params;
   const tenantId = await requireTenantId();
 

@@ -23,7 +23,8 @@ function num(v: number | null, fmt: (n: number) => string): string {
   return v != null ? fmt(v) : "—";
 }
 
-export default async function TearsheetPage({ params }: { params: { id: string; ticker: string } }) {
+export default async function TearsheetPage(props: { params: Promise<{ id: string; ticker: string }> }) {
+  const params = await props.params;
   const { id, ticker } = params;
   const tenantId = await requireTenantId();
 

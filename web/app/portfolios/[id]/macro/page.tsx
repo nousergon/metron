@@ -23,7 +23,8 @@ function delta(ind: MacroIndicator): string {
 // Macro detail page (metron-ops) — reinstated from the #64 redirect. Key US macro
 // indicators from FRED (public-domain → beta-safe, ungated) with a ~12-month chart each.
 // Reached by clicking a tile in the Overview macro strip (anchored to the indicator).
-export default async function MacroPage({ params }: { params: { id: string } }) {
+export default async function MacroPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const { id } = params;
   const tenantId = await requireTenantId();
   const featureStates = await navFeatureStates(tenantId);

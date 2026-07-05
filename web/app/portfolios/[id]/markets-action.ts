@@ -12,7 +12,7 @@ import { requireTenantId } from "@/lib/session";
 export async function fetchIndicesAction(): Promise<Indices | null> {
   try {
     const tenantId = await requireTenantId();
-    return await getIndices(tenantId, previewFromCookies());
+    return await getIndices(tenantId, await previewFromCookies());
   } catch {
     return null; // transient — the client keeps showing the last good snapshot
   }

@@ -24,9 +24,10 @@ export const ENTITLEMENTS_REVALIDATE_SECONDS = 60;
  *  zero for that tenant; otherwise the TTL above bounds staleness. */
 export const entitlementsTag = (tenantId: string) => `entitlements:${tenantId}`;
 
-/** The owner-simulator preview selection (tier dropdown + feed toggle) from cookies. */
-export function previewFromCookies(): { tier?: string; feed?: boolean } {
-  const jar = cookies();
+/** The owner-simulator preview selection (tier dropdown + feed toggle) from cookies.
+ *  `cookies()` is async in Next 15, so this is now async and every caller must await it. */
+export async function previewFromCookies(): Promise<{ tier?: string; feed?: boolean }> {
+  const jar = await cookies();
   const tier = jar.get("metron_preview_tier")?.value;
   const feedRaw = jar.get("metron_preview_feed")?.value;
   return { tier, feed: feedRaw === undefined ? undefined : feedRaw === "true" };
@@ -42,7 +43,7 @@ export function previewFromCookies(): { tier?: string; feed?: boolean } {
  *  (a documented cross-tenant footgun for header-authed multi-tenant apps). Distinct
  *  preview tiers/feeds key to distinct entries, so the owner tier-simulator stays exact. */
 export async function loadEntitlements(tenantId: string): Promise<Entitlements | null> {
-  const preview = previewFromCookies();
+  const preview = await previewFromCookies();
   try {
     const read = unstable_cache(
       () => getEntitlements(tenantId, preview),
