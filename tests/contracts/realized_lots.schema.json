@@ -1,0 +1,137 @@
+{
+  "$defs": {
+    "Form8949Box": {
+      "enum": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "J",
+        "K",
+        "L"
+      ],
+      "title": "Form8949Box",
+      "type": "string"
+    },
+    "RealizedLot": {
+      "additionalProperties": false,
+      "properties": {
+        "box": {
+          "$ref": "#/$defs/Form8949Box"
+        },
+        "cost_basis": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "column (e)",
+          "title": "Cost Basis"
+        },
+        "date_acquired": {
+          "description": "ISO date or 'VARIOUS' \u2014 column (b)",
+          "title": "Date Acquired",
+          "type": "string"
+        },
+        "date_sold": {
+          "description": "ISO date \u2014 column (c)",
+          "title": "Date Sold",
+          "type": "string"
+        },
+        "description": {
+          "description": "8949 column (a)",
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "proceeds": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "column (d)",
+          "title": "Proceeds"
+        },
+        "source": {
+          "description": "producing system/document id",
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "term": {
+          "$ref": "#/$defs/Term"
+        },
+        "wash_sale_disallowed": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "default": "0",
+          "description": "broker-reported code-W adjustment, column (g); never recomputed year 1",
+          "title": "Wash Sale Disallowed"
+        }
+      },
+      "required": [
+        "description",
+        "date_acquired",
+        "date_sold",
+        "proceeds",
+        "cost_basis",
+        "term",
+        "box",
+        "source"
+      ],
+      "title": "RealizedLot",
+      "type": "object"
+    },
+    "Term": {
+      "enum": [
+        "short",
+        "long"
+      ],
+      "title": "Term",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "lots": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RealizedLot"
+      },
+      "title": "Lots",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "title": "RealizedLots",
+  "type": "object"
+}

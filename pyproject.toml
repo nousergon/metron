@@ -61,6 +61,10 @@ dev = [
     "pytest-cov>=5.0",
     "httpx>=0.27",            # FastAPI TestClient
     "psycopg[binary]>=3.2",   # Postgres driver (prod); SQLite needs nothing extra
+    # Validates the realized-lots export against the pinned telos contract schema in CI
+    # (tests/test_realized_lots_export_contract.py) so the export can't silently drift from
+    # nousergon/telos realized_lots v1.0.0 — metron-ops#127.
+    "jsonschema>=4.20",
 ]
 
 [tool.hatch.build.targets.wheel]
