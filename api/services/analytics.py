@@ -32,6 +32,7 @@ from api.db import models
 from api.services import fx as fx_service
 from api.services import labels
 from api.services import prices as price_service
+from portfolio_analytics.domain import realized_lots_export as realized_lots_export_domain
 from portfolio_analytics.domain.ledger import Ledger, RealizedGain, Transaction, TxnType, build_ledger
 from portfolio_analytics.domain.realized import YearlyIncome, summarize_income_by_year
 from portfolio_analytics.ingestion.base import SNAPSHOT_SOURCES
@@ -900,6 +901,71 @@ def realized(
             )
         )
     return out
+
+
+def realized_lots_export(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    year: int,
+) -> dict:
+    """The realized-lots export for ``year``, TAXABLE accounts only, conforming to the
+    telos ``realized_lots`` contract v1.0.0 (metron-ops#127; consumer: telos#6
+    ``engine.reconcile_lots``).
+
+    A pure projection of the closed lots ``realized()`` already computes (proceeds, basis,
+    short/long-term) into one Form 8949 row per lot — no lot tracking is redone here. Only
+    lots closed in the calendar ``year`` are included; tax-advantaged accounts are excluded
+    (a gain in an IRA/401(k)/Roth is never a taxable disposal). Reporting currency is the
+    portfolio base currency — proceeds/basis use the close-date-converted ``*_base`` figures
+    when the FX rate is cached, else the native amount (Metron never fabricates a rate).
+
+    Box assignment lives in ``domain.realized_lots_export`` (crypto → G/J, else A/D, always
+    the basis-reported box); the ``source`` is the account's connector (e.g. ``ibkr_flex``)."""
+    from api.services import account_meta  # local import avoids a cycle (account_meta → models)
+
+    taxable_ids = account_meta.taxable_account_ids(session, tenant_id, portfolio_id)
+    accounts = {
+        a.id: a
+        for a in session.scalars(
+            select(models.Account).where(models.Account.id.in_(taxable_ids))
+        ).all()
+    } if taxable_ids else {}
+
+    export_lots: list[realized_lots_export_domain.ExportLot] = []
+    all_symbols: list[str] = []
+    # Per account so each lot keeps its source (the account connector); realized() already
+    # merges stored + replayed lots and resolves the base-currency figures for that account.
+    pending: list[tuple[str, RealizedLot]] = []
+    for aid, account in accounts.items():
+        source = account.broker or ""
+        for lot in realized(session, tenant_id, portfolio_id, account_id=aid):
+            if lot.close_date.year != year:
+                continue
+            pending.append((source, lot))
+            all_symbols.append(lot.ticker)
+
+    asset_class_by_symbol = {
+        sym: ac for sym, (ac, _name) in _security_meta_by_symbol(session, all_symbols).items()
+    }
+    for source, lot in pending:
+        proceeds = lot.proceeds_base if lot.proceeds_base is not None else lot.proceeds
+        cost_basis = lot.cost_basis_base if lot.cost_basis_base is not None else lot.cost_basis
+        export_lots.append(
+            realized_lots_export_domain.ExportLot(
+                description=lot.ticker,
+                date_acquired=lot.open_date,
+                date_sold=lot.close_date,
+                proceeds=proceeds,
+                cost_basis=cost_basis,
+                long_term=lot.long_term,
+                source=source,
+                asset_class=asset_class_by_symbol.get(lot.ticker),
+            )
+        )
+
+    export_lots.sort(key=lambda lot: (lot.date_sold, lot.description))
+    return realized_lots_export_domain.build_export(export_lots)
 
 
 def transactions(
