@@ -30,8 +30,10 @@ NODE_OPTIONS=--max-old-space-size=700 npm run build || { echo "web build FAILED"
 # of needing a hand-pasted token/flag (metron-ops#82). Only the marked block is
 # rewritten; hand-set lines are preserved. METRON_ADVISOR_SFT_CAPTURE_ENABLED rides this
 # loop (non-secret, but capture must survive a box rebuild or it silently stops accruing
-# the distillation corpus). Values are written straight to the file and NEVER echoed
-# (they'd leak into the GHA log).
+# the distillation corpus). OPENROUTER_API_KEY likewise rides it so the advisor's
+# open-weight provider (config#1658) self-heals on a box rebuild instead of needing a
+# hand-pasted key; ANTHROPIC_API_KEY stays hand-set (no /metron/anthropic_api_key param).
+# Values are written straight to the file and NEVER echoed (they'd leak into the GHA log).
 ENVF="$REPO/../metron-ops/.env"
 echo "=== hydrating SSM secrets → metron-ops/.env ==="
 touch "$ENVF"
@@ -41,6 +43,7 @@ BLOCK=$(mktemp)
   for pair in \
     "FLEX_TOKEN:/metron/flex_token" \
     "FLEX_QUERY_ID:/metron/flex_query_id" \
+    "OPENROUTER_API_KEY:/metron/openrouter_api_key" \
     "METRON_ADVISOR_SFT_CAPTURE_ENABLED:/metron/advisor_sft_capture_enabled" \
     "TELEGRAM_BOT_TOKEN:/metron/telegram_bot_token" \
     "TELEGRAM_CHAT_ID:/metron/telegram_chat_id"; do
