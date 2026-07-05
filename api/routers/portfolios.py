@@ -1797,6 +1797,22 @@ def get_realized(
     return analytics.realized(session, portfolio.tenant_id, portfolio.id, account_ids=account_ids)
 
 
+@router.get("/{portfolio_id}/realized-lots-export")
+def get_realized_lots_export(
+    year: int,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Realized-lots export for ``year`` conforming to the telos ``realized_lots`` contract
+    v1.0.0 (metron-ops#127) — one Form 8949 row per closed lot, TAXABLE accounts only, for
+    the given calendar year. Payload: ``{schema_version: "1.0.0", lots: [...]}``, the shape
+    telos ``engine.reconcile_lots`` (telos#6) consumes. Always taxable-only (a gain in a
+    tax-advantaged account is never a taxable disposal), so no ``taxable_only`` toggle. See
+    ``analytics.realized_lots_export`` — a pure projection of the existing Realized-YTD lots,
+    not a re-computation."""
+    return analytics.realized_lots_export(session, portfolio.tenant_id, portfolio.id, year)
+
+
 @router.get("/{portfolio_id}/income", response_model=list[IncomeOut])
 def get_income(
     taxable_only: bool = False,
