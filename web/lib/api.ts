@@ -699,6 +699,7 @@ export type Tearsheet = {
     max_drawdown: number | null;
     beta_vs_spy: number | null;
     vs_spy: number | null;
+    vs_spy_1y: number | null;
     n_bars: number;
     history_from: string | null;
   };

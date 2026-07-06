@@ -49,36 +49,52 @@ def _seed(session, closes: list[tuple[date, float]]):
 
 # History spans >1y: pre-year-start + year-start + as-of, so both windows resolve.
 _CLOSES = [
-    (date(2024, 1, 2), 100.0),   # before LTM start
-    (date(2024, 6, 3), 120.0),   # first close on/after LTM start (2025-06-12)? no — see below
-    (date(2025, 1, 2), 150.0),   # first close on/after YTD start (2025-01-01) for as_of 2025
+    (date(2024, 1, 2), 100.0),
+    (date(2024, 6, 3), 120.0),
+    (date(2025, 1, 2), 150.0),
     (date(2025, 6, 1), 180.0),
 ]
 
+_PERF_ART = {
+    "as_of": "2025-06-01",
+    "performance": {
+        "AAPL": {"ytd_pct": 0.20, "ltm_pct": 0.50},
+    },
+}
 
-def test_ytd_and_ltm_from_cached_closes(db_session):
+
+def test_ytd_and_ltm_from_spine(db_session):
     tid, pid = _seed(db_session, _CLOSES)
     out = security_perf.per_security_returns(
-        db_session, tid, pid, ["AAPL"], as_of=date(2025, 6, 1), feed_entitled=False
+        db_session, tid, pid, ["AAPL"], as_of=date(2025, 6, 1), feed_entitled=True,
+        performance_reader=lambda: _PERF_ART,
     )
     sr = out["AAPL"]
-    # YTD: first close on/after 2025-01-01 is 150 (2025-01-02); latest 180 → +20%.
     assert sr.ytd_pct == pytest.approx(0.20)
-    # LTM: first close on/after 2024-06-01 is 120 (2024-06-03); latest 180 → +50%.
     assert sr.ltm_pct == pytest.approx(0.50)
-    # No feed → no day legs.
-    assert sr.day_pct is None and sr.overnight_pct is None and sr.intraday_pct is None
+    assert sr.day_pct is None
+
+
+def test_ytd_and_ltm_blank_off_feed(db_session):
+    tid, pid = _seed(db_session, _CLOSES)
+    out = security_perf.per_security_returns(
+        db_session, tid, pid, ["AAPL"], as_of=date(2025, 6, 1), feed_entitled=False,
+        performance_reader=lambda: _PERF_ART,
+    )
+    sr = out["AAPL"]
+    assert sr.ytd_pct is None
+    assert sr.ltm_pct is None
 
 
 def test_window_omitted_when_history_too_short(db_session):
-    # Only recent bars — history does not reach back to the YTD/LTM window start.
     tid, pid = _seed(db_session, [(date(2025, 5, 1), 170.0), (date(2025, 6, 1), 180.0)])
     out = security_perf.per_security_returns(
-        db_session, tid, pid, ["AAPL"], as_of=date(2025, 6, 1), feed_entitled=False
+        db_session, tid, pid, ["AAPL"], as_of=date(2025, 6, 1), feed_entitled=True,
+        performance_reader=lambda: {"performance": {}},
     )
     sr = out["AAPL"]
-    assert sr.ytd_pct is None  # no bar on/before 2025-01-01
-    assert sr.ltm_pct is None  # no bar on/before 2024-06-01
+    assert sr.ytd_pct is None
+    assert sr.ltm_pct is None
 
 
 def test_day_legs_from_intraday_feed(db_session):
@@ -96,7 +112,10 @@ def test_day_legs_from_intraday_feed(db_session):
 def test_enrich_holdings_populates_holding_fields(db_session):
     tid, pid = _seed(db_session, _CLOSES)
     held = analytics.valued_holdings(db_session, tid, pid)
-    security_perf.enrich_holdings(db_session, tid, pid, held, as_of=date(2025, 6, 1), feed_entitled=False)
+    security_perf.enrich_holdings(
+        db_session, tid, pid, held, as_of=date(2025, 6, 1), feed_entitled=True,
+        performance_reader=lambda: _PERF_ART,
+    )
     h = next(h for h in held if h.ticker == "AAPL")
     assert h.ytd_pct == pytest.approx(0.20)
     assert h.ltm_pct == pytest.approx(0.50)
@@ -155,23 +174,13 @@ def test_enrich_does_not_flag_broker_snapshot(db_session):
     assert broker.last_price_stale is False
 
 
-def test_ltm_syncs_stale_history_from_spine(db_session, monkeypatch):
-    """Holdings LTM must re-sync from the spine — same stale-anchor class as the tearsheet."""
-    from portfolio_analytics.prices import ClosePoint
-
-    tid, pid = _seed(
-        db_session,
-        [
-            (date(2025, 7, 6), 518.0),   # stale pre-split anchor
-            (date(2026, 7, 2), 193.98),
-        ],
-    )
-
-    def spine_src(symbols, start, end, *, source=None):
-        return {"AAPL": [ClosePoint(date(2025, 7, 6), 126.36), ClosePoint(date(2026, 7, 2), 193.98)]}
-
-    monkeypatch.setattr("api.services.prices.fetch_close_history", spine_src)
+def test_ltm_from_spine_artifact(db_session):
+    """Holdings LTM reads the security_performance spine — not local price_bars."""
+    tid, pid = _seed(db_session, [(date(2025, 7, 6), 518.0), (date(2026, 7, 2), 193.98)])
+    ltm = 193.98 / 126.36 - 1.0
+    perf_art = {"performance": {"AAPL": {"ltm_pct": ltm, "ytd_pct": ltm}}}
     out = security_perf.per_security_returns(
-        db_session, tid, pid, ["AAPL"], as_of=date(2026, 7, 6), feed_entitled=False
+        db_session, tid, pid, ["AAPL"], as_of=date(2026, 7, 6), feed_entitled=True,
+        performance_reader=lambda: perf_art,
     )
-    assert out["AAPL"].ltm_pct == pytest.approx(193.98 / 126.36 - 1.0, rel=1e-3)
+    assert out["AAPL"].ltm_pct == pytest.approx(ltm, rel=1e-3)

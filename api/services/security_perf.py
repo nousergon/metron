@@ -4,10 +4,9 @@ YTD, and LTM, per ticker.
 - **Day legs** (overnight/intraday/day) reuse ``intraday.today_view`` (the canonical
   prior-close / open / latest decomposition from the yfinance intraday spine). Owner-build
   only (``feed_entitled``); blank otherwise — never fabricated.
-- **YTD / LTM** are total returns of the SECURITY from its cached daily closes
-  (``prices.close_history_by_symbol``): first close on/after the window start vs the latest
-  close. A window with no cached bar reaching back that far is omitted (None), like the
-  tearsheet's ``_period_returns`` — never a partial-window number that reads as full.
+- **YTD / LTM** are read from the spine ``security_performance/latest.json`` artifact
+  (producer: alpha-engine-data ``collect_security_performance``). Feed-entitled only —
+  Metron never recomputes these from local ``price_bars``.
 """
 
 from __future__ import annotations
@@ -23,6 +22,8 @@ from sqlalchemy.orm import Session
 
 from api.services import intraday
 from api.services import prices as price_service
+from api.services import security_performance as performance_service
+from api.services import tearsheet as tearsheet_service
 from portfolio_analytics.prices import ClosePoint, HistorySource
 
 # The EOD close feed is keyed by NYSE trading days, so freshness is judged in market time.
@@ -146,23 +147,23 @@ def per_security_returns(
     feed_entitled: bool,
     account_ids: Collection[uuid.UUID] | None = None,
     reader=None,
+    performance_reader=None,
     now: datetime | None = None,
 ) -> dict[str, SecurityReturns]:
-    """``{ticker: SecurityReturns}`` for the given held tickers. Tickers absent from the
-    price cache simply carry None YTD/LTM; day legs are None off a feed-entitled build."""
+    """``{ticker: SecurityReturns}`` for the given held tickers. YTD/LTM come from the
+    security_performance spine when ``feed_entitled``; day legs from intraday when entitled."""
     out: dict[str, SecurityReturns] = {t: SecurityReturns() for t in tickers}
     if not out:
         return out
 
-    # Same spine sync as the tearsheet — stale pre-split anchors broke LTM/YTD too.
-    price_service.ensure_tearsheet_history(session, list(out), as_of=as_of)
-    hist = price_service.close_history_by_symbol(session, list(out))
-    ytd_start, ltm_start = _year_start(as_of), _year_ago(as_of)
-    for ticker, sr in out.items():
-        series = hist.get(ticker)
-        if series:
-            sr.ytd_pct = _window_return(series, ytd_start)
-            sr.ltm_pct = _window_return(series, ltm_start)
+    if feed_entitled:
+        snap = performance_service.load_security_performance(reader=performance_reader)
+        yf_map = tearsheet_service._yf_symbol_map(session, list(out))
+        for ticker, sr in out.items():
+            row = snap.by_symbol.get(yf_map.get(ticker, ticker))
+            if row is not None:
+                sr.ytd_pct = row.ytd_pct
+                sr.ltm_pct = row.ltm_pct
 
     # Day decomposition from the intraday spine (owner build only).
     if feed_entitled:
@@ -189,6 +190,7 @@ def enrich_holdings(
     feed_entitled: bool,
     account_ids: Collection[uuid.UUID] | None = None,
     reader=None,
+    performance_reader=None,
     now: datetime | None = None,
 ) -> list:
     """Populate ``overnight_pct`` / ``intraday_pct`` / ``day_pct`` / ``ytd_pct`` /
@@ -196,7 +198,8 @@ def enrich_holdings(
     in place, then return the list."""
     returns = per_security_returns(
         session, tenant_id, portfolio_id, [h.ticker for h in held],
-        as_of=as_of, feed_entitled=feed_entitled, account_ids=account_ids, reader=reader, now=now,
+        as_of=as_of, feed_entitled=feed_entitled, account_ids=account_ids,
+        reader=reader, performance_reader=performance_reader, now=now,
     )
     today = market_today(now)
     for h in held:

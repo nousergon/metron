@@ -80,10 +80,11 @@ export default async function TearsheetPage({ params }: { params: { id: string; 
       </Section>
 
       {/* 2 — Performance */}
-      <Section title="Performance" note={hasHistory ? `from price history since ${perf.history_from ? isoDate(perf.history_from) : "—"} (${perf.n_bars} bars)` : "return vs cost only — no price history cached"}>
+      <Section title="Performance" note={hasHistory ? `data spine as of ${perf.history_from ? isoDate(perf.history_from) : "—"} (${perf.n_bars} bars)` : "return vs cost only — market metrics require feed entitlement"}>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <StatCard label="Return vs cost" value={num(perf.return_vs_cost, percent)} valueClass={signClass(perf.return_vs_cost ?? 0)} />
-          <StatCard label="vs SPY" value={num(perf.vs_spy, percent)} valueClass={signClass(perf.vs_spy ?? 0)} hint="over cached window" />
+          <StatCard label="vs SPY (1Y)" value={num(perf.vs_spy_1y, percent)} valueClass={signClass(perf.vs_spy_1y ?? 0)} />
+          <StatCard label="vs SPY (window)" value={num(perf.vs_spy, percent)} valueClass={signClass(perf.vs_spy ?? 0)} hint="overlap window" />
           <StatCard label="Beta vs SPY" value={num(perf.beta_vs_spy, (v) => v.toFixed(2))} />
           <StatCard label="Max drawdown" value={num(perf.max_drawdown, percent)} valueClass={signClass(perf.max_drawdown ?? 0)} />
           <StatCard label="Volatility (ann.)" value={num(perf.volatility, (v) => `${(v * 100).toFixed(1)}%`)} />
