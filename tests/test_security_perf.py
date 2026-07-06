@@ -111,6 +111,9 @@ def test_enrich_holdings_populates_holding_fields(db_session):
         (date(2026, 6, 23), date(2026, 6, 25), 2),   # one full session skipped → stale
         (date(2026, 6, 19), date(2026, 6, 22), 1),   # Fri close read Mon — weekend skipped
         (date(2026, 6, 19), date(2026, 6, 23), 2),   # Fri close still unrefreshed Tue → stale
+        # 2026-07-03 is an NYSE holiday (Independence Day observed, 7/4 fell on a Saturday).
+        (date(2026, 7, 2), date(2026, 7, 6), 1),      # Thu close read Mon after the holiday — fresh
+        (date(2026, 7, 2), date(2026, 7, 7), 2),      # Thu close still unrefreshed Tue → stale
     ],
 )
 def test_sessions_behind(price_date, today, expected):

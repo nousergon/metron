@@ -15,9 +15,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
+from krepis.trading_calendar import count_trading_days
 from sqlalchemy.orm import Session
 
 from api.services import intraday
@@ -33,22 +34,17 @@ _STALE_AFTER_SESSIONS = 2
 
 
 def sessions_behind(price_date: date, today: date) -> int:
-    """How many weekday sessions ``price_date`` lags ``today`` — weekdays strictly after
-    ``price_date`` through ``today`` inclusive (0 when priced today or in the future).
+    """How many NYSE trading sessions ``price_date`` lags ``today`` — trading sessions
+    strictly after ``price_date`` through ``today`` inclusive (0 when priced today or in
+    the future).
 
-    Weekday-based by design (no dependency on a NYSE holiday calendar): weekends never
-    count, so a Friday close read on Monday is 1 (fresh). The only imprecision is the
-    morning after a market holiday, where the prior session can read one session high —
-    acceptable because the always-visible "prices as of {date}" caption stays literally
-    true and over-warning is the safe direction for a freshness guard."""
-    if price_date >= today:
-        return 0
-    n, d = 0, price_date
-    while d < today:
-        d += timedelta(days=1)
-        if d.weekday() < 5:  # Mon–Fri
-            n += 1
-    return n
+    NYSE-holiday-aware via ``krepis.trading_calendar.count_trading_days`` (the fleet-wide
+    trading-day calendar, per the two-axis date doctrine, config#1610 2026-07-02): a
+    Friday close read on the Monday after a normal weekend is 1 (fresh), and so is a
+    Thursday close read on the Monday after a Friday NYSE holiday — the previous
+    weekday-only version double-counted that holiday as a missed session and mis-flagged
+    it stale (fixed 2026-07-06)."""
+    return count_trading_days(price_date, today)
 
 
 def market_today(now: datetime | None = None) -> date:
