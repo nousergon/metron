@@ -95,6 +95,13 @@ describe("ColumnPresetControl", () => {
     expect(onChange).toHaveBeenCalledWith(["Fundamentals"]);
   });
 
+  it("clicking Returns replaces Overview — Returns band only, no Position/Value drag-along", () => {
+    const onChange = vi.fn();
+    render(<ColumnPresetControl value={["Position", "Value"]} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Returns" }));
+    expect(onChange).toHaveBeenCalledWith(["Returns"]);
+  });
+
   it("has a dedicated Attractiveness preset (not bundled into another analytic preset)", () => {
     const onChange = vi.fn();
     render(<ColumnPresetControl value={["Position", "Value"]} onChange={onChange} />);

@@ -382,15 +382,12 @@ const RATING_LABEL: Record<string, string> = {
 const attractivenessTone = (v: number): string =>
   v >= 60 ? "text-positive" : v <= 40 ? "text-negative" : "";
 
-// Unit sub-scores ∈ [0, 1] band around the 0.5 neutral midpoint (matches the tearsheet gauge
-// breakdown's convention — see ATTRACTIVENESS_COMPONENT_LABELS in the tearsheet page).
-const subScoreTone = (v: number): string =>
-  v >= 0.6 ? "text-positive" : v <= 0.4 ? "text-negative" : "";
+// Pillar percentiles 0–100 band around the 50 neutral midpoint.
+const pillarTone = (v: number): string =>
+  v >= 60 ? "text-positive" : v <= 40 ? "text-negative" : "";
 
 const METRIC_COLUMNS: MetricColumn[] = [
-  // ── Attractiveness — composite score (metron-ops#106, Phase 2) plus its full component
-  // breakdown, the same inspectable sub-scores the tearsheet gauge shows (metron-ops#130). A
-  // component is "—" when its input was missing and dropped from the renormalized blend. ──
+  // ── Attractiveness — SOTA 6-pillar cross-sectional score from NE factor profiles. ──
   {
     key: "attractiveness",
     label: "Score",
@@ -399,54 +396,63 @@ const METRIC_COLUMNS: MetricColumn[] = [
     render: (v) => decimal(v, 1),
     tone: attractivenessTone,
     title:
-      "Composite attractiveness (0–100): transparent blend of fwd-P/E vs sector median, " +
-      "price-target upside, consensus rating, revision momentum, and news sentiment. " +
-      "Click the ticker to open the holding's tearsheet for the weighted breakdown.",
+      "Composite attractiveness (0–100): 6-pillar sector-neutral z-blend ranked across the " +
+      "full scanner universe — same method as the NE console board. " +
+      "Click the ticker for the weighted pillar breakdown.",
   },
   {
-    key: "attractiveness_valuation",
+    key: "attractiveness_quality",
+    label: "Qual",
+    group: "Attractiveness",
+    value: (h) => h.attractiveness_quality,
+    render: (v) => decimal(v, 0),
+    tone: pillarTone,
+    title: "Quality pillar (0–100): ROE, leverage, margins, liquidity vs sector peers.",
+  },
+  {
+    key: "attractiveness_value",
     label: "Val",
     group: "Attractiveness",
-    value: (h) => h.attractiveness_valuation,
-    render: (v) => decimal(v, 2),
-    tone: subScoreTone,
-    title: "Valuation sub-score (0–1): forward P/E vs the sector/country median — cheaper is more attractive.",
+    value: (h) => h.attractiveness_value,
+    render: (v) => decimal(v, 0),
+    tone: pillarTone,
+    title: "Value pillar (0–100): P/E, P/B, FCF yield vs sector peers (higher = cheaper).",
   },
   {
-    key: "attractiveness_upside",
-    label: "Ups",
+    key: "attractiveness_momentum",
+    label: "Mom",
     group: "Attractiveness",
-    value: (h) => h.attractiveness_upside,
-    render: (v) => decimal(v, 2),
-    tone: subScoreTone,
-    title: "Upside sub-score (0–1): mean analyst price target vs the live price.",
+    value: (h) => h.attractiveness_momentum,
+    render: (v) => decimal(v, 0),
+    tone: pillarTone,
+    title: "Momentum pillar (0–100): price trends and distance from 52-week high vs sector peers.",
   },
   {
-    key: "attractiveness_rating",
-    label: "Rtg",
+    key: "attractiveness_growth",
+    label: "Gro",
     group: "Attractiveness",
-    value: (h) => h.attractiveness_rating,
-    render: (v) => decimal(v, 2),
-    tone: subScoreTone,
-    title: "Rating sub-score (0–1): analyst consensus rating (strongBuy…strongSell) remapped to unit scale.",
+    value: (h) => h.attractiveness_growth,
+    render: (v) => decimal(v, 0),
+    tone: pillarTone,
+    title: "Growth pillar (0–100): revenue/EPS growth and sustainable growth vs sector peers.",
   },
   {
-    key: "attractiveness_revision",
-    label: "Rev",
+    key: "attractiveness_stewardship",
+    label: "Stew",
     group: "Attractiveness",
-    value: (h) => h.attractiveness_revision,
-    render: (v) => decimal(v, 2),
-    tone: subScoreTone,
-    title: "Revision sub-score (0–1): estimate-revision momentum. Paid feed — dropped until it lands (metron-ops#107).",
+    value: (h) => h.attractiveness_stewardship,
+    render: (v) => decimal(v, 0),
+    tone: pillarTone,
+    title: "Stewardship pillar (0–100): capital allocation and payout discipline vs sector peers.",
   },
   {
-    key: "attractiveness_sentiment",
-    label: "Sent",
+    key: "attractiveness_defensiveness",
+    label: "Def",
     group: "Attractiveness",
-    value: (h) => h.attractiveness_sentiment,
-    render: (v) => decimal(v, 2),
-    tone: subScoreTone,
-    title: "Sentiment sub-score (0–1): news sentiment, trust-weighted Loughran-McDonald composite.",
+    value: (h) => h.attractiveness_defensiveness,
+    render: (v) => decimal(v, 0),
+    tone: pillarTone,
+    title: "Defensiveness pillar (0–100): low-volatility profile vs sector peers.",
   },
   // ── Valuation ──
   { key: "market_cap", label: "Mkt Cap", group: "Valuation", value: (h) => h.market_cap, render: (v, base) => marketCapShort(v, base) },

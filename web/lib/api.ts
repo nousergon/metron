@@ -95,17 +95,15 @@ export type Holding = {
   num_analysts: number | null;
   news_sentiment: number | null; // trust-weighted LM composite ∈ [-1, +1]
   news_articles: number | null;
-  // Composite attractiveness score (metron-ops#106, Phase 2) — transparent 0–100 blend of the
-  // fields above. null off-feed or on a total coverage gap, never fabricated.
+  // SOTA 6-pillar attractiveness from NE factor profiles. null off-feed or outside scanner universe.
   attractiveness: number | null;
-  attractiveness_coverage: number | null; // # of components that contributed
-  // Unit sub-scores ∈ [0, 1] behind the composite — the same breakdown the tearsheet gauge
-  // shows. null when that component's input was missing and dropped from the blend.
-  attractiveness_valuation: number | null;
-  attractiveness_upside: number | null;
-  attractiveness_rating: number | null;
-  attractiveness_revision: number | null;
-  attractiveness_sentiment: number | null;
+  attractiveness_coverage: number | null;
+  attractiveness_quality: number | null;
+  attractiveness_value: number | null;
+  attractiveness_momentum: number | null;
+  attractiveness_growth: number | null;
+  attractiveness_stewardship: number | null;
+  attractiveness_defensiveness: number | null;
 };
 
 // Sector- / country-level median multiples (SP1500-broad peer benchmark) for the Holdings
@@ -395,11 +393,12 @@ export type WatchlistEntry = {
   news_articles: number | null;
   attractiveness: number | null;
   attractiveness_coverage: number | null;
-  attractiveness_valuation: number | null;
-  attractiveness_upside: number | null;
-  attractiveness_rating: number | null;
-  attractiveness_revision: number | null;
-  attractiveness_sentiment: number | null;
+  attractiveness_quality: number | null;
+  attractiveness_value: number | null;
+  attractiveness_momentum: number | null;
+  attractiveness_growth: number | null;
+  attractiveness_stewardship: number | null;
+  attractiveness_defensiveness: number | null;
 };
 
 export const getWatchlist = (tenantId: string, id: string) =>
@@ -724,15 +723,16 @@ export type Tearsheet = {
 };
 
 export type TearsheetAttractivenessComponent = {
-  key: string; // valuation / upside / rating / revision / sentiment
-  weight: number; // catalog weight (pre-renormalization)
-  sub_score: number; // unit sub-score ∈ [0, 1]
+  key: string; // quality / value / momentum / growth / stewardship / defensiveness
+  weight: number;
+  score: number; // 0–100 sector-neutral pillar percentile
+  contribution: number | null;
 };
 
 export type TearsheetAttractiveness = {
   available: boolean;
-  score: number | null; // 0–100
-  coverage: number | null; // # of components that contributed
+  score: number | null;
+  coverage: number | null;
   components: TearsheetAttractivenessComponent[];
 };
 
