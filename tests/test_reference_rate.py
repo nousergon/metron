@@ -160,7 +160,7 @@ def test_daily_refresh_never_overwrites_reference_rate_nav(db_session, monkeypat
     wrong_close = ClosePoint(bar_date=today, close=1.0)  # absurd vs the artifact's real prices
 
     def _wrong_prices(symbols, *, source=None):
-        return {s: wrong_close for s in symbols}
+        return dict.fromkeys(symbols, wrong_close)
 
     monkeypatch.setattr("api.services.prices.fetch_latest_closes", _wrong_prices)
     monkeypatch.setattr("api.services.performance.fetch_latest_closes", _wrong_prices)
