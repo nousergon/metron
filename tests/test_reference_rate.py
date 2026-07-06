@@ -4,13 +4,16 @@ and the seeded read-only live portfolio under the demo tenant."""
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 from sqlalchemy import select
 
 from api.db import models
+from api.maintenance import daily_refresh
 from api.services import demo
 from portfolio_analytics.ingestion import reference_connector
 from portfolio_analytics.ingestion.base import SNAPSHOT_SOURCES
+from portfolio_analytics.prices import ClosePoint
 
 REFERENCE_HEADERS = {"X-Tenant-Id": str(demo.DEMO_TENANT_ID)}
 
@@ -141,6 +144,40 @@ def test_sync_failsoft_keeps_last_good(db_session):
         select(models.Account).where(models.Account.portfolio_id == demo.REFERENCE_PORTFOLIO_ID)
     ).all()
     assert len(accts) == 1
+
+
+def test_daily_refresh_never_overwrites_reference_rate_nav(db_session, monkeypatch):
+    """metron-ops#141 regression: daily_refresh's generic per-portfolio NAV writers
+    (record_snapshot / record_account_snapshots / reconstruct_snapshots / reconcile_snapshots)
+    must never touch the Reference Rate portfolio — its NavSnapshot series has exactly one
+    authoritative source, the engine artifact seeded by sync_reference_holdings. Prices are
+    monkeypatched to a value that deliberately DIFFERS wildly from the artifact's own NAV, so
+    a regression (some writer re-deriving NAV from Metron's own price cache) would flip the
+    assertion below instead of passing by coincidence."""
+    assert demo.sync_reference_holdings(db_session, reader=_reader) is True
+
+    today = date(2026, 6, 18)  # the artifact's own latest nav_history date
+    wrong_close = ClosePoint(bar_date=today, close=1.0)  # absurd vs the artifact's real prices
+
+    def _wrong_prices(symbols, *, source=None):
+        return {s: wrong_close for s in symbols}
+
+    monkeypatch.setattr("api.services.prices.fetch_latest_closes", _wrong_prices)
+    monkeypatch.setattr("api.services.performance.fetch_latest_closes", _wrong_prices)
+    monkeypatch.setattr("api.maintenance.fetch_latest_closes", _wrong_prices)
+
+    result = daily_refresh(db_session, today=today)
+
+    assert result.snapshots_recorded == 0  # the only portfolio in the DB is the reference one
+    row = db_session.scalar(
+        select(models.NavSnapshot).where(
+            models.NavSnapshot.portfolio_id == demo.REFERENCE_PORTFOLIO_ID,
+            models.NavSnapshot.snap_date == today,
+        )
+    )
+    # Untouched — still exactly the engine artifact's NAV, never Metron's re-derived figure
+    # off the (deliberately wrong) $1 closes above.
+    assert float(row.nav) == 1_001_593.11
 
 
 def test_holdings_endpoint_serves_reference(client, db_session):

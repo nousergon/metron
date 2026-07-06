@@ -33,6 +33,7 @@ from api.db.session import SessionLocal, create_all
 from api.services import analytics, attribution, data_spine, fx, performance, risk
 from api.services import calendar as calendar_svc
 from api.services import prices as price_service
+from api.services.demo import REFERENCE_PORTFOLIO_ID
 from portfolio_analytics.prices import fetch_latest_closes
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,19 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     Per portfolio: fetch the latest close for each held ticker into the global price
     cache, then snapshot today's NAV (skipped, not fabricated, when nothing is priceable).
     Returns aggregate counts for logging.
+
+    EXCEPTION — the Reference Rate showcase (``REFERENCE_PORTFOLIO_ID``): its NAV series
+    has exactly one authoritative source, the engine's published ``nav_history`` artifact
+    (seeded/upserted by ``demo.sync_reference_holdings`` earlier in this function). The
+    generic per-portfolio NAV writers below (``record_snapshot``, ``record_account_snapshots``,
+    ``reconstruct_snapshots``, ``reconcile_snapshots``) each independently RE-DERIVE NAV from
+    Metron's own price/FX cache — for every other portfolio that's the whole point, but for
+    the reference portfolio it's a second, non-reconciled source of truth racing the first to
+    write the identical ``NavSnapshot`` row, silently diverging by a few percent depending on
+    which writer finishes last (metron-ops#141). So this portfolio is skipped in the loop
+    below; its NAV/holdings pricing display (live "Total value" tiles etc., which are a
+    request-time re-valuation, not a persisted series) is unaffected and intentionally still
+    shows Metron's own live pricing.
     """
     today = today or date.today()
 
@@ -161,11 +175,19 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         txn_ccys, earliest = analytics.foreign_transaction_currencies(session, p.tenant_id, p.id, base=base)
         if txn_ccys and earliest is not None:
             fx_updated += fx.backfill_fx_rates(session, txn_ccys, earliest, today, base=base)
+
+        # The Reference Rate showcase's NavSnapshot series is sole-sourced from the engine's
+        # artifact (demo.sync_reference_holdings, above) — see the single-source-of-truth
+        # note on this function's docstring (metron-ops#141). None of the generic NAV
+        # writers below may touch it, or they'd re-derive + clobber it from Metron's own
+        # price/FX cache.
+        is_reference_rate = p.id == REFERENCE_PORTFOLIO_ID
+
         # Reconcile provisional snapshots BEFORE recording today's — the price refresh just
         # above cached the prior session's now-struck mutual-fund NAVs, so this restates
         # yesterday's stale-fund snapshot with the real value before today's (again
         # provisional) snapshot is recorded. Best-effort; a failure never costs the snapshot.
-        reconciled = _best_effort(
+        reconciled = None if is_reference_rate else _best_effort(
             "reconcile", p.id,
             lambda p=p: performance.reconcile_snapshots(session, p.tenant_id, p.id, today=today),
         )
@@ -173,13 +195,13 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         # then record TODAY from live positions — so the authoritative live value (complete
         # even for non-lot holdings) overwrites today's reconstructed point rather than the
         # reverse (the reconstruct-clobbers-live bug, metron-ops#74).
-        recon = _best_effort(
+        recon = None if is_reference_rate else _best_effort(
             "performance", p.id,
             lambda p=p: performance.reconstruct_snapshots(session, p.tenant_id, p.id, today=today),
         )
         snap = (
             performance.record_snapshot(session, p.tenant_id, p.id, today=today)
-            if closes_published
+            if closes_published and not is_reference_rate
             else None
         )
         # Per-account NAV snapshots — additive, best-effort (a failure here never costs the
@@ -190,7 +212,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
                 "account-snapshots", p.id,
                 lambda p=p: performance.record_account_snapshots(session, p.tenant_id, p.id, today=today),
             )
-            if closes_published
+            if closes_published and not is_reference_rate
             else None
         )
         # Overnight/intraday/day decomposition for the day (metron-ops#87) — additive,
