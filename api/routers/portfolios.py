@@ -15,7 +15,7 @@ value, performance, risk) arrive in later PH1–PH3 increments.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict
@@ -1980,6 +1980,7 @@ def get_performance_tiles(
         with_benchmarks=with_benchmarks,
         live=live,
         today_bench=today_bench,
+        now=datetime.now(UTC),
     )
 
 
