@@ -72,6 +72,9 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["api", "portfolio_analytics"]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"
