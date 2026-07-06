@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 
-from api.services.security_performance import load_security_performance
+from api.services import security_performance
 
 
 _ART = {
@@ -32,7 +32,7 @@ _ART = {
 
 
 def test_security_performance_consumer_parses_spine():
-    snap = load_security_performance(reader=lambda: _ART)
+    snap = security_performance.load_security_performance(reader=lambda: _ART)
     row = snap.by_symbol["AAPL"]
     assert snap.as_of == date(2026, 7, 2)
     assert row.period_returns["1Y"] == pytest.approx(0.15)
