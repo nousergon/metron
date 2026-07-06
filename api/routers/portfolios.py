@@ -218,17 +218,14 @@ class HoldingOut(BaseModel):
     num_analysts: int | None = None
     news_sentiment: float | None = None
     news_articles: int | None = None
-    # Composite attractiveness score (metron-ops#106, Phase 2) — transparent 0–100 blend of the
-    # fields above. None off-feed or on a total coverage gap, never fabricated.
     attractiveness: float | None = None
     attractiveness_coverage: int | None = None
-    # Unit sub-scores ∈ [0, 1] behind the composite — the same breakdown the tearsheet gauge
-    # shows. None when that component's input was missing and dropped from the blend.
-    attractiveness_valuation: float | None = None
-    attractiveness_upside: float | None = None
-    attractiveness_rating: float | None = None
-    attractiveness_revision: float | None = None
-    attractiveness_sentiment: float | None = None
+    attractiveness_quality: float | None = None
+    attractiveness_value: float | None = None
+    attractiveness_momentum: float | None = None
+    attractiveness_growth: float | None = None
+    attractiveness_stewardship: float | None = None
+    attractiveness_defensiveness: float | None = None
 
 
 class GroupMediansOut(BaseModel):
@@ -619,11 +616,12 @@ class WatchlistEntryOut(BaseModel):
     news_articles: int | None = None
     attractiveness: float | None = None
     attractiveness_coverage: int | None = None
-    attractiveness_valuation: float | None = None
-    attractiveness_upside: float | None = None
-    attractiveness_rating: float | None = None
-    attractiveness_revision: float | None = None
-    attractiveness_sentiment: float | None = None
+    attractiveness_quality: float | None = None
+    attractiveness_value: float | None = None
+    attractiveness_momentum: float | None = None
+    attractiveness_growth: float | None = None
+    attractiveness_stewardship: float | None = None
+    attractiveness_defensiveness: float | None = None
 
 
 class WatchlistIn(BaseModel):
@@ -2188,18 +2186,17 @@ class TearsheetConsensusOut(BaseModel):
 
 
 class TearsheetAttractivenessComponentOut(BaseModel):
-    """One inspectable line of the attractiveness breakdown — the gauge tooltip renders these
-    so the weighting is never a black box (metron-ops#106)."""
+    """One inspectable pillar line of the attractiveness breakdown."""
     model_config = ConfigDict(from_attributes=True)
 
     key: str
     weight: float
-    sub_score: float
+    score: float
+    contribution: float | None = None
 
 
 class TearsheetAttractivenessOut(BaseModel):
-    """Composite attractiveness gauge (metron-ops#106, Phase 2) — the 0–100 headline score plus
-    its per-component breakdown. ``available`` is false off-feed or on a total coverage gap."""
+    """SOTA 6-pillar attractiveness gauge — cross-sectional percentile + pillar breakdown."""
     model_config = ConfigDict(from_attributes=True)
 
     available: bool = False

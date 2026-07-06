@@ -155,21 +155,15 @@ class Holding:
     num_analysts: int | None = None
     news_sentiment: float | None = None       # trust-weighted LM composite ∈ [-1, +1]
     news_articles: int | None = None          # # articles behind the sentiment
-    # Composite attractiveness score (metron-ops#106, Phase 2) — a transparent 0–100 blend of
-    # the fields above (fwd-P/E vs sector median, upside, rating, revision, sentiment). Set by
-    # the Holdings endpoint on a feed-entitled build via api.services.attractiveness; None
-    # off-feed or when no component is present, never fabricated.
+    # SOTA 6-pillar attractiveness from NE factor profiles (factors/profiles/latest.json).
     attractiveness: float | None = None
-    attractiveness_coverage: int | None = None  # # of components that contributed to the score
-    # Unit sub-scores ∈ [0, 1] behind the composite (api.services.attractiveness.compute) — the
-    # same breakdown the tearsheet gauge shows, surfaced on the Holdings/watchlist rows too so
-    # the "Attractiveness" band doesn't require a tearsheet click. None when that component's
-    # input was missing and dropped from the renormalized blend (never fabricated).
-    attractiveness_valuation: float | None = None
-    attractiveness_upside: float | None = None
-    attractiveness_rating: float | None = None
-    attractiveness_revision: float | None = None
-    attractiveness_sentiment: float | None = None
+    attractiveness_coverage: int | None = None
+    attractiveness_quality: float | None = None
+    attractiveness_value: float | None = None
+    attractiveness_momentum: float | None = None
+    attractiveness_growth: float | None = None
+    attractiveness_stewardship: float | None = None
+    attractiveness_defensiveness: float | None = None
 
 
 @dataclass

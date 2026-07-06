@@ -11,11 +11,12 @@ const PERIODS = ["1Y", "3Y", "5Y", "10Y"];
 // Attractiveness component keys → human labels for the inspectable gauge breakdown
 // (metron-ops#106). The count is the catalog size — the gauge note reads "N of M inputs".
 const ATTRACTIVENESS_COMPONENT_LABELS: Record<string, string> = {
-  valuation: "Valuation (fwd P/E vs sector)",
-  upside: "Price-target upside",
-  rating: "Consensus rating",
-  revision: "Revision momentum",
-  sentiment: "News sentiment",
+  quality: "Quality",
+  value: "Value",
+  momentum: "Momentum",
+  growth: "Growth",
+  stewardship: "Stewardship",
+  defensiveness: "Defensiveness",
 };
 const COMPONENT_LABELS_COUNT = Object.keys(ATTRACTIVENESS_COMPONENT_LABELS).length;
 
@@ -194,12 +195,12 @@ export default async function TearsheetPage({ params }: { params: { id: string; 
               </div>
               {/* Inspectable weighting — the deliberate "not a black box" deliverable. */}
               <div className="mt-4">
-                <Table head={["Component", "Weight", "Sub-score"]}>
+                <Table head={["Pillar", "Weight", "Score"]}>
                   {a.components.map((c) => (
                     <tr key={c.key} className="border-b border-line last:border-0">
                       <td className="px-4 py-2">{ATTRACTIVENESS_COMPONENT_LABELS[c.key] ?? c.key}</td>
                       <td className="px-4 py-2 text-right tabular-nums">{percent(c.weight)}</td>
-                      <td className="px-4 py-2 text-right tabular-nums">{c.sub_score.toFixed(2)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">{c.score.toFixed(0)}</td>
                     </tr>
                   ))}
                 </Table>

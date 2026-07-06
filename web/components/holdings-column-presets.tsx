@@ -8,9 +8,9 @@
 // horizontal scrolling. Every OTHER preset maps 1:1 onto its own named band — an analytic
 // preset (Valuation / Fundamentals / Attractiveness / Technicals / Consensus) never drags the
 // Position/Value bands along for context; the frozen spine already anchors the row. Overview
-// and Returns are the exception by design — they're both about position economics, so
-// bundling Position + Value there is the point, not incidental repetition. "Customize" drops
-// to band-level checkboxes for a bespoke set (→ "Custom").
+// is the lean position-economics default (Position + Value). Returns replaces Overview — it
+// shows only the Returns band (Day/YTD/LTM) beside the spine, same as other analytic presets.
+// "Customize" drops to band-level checkboxes for a bespoke set (→ "Custom").
 
 import { BAND_ORDER, type ColumnBand } from "@/components/holdings-table";
 
@@ -27,7 +27,7 @@ export type PresetKey =
 
 export const COLUMN_PRESETS: { key: PresetKey; label: string; groups: ColumnBand[] }[] = [
   { key: "overview", label: "Overview", groups: ["Position", "Value"] },
-  { key: "returns", label: "Returns", groups: ["Position", "Value", "Returns"] },
+  { key: "returns", label: "Returns", groups: ["Returns"] },
   { key: "valuation", label: "Valuation", groups: ["Valuation"] },
   { key: "fundamentals", label: "Fundamentals", groups: ["Fundamentals"] },
   { key: "attractiveness", label: "Attractiveness", groups: ["Attractiveness"] },

@@ -29,7 +29,6 @@ from api.services import analytics
 from api.services import attractiveness as attractiveness_service
 from api.services import fundamentals as fundamentals_service
 from api.services import sentiment as sentiment_service
-from api.services import valuation_medians as valuation_medians_service
 
 _SPY = "SPY"
 _MIN_RISK_BARS = 60          # ~3 months of daily closes before annualized risk stats mean anything
@@ -114,19 +113,15 @@ class TearsheetConsensus:
 
 @dataclass
 class TearsheetAttractivenessComponent:
-    """One inspectable line of the attractiveness breakdown — drives the gauge tooltip so the
-    blend is never a black box (metron-ops#106)."""
-
     key: str
-    weight: float        # the catalog weight (pre-renormalization)
-    sub_score: float     # unit sub-score ∈ [0, 1]
+    weight: float
+    score: float
+    contribution: float | None = None
 
 
 @dataclass
 class TearsheetAttractiveness:
-    """Composite attractiveness gauge for the tearsheet (metron-ops#106, Phase 2): the same
-    0–100 headline score as the Holdings column, plus the per-component breakdown that makes
-    the weighting inspectable. ``available`` is False off-feed or on a total coverage gap."""
+    """SOTA 6-pillar attractiveness gauge: cross-sectional percentile + pillar breakdown."""
 
     available: bool = False
     score: float | None = None
@@ -414,34 +409,21 @@ def tearsheet(
                 con.news_articles = s.n_articles
                 con.news_as_of = s.as_of
 
-        # Composite attractiveness gauge (metron-ops#106, Phase 2) — blend the fundamentals
-        # (fwd-P/E vs the holding's sector median, country median as a fallback) + consensus
-        # blocks into the same transparent 0–100 score as the Holdings column.
-        fund = sheet.fundamentals
-        con = sheet.consensus
-        median_fwd_pe = None
-        if fund is not None and fund.sector:
-            med = valuation_medians_service.load_valuation_medians()
-            grp = med.by_sector.get(fund.sector)
-            median_fwd_pe = grp.forward_pe if grp is not None else None
-        att = attractiveness_service.compute(
-            fwd_pe=(fund.forward_pe if fund is not None else None),
-            median_fwd_pe=median_fwd_pe,
-            price_target_upside=con.price_target_upside,
-            consensus_score=con.consensus_score,
-            estimate_revision_trend=con.estimate_revision_trend,
-            news_sentiment=con.news_sentiment,
-        )
-        if att is not None:
+        yf = _yf_symbol_map(session, [ticker.upper()]).get(ticker.upper(), ticker.upper())
+        att = attractiveness_service.lookup(yf, attractiveness_service.compute_universe())
+        if att is not None and att.score is not None:
             sheet.attractiveness = TearsheetAttractiveness(
                 available=True,
                 score=att.score,
                 coverage=att.coverage,
                 components=[
                     TearsheetAttractivenessComponent(
-                        key=c.key, weight=c.weight, sub_score=c.sub_score
+                        key=p.key,
+                        weight=p.weight,
+                        score=p.score,
+                        contribution=p.contribution,
                     )
-                    for c in att.components
+                    for p in att.pillars
                 ],
             )
     return sheet

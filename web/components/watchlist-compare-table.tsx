@@ -96,11 +96,12 @@ function toShellHolding(e: WatchlistEntry): Holding {
     news_articles: e.news_articles,
     attractiveness: e.attractiveness,
     attractiveness_coverage: e.attractiveness_coverage,
-    attractiveness_valuation: e.attractiveness_valuation,
-    attractiveness_upside: e.attractiveness_upside,
-    attractiveness_rating: e.attractiveness_rating,
-    attractiveness_revision: e.attractiveness_revision,
-    attractiveness_sentiment: e.attractiveness_sentiment,
+    attractiveness_quality: e.attractiveness_quality,
+    attractiveness_value: e.attractiveness_value,
+    attractiveness_momentum: e.attractiveness_momentum,
+    attractiveness_growth: e.attractiveness_growth,
+    attractiveness_stewardship: e.attractiveness_stewardship,
+    attractiveness_defensiveness: e.attractiveness_defensiveness,
   };
 }
 
