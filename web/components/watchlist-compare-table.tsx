@@ -1,11 +1,13 @@
 "use client";
 
 // Watchlist comparison table (metron-ops#121) — add tickers you don't hold and sort them
-// alongside the Holdings metrics (valuation/fundamentals/balance-sheet/technicals/
-// consensus/attractiveness) for side-by-side comparison. Renders through the SAME
-// HoldingsTable column/band/sort machinery as real positions, restricted to the
-// comparison-relevant bands (no Position/Value/Returns — a watchlist entry has no
-// position). Mutations never touch NAV/performance: entries.
+// alongside the Holdings metrics (valuation/fundamentals/technicals/consensus/attractiveness
+// — fundamentals now includes balance-sheet/debt metrics, metron-ops#140) for side-by-side
+// comparison. Renders through the SAME HoldingsTable column/band/sort machinery as real
+// positions, restricted to the comparison-relevant bands (no Position/Value/Returns — a
+// watchlist entry has no position; `showMarketValue={false}` also drops the frozen Market
+// Value spine column, which would otherwise be all "—"). Mutations never touch NAV/performance
+// entries.
 //
 // entries carry no quantity/cost/market-value fields at all (see WatchlistEntry in
 // lib/api.ts) — the shell Holding built below hard-codes those to zero/null so a glance at
@@ -23,7 +25,6 @@ const WATCHLIST_BANDS: ColumnBand[] = [
   "Attractiveness",
   "Valuation",
   "Fundamentals",
-  "Balance Sheet",
   "Technicals",
   "Consensus",
 ];
@@ -182,6 +183,7 @@ export function WatchlistCompareTable({
             portfolioId={portfolioId}
             visibleBands={WATCHLIST_BANDS}
             showTotals={false}
+            showMarketValue={false}
             onRemove={remove}
           />
           {alsoHeld.length > 0 ? (
