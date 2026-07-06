@@ -11,6 +11,7 @@ import pytest
 
 from api.db import models
 from api.services import tearsheet
+from portfolio_analytics.prices import ClosePoint
 
 
 def _seed(session):
@@ -124,3 +125,48 @@ def test_tearsheet_endpoint_404_for_unheld(client):
     pid = client.post("/portfolios", json={"name": "P"}, headers={"X-Tenant-Id": tenant}).json()["id"]
     r = client.get(f"/portfolios/{pid}/tearsheet/TSLA", headers={"X-Tenant-Id": tenant})
     assert r.status_code == 404
+
+
+def _seed_crwd(session):
+    """CRWD holding with a stale pre-split 1Y anchor in the local cache."""
+    tenant = models.Tenant(name="t")
+    session.add(tenant)
+    session.flush()
+    pf = models.Portfolio(tenant_id=tenant.id, name="P", base_currency="USD")
+    session.add(pf)
+    session.flush()
+    acct = models.Account(tenant_id=tenant.id, portfolio_id=pf.id, broker="csv", external_id="CSV-1", currency="USD")
+    crwd = models.Security(symbol="CRWD", currency="USD")
+    session.add_all([acct, crwd])
+    session.flush()
+    session.add(
+        models.Transaction(
+            tenant_id=tenant.id, account_id=acct.id, security_id=crwd.id, txn_type="BUY",
+            quantity=10, price=100.0, amount=1000.0, currency="USD",
+            trade_date=date(2025, 1, 1), source_key="buy-crwd",
+        )
+    )
+    # Stale local cache: pre-split anchor + correct latest (the failure mode Brian saw).
+    session.add(models.PriceBar(security_id=crwd.id, bar_date=date(2025, 7, 6), close=518.0, currency="USD"))
+    session.add(models.PriceBar(security_id=crwd.id, bar_date=date(2026, 7, 2), close=193.98, currency="USD"))
+    session.commit()
+    return tenant.id, pf.id
+
+
+def test_tearsheet_period_return_syncs_stale_history(db_session, monkeypatch):
+    """Tearsheet must re-sync from the spine so a stale 1Y anchor doesn't persist."""
+    tenant_id, pid = _seed_crwd(db_session)
+
+    def spine_src(symbols, start, end, *, source=None):
+        return {
+            "CRWD": [
+                ClosePoint(date(2025, 7, 6), 126.36),
+                ClosePoint(date(2026, 7, 2), 193.98),
+            ],
+        }
+
+    monkeypatch.setattr("api.services.prices.fetch_close_history", spine_src)
+    sheet = tearsheet.tearsheet(db_session, tenant_id, pid, "CRWD")
+    assert sheet is not None
+    # Without the sync this would be 193.98/518 - 1 ≈ -62.5%; with corrected anchor ≈ +53.5%.
+    assert sheet.performance.period_returns["1Y"] == pytest.approx(193.98 / 126.36 - 1.0, rel=1e-3)
