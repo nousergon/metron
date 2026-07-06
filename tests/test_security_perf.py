@@ -153,3 +153,25 @@ def test_enrich_does_not_flag_broker_snapshot(db_session):
     )
     security_perf.enrich_holdings(db_session, tid, pid, [broker], as_of=date(2026, 6, 25), feed_entitled=False, now=_NOW_0625)
     assert broker.last_price_stale is False
+
+
+def test_ltm_syncs_stale_history_from_spine(db_session, monkeypatch):
+    """Holdings LTM must re-sync from the spine — same stale-anchor class as the tearsheet."""
+    from portfolio_analytics.prices import ClosePoint
+
+    tid, pid = _seed(
+        db_session,
+        [
+            (date(2025, 7, 6), 518.0),   # stale pre-split anchor
+            (date(2026, 7, 2), 193.98),
+        ],
+    )
+
+    def spine_src(symbols, start, end, *, source=None):
+        return {"AAPL": [ClosePoint(date(2025, 7, 6), 126.36), ClosePoint(date(2026, 7, 2), 193.98)]}
+
+    monkeypatch.setattr("api.services.prices.fetch_close_history", spine_src)
+    out = security_perf.per_security_returns(
+        db_session, tid, pid, ["AAPL"], as_of=date(2026, 7, 6), feed_entitled=False
+    )
+    assert out["AAPL"].ltm_pct == pytest.approx(193.98 / 126.36 - 1.0, rel=1e-3)

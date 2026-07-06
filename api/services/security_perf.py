@@ -154,6 +154,8 @@ def per_security_returns(
     if not out:
         return out
 
+    # Same spine sync as the tearsheet — stale pre-split anchors broke LTM/YTD too.
+    price_service.ensure_tearsheet_history(session, list(out), as_of=as_of)
     hist = price_service.close_history_by_symbol(session, list(out))
     ytd_start, ltm_start = _year_start(as_of), _year_ago(as_of)
     for ticker, sr in out.items():

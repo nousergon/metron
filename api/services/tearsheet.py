@@ -29,6 +29,7 @@ from api.services import analytics
 from api.services import attractiveness as attractiveness_service
 from api.services import fundamentals as fundamentals_service
 from api.services import prices as price_service
+from api.services import security_perf as security_perf_service
 from api.services import sentiment as sentiment_service
 
 _SPY = "SPY"
@@ -339,8 +340,9 @@ def tearsheet(
         weight_pct=weight,
         accounts=sorted(account_names),
     )
-    as_of = date.today()
-    price_service.ensure_tearsheet_history(session, [ticker], as_of=as_of)
+    as_of = security_perf_service.market_today()
+    # Held ticker + SPY (beta / vs-SPY need a fresh benchmark series too).
+    price_service.ensure_tearsheet_history(session, [ticker, _SPY], as_of=as_of)
     technical = _technical(session, ticker)
     sheet = Tearsheet(
         ticker=ticker,
