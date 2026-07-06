@@ -1,11 +1,16 @@
 "use client";
 
-// Column-preset control for the Holdings table (metron-ops#114, #118+). The table carries
-// ~40 columns across 10 bands; the only always-on (frozen) column is the Ticker — everything
-// else lives in a band the preset can toggle. SOTA pattern: a Ticker spine + a swappable set
-// of bands chosen by a preset. The lean default shows the position economics (Position +
-// Value) so the table reads at a glance without horizontal scrolling; richer presets add the
-// analytic bands. "Customize" drops to band-level checkboxes for a bespoke set (→ "Custom").
+// Column-preset control for the Holdings table (metron-ops#114, #118+, realigned #140). The
+// table carries ~40 columns across 9 bands; the only always-on (frozen) columns are Ticker +
+// Market Value — everything else lives in a band the preset can toggle. SOTA pattern: a
+// Ticker + Market Value spine + a swappable set of bands chosen by a preset. The lean default
+// shows the position economics (Position + Value) so the table reads at a glance without
+// horizontal scrolling. Every OTHER preset maps 1:1 onto its own named band — an analytic
+// preset (Valuation / Fundamentals / Attractiveness / Technicals / Consensus) never drags the
+// Position/Value bands along for context; the frozen spine already anchors the row. Overview
+// and Returns are the exception by design — they're both about position economics, so
+// bundling Position + Value there is the point, not incidental repetition. "Customize" drops
+// to band-level checkboxes for a bespoke set (→ "Custom").
 
 import { BAND_ORDER, type ColumnBand } from "@/components/holdings-table";
 
@@ -14,6 +19,7 @@ export type PresetKey =
   | "returns"
   | "valuation"
   | "fundamentals"
+  | "attractiveness"
   | "technicals"
   | "consensus"
   | "classification"
@@ -22,10 +28,11 @@ export type PresetKey =
 export const COLUMN_PRESETS: { key: PresetKey; label: string; groups: ColumnBand[] }[] = [
   { key: "overview", label: "Overview", groups: ["Position", "Value"] },
   { key: "returns", label: "Returns", groups: ["Position", "Value", "Returns"] },
-  { key: "valuation", label: "Valuation", groups: ["Position", "Value", "Valuation"] },
-  { key: "fundamentals", label: "Fundamentals", groups: ["Position", "Value", "Attractiveness", "Fundamentals", "Balance Sheet"] },
-  { key: "technicals", label: "Technicals", groups: ["Position", "Value", "Attractiveness", "Technicals"] },
-  { key: "consensus", label: "Consensus", groups: ["Position", "Value", "Attractiveness", "Consensus"] },
+  { key: "valuation", label: "Valuation", groups: ["Valuation"] },
+  { key: "fundamentals", label: "Fundamentals", groups: ["Fundamentals"] },
+  { key: "attractiveness", label: "Attractiveness", groups: ["Attractiveness"] },
+  { key: "technicals", label: "Technicals", groups: ["Technicals"] },
+  { key: "consensus", label: "Consensus", groups: ["Consensus"] },
   { key: "classification", label: "Classify", groups: ["Class"] },
   { key: "all", label: "All", groups: [...BAND_ORDER] },
 ];

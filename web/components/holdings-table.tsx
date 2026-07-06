@@ -6,12 +6,14 @@
 // conversion. When a foreign holding has no cached FX rate the native value is
 // shown muted with a `*` (never silently treated as base currency).
 //
-// COLUMN MODEL (metron-ops#118+): the only always-on (frozen, sticky) column is the
-// Ticker — every other column belongs to a toggleable BAND. Position economics, value,
-// returns and classification are bands just like the feed-gated analytics (Valuation /
-// Fundamentals / …), so the column-preset control can show a lean set and the table no
-// longer forces constant horizontal scrolling. Bands render under a grouped two-row header;
-// each metric is null off-feed or on a coverage gap → "—" (never fabricated).
+// COLUMN MODEL (metron-ops#118+, realigned metron-ops#140): the always-on frozen spine is
+// Ticker + Market Value (priced views) — every other column belongs to a toggleable BAND, so
+// no analytic preset needs to drag the full Position/Value economics along just for anchoring
+// context. Fundamentals covers the whole financial-statement picture — growth/margins/returns
+// AND balance-sheet leverage/liquidity — in one band, matching how institutional platforms
+// (Bloomberg, FactSet) group it, rather than splitting balance-sheet health out as an
+// unrelated axis. Bands render under a grouped two-row header; each metric is null off-feed
+// or on a coverage gap → "—" (never fabricated).
 
 import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
@@ -115,9 +117,9 @@ type RowCtx = {
   baseMoney: (base: number | null, native: number | null, fmt?: (v: number, c: string) => string) => ReactNode;
 };
 
-// Every column belongs to a BAND. Ticker is the lone frozen spine (not a band); the optional
-// Account column (uncombined view) pins beside it. Position / Value / Returns / Class hold the
-// position spine; the rest are the feed-gated analytics.
+// Every column belongs to a BAND. Ticker + Market Value are the frozen spine (not a band); the
+// optional Account column (uncombined view) pins beside them. Position / Value / Returns /
+// Class hold the remaining position spine; the rest are the feed-gated analytics.
 export type ColumnBand =
   | "Position"
   | "Value"
@@ -126,7 +128,6 @@ export type ColumnBand =
   | "Attractiveness"
   | "Valuation"
   | "Fundamentals"
-  | "Balance Sheet"
   | "Technicals"
   | "Consensus";
 
@@ -138,7 +139,6 @@ export const BAND_ORDER: ColumnBand[] = [
   "Attractiveness",
   "Valuation",
   "Fundamentals",
-  "Balance Sheet",
   "Technicals",
   "Consensus",
 ];
@@ -194,7 +194,8 @@ const POSITION_COLUMNS: ColumnDef[] = [
     cell: (h, ctx) => ctx.baseMoney(h.cost_basis_base, h.cost_basis, moneyWhole),
     foot: (t, ccy) => moneyWhole(t.cost, ccy),
   },
-  // Value — live price + market value + unrealized (priced).
+  // Value — live price + unrealized (priced). Market value itself is rendered as part of the
+  // frozen spine (MARKET_VALUE_COLUMN below), not this band.
   {
     key: "last",
     label: "Last",
@@ -227,16 +228,6 @@ const POSITION_COLUMNS: ColumnDef[] = [
         </span>
       );
     },
-  },
-  {
-    key: "market_value",
-    label: "Market value",
-    band: "Value",
-    priced: true,
-    defaultDesc: true,
-    sort: (h) => h.market_value ?? h.market_value_local,
-    cell: (h, ctx) => ctx.baseMoney(h.market_value, h.market_value_local, moneyWhole),
-    foot: (t, ccy) => moneyWhole(t.mv, ccy),
   },
   {
     key: "unrealized",
@@ -466,7 +457,9 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "ev_ebitda", label: "EV/EBITDA", group: "Valuation", value: (h) => h.ev_ebitda, render: (v) => multiple(v) },
   { key: "peg", label: "PEG", group: "Valuation", value: (h) => h.peg, render: (v) => decimal(v, 2) },
   { key: "div_yield", label: "Div Yld", group: "Valuation", value: (h) => h.div_yield, render: (v) => pct1(v) },
-  // ── Fundamentals ──
+  // ── Fundamentals (full financial-statement picture, metron-ops#140: growth/margins/returns
+  // AND balance-sheet leverage/liquidity in one band — institutional platforms don't split
+  // balance-sheet health out as an unrelated axis from the rest of the fundamentals) ──
   { key: "rev_growth", label: "Rev Gr", group: "Fundamentals", value: (h) => h.rev_growth, render: (v) => percent(v), signed: true },
   { key: "earnings_growth", label: "EPS Gr", group: "Fundamentals", value: (h) => h.earnings_growth, render: (v) => percent(v), signed: true },
   { key: "gross_margin", label: "Gross M", group: "Fundamentals", value: (h) => h.gross_margin, render: (v) => pct1(v) },
@@ -474,15 +467,14 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "roe", label: "ROE", group: "Fundamentals", value: (h) => h.roe, render: (v) => percent(v), signed: true },
   { key: "roa", label: "ROA", group: "Fundamentals", value: (h) => h.roa, render: (v) => percent(v), signed: true },
   { key: "beta", label: "Beta", group: "Fundamentals", value: (h) => h.beta, render: (v) => decimal(v, 2) },
-  // ── Balance Sheet (absolute balances + leverage/liquidity) ──
-  { key: "cash", label: "Cash", group: "Balance Sheet", value: (h) => h.cash, render: (v, base) => marketCapShort(v, base), title: "Total cash & equivalents" },
-  { key: "debt", label: "Debt", group: "Balance Sheet", value: (h) => h.debt, render: (v, base) => marketCapShort(v, base), title: "Total debt" },
-  { key: "net_debt", label: "Net Debt", group: "Balance Sheet", value: (h) => h.net_debt, render: (v, base) => marketCapShort(v, base), title: "Total debt − total cash (negative = net cash)" },
-  { key: "debt_to_equity", label: "D/E", group: "Balance Sheet", value: (h) => h.debt_to_equity, render: (v) => decimal(v / 100, 2), title: "Debt / equity (ratio)" },
-  { key: "net_debt_to_ebitda", label: "ND/EBITDA", group: "Balance Sheet", value: (h) => h.net_debt_to_ebitda, render: (v) => decimal(v, 2), title: "Net debt / EBITDA — leverage" },
-  { key: "current_ratio", label: "Cur R", group: "Balance Sheet", value: (h) => h.current_ratio, render: (v) => decimal(v, 2), title: "Current ratio (liquidity)" },
-  { key: "quick_ratio", label: "Quick R", group: "Balance Sheet", value: (h) => h.quick_ratio, render: (v) => decimal(v, 2), title: "Quick ratio (acid-test liquidity)" },
-  { key: "fcf", label: "FCF", group: "Balance Sheet", value: (h) => h.fcf, render: (v, base) => marketCapShort(v, base), signed: true, title: "Free cash flow (TTM)" },
+  { key: "cash", label: "Cash", group: "Fundamentals", value: (h) => h.cash, render: (v, base) => marketCapShort(v, base), title: "Total cash & equivalents" },
+  { key: "debt", label: "Debt", group: "Fundamentals", value: (h) => h.debt, render: (v, base) => marketCapShort(v, base), title: "Total debt" },
+  { key: "net_debt", label: "Net Debt", group: "Fundamentals", value: (h) => h.net_debt, render: (v, base) => marketCapShort(v, base), title: "Total debt − total cash (negative = net cash)" },
+  { key: "debt_to_equity", label: "D/E", group: "Fundamentals", value: (h) => h.debt_to_equity, render: (v) => decimal(v / 100, 2), title: "Debt / equity (ratio)" },
+  { key: "net_debt_to_ebitda", label: "ND/EBITDA", group: "Fundamentals", value: (h) => h.net_debt_to_ebitda, render: (v) => decimal(v, 2), title: "Net debt / EBITDA — leverage" },
+  { key: "current_ratio", label: "Cur R", group: "Fundamentals", value: (h) => h.current_ratio, render: (v) => decimal(v, 2), title: "Current ratio (liquidity)" },
+  { key: "quick_ratio", label: "Quick R", group: "Fundamentals", value: (h) => h.quick_ratio, render: (v) => decimal(v, 2), title: "Quick ratio (acid-test liquidity)" },
+  { key: "fcf", label: "FCF", group: "Fundamentals", value: (h) => h.fcf, render: (v, base) => marketCapShort(v, base), signed: true, title: "Free cash flow (TTM)" },
   // ── Technicals ──
   { key: "rsi_14", label: "RSI", group: "Technicals", value: (h) => h.rsi_14, render: (v) => decimal(v, 0), title: "Wilder RSI(14)" },
   { key: "macd_hist", label: "MACD", group: "Technicals", value: (h) => h.macd_hist, render: (v) => decimal(v, 2), signed: true, title: "MACD histogram (line − signal)" },
@@ -525,9 +517,28 @@ function metricToColumnDef(c: MetricColumn): ColumnDef {
 // Every column (position spine + analytics) in one list, keyed by band for the grouped header.
 const ALL_COLUMNS: ColumnDef[] = [...POSITION_COLUMNS, ...METRIC_COLUMNS.map(metricToColumnDef)];
 
+// Market Value — held constant in the frozen spine beside Ticker (metron-ops#140) rather than
+// living inside the toggleable Value band, so every column-set preset anchors on the same
+// two reference columns without needing to drag the rest of Value/Position along. Not part of
+// ALL_COLUMNS (it never renders through the band loop) but still registered for sort.
+const MARKET_VALUE_COLUMN: ColumnDef = {
+  key: "market_value",
+  label: "Market value",
+  band: "Value",
+  priced: true,
+  defaultDesc: true,
+  sort: (h) => h.market_value ?? h.market_value_local,
+  cell: (h, ctx) => ctx.baseMoney(h.market_value, h.market_value_local, moneyWhole),
+  foot: (t, ccy) => moneyWhole(t.mv, ccy),
+};
+
 // Lookup over EVERY sortable column, so header clicks sort uniformly.
-const SORT_BY_KEY = new Map<string, (h: Holding) => SortValue>(ALL_COLUMNS.map((c) => [c.key, c.sort] as const));
-const DESC_BY_DEFAULT = new Set<string>(ALL_COLUMNS.filter((c) => c.defaultDesc).map((c) => c.key));
+const SORT_BY_KEY = new Map<string, (h: Holding) => SortValue>(
+  [...ALL_COLUMNS, MARKET_VALUE_COLUMN].map((c) => [c.key, c.sort] as const),
+);
+const DESC_BY_DEFAULT = new Set<string>(
+  [...ALL_COLUMNS, MARKET_VALUE_COLUMN].filter((c) => c.defaultDesc).map((c) => c.key),
+);
 
 // Sticky first (ticker) column — stays put while the bands scroll right.
 const STICKY = "sticky left-0 z-10";
@@ -540,6 +551,7 @@ export function HoldingsTable({
   visibleBands = BAND_ORDER,
   accountColumn = false,
   showTotals = true,
+  showMarketValue = true,
   onRemove,
 }: {
   holdings: Holding[];
@@ -548,7 +560,7 @@ export function HoldingsTable({
   /** When set, the Ticker cell exposes an inline alias editor (metron-ops#47). */
   portfolioId?: string;
   /** Which bands to render, in canonical order (column presets, metron-ops#114/#118+).
-   *  Defaults to every band; the Ticker spine is always shown. */
+   *  Defaults to every band; the Ticker + Market Value spine is always shown. */
   visibleBands?: ColumnBand[];
   /** Render an Account column (the uncombined per-account view, metron-ops#114). The rows
    *  must carry `account_label`; it pins beside Ticker in the frozen spine. */
@@ -556,6 +568,10 @@ export function HoldingsTable({
   /** The Position/Value footer totals only mean something for real positions — a
    *  comparison-only row set (e.g. the watchlist) passes false to drop the row entirely. */
   showTotals?: boolean;
+  /** Market Value is part of the frozen spine by default (metron-ops#140) — a row set with no
+   *  real position (e.g. the watchlist compare table) passes false so it doesn't render a
+   *  column of nothing but "—". */
+  showMarketValue?: boolean;
   /** When set, renders a trailing "Remove" column (e.g. the watchlist compare table,
    *  metron-ops#121) — absent for the read-only Holdings view. */
   onRemove?: (ticker: string) => void;
@@ -567,7 +583,8 @@ export function HoldingsTable({
     .map((b) => [b, ALL_COLUMNS.filter((c) => c.band === b && (priced || !c.priced))] as const)
     .filter(([, cols]) => cols.length > 0);
   const visibleColumns = colsByBand.flatMap(([, cols]) => cols);
-  const spineCols = 1 + (accountColumn ? 1 : 0);
+  const marketValueVisible = priced && showMarketValue;
+  const spineCols = 1 + (accountColumn ? 1 : 0) + (marketValueVisible ? 1 : 0);
 
   const [sort, setSort] = useState<{ key: string; desc: boolean } | null>(null);
 
@@ -681,6 +698,11 @@ export function HoldingsTable({
                 <SortTh colKey="account" label="Account" />
               </th>
             ) : null}
+            {marketValueVisible ? (
+              <th className="px-3 py-2 text-right font-medium">
+                <SortTh colKey={MARKET_VALUE_COLUMN.key} label={MARKET_VALUE_COLUMN.label} />
+              </th>
+            ) : null}
             {colsByBand.map(([, cols]) =>
               cols.map((col, j) => (
                 <th
@@ -723,6 +745,9 @@ export function HoldingsTable({
                 {accountColumn ? (
                   <td className="px-3 py-2 text-left text-muted">{h.account_label ?? "—"}</td>
                 ) : null}
+                {marketValueVisible ? (
+                  <td className="px-3 py-2 text-right tabular-nums">{MARKET_VALUE_COLUMN.cell(h, ctx)}</td>
+                ) : null}
                 {colsByBand.map(([, cols]) =>
                   cols.map((col, j) => (
                     <td
@@ -760,6 +785,11 @@ export function HoldingsTable({
                 Total{totals.excluded > 0 ? "*" : ""}
               </td>
               {accountColumn ? <td className="px-3 py-2" /> : null}
+              {marketValueVisible ? (
+                <td className="px-3 py-2 text-right tabular-nums">
+                  {MARKET_VALUE_COLUMN.foot ? MARKET_VALUE_COLUMN.foot(totals, baseCurrency) : null}
+                </td>
+              ) : null}
               {colsByBand.map(([, cols]) =>
                 cols.map((col, j) => (
                   <td

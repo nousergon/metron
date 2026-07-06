@@ -1,6 +1,6 @@
-// Column presets (metron-ops#114, #118+): HoldingsTable renders only the visible bands over
-// the always-on Ticker spine, and ColumnPresetControl drives the visible-band set from
-// presets + the Customize popover.
+// Column presets (metron-ops#114, #118+, realigned #140): HoldingsTable renders only the
+// visible bands over the always-on Ticker + Market Value spine, and ColumnPresetControl
+// drives the visible-band set from presets + the Customize popover.
 
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -65,6 +65,21 @@ describe("HoldingsTable visibleBands", () => {
     expect(screen.getByText("Valuation")).toBeInTheDocument();
     expect(screen.getByText("Technicals")).toBeInTheDocument();
   });
+
+  it("holds Market Value constant in the frozen spine regardless of which band is visible", () => {
+    render(
+      <HoldingsTable baseCurrency="USD" priced holdings={[h("AAPL")]} visibleBands={["Attractiveness"]} showTotals={false} />,
+    );
+    expect(screen.getByText("Market value")).toBeInTheDocument();
+    expect(screen.getByText("$1,200")).toBeInTheDocument(); // market_value cell, spine-rendered
+  });
+
+  it("drops the Market Value spine column when showMarketValue is false", () => {
+    render(
+      <HoldingsTable baseCurrency="USD" priced holdings={[h("AAPL")]} visibleBands={["Attractiveness"]} showMarketValue={false} />,
+    );
+    expect(screen.queryByText("Market value")).not.toBeInTheDocument();
+  });
 });
 
 describe("ColumnPresetControl", () => {
@@ -73,11 +88,18 @@ describe("ColumnPresetControl", () => {
     expect(COLUMN_PRESETS[0].key).toBe("overview");
   });
 
-  it("clicking a preset emits its canonical-ordered band set", () => {
+  it("clicking an analytic preset emits ONLY its own band — no Position/Value drag-along", () => {
     const onChange = vi.fn();
     render(<ColumnPresetControl value={["Position", "Value"]} onChange={onChange} />);
     fireEvent.click(screen.getByRole("button", { name: "Fundamentals" }));
-    expect(onChange).toHaveBeenCalledWith(["Position", "Value", "Attractiveness", "Fundamentals", "Balance Sheet"]);
+    expect(onChange).toHaveBeenCalledWith(["Fundamentals"]);
+  });
+
+  it("has a dedicated Attractiveness preset (not bundled into another analytic preset)", () => {
+    const onChange = vi.fn();
+    render(<ColumnPresetControl value={["Position", "Value"]} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Attractiveness" }));
+    expect(onChange).toHaveBeenCalledWith(["Attractiveness"]);
   });
 
   it("toggling a Customize band adds it in canonical order", () => {
@@ -91,7 +113,7 @@ describe("ColumnPresetControl", () => {
   });
 
   it("marks the active preset via aria-pressed", () => {
-    render(<ColumnPresetControl value={["Position", "Value", "Valuation"]} onChange={vi.fn()} />);
+    render(<ColumnPresetControl value={["Valuation"]} onChange={vi.fn()} />);
     expect(screen.getByRole("button", { name: "Valuation" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Overview" })).toHaveAttribute("aria-pressed", "false");
   });
