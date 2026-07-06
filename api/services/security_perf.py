@@ -190,6 +190,7 @@ def enrich_holdings(
     feed_entitled: bool,
     account_ids: Collection[uuid.UUID] | None = None,
     reader=None,
+    performance_reader=None,
     now: datetime | None = None,
 ) -> list:
     """Populate ``overnight_pct`` / ``intraday_pct`` / ``day_pct`` / ``ytd_pct`` /
@@ -197,7 +198,8 @@ def enrich_holdings(
     in place, then return the list."""
     returns = per_security_returns(
         session, tenant_id, portfolio_id, [h.ticker for h in held],
-        as_of=as_of, feed_entitled=feed_entitled, account_ids=account_ids, reader=reader, now=now,
+        as_of=as_of, feed_entitled=feed_entitled, account_ids=account_ids,
+        reader=reader, performance_reader=performance_reader, now=now,
     )
     today = market_today(now)
     for h in held:
