@@ -37,9 +37,7 @@ dependencies = [
     # NE dedup lib, relicensed from MIT at 0.60.0) — fine here, metron core is AGPL too.
     # Renamed alpha-engine-lib → nousergon-lib at 0.60.0; old `alpha_engine_lib.*` imports
     # still resolve via the in-package shim. Imported from PyPI, not vendored.
-    # Until nousergon-lib 0.88.0 publishes (nousergon-lib#164), pin the PR branch for CI.
-    # Revert to `nousergon-lib[quant]>=0.88.0` before merging this PR to main.
-    "nousergon-lib[quant] @ git+https://github.com/nousergon/nousergon-lib@8d06600",
+    "nousergon-lib[quant]>=0.88.0",
     # flow-doctor pipeline error-handler via krepis (MIT). krepis owns the
     # logging+flow-doctor glue; metron is AGPL but pulls the MIT commodity
     # layer from krepis and only the AGPL quant core from nousergon-lib.
@@ -71,9 +69,6 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["api", "portfolio_analytics"]
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.ruff]
 line-length = 120
