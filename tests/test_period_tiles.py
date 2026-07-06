@@ -10,7 +10,7 @@ backfill fetch is monkeypatched to a no-op so a coverage gap can't reach out.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest

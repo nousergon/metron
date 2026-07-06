@@ -19,7 +19,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from krepis.trading_calendar import last_closed_trading_day, previous_trading_day, session_date
@@ -1179,7 +1179,6 @@ def period_tiles(
         return result
 
     at = _tile_now(today, now)
-    sess = session_date(at)
     lcd = last_closed_trading_day(at)
     cal = market_today(at)
 
