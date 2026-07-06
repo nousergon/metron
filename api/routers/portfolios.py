@@ -2113,6 +2113,7 @@ class TearsheetPerformanceOut(BaseModel):
     max_drawdown: float | None = None
     beta_vs_spy: float | None = None
     vs_spy: float | None = None
+    vs_spy_1y: float | None = None
     n_bars: int = 0
     history_from: date | None = None
 
