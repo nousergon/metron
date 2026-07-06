@@ -21,10 +21,8 @@ from krepis.trading_calendar import count_trading_days
 from sqlalchemy.orm import Session
 
 from api.services import intraday
-from api.services import prices as price_service
 from api.services import security_performance as performance_service
 from api.services import tearsheet as tearsheet_service
-from portfolio_analytics.prices import ClosePoint, HistorySource
 
 # The EOD close feed is keyed by NYSE trading days, so freshness is judged in market time.
 _MARKET_TZ = ZoneInfo("America/New_York")
@@ -64,76 +62,20 @@ class SecurityReturns:
     ltm_pct: float | None = None        # vs first close on/after as_of − 1y
 
 
-def _year_start(as_of: date) -> date:
-    return date(as_of.year, 1, 1)
-
-
-def _year_ago(as_of: date) -> date:
-    try:
-        return as_of.replace(year=as_of.year - 1)
-    except ValueError:  # Feb-29 → Feb-28
-        return as_of.replace(year=as_of.year - 1, day=28)
-
-
-def _window_return(series: list[ClosePoint], start: date) -> float | None:
-    """Total return from the first close on/after ``start`` to the latest close — only when
-    the cached history actually reaches back to ``start`` (else None, no partial window)."""
-    if len(series) < 2 or series[0].bar_date > start:
-        return None
-    ref = next((p.close for p in series if p.bar_date >= start), None)
-    last = series[-1].close
-    if ref is None or ref <= 0:
-        return None
-    return last / ref - 1.0
-
-
-# A cached close may legitimately lag the latest session over a weekend / holiday; only
-# refetch once the gap exceeds this many calendar days (mirrors performance.py's slack).
-_INDEX_COVERAGE_SLACK_DAYS = 4
-
-
-def ensure_index_history(
-    session: Session, symbols: Collection[str], *, as_of: date, source: HistorySource | None = None
-) -> None:
-    """Backfill the cached daily closes for the index/ETF proxies so the YTD **and** LTM
-    windows resolve for every proxy — not just the ones a perf-page visit happened to warm.
-
-    The Markets strip lives on the Overview, which can load without the Performance page
-    ever populating ``price_bars`` for these proxies; without this the strip shows "—" for
-    YTD/LTM. Idempotent and network-light, mirroring ``performance._ensure_benchmark_coverage``:
-    skips the fetch when the cache already spans ``[start, as_of]`` within the weekend/holiday
-    slack. ``start`` is the earlier of Jan-1 and one year ago so both windows are covered."""
-    start = min(_year_start(as_of), _year_ago(as_of))
-    for sym in symbols:
-        price_service.ensure_security(session, sym)
-    hist = price_service.close_history_by_symbol(session, list(symbols))
-    need = [
-        sym
-        for sym in symbols
-        if (
-            (series := hist.get(sym)) is None
-            or series[0].bar_date > start
-            or (as_of - series[-1].bar_date).days > _INDEX_COVERAGE_SLACK_DAYS
-        )
-    ]
-    if need:
-        price_service.backfill_prices(session, need, start, as_of, source=source)
-
-
 def index_period_returns(
-    session: Session, symbols: Collection[str], *, as_of: date
+    symbols: Collection[str],
+    *,
+    performance_reader=None,
 ) -> dict[str, tuple[float | None, float | None]]:
-    """``{symbol: (ytd_pct, ltm_pct)}`` for index/ETF proxies, from cached daily closes —
-    the Markets-strip period returns, TWR-comparable to the per-account/portfolio tiles
-    (metron-ops#87). A symbol with no cached history (or none reaching back to the window
-    start) is omitted / None — never a partial-window number."""
-    hist = price_service.close_history_by_symbol(session, list(symbols))
-    ytd_start, ltm_start = _year_start(as_of), _year_ago(as_of)
+    """``{symbol: (ytd_pct, ltm_pct)}`` for index/ETF proxies from the
+    ``security_performance`` spine (metron-ops#87). Symbols absent from the artifact
+    are omitted — never locally recomputed from ``price_bars``."""
+    snap = performance_service.load_security_performance(reader=performance_reader)
     out: dict[str, tuple[float | None, float | None]] = {}
     for sym in symbols:
-        series = hist.get(sym)
-        if series:
-            out[sym] = (_window_return(series, ytd_start), _window_return(series, ltm_start))
+        row = snap.by_symbol.get(sym)
+        if row is not None:
+            out[sym] = (row.ytd_pct, row.ltm_pct)
     return out
 
 

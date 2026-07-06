@@ -14,9 +14,7 @@ from datetime import UTC, date, datetime
 import pytest
 
 from api.config import settings
-from api.db import models
 from api.services import indices, security_perf
-from api.services import prices as price_service
 from portfolio_analytics.prices import ClosePoint
 
 _AS_OF = "2026-06-12T15:00:00Z"
@@ -238,30 +236,17 @@ class TestProxyDayReturn:
         assert indices.proxy_day_return("SPY", reader=lambda: art, now=_NOW) is None
 
 
-class TestEnsureIndexHistory:
-    def test_backfills_only_uncovered_proxies(self, db_session, monkeypatch):
-        today = date(2026, 6, 25)
-        # SPY already fully covered in the cache → must NOT be refetched.
-        sid = price_service.ensure_security(db_session, "SPY")
-        for when, close in [(date(2025, 1, 1), 400.0), (date(2026, 1, 2), 400.0), (today, 480.0)]:
-            db_session.add(models.PriceBar(security_id=sid, bar_date=when, close=close, currency="USD"))
-        db_session.commit()
-
-        fetched: list[str] = []
-
-        def _fake_fetch(targets, start, end, *, source=None):
-            fetched.extend(targets)
-            return {
-                s: [ClosePoint(date(2025, 1, 1), 100.0), ClosePoint(date(2026, 1, 2), 100.0), ClosePoint(today, 120.0)]
-                for s in targets
-            }
-
-        monkeypatch.setattr("api.services.prices.fetch_close_history", _fake_fetch)
-        security_perf.ensure_index_history(db_session, ["SPY", "ONEQ", "QQQ", "IWM"], as_of=today)
-
-        # SPY skipped (already covered); the three uncovered proxies fetched once each.
-        assert "SPY" not in fetched
-        assert set(fetched) == {"ONEQ", "QQQ", "IWM"}
-        periods = security_perf.index_period_returns(db_session, ["SPY", "ONEQ"], as_of=today)
-        assert periods["SPY"][0] == pytest.approx(480.0 / 400.0 - 1.0)  # uses the seeded SPY bars
-        assert periods["ONEQ"][0] == pytest.approx(120.0 / 100.0 - 1.0)  # uses the backfilled bars
+class TestIndexPeriodReturnsFromSpine:
+    def test_reads_ytd_ltm_from_security_performance_artifact(self, monkeypatch):
+        art = {
+            "performance": {
+                "SPY": {"ytd_pct": 0.08, "ltm_pct": 0.15},
+                "ONEQ": {"ytd_pct": 0.09, "ltm_pct": 0.16},
+            },
+        }
+        periods = security_perf.index_period_returns(
+            ["SPY", "ONEQ", "QQQ"], performance_reader=lambda: art,
+        )
+        assert periods["SPY"] == (pytest.approx(0.08), pytest.approx(0.15))
+        assert periods["ONEQ"] == (pytest.approx(0.09), pytest.approx(0.16))
+        assert "QQQ" not in periods

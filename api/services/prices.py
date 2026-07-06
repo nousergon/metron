@@ -213,27 +213,6 @@ def backfill_prices(
     return written
 
 
-def ensure_tearsheet_history(
-    session: Session, symbols: list[str], *, as_of: date, source: HistorySource | None = None
-) -> None:
-    """Sync cached daily closes from the spine for tearsheet period returns (1Y–10Y).
-
-    Always re-fetches over the full period-return window so stale pre-split (or
-    otherwise outdated) bars get corrected via ``backfill_prices`` upsert — the
-    insert-only backfill path left wrong anchor closes in place after corporate
-    actions. One symbol ≈ one S3 artifact read; idempotent when the cache matches."""
-    symbols = [s for s in dict.fromkeys(symbols) if s]
-    if not symbols:
-        return
-    try:
-        start = as_of.replace(year=as_of.year - 10)
-    except ValueError:  # Feb-29 → Feb-28
-        start = as_of.replace(year=as_of.year - 10, day=28)
-    for sym in symbols:
-        ensure_security(session, sym)
-    backfill_prices(session, symbols, start, as_of, source=source)
-
-
 def close_history_by_symbol(session: Session, symbols: list[str]) -> dict[str, list[ClosePoint]]:
     """Full cached close series per symbol, ascending by date — for as-of valuation
     during reconstruction. Absent symbols are omitted."""
