@@ -41,6 +41,8 @@ function toShellHolding(e: WatchlistEntry): Holding {
     last_price_date: null,
     last_price_stale: false,
     is_estimated: false,
+    broker_as_of: null,
+    positions_stale: false,
     market_value_local: null,
     cost_basis_base: null,
     market_value: null,

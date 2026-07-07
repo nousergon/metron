@@ -51,7 +51,15 @@ class Holding:
     # Broker-reported native price/value (snapshot sources) — the valuation fallback
     # when the price cache can't resolve a foreign listing. None for ledger-only holdings.
     broker_market_price: float | None = None
+    # The broker's own "as of" date for this position (IBKR Flex statement report_date /
+    # SnapTrade account last_holdings_sync) — i.e. how current the SHARE COUNT is, as
+    # distinct from ``last_price_date`` (how current the PRICE is). None for ledger-only
+    # (CSV/OFX) holdings, which have no snapshot to go stale — the ledger is always live.
     broker_as_of: date | None = None
+    # True when a snapshot-sourced holding's ``broker_as_of`` is stale relative to today
+    # (the broker sync hasn't run recently, e.g. metron-ops#150) — always False for
+    # ledger-only holdings. Stamped by security_perf.enrich_holdings (Holdings view only).
+    positions_stale: bool = False
     # Valuation — populated by valued_holdings. ``_local`` fields are in the holding's
     # native currency; the bare fields are converted to the portfolio BASE currency.
     # A foreign holding with no cached FX rate keeps the base fields None (never
@@ -609,10 +617,15 @@ def holdings(
         agg.setdefault(ticker, [0.0, 0.0])
         agg[ticker][0] += qty
         agg[ticker][1] += qty * float(avg_cost)
+        # Track the OLDEST contributing account's as_of, independent of whether a market
+        # value was reported — a ticker held across two accounts is only as fresh as its
+        # stalest contributor, and an unpriced snapshot position (no mv_local) must not be
+        # silently excluded from staleness detection (that's exactly the case a "positions
+        # as of" freshness signal exists to catch, metron-ops#150).
+        if as_of is not None and (ticker not in broker_as_of or as_of < broker_as_of[ticker]):
+            broker_as_of[ticker] = as_of
         if mv_local is not None:
             broker_mv[ticker] = broker_mv.get(ticker, 0.0) + float(mv_local)
-            if as_of is not None and (ticker not in broker_as_of or as_of > broker_as_of[ticker]):
-                broker_as_of[ticker] = as_of
 
     ccy = _currency_by_symbol(session, list(agg))
     out: list[Holding] = []

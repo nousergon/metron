@@ -174,6 +174,40 @@ def test_enrich_does_not_flag_broker_snapshot(db_session):
     assert broker.last_price_stale is False
 
 
+def test_enrich_flags_stale_positions(db_session):
+    # A broker-snapshot holding whose as_of is 2+ trading sessions behind "today" means
+    # the daily re-sync hasn't run recently — the metron-ops#150 failure mode (a sold
+    # PLTR position still showing its pre-sale share count).
+    tid, pid = _seed(db_session, _CLOSES)
+    broker = analytics.Holding(
+        ticker="PLTR", quantity=100, avg_cost=20.0, cost_basis=2000.0,
+        broker_as_of=date(2026, 6, 22),
+    )
+    security_perf.enrich_holdings(db_session, tid, pid, [broker], as_of=date(2026, 6, 25), feed_entitled=False, now=_NOW_0625)
+    assert broker.positions_stale is True
+
+
+def test_enrich_does_not_flag_fresh_positions(db_session):
+    tid, pid = _seed(db_session, _CLOSES)
+    broker = analytics.Holding(
+        ticker="PLTR", quantity=100, avg_cost=20.0, cost_basis=2000.0,
+        broker_as_of=date(2026, 6, 24),
+    )
+    security_perf.enrich_holdings(db_session, tid, pid, [broker], as_of=date(2026, 6, 25), feed_entitled=False, now=_NOW_0625)
+    assert broker.positions_stale is False  # 1 session behind = normal before a sync fires
+
+
+def test_enrich_does_not_flag_ledger_only_holdings(db_session):
+    # A CSV/OFX ledger-derived holding has no broker snapshot to go stale — broker_as_of
+    # stays None, so positions_stale must stay False regardless of "today".
+    tid, pid = _seed(db_session, _CLOSES)
+    held = analytics.valued_holdings(db_session, tid, pid)
+    security_perf.enrich_holdings(db_session, tid, pid, held, as_of=date(2025, 6, 1), feed_entitled=True, performance_reader=lambda: _PERF_ART)
+    h = next(h for h in held if h.ticker == "AAPL")
+    assert h.broker_as_of is None
+    assert h.positions_stale is False
+
+
 def test_ltm_from_spine_artifact(db_session):
     """Holdings LTM reads the security_performance spine — not local price_bars."""
     tid, pid = _seed(db_session, [(date(2025, 7, 6), 518.0), (date(2026, 7, 2), 193.98)])

@@ -92,4 +92,27 @@ describe("GroupedHoldings", () => {
     render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced={false} />);
     expect(screen.queryByText(/Prices as of/)).not.toBeInTheDocument();
   });
+
+  it("shows a plain 'positions synced through' caption for the oldest broker-sourced holding", () => {
+    const holdings = [
+      h("AAPL", "equity", { broker_as_of: "2026-06-24" }),
+      h("PLTR", "equity", { broker_as_of: "2026-06-20" }),
+    ];
+    render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced />);
+    // The OLDEST contributing account wins (the worst-case freshness), not the newest.
+    expect(screen.getByText(/Positions synced through Jun 20, 2026\./)).toBeInTheDocument();
+  });
+
+  it("escalates to a stale positions warning when any holding's broker sync is stale", () => {
+    const holdings = [h("PLTR", "equity", { broker_as_of: "2026-06-20", positions_stale: true })];
+    render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced />);
+    expect(screen.getByText(/Positions synced through Jun 20, 2026/)).toBeInTheDocument();
+    expect(screen.getByText(/may not be reflected yet/)).toBeInTheDocument();
+  });
+
+  it("omits the positions caption for ledger-only (CSV\\/OFX) holdings", () => {
+    const holdings = [h("AAPL", "equity")]; // no broker_as_of — ledger-derived
+    render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced />);
+    expect(screen.queryByText(/Positions synced through/)).not.toBeInTheDocument();
+  });
 });

@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from api.config import settings
 from api.db import models
 from api.db.session import SessionLocal, create_all
-from api.services import analytics, attribution, data_spine, fx, performance, risk
+from api.services import analytics, attribution, broker_sync, data_spine, fx, performance, risk
 from api.services import calendar as calendar_svc
 from api.services import prices as price_service
 from api.services.demo import REFERENCE_PORTFOLIO_ID
@@ -81,6 +81,8 @@ class RefreshResult:
     earnings_refreshed: int = 0     # securities whose next earnings date refreshed from the spine
     universe_published: bool = False  # held-ticker universe published to the data spine
     watchlist_universe_published: bool = False  # watchlist-only-ticker universe published (metron-ops#132)
+    broker_flex_synced: int = 0     # portfolios whose IBKR Flex-sourced accounts were re-synced (metron-ops#150)
+    broker_snaptrade_synced: int = 0  # portfolios whose SnapTrade-sourced accounts were re-synced (metron-ops#150)
 
 
 def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResult:
@@ -146,6 +148,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     total_symbols = total_updated = total_snaps = total_fx = 0
     total_recon = total_risk = total_attr = total_acct_snaps = total_earnings = 0
     total_reconciled = 0
+    total_flex_synced = total_snaptrade_synced = 0
 
     # Freshness gate: only stamp a ``today`` NAV snapshot once today's own close has
     # published in the spine. This lets the refresh fire SOON after the close (instead of
@@ -162,6 +165,23 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         )
 
     for p in portfolios:
+        is_reference_rate = p.id == REFERENCE_PORTFOLIO_ID
+        # Re-sync broker-reported positions BEFORE computing holdings, so a real trade at
+        # the broker (a buy/sell since the last sync) is reflected in today's price refresh
+        # + NAV snapshot instead of waiting on a manual "Sync" click — the fix for
+        # metron-ops#150 (a sold PLTR position still showed its pre-sale value days later).
+        # Best-effort and independent per broker so a Flex outage never blocks the
+        # SnapTrade sync (or vice versa) for the same portfolio; each is itself a no-op
+        # (returns None, not an error) for a portfolio that never connected that broker.
+        # Skipped for the reference-rate showcase, which has no real brokerage attached.
+        flex_synced = None if is_reference_rate else _best_effort(
+            "broker-sync-flex", p.id,
+            lambda p=p: broker_sync.sync_flex_for_portfolio(session, p),
+        )
+        snaptrade_synced = None if is_reference_rate else _best_effort(
+            "broker-sync-snaptrade", p.id,
+            lambda p=p: broker_sync.sync_snaptrade_for_portfolio(session, p),
+        )
         held = analytics.holdings(session, p.tenant_id, p.id)
         symbols = [h.ticker for h in held if h.ticker]
         updated = price_service.refresh_latest_prices(session, symbols) if symbols else 0
@@ -180,8 +200,8 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         # artifact (demo.sync_reference_holdings, above) — see the single-source-of-truth
         # note on this function's docstring (metron-ops#141). None of the generic NAV
         # writers below may touch it, or they'd re-derive + clobber it from Metron's own
-        # price/FX cache.
-        is_reference_rate = p.id == REFERENCE_PORTFOLIO_ID
+        # price/FX cache. (``is_reference_rate`` is computed at the top of this loop, before
+        # the broker-position re-sync above.)
 
         # Reconcile provisional snapshots BEFORE recording today's — the price refresh just
         # above cached the prior session's now-struck mutual-fund NAVs, so this restates
@@ -250,13 +270,17 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         total_risk += 1 if (risk_summary is not None and risk_summary.computable) else 0
         total_attr += 1 if (attr_summary is not None and attr_summary.computable) else 0
         total_earnings += earnings or 0
+        total_flex_synced += 1 if flex_synced is not None else 0
+        total_snaptrade_synced += 1 if snaptrade_synced is not None else 0
         logger.info(
-            "portfolio %s: %d symbols, %d prices, %d fx, snapshot=%s, reconstructed=%s, reconciled=%s, risk=%s, attribution=%s, earnings=%s",
+            "portfolio %s: %d symbols, %d prices, %d fx, snapshot=%s, reconstructed=%s, reconciled=%s, risk=%s, attribution=%s, earnings=%s, flex_synced=%s, snaptrade_synced=%s",
             p.id, len(symbols), updated, fx_updated, snap is not None,
             recon or 0, reconciled or 0,
             risk_summary.computable if risk_summary is not None else False,
             attr_summary.computable if attr_summary is not None else False,
             earnings or 0,
+            flex_synced is not None,
+            snaptrade_synced is not None,
         )
     # Publish the held-ticker universe to the data spine so `alpha-engine-data` knows
     # which EOD closes + FX pairs to pull. Best-effort: a failure here WARNs and never
@@ -294,6 +318,8 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         earnings_refreshed=total_earnings,
         universe_published=universe_published,
         watchlist_universe_published=watchlist_universe_published,
+        broker_flex_synced=total_flex_synced,
+        broker_snaptrade_synced=total_snaptrade_synced,
     )
 
 
@@ -365,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info(
             "daily-refresh done: %d portfolios, %d symbols, %d prices, %d snapshots, "
             "%d deferred, %d account-snapshots, %d reconstructed, %d risk, %d attribution, "
-            "universe_published=%s",
+            "universe_published=%s, %d flex-synced, %d snaptrade-synced",
             r.portfolios,
             r.symbols,
             r.prices_updated,
@@ -376,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
             r.risk_computed,
             r.attribution_computed,
             r.universe_published,
+            r.broker_flex_synced,
+            r.broker_snaptrade_synced,
         )
     return 0
 

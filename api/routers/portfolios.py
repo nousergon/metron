@@ -152,6 +152,16 @@ class HoldingOut(BaseModel):
     # its own NAV yet today. Not a problem flag like last_price_stale — an expected,
     # clearly-labeled estimate, reconciled to the true struck NAV by mechanism A tomorrow.
     is_estimated: bool = False
+    # Broker-reported "as of" date for this position (IBKR Flex statement / SnapTrade
+    # last_holdings_sync) — how current the SHARE COUNT is, distinct from
+    # last_price_date (how current the PRICE is). None for ledger-only (CSV/OFX)
+    # holdings, which have no broker snapshot to go stale.
+    broker_as_of: date | None = None
+    # True when a snapshot-sourced holding's broker_as_of is stale (metron-ops#150) —
+    # e.g. the daily broker re-sync hasn't run recently, so a real trade at the broker
+    # may not yet be reflected here even though last_price looks fresh. Drives the
+    # Holdings "positions as of" staleness warning. Always False for ledger-only holdings.
+    positions_stale: bool = False
     market_value_local: float | None = None
     cost_basis_base: float | None = None
     market_value: float | None = None
@@ -1389,15 +1399,9 @@ def _snaptrade_excluded_ids(session: Session, portfolio: models.Portfolio) -> se
     elsewhere (e.g. IBKR via Flex — syncing it from SnapTrade too would double-count).
     Keyed by the connection's stable authorization id — never by institution-name
     matching, which proved fragile (SnapTrade reports "E-Trade" on accounts but
-    "E*Trade" on the connection)."""
-    pref = session.scalars(
-        select(models.InvestorPreferences).where(
-            models.InvestorPreferences.tenant_id == portfolio.tenant_id,
-            models.InvestorPreferences.portfolio_id == portfolio.id,
-        )
-    ).first()
-    raw = pref.snaptrade_excluded_connections if pref is not None else None
-    return {s.strip() for s in (raw or "").split(",") if s.strip()}
+    "E*Trade" on the connection). Shared with the automated ``broker_sync`` re-sync
+    via ``persistence.snaptrade_excluded_ids``."""
+    return persistence.snaptrade_excluded_ids(session, portfolio.tenant_id, portfolio.id)
 
 
 @router.post("/{portfolio_id}/import/snaptrade", response_model=ImportOut)
