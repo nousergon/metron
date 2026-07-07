@@ -140,3 +140,10 @@ def lookup(
 ) -> Attractiveness | None:
     """Resolve one holding's attractiveness from a pre-computed universe map."""
     return universe.get(yf_symbol.upper())
+
+
+def clear_cache() -> None:
+    """Clear the module-level compute cache — for tests."""
+    global _compute_universe_cache, _compute_universe_cache_time
+    _compute_universe_cache.clear()
+    _compute_universe_cache_time = 0.0

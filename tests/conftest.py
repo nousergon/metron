@@ -18,6 +18,7 @@ from sqlalchemy.pool import StaticPool
 
 from api.db.session import Base, get_session
 from api.main import app
+from api.services import attractiveness as attractiveness_service
 from api.services import compute_cache
 
 
@@ -26,8 +27,10 @@ def _clear_compute_cache():
     """The compute cache is a process-level global; clear it around every test so one
     test's cached result can never bleed into another's isolated in-memory DB."""
     compute_cache.clear()
+    attractiveness_service.clear_cache()
     yield
     compute_cache.clear()
+    attractiveness_service.clear_cache()
 
 
 class _NoCredsStubClient:

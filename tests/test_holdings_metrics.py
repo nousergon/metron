@@ -148,13 +148,22 @@ def test_enrich_metrics_maps_attractiveness_pillar_scores(monkeypatch):
                         lambda: type("S", (), {"by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment",
                         lambda: type("S", (), {"by_symbol": {}})())
-    from api.services import factor_profiles as factor_profiles_service
 
+    from api.services import attractiveness as attractiveness_service
+
+    def _mock_profiles_reader():
+        from api.services import factor_profiles as factor_profiles_service
+        return factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES)
+
+    # Mock compute_universe to use test profiles; enrich_metrics calls compute_universe()
+    # without custom readers, so we need to mock it at the call site.
     monkeypatch.setattr(
-        factor_profiles_service, "load_factor_profiles",
-        lambda reader=None: factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES),
+        metrics_enrichment.attractiveness_service, "compute_universe",
+        lambda profiles_reader=None, weights_reader=None: attractiveness_service.compute_universe(
+            profiles_reader=profiles_reader or _mock_profiles_reader,
+            weights_reader=weights_reader,
+        ),
     )
-    monkeypatch.setattr(factor_profiles_service, "load_pillar_weights", lambda reader=None: None)
 
     metrics_enrichment.enrich_metrics(session=None, held=held)
     aapl = held[0]

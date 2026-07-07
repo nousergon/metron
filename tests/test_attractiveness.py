@@ -9,7 +9,12 @@ from __future__ import annotations
 from datetime import date
 
 from api.db import models
-from api.services import analytics, attractiveness, metrics_enrichment, tearsheet
+from api.services import (
+    analytics,
+    attractiveness,
+    metrics_enrichment,
+    tearsheet,
+)
 
 _PROFILES = {
     "AAPL": {
@@ -62,13 +67,20 @@ def test_enrich_metrics_attaches_sota_attractiveness(db_session, monkeypatch):
     monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals", lambda: type("S", (), {"by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst", lambda: type("S", (), {"by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment", lambda: type("S", (), {"by_symbol": {}})())
-    from api.services import factor_profiles as factor_profiles_service
 
+    def _mock_profiles_reader():
+        from api.services import factor_profiles as factor_profiles_service
+        return factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES)
+
+    # Mock compute_universe to use test profiles; enrich_metrics calls compute_universe()
+    # without custom readers, so we need to mock it at the call site.
     monkeypatch.setattr(
-        factor_profiles_service, "load_factor_profiles",
-        lambda reader=None: factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES),
+        metrics_enrichment.attractiveness_service, "compute_universe",
+        lambda profiles_reader=None, weights_reader=None: attractiveness.compute_universe(
+            profiles_reader=profiles_reader or _mock_profiles_reader,
+            weights_reader=weights_reader,
+        ),
     )
-    monkeypatch.setattr(factor_profiles_service, "load_pillar_weights", lambda reader=None: None)
 
     metrics_enrichment.enrich_metrics(db_session, held)
     aapl = held[0]
@@ -101,13 +113,20 @@ def _seed_aapl(session):
 
 def test_tearsheet_gauge_populates_when_profiles_available(db_session, monkeypatch):
     tenant_id, pid = _seed_aapl(db_session)
-    from api.services import factor_profiles as factor_profiles_service
 
+    def _mock_profiles_reader():
+        from api.services import factor_profiles as factor_profiles_service
+        return factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES)
+
+    from api.services import tearsheet as tearsheet_service
+    # tearsheet.tearsheet calls attractiveness_service.compute_universe() without custom readers
     monkeypatch.setattr(
-        factor_profiles_service, "load_factor_profiles",
-        lambda reader=None: factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES),
+        tearsheet_service.attractiveness_service, "compute_universe",
+        lambda profiles_reader=None, weights_reader=None: attractiveness.compute_universe(
+            profiles_reader=profiles_reader or _mock_profiles_reader,
+            weights_reader=weights_reader,
+        ),
     )
-    monkeypatch.setattr(factor_profiles_service, "load_pillar_weights", lambda reader=None: None)
     sheet = tearsheet.tearsheet(db_session, tenant_id, pid, "AAPL", feed_enabled=True)
     att = sheet.attractiveness
     assert att.available is True
