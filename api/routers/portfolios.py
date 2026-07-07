@@ -343,13 +343,15 @@ class SummaryOut(BaseModel):
 
 
 class IntradayStatusOut(BaseModel):
-    """Live-valuation status for the Overview/Holdings/Performance "intraday" label +
-    poll (metron-ops#79)."""
+    """Live-valuation status for the Overview/Holdings "intraday" label + poll
+    (metron-ops#79); coverage disclosure per metron-ops#146."""
 
     applied: bool                  # the intraday overlay is currently in effect
     as_of_utc: str | None = None   # producer write time of the snapshot in use
     stale: bool = False            # snapshot older than the freshness window (market closed?)
     n_priced: int = 0              # held positions revalued from a fresh intraday quote
+    n_total: int = 0               # held positions in scope — un-priced ones keep EOD close
+    n_estimated: int = 0           # of n_priced, synthesized fund estimates (metron-ops#112)
     reason: str | None = None      # why not applied ("feed" / "stale" / "unavailable")
 
 
@@ -2626,7 +2628,8 @@ def get_intraday_status(
         session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled, account_ids=account_ids
     )
     return IntradayStatusOut(
-        applied=m.applied, as_of_utc=m.as_of_utc, stale=m.stale, n_priced=m.n_priced, reason=m.reason
+        applied=m.applied, as_of_utc=m.as_of_utc, stale=m.stale, n_priced=m.n_priced,
+        n_total=m.n_total, n_estimated=len(m.estimated_tickers), reason=m.reason,
     )
 
 

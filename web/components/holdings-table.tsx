@@ -34,6 +34,7 @@ import {
   signClass,
 } from "@/lib/format";
 import { setSecurityClassificationAction, setSecurityLabelAction } from "@/app/portfolios/[id]/actions";
+import { useLiveValuation } from "@/components/live-valuation-context";
 
 // Canonical option lists for the inline classification override (matches the data-spine
 // vocabulary: yfinance Title-Case sectors + their SPDR ETFs, plus the "Broad Market / Index"
@@ -155,6 +156,10 @@ type ColumnDef = {
   defaultDesc?: boolean;
   align?: "left" | "right";
   title?: string;
+  /** Revalues from the delayed intraday overlay while it's applied (metron-ops#147) —
+   *  its header carries the live dot so the live/close provenance boundary is visible
+   *  inside a mixed row. Everything unmarked is close-anchored. */
+  live?: boolean;
   /** Sort value — base-currency where available, native as a stable fallback. */
   sort: (h: Holding) => SortValue;
   /** Cell content (the wrapping <td> supplies padding / alignment / border). */
@@ -202,6 +207,7 @@ const POSITION_COLUMNS: ColumnDef[] = [
     band: "Value",
     priced: true,
     defaultDesc: true,
+    live: true,
     sort: (h) => (h.last_price != null && h.fx_rate != null ? h.last_price * h.fx_rate : h.last_price),
     cell: (h, ctx) => {
       const lastBase = h.last_price != null && h.fx_rate != null ? h.last_price * h.fx_rate : null;
@@ -235,6 +241,9 @@ const POSITION_COLUMNS: ColumnDef[] = [
     band: "Value",
     priced: true,
     defaultDesc: true,
+    // A declared blend: the market-value leg follows the live overlay, the cost-basis leg
+    // is settled — the number moves intraday, so it carries the live dot.
+    live: true,
     title: "Paper gain/loss if sold now: market value − cost basis (base currency). Excludes realized gains + dividends.",
     sort: (h) => h.unrealized_gain,
     cell: (h, ctx) => (
@@ -250,6 +259,7 @@ const POSITION_COLUMNS: ColumnDef[] = [
     band: "Value",
     priced: true,
     defaultDesc: true,
+    live: true,
     title: "Unrealized gain/loss as a % of cost basis (the position's total return so far, ex-dividends).",
     sort: (h) => h.unrealized_pct,
     cell: (h) => (
@@ -268,6 +278,7 @@ const POSITION_COLUMNS: ColumnDef[] = [
     band: "Returns",
     priced: true,
     defaultDesc: true,
+    live: true,
     title: "Today's price return — overnight (open vs prior close) + intraday (latest vs open). Needs the live feed.",
     sort: (h) => h.day_pct,
     cell: (h) => (
@@ -533,6 +544,7 @@ const MARKET_VALUE_COLUMN: ColumnDef = {
   band: "Value",
   priced: true,
   defaultDesc: true,
+  live: true,
   sort: (h) => h.market_value ?? h.market_value_local,
   cell: (h, ctx) => ctx.baseMoney(h.market_value, h.market_value_local, moneyWhole),
   foot: (t, ccy) => moneyWhole(t.mv, ccy),
@@ -548,6 +560,18 @@ const DESC_BY_DEFAULT = new Set<string>(
 
 // Sticky first (ticker) column — stays put while the bands scroll right.
 const STICKY = "sticky left-0 z-10";
+
+// Bands whose every metric is computed from close/spine data (metron-ops#147). While the
+// live overlay is applied their band header carries a "· close" marker so they're not read
+// as moving with the live row values beside them. Position/Class are reference data (no
+// price provenance) and Returns is mixed (Day is live-dotted per-column; YTD/LTM close).
+const CLOSE_ANCHORED_BANDS: ReadonlySet<ColumnBand> = new Set([
+  "Attractiveness",
+  "Valuation",
+  "Fundamentals",
+  "Technicals",
+  "Consensus",
+]);
 
 export function HoldingsTable({
   holdings,
@@ -593,6 +617,10 @@ export function HoldingsTable({
   const spineCols = 1 + (accountColumn ? 1 : 0) + (marketValueVisible ? 1 : 0);
 
   const [sort, setSort] = useState<{ key: string; desc: boolean } | null>(null);
+  // Whether this page's values are being revalued from the delayed intraday overlay
+  // (metron-ops#147) — drives the per-column live dots + the "· close" band markers.
+  // False wherever no LiveValuationProvider is mounted (watchlist, cost-basis views).
+  const liveApplied = useLiveValuation();
 
   const sorted = useMemo(() => {
     if (!sort) return holdings;
@@ -645,8 +673,20 @@ export function HoldingsTable({
   // small ⓘ signpost so the definition is discoverable via a real click-to-open disclosure —
   // NOT nested inside the sort <button> (nested buttons are invalid HTML and swallow every
   // click into `toggle(colKey)`, so the ⓘ was unreachable — metron-ops#115 follow-up, metron#158).
-  const SortTh = ({ colKey, label, title }: { colKey: string; label: string; title?: string }) => (
+  const SortTh = ({ colKey, label, title, live }: { colKey: string; label: string; title?: string; live?: boolean }) => (
     <span className="inline-flex items-center gap-1 uppercase tracking-wide">
+      {/* Live-provenance dot (metron-ops#147): marks the columns that revalue from the
+          delayed intraday overlay, only while it's actually applied. Distinct from the
+          amber stale ⚠ and the sky estimated ~ (both per-cell states, not provenance). */}
+      {liveApplied && live ? (
+        <span
+          className="text-[8px] leading-none text-emerald-500"
+          title="Live — revalues from delayed intraday quotes while the overlay is on; unmarked columns are close-anchored"
+          aria-label={`${label} is live`}
+        >
+          ●
+        </span>
+      ) : null}
       <button
         type="button"
         onClick={() => toggle(colKey)}
@@ -690,6 +730,14 @@ export function HoldingsTable({
                   className="border-l border-line px-3 py-1.5 text-center font-semibold text-accent"
                 >
                   {band}
+                  {liveApplied && CLOSE_ANCHORED_BANDS.has(band) ? (
+                    <span
+                      className="ml-1 font-normal normal-case text-muted"
+                      title="Computed from last-close / spine data — does not move with the live values beside it"
+                    >
+                      · close
+                    </span>
+                  ) : null}
                 </th>
               ))}
               {onRemove ? <th className="bg-surface px-3 py-1.5" /> : null}
@@ -706,7 +754,7 @@ export function HoldingsTable({
             ) : null}
             {marketValueVisible ? (
               <th className="px-3 py-2 text-right font-medium">
-                <SortTh colKey={MARKET_VALUE_COLUMN.key} label={MARKET_VALUE_COLUMN.label} />
+                <SortTh colKey={MARKET_VALUE_COLUMN.key} label={MARKET_VALUE_COLUMN.label} live={MARKET_VALUE_COLUMN.live} />
               </th>
             ) : null}
             {colsByBand.map(([, cols]) =>
@@ -715,7 +763,7 @@ export function HoldingsTable({
                   key={col.key}
                   className={`px-3 py-2 font-medium ${col.align === "left" ? "text-left" : "text-right"} ${j === 0 ? "border-l border-line" : ""}`}
                 >
-                  <SortTh colKey={col.key} label={col.label} title={col.title} />
+                  <SortTh colKey={col.key} label={col.label} title={col.title} live={col.live} />
                 </th>
               )),
             )}

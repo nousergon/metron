@@ -77,9 +77,15 @@ export function IntradayRefresher({ portfolioId }: { portfolioId: string }) {
 
   if (!status || !status.applied) return null;
 
+  // Coverage disclosure (metron-ops#146): a symbol without a usable quote silently keeps
+  // its EOD close inside the same NAV, so a partial overlay must say so — full coverage
+  // (the norm) stays quiet.
+  const partial = status.n_total > 0 && status.n_priced < status.n_total;
+
   return (
-    <span className="text-[11px] text-muted" title="Position values + NAV recompute from delayed intraday quotes while open">
+    <span className="text-[11px] text-muted" title="Position values + NAV recompute from delayed intraday quotes while open; positions without a usable quote stay at their last close">
       intraday · ~15-min delayed{status.as_of_utc ? ` · as of ${asOf(status.as_of_utc)}` : ""}
+      {partial ? ` · ${status.n_priced}/${status.n_total} live` : ""}
     </span>
   );
 }
