@@ -134,6 +134,9 @@ _PROFILES = {
 
 
 def test_enrich_metrics_maps_attractiveness_pillar_scores(monkeypatch):
+    from api.services import attractiveness as attractiveness_service
+    from api.services import factor_profiles as factor_profiles_service
+
     held = [analytics.Holding(
         ticker="AAPL", quantity=1, avg_cost=1, cost_basis=1,
         last_price=100.0, sector="Technology",
@@ -149,21 +152,17 @@ def test_enrich_metrics_maps_attractiveness_pillar_scores(monkeypatch):
     monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment",
                         lambda: type("S", (), {"by_symbol": {}})())
 
-    from api.services import attractiveness as attractiveness_service
-
-    def _mock_profiles_reader():
-        from api.services import factor_profiles as factor_profiles_service
+    def _test_profiles_reader():
         return factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES)
 
-    # Mock compute_universe to use test profiles; enrich_metrics calls compute_universe()
-    # without custom readers, so we need to mock it at the call site.
-    monkeypatch.setattr(
-        metrics_enrichment.attractiveness_service, "compute_universe",
-        lambda profiles_reader=None, weights_reader=None: attractiveness_service.compute_universe(
-            profiles_reader=profiles_reader or _mock_profiles_reader,
+    # Directly call the uncached computation with test profiles to avoid cache recursion
+    original_compute_universe = attractiveness_service._compute_universe_uncached
+    def _mock_compute_universe(profiles_reader=None, weights_reader=None):
+        return original_compute_universe(
+            profiles_reader=profiles_reader or _test_profiles_reader,
             weights_reader=weights_reader,
-        ),
-    )
+        )
+    monkeypatch.setattr(attractiveness_service, "compute_universe", _mock_compute_universe)
 
     metrics_enrichment.enrich_metrics(session=None, held=held)
     aapl = held[0]

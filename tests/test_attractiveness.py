@@ -54,6 +54,8 @@ def test_lookup_misses_outside_universe():
 
 
 def test_enrich_metrics_attaches_sota_attractiveness(db_session, monkeypatch):
+    from api.services import factor_profiles as factor_profiles_service
+
     held = [
         analytics.Holding(
             ticker="AAPL", quantity=10.0, avg_cost=100.0, cost_basis=1000.0, currency="USD",
@@ -68,19 +70,17 @@ def test_enrich_metrics_attaches_sota_attractiveness(db_session, monkeypatch):
     monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst", lambda: type("S", (), {"by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment", lambda: type("S", (), {"by_symbol": {}})())
 
-    def _mock_profiles_reader():
-        from api.services import factor_profiles as factor_profiles_service
+    def _test_profiles_reader():
         return factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES)
 
-    # Mock compute_universe to use test profiles; enrich_metrics calls compute_universe()
-    # without custom readers, so we need to mock it at the call site.
-    monkeypatch.setattr(
-        metrics_enrichment.attractiveness_service, "compute_universe",
-        lambda profiles_reader=None, weights_reader=None: attractiveness.compute_universe(
-            profiles_reader=profiles_reader or _mock_profiles_reader,
+    # Directly call the uncached computation with test profiles to avoid cache recursion
+    original_compute_universe = attractiveness._compute_universe_uncached
+    def _mock_compute_universe(profiles_reader=None, weights_reader=None):
+        return original_compute_universe(
+            profiles_reader=profiles_reader or _test_profiles_reader,
             weights_reader=weights_reader,
-        ),
-    )
+        )
+    monkeypatch.setattr(attractiveness, "compute_universe", _mock_compute_universe)
 
     metrics_enrichment.enrich_metrics(db_session, held)
     aapl = held[0]
@@ -112,21 +112,22 @@ def _seed_aapl(session):
 
 
 def test_tearsheet_gauge_populates_when_profiles_available(db_session, monkeypatch):
+    from api.services import factor_profiles as factor_profiles_service
+
     tenant_id, pid = _seed_aapl(db_session)
 
-    def _mock_profiles_reader():
-        from api.services import factor_profiles as factor_profiles_service
+    def _test_profiles_reader():
         return factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES)
 
-    from api.services import tearsheet as tearsheet_service
-    # tearsheet.tearsheet calls attractiveness_service.compute_universe() without custom readers
-    monkeypatch.setattr(
-        tearsheet_service.attractiveness_service, "compute_universe",
-        lambda profiles_reader=None, weights_reader=None: attractiveness.compute_universe(
-            profiles_reader=profiles_reader or _mock_profiles_reader,
+    # Directly call the uncached computation with test profiles to avoid cache recursion
+    original_compute_universe = attractiveness._compute_universe_uncached
+    def _mock_compute_universe(profiles_reader=None, weights_reader=None):
+        return original_compute_universe(
+            profiles_reader=profiles_reader or _test_profiles_reader,
             weights_reader=weights_reader,
-        ),
-    )
+        )
+    monkeypatch.setattr(attractiveness, "compute_universe", _mock_compute_universe)
+
     sheet = tearsheet.tearsheet(db_session, tenant_id, pid, "AAPL", feed_enabled=True)
     att = sheet.attractiveness
     assert att.available is True
