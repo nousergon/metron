@@ -10,7 +10,7 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/portfolios/p1",
   useSearchParams: () => new URLSearchParams(""),
 }));
-const saveAccountSelectionAction = vi.fn(() => Promise.resolve());
+const saveAccountSelectionAction = vi.fn();
 vi.mock("@/app/portfolios/[id]/actions", () => ({
   saveAccountSelectionAction: (...args: unknown[]) => saveAccountSelectionAction(...args),
 }));
