@@ -18,8 +18,9 @@
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { deleteAccountAction, saveAccountSelectionAction } from "@/app/portfolios/[id]/actions";
+import { useRouter } from "next/navigation";
+import { deleteAccountAction } from "@/app/portfolios/[id]/actions";
+import { useAccountSelection } from "@/lib/use-account-selection";
 import type { Account } from "@/lib/api";
 import { accountingMoneyWhole, accountingPercent, moneyWhole, signClass } from "@/lib/format";
 import { isReferencePortfolio } from "@/lib/demo";
@@ -180,32 +181,17 @@ export function AccountPanel({
   // Holdings filter view never renders a delete affordance in the first place.
   const readOnly = deletable && isReferencePortfolio(portfolioId);
   const router = useRouter();
-  const pathname = usePathname();
-  const params = useSearchParams();
   const [deleting, startDelete] = useTransition();
-  const [navPending, startNav] = useTransition();
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const allIds = useMemo(() => accounts.map((a) => a.account_id), [accounts]);
-  // The selection, as a stable comma-key, so the memo + callbacks below don't rebuild
-  // a new Set every render (and trip the exhaustive-deps lint).
-  const urlKey = params.getAll("account_id").join(",");
-  // Empty URL selection = viewing the whole portfolio → every box reads as checked.
-  const selectedFromUrl = useMemo(() => new Set(urlKey ? urlKey.split(",") : allIds), [urlKey, allIds]);
-
-  // OPTIMISTIC selection: the checkbox state is normally derived from the URL, which only
-  // updates AFTER the server round-trip (~0.5–1s) commits — so a click felt unresponsive
-  // ("did nothing, then snapped"). We flip the boxes instantly via a local pending set and
-  // reconcile to the URL once the navigation lands (urlKey changes → clear it). The data
-  // sections below still re-fetch, but `navPending` drives a subtle "Updating…" cue so the
-  // delay reads as in-progress, not broken.
-  const [pendingSel, setPendingSel] = useState<Set<string> | null>(null);
-  useEffect(() => {
-    // The URL caught up with (or diverged from) the optimistic guess — drop the override.
-    setPendingSel(null);
-  }, [urlKey]);
-  const selected = pendingSel ?? selectedFromUrl;
-  const viewingAll = selected.size === allIds.length;
+  // Selection machinery lifted to the shared hook (metron-ops-I156) — the Holdings
+  // toolbar's accounts scope chip drives the SAME optimistic `?account_id=` push, so
+  // the two surfaces can't drift.
+  const { selected, viewingAll, navPending, push: pushSelection, toggle } = useAccountSelection(
+    portfolioId,
+    allIds,
+  );
 
   // Group accounts by tax status (preserving the incoming order within each group), in a
   // stable display order. One group → no subtotals (they'd duplicate the grand total).
@@ -232,49 +218,6 @@ export function AccountPanel({
     [accounts, selected],
   );
   const grand = useMemo(() => subtotal(selectedAccounts), [selectedAccounts]);
-
-  const pushSelection = useCallback(
-    async (ids: string[]) => {
-      // Optimistic: flip the boxes NOW (an empty `ids` means "all", so show every box on).
-      setPendingSel(new Set(ids.length === 0 ? allIds : ids));
-      const qs = new URLSearchParams();
-      // Preserve any other query params; replace the account_id set.
-      params.forEach((value, key) => {
-        if (key !== "account_id") qs.append(key, value);
-      });
-      ids.forEach((id) => qs.append("account_id", id));
-      const s = qs.toString();
-      if (ids.length === 0) {
-        // Clearing to "All" empties the URL — the page then applies the SAVED
-        // selection, so the save must land first or it redirects back into the
-        // stale filter. (Errors swallowed: filtering still works URL-driven.)
-        await saveAccountSelectionAction(portfolioId, ids).catch(() => undefined);
-      } else {
-        // Persist server-side so the selection survives reloads. Fire-and-forget: a
-        // save failure must never block the URL-driven filtering.
-        void saveAccountSelectionAction(portfolioId, ids);
-      }
-      // Drive the soft navigation through a transition so `navPending` reflects the
-      // in-flight re-fetch of the data sections below (the optimistic boxes already moved).
-      startNav(() => {
-        router.replace(s ? `${pathname}?${s}` : pathname, { scroll: false });
-      });
-    },
-    [params, pathname, router, portfolioId, allIds],
-  );
-
-  const toggle = useCallback(
-    (id: string) => {
-      const next = new Set(selected);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      // Normalize "all" or "none" back to the whole-portfolio view (empty URL) so the
-      // page never goes blank and the All toggle stays in sync.
-      const ids = next.size === 0 || next.size === allIds.length ? [] : [...next];
-      pushSelection(ids);
-    },
-    [selected, allIds.length, pushSelection],
-  );
 
   // Toggle a whole tax-status group at once (metron-ops#64): if every account in the
   // group is already selected, drop them all; otherwise add them all.

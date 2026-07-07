@@ -1464,6 +1464,10 @@ export type IntradayStatus = {
   // Per-ticker pricing source (metron-ops#152): "delayed" | "estimated" | "last_close" |
   // "unpriced" — derived, never a manual flag. Empty when the overlay isn't applied.
   sources: Record<string, string>;
+  // Market/session state (metron-ops-I156): "live" (in session) / "recap" (today's
+  // session closed — the snapshot is its closing state) / "closed" (pre-market /
+  // weekend / holiday). Drives the valuation toggle's label + availability.
+  session_state: "live" | "recap" | "closed";
 };
 
 export async function getIntradayStatus(tenantId: string, id: string): Promise<IntradayStatus> {
