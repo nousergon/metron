@@ -89,6 +89,9 @@ class TestComputeAttribution:
             price_source=_full_hist, sector_source=_sectors, benchmark_source=_bench,
         )
         assert a.computable is True
+        # as_of is the freshest close bar the window returns used (last synthetic bar =
+        # 2024-02-19), never the compute-call date (2024-02-20).
+        assert a.as_of == date(2024, 2, 19)
         assert a.coverage == pytest.approx(1.0)  # both holdings classified
         held_sectors = {e.sector for e in a.sectors if e.port_weight > 0}
         assert held_sectors == {"Technology", "Energy"}

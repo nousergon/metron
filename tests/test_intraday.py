@@ -144,9 +144,21 @@ class TestLivePrices:
             db_session, ["AAPL"], feed_entitled=True,
             reader=lambda: _art({"AAPL": {"last": 130.0, "session_date": "2026-06-12"}}), now=_NOW,
         )
-        assert meta.applied is True and meta.n_priced == 1
+        assert meta.applied is True and meta.n_priced == 1 and meta.n_total == 1
         assert prices["AAPL"].close == 130.0  # intraday last, not the 120 EOD close
         assert prices["AAPL"].bar_date == date(2026, 6, 12)
+
+    def test_partial_coverage_disclosed(self, db_session):
+        """Only one of two held tickers gets a usable quote — the other silently keeps its
+        EOD close inside the same valuation, so the meta must disclose the partial live
+        coverage (n_priced < n_total drives the UI's "n/N live" label, metron-ops#146)."""
+        _seed_one_holding(db_session)
+        prices, meta = intraday.live_prices(
+            db_session, ["AAPL", "MSFT"], feed_entitled=True,
+            reader=lambda: _art({"AAPL": {"last": 130.0}}), now=_NOW,
+        )
+        assert meta.applied is True
+        assert meta.n_priced == 1 and meta.n_total == 2
 
     def test_suspect_quote_skipped(self, db_session):
         _seed_one_holding(db_session)
@@ -395,6 +407,8 @@ class TestIntradayStatusEndpoint:
         assert r.status_code == 200
         body = r.json()
         assert body["applied"] is False and body["reason"] == "off"
+        # Coverage fields (metron-ops#146) are additive with safe defaults.
+        assert body["n_total"] == 0 and body["n_estimated"] == 0
 
 
 class TestHoldingsEndpointIsEstimated:

@@ -2,6 +2,7 @@ import { acctParams, getAttribution, MetronApiError } from "@/lib/api";
 import { percent, signClass } from "@/lib/format";
 import { Empty, Locked, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
+import { AsOfClose } from "@/components/as-of-close";
 import { TierSimulator } from "@/components/tier-simulator";
 import { ComputeAttribution } from "@/components/compute-attribution";
 import { featureEntitlement, loadEntitlements, toFeatureStates } from "@/lib/entitlements";
@@ -63,7 +64,12 @@ export default async function AttributionPage({
       <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
       {entitlements ? <TierSimulator entitlements={entitlements} /> : null}
 
-      <h1 className="mt-3 text-lg font-semibold">Sector attribution</h1>
+      <div className="mt-3 flex items-baseline gap-2">
+        <h1 className="text-lg font-semibold">Sector attribution</h1>
+        {/* SETTLED tab (metron-ops#145/#146): as_of is the freshest close bar the window
+            returns were computed from — the decomposition's true data horizon. */}
+        <AsOfClose date={attr.as_of} />
+      </div>
       <p className="text-sm text-muted">
         Brinson-Fachler decomposition of active return vs {attr.benchmark} into allocation (sector tilts), selection
         (picks within a sector), and interaction
