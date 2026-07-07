@@ -77,15 +77,23 @@ export function IntradayRefresher({ portfolioId }: { portfolioId: string }) {
 
   if (!status || !status.applied) return null;
 
-  // Coverage disclosure (metron-ops#146): a symbol without a usable quote silently keeps
-  // its EOD close inside the same NAV, so a partial overlay must say so — full coverage
-  // (the norm) stays quiet.
+  // Coverage disclosure (metron-ops#146/#152): a symbol without a usable quote keeps its
+  // EOD close inside the same NAV, so a partial overlay must say so — NAV-WEIGHTED (a
+  // ticker count misstates coverage whenever position sizes differ). Full coverage (the
+  // norm) stays quiet; the count remains in the hover title.
   const partial = status.n_total > 0 && status.n_priced < status.n_total;
+  const navPct =
+    status.covered_nav != null && status.total_nav
+      ? Math.round((status.covered_nav / status.total_nav) * 100)
+      : null;
 
   return (
-    <span className="text-[11px] text-muted" title="Position values + NAV recompute from delayed intraday quotes while open; positions without a usable quote stay at their last close">
+    <span
+      className="text-[11px] text-muted"
+      title={`Position values + NAV recompute from delayed intraday quotes while open; positions without a usable quote stay at their last close${partial ? ` (${status.n_priced}/${status.n_total} holdings live)` : ""}`}
+    >
       intraday · ~15-min delayed{status.as_of_utc ? ` · as of ${asOf(status.as_of_utc)}` : ""}
-      {partial ? ` · ${status.n_priced}/${status.n_total} live` : ""}
+      {partial ? (navPct != null ? ` · covers ${navPct}% of NAV` : ` · ${status.n_priced}/${status.n_total} live`) : ""}
     </span>
   );
 }

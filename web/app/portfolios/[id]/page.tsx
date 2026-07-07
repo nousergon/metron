@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { getAccounts, getHoldings, getHoldingsPerformanceSeries, getIndices, getIntradayLegs, getIntradayStatus, getPerformanceTiles, getPlugins, getPortfolio, getSummary, getToday, MetronApiError, type Account, type Holding, type HoldingsPerfSeries, type IntradayLegHistory, type PeriodTiles, type Portfolio, type PluginNav, type Summary, type Today } from "@/lib/api";
+import { getAccounts, getHoldings, getHoldingsPerformanceSeries, getIndices, getPerformanceTiles, getPlugins, getPortfolio, getSummary, MetronApiError, type Account, type Holding, type HoldingsPerfSeries, type PeriodTiles, type Portfolio, type PluginNav, type Summary } from "@/lib/api";
 import { accountingMoneyWhole, moneyWhole, percent, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard } from "@/components/ui";
 import { AllocationBreakdown } from "@/components/allocation-breakdown";
@@ -9,7 +9,7 @@ import { PerfTiles } from "@/components/perf-tiles";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { TierSimulator } from "@/components/tier-simulator";
 import { IndexStrip } from "@/components/index-strip";
-import { IntradayRefresher } from "@/components/intraday-refresher";
+import { SettledRefresher } from "@/components/settled-refresher";
 import { RenamePortfolio } from "@/components/rename-portfolio";
 import { featureEntitlement, loadEntitlements, previewFromCookies, toFeatureStates } from "@/lib/entitlements";
 import { requireTenantId } from "@/lib/session";
@@ -125,7 +125,7 @@ export default async function PortfolioPage({
           and per-benchmark alpha (feed-gated). Sits directly under Markets so the two read
           in comparable TWR terms, above the Total value headline. */}
       {showTiles && tiles ? (
-        <PerfTiles tiles={tiles.tiles} benchmarksAvailable={tiles.benchmarks_available} />
+        <PerfTiles tiles={tiles.tiles} benchmarksAvailable={tiles.benchmarks_available} sessionHref={`/portfolios/${id}/holdings?val=live`} />
       ) : null}
 
       {/* Headline: total value, with unrealized broken out by tax treatment. */}
@@ -135,9 +135,13 @@ export default async function PortfolioPage({
             {/* This page always shows the whole portfolio (scoped === false), so no
                 "n of m accounts" subtitle — every account contributes to this headline. */}
             <div className="text-xs uppercase tracking-wide text-muted">Total value</div>
-            {/* Live-NAV refresher: recomputes the value from intraday balances every ~5 min
-                while open, and shows the delayed-as-of label when applied (metron-ops#79). */}
-            <IntradayRefresher portfolioId={id} />
+            {/* The Overview is SETTLED (metron-ops#154): the headline is the official
+                EOD-close NAV; live session detail lives in Holdings' live mode. The quiet
+                slow poll below still catches the daily snapshot advance in an open tab. */}
+            <span className="text-[11px] text-muted" title="Settled view — the official end-of-day close valuation. Live session detail is on Holdings → Live session.">
+              settled close
+            </span>
+            <SettledRefresher />
           </div>
           <div className="mt-1 text-3xl font-semibold tabular-nums">{moneyWhole(summary.market_value as number, ccy)}</div>
           <div className="mt-1 text-xs text-muted">cost basis {moneyWhole(summary.total_cost_basis, ccy)}</div>
@@ -151,15 +155,6 @@ export default async function PortfolioPage({
           <StatCard label="Cost basis" value={moneyWhole(summary.total_cost_basis, ccy)} hint={`${summary.n_holdings} holdings`} href={`/portfolios/${id}/holdings${navQuery}`} />
         </div>
       )}
-
-      {/* Today's P&L (metron-ops#87, moved here from Holdings #113): Day = Overnight (open
-          vs prior close) + Intraday (latest vs open), whole-portfolio. Per-holding detail is
-          the Day column on the Holdings table. Streams behind the headline. */}
-      {priced ? (
-        <Suspense fallback={<TodaySkeleton />}>
-          <TodaySection tenantId={tenantId} id={id} ccy={ccy} accountIds={accountIds} />
-        </Suspense>
-      ) : null}
 
       {/* Performance over time (moved here from Holdings #113): per-account NAV lines +
           feed-gated benchmark overlays. The trend centerpiece of the dashboard. */}
@@ -247,17 +242,6 @@ function SplitCardsSkeleton({ className = "mt-4" }: { className?: string }) {
   );
 }
 
-/** Three-card placeholder for the Today P&L strip while it loads. */
-function TodaySkeleton() {
-  return (
-    <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3" aria-busy="true">
-      <div className="h-16 animate-pulse rounded-md bg-line/60" />
-      <div className="h-16 animate-pulse rounded-md bg-line/60" />
-      <div className="h-16 animate-pulse rounded-md bg-line/60" />
-    </div>
-  );
-}
-
 /** Skeleton fallback for a streamed Section (chart / aggregates) while its data loads. */
 function SectionSkeleton({ rows = 3 }: { rows?: number }) {
   return (
@@ -284,91 +268,25 @@ async function UnrealizedSplit({
   // only one with a tax consequence.
   const taxableUnreal = sumOrNull(activeAccts.filter(isTaxable), (a) => a.unrealized_gain);
   const advUnreal = sumOrNull(activeAccts.filter((a) => !isTaxable(a)), (a) => a.unrealized_gain);
-  // Declared blend (metron-ops#147): unrealized = market value − cost basis, so while the
-  // live overlay is applied the MV leg moves with delayed quotes against a settled basis.
-  // Best-effort — on a failed status read the hint stays off (conservative settled claim).
-  const live = await getIntradayStatus(tenantId, id).catch(() => null);
-  const blendTitle = live?.applied
-    ? "Market-value leg is live (~15-min delayed intraday); cost basis is settled"
-    : undefined;
+  // Settled by construction (metron-ops#154): both the MV leg and the cost basis are
+  // official-close figures now, so the old live-blend disclosure (metron-ops#147) is gone.
   return (
     <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
       <Link href={`/portfolios/${id}/tax${navQuery}`} className="rounded-md border border-line p-3 transition hover:border-muted hover:bg-white/5">
         <div className="text-xs uppercase tracking-wide text-muted">Taxable unrealized →</div>
-        <div className={`mt-1 text-xl font-semibold tabular-nums ${signClass(taxableUnreal ?? 0)}`} title={blendTitle}>
+        <div className={`mt-1 text-xl font-semibold tabular-nums ${signClass(taxableUnreal ?? 0)}`}>
           {taxableUnreal != null ? accountingMoneyWhole(taxableUnreal, ccy) : "—"}
         </div>
         <div className="mt-1 text-xs text-muted">the only unrealized with a tax consequence</div>
       </Link>
       <div className="rounded-md border border-line/60 p-3">
         <div className="text-xs uppercase tracking-wide text-muted/70">Tax-advantaged unrealized</div>
-        <div className="mt-1 text-xl font-semibold tabular-nums text-muted" title={blendTitle}>
+        <div className="mt-1 text-xl font-semibold tabular-nums text-muted">
           {advUnreal != null ? accountingMoneyWhole(advUnreal, ccy) : "—"}
         </div>
         <div className="mt-1 text-xs text-muted/70">IRA / 401(k) / Roth — never taxed</div>
       </div>
-      {live?.applied ? (
-        <p className="text-[11px] text-muted sm:col-span-2">
-          unrealized moves with the live market value (~15-min delayed) against settled cost basis
-        </p>
-      ) : null}
     </div>
-  );
-}
-
-/** Today's P&L strip + the cumulative overnight-vs-intraday drift footnote — whole-portfolio
- *  (moved here from Holdings #113). Renders nothing when no intraday day is available. */
-async function TodaySection({
-  tenantId, id, ccy, accountIds,
-}: {
-  tenantId: string; id: string; ccy: string; accountIds: string[];
-}) {
-  const [today, legs] = await Promise.all([
-    getToday(tenantId, id, accountIds).catch((): Today | null => null),
-    getIntradayLegs(tenantId, id).catch((): IntradayLegHistory | null => null),
-  ]);
-  const showToday = !!today?.available && today.rows.length > 0;
-  if (!showToday || !today) return null;
-  const showLegs = (legs?.n_days ?? 0) > 0 && legs?.cum_day_pct != null;
-  return (
-    <>
-      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <StatCard
-          label="Overnight"
-          value={today.overnight_gain != null ? accountingMoneyWhole(today.overnight_gain, ccy) : "—"}
-          valueClass={signClass(today.overnight_gain ?? 0)}
-          hint={today.overnight_pct != null ? percent(today.overnight_pct) : undefined}
-        />
-        <StatCard
-          label="Intraday"
-          value={today.intraday_gain != null ? accountingMoneyWhole(today.intraday_gain, ccy) : "—"}
-          valueClass={signClass(today.intraday_gain ?? 0)}
-          hint={today.intraday_pct != null ? percent(today.intraday_pct) : undefined}
-        />
-        <StatCard
-          label="Day"
-          value={today.day_gain != null ? accountingMoneyWhole(today.day_gain, ccy) : "—"}
-          valueClass={signClass(today.day_gain ?? 0)}
-          hint={today.day_pct != null ? percent(today.day_pct) : undefined}
-        />
-      </div>
-      {showLegs && legs ? (
-        <p className="mt-2 text-xs text-muted">
-          Since tracking ({legs.n_days} day{legs.n_days === 1 ? "" : "s"}), cumulative drift split:{" "}
-          <span className={signClass(legs.cum_overnight_pct ?? 0)}>
-            overnight {legs.cum_overnight_pct != null ? percent(legs.cum_overnight_pct) : "—"}
-          </span>{" "}
-          ·{" "}
-          <span className={signClass(legs.cum_intraday_pct ?? 0)}>
-            intraday {legs.cum_intraday_pct != null ? percent(legs.cum_intraday_pct) : "—"}
-          </span>{" "}
-          ·{" "}
-          <span className={signClass(legs.cum_day_pct ?? 0)}>
-            day {legs.cum_day_pct != null ? percent(legs.cum_day_pct) : "—"}
-          </span>
-        </p>
-      ) : null}
-    </>
   );
 }
 

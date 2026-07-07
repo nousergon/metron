@@ -286,7 +286,6 @@ export type PeriodTile = {
   twr: number | null;   // % time-weighted return over the window
   benchmarks: BenchmarkReturn[];
   note?: string | null; // honest empty-state reason (e.g. TODAY "as of <prior date>")
-  intraday?: boolean;   // live intraday TODAY tile (prior-session close → live NAV)
 };
 
 /** Overview performance-vs-market tiles. Benchmark comparison is feed-gated (Pro):
@@ -592,13 +591,25 @@ export const renamePortfolio = (tenantId: string, id: string, name: string) =>
 // The reads below take an optional `accountIds` selection (from the account panel's
 // checkboxes); omitted/empty = whole portfolio. `getAccounts` is always unscoped — it
 // IS the selector, so it lists every account with its own valuation.
-export const getSummary = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<Summary>(tenantId, `/portfolios/${id}/summary${acctParams(accountIds)}`);
+// `valuation` selects the regime (metron-ops#153): omitted/"settled" = official EOD close
+// (the conservative default — Overview and every non-asking consumer); "live" = the
+// Holdings live mode's intraday overlay.
+export const getSummary = (tenantId: string, id: string, accountIds?: string[], valuation?: "live" | "settled") => {
+  const base = acctParams(accountIds);
+  const q = valuation === "live" ? (base ? `${base}&valuation=live` : "?valuation=live") : base;
+  return get<Summary>(tenantId, `/portfolios/${id}/summary${q}`);
+};
 // `byAccount` requests the UNCOMBINED view — one row per (account, ticker), each tagged
 // with account_id/account_label (metron-ops#114). Default consolidates per ticker.
-export const getHoldings = (tenantId: string, id: string, accountIds?: string[], byAccount?: boolean) => {
+// `valuation` (metron-ops#153): omitted/"settled" = official EOD close (session day legs
+// null); "live" = the intraday overlay + session day legs, feed/toggle permitting.
+export const getHoldings = (tenantId: string, id: string, accountIds?: string[], byAccount?: boolean, valuation?: "live" | "settled") => {
+  const parts: string[] = [];
   const base = acctParams(accountIds);
-  const q = byAccount ? (base ? `${base}&by_account=1` : "?by_account=1") : base;
+  if (base) parts.push(base.slice(1));
+  if (byAccount) parts.push("by_account=1");
+  if (valuation === "live") parts.push("valuation=live");
+  const q = parts.length ? `?${parts.join("&")}` : "";
   return get<Holding[]>(tenantId, `/portfolios/${id}/holdings${q}`);
 };
 // SP1500-broad sector & country median multiples for the Holdings "by sector → country"
@@ -1286,6 +1297,7 @@ export type HoldingsViewPrefs = {
   visible_bands: string[] | null;
   combine_by_account: boolean | null;
   hidden_types: string[] | null;
+  valuation: string | null; // "live" | "settled" (metron-ops#153); null = page default
 };
 
 export const getHoldingsView = (tenantId: string, id: string) =>
@@ -1444,6 +1456,14 @@ export type IntradayStatus = {
   n_total: number;
   n_estimated: number;
   reason: string | null;
+  // NAV-weighted coverage (metron-ops#152): base-$ market value of the covered
+  // (delayed/estimated) positions vs the whole valued portfolio, in live-NAV terms —
+  // the honest "covers $X of $Y NAV" disclosure. Null when the overlay isn't applied.
+  covered_nav: number | null;
+  total_nav: number | null;
+  // Per-ticker pricing source (metron-ops#152): "delayed" | "estimated" | "last_close" |
+  // "unpriced" — derived, never a manual flag. Empty when the overlay isn't applied.
+  sources: Record<string, string>;
 };
 
 export async function getIntradayStatus(tenantId: string, id: string): Promise<IntradayStatus> {
@@ -1468,6 +1488,14 @@ export type TodayRow = {
   day_gain: number | null;
 };
 
+// A held position excluded from the covered live-session basis, with the reason
+// (metron-ops#152) — drives the explicit not-in-live-session disclosure.
+export type TodayExcludedRow = {
+  ticker: string;
+  label: string;
+  reason: string; // "suspect" | "no_quote" | "no_fx"
+};
+
 export type Today = {
   available: boolean;
   base_currency: string;
@@ -1482,7 +1510,11 @@ export type Today = {
   overnight_pct: number | null;
   intraday_pct: number | null;
   day_pct: number | null;
+  // Covered-basis denominator (metron-ops#152): prior-close base-$ MV of the decomposable
+  // rows only — excluded holdings are in neither the leg $ nor this.
+  covered_prev_mv: number | null;
   rows: TodayRow[];
+  excluded_rows: TodayExcludedRow[];
 };
 
 export const getToday = (tenantId: string, id: string, accountIds?: string[]) =>
