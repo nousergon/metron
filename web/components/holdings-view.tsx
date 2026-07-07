@@ -62,6 +62,36 @@ function CombineToggle({ byAccount, onChange }: { byAccount: boolean; onChange: 
   );
 }
 
+/** The valuation-regime selector (metron-ops#153): Live session (~15-min-delayed intraday
+ *  overlay + session detail) vs Settled close (the official EOD valuation). URL-driven like
+ *  Combine — it changes the holdings DATA (the server re-fetches with `?valuation=`), and
+ *  the whole page (session panel, accounts day%, table columns) follows the regime. Only
+ *  rendered when the live mode is available (feed entitled + the intraday toggle on). */
+function ValuationToggle({ live, onChange }: { live: boolean; onChange: (live: boolean) => void }) {
+  return (
+    <div className="inline-flex rounded-lg border border-line p-0.5 text-xs">
+      <button
+        type="button"
+        onClick={() => onChange(true)}
+        className={SEG_BTN(live)}
+        aria-pressed={live}
+        title="Value positions from delayed intraday quotes while the session is open, with covered-basis session detail"
+      >
+        Live session
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(false)}
+        className={SEG_BTN(!live)}
+        aria-pressed={!live}
+        title="Value positions from the official end-of-day close — the settled record"
+      >
+        Settled close
+      </button>
+    </div>
+  );
+}
+
 export function HoldingsView({
   holdings,
   baseCurrency,
@@ -72,6 +102,8 @@ export function HoldingsView({
   savedGrouping = null,
   savedBands = null,
   savedHiddenTypes = null,
+  valuation = "settled",
+  liveAvailable = false,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -84,6 +116,11 @@ export function HoldingsView({
   savedGrouping?: string | null;
   savedBands?: string[] | null;
   savedHiddenTypes?: string[] | null;
+  /** The active valuation regime (metron-ops#153) — resolved server-side (URL param →
+   *  saved view → default). The toggle re-fetches via `?val=`. */
+  valuation?: "live" | "settled";
+  /** Whether the live regime is offered at all (feed entitled + intraday toggle on). */
+  liveAvailable?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -107,14 +144,16 @@ export function HoldingsView({
   );
 
   // Persist the full view on any control change (fire-and-forget). Always sends every field
-  // (the PUT is a full replace), defaulting unspecified facets to current state.
-  const persist = (next: { grouping?: Mode; bands?: ColumnBand[]; combine?: boolean; hidden?: string[] }) => {
+  // (the PUT is a full replace), defaulting unspecified facets to current state — including
+  // the valuation regime, so a grouping change never silently clears the saved mode.
+  const persist = (next: { grouping?: Mode; bands?: ColumnBand[]; combine?: boolean; hidden?: string[]; valuation?: "live" | "settled" }) => {
     if (!portfolioId) return;
     void saveHoldingsViewAction(portfolioId, {
       grouping: next.grouping !== undefined ? next.grouping : mode,
       visible_bands: next.bands !== undefined ? next.bands : visibleGroups,
       combine_by_account: next.combine !== undefined ? next.combine : byAccount,
       hidden_types: next.hidden !== undefined ? next.hidden : [...hiddenTypes],
+      valuation: next.valuation !== undefined ? next.valuation : valuation,
     });
   };
 
@@ -133,6 +172,14 @@ export function HoldingsView({
     sp.set("combine", on ? "accounts" : "combined"); // explicit both ways → URL wins this session
     router.push(`${pathname}?${sp.toString()}`);
   };
+  const changeValuation = (liveOn: boolean) => {
+    const next = liveOn ? "live" : "settled";
+    if (next === valuation) return;
+    persist({ valuation: next }); // remember across fresh loads
+    const sp = new URLSearchParams(params.toString());
+    sp.set("val", next); // explicit both ways → URL wins this session
+    router.push(`${pathname}?${sp.toString()}`);
+  };
 
   // "By account" grouping is only valid on the by-account data; in Combined mode it's not
   // offered and a stale selection falls back to asset-class.
@@ -149,6 +196,9 @@ export function HoldingsView({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
+        {liveAvailable && priced ? (
+          <ValuationToggle live={valuation === "live"} onChange={changeValuation} />
+        ) : null}
         <CombineToggle byAccount={byAccount} onChange={changeCombine} />
         <div className="inline-flex rounded-lg border border-line p-0.5 text-xs">
           {modes.map((m) => (

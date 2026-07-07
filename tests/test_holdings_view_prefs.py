@@ -21,10 +21,19 @@ def _portfolio(client, tenant):
     return client.post("/portfolios", json={"name": "P"}, headers=_hdr(tenant)).json()["id"]
 
 
+_ALL_NULL = {
+    "grouping": None,
+    "visible_bands": None,
+    "combine_by_account": None,
+    "hidden_types": None,
+    "valuation": None,
+}
+
+
 def test_unset_view_is_all_null(client, tenant):
     pid = _portfolio(client, tenant)
     v = client.get(f"/portfolios/{pid}/holdings-view", headers=_hdr(tenant)).json()
-    assert v == {"grouping": None, "visible_bands": None, "combine_by_account": None, "hidden_types": None}
+    assert v == _ALL_NULL
 
 
 def test_put_then_get_roundtrips(client, tenant):
@@ -34,6 +43,7 @@ def test_put_then_get_roundtrips(client, tenant):
         "visible_bands": ["Attractiveness", "Valuation"],
         "combine_by_account": True,
         "hidden_types": ["cash", "option"],
+        "valuation": "settled",
     }
     put = client.put(f"/portfolios/{pid}/holdings-view", json=body, headers=_hdr(tenant))
     assert put.status_code == 200
@@ -61,11 +71,11 @@ def test_null_fields_clear_back_to_default(client, tenant):
     )
     client.put(
         f"/portfolios/{pid}/holdings-view",
-        json={"grouping": None, "visible_bands": None, "combine_by_account": None, "hidden_types": None},
+        json=dict(_ALL_NULL),
         headers=_hdr(tenant),
     )
     got = client.get(f"/portfolios/{pid}/holdings-view", headers=_hdr(tenant)).json()
-    assert got == {"grouping": None, "visible_bands": None, "combine_by_account": None, "hidden_types": None}
+    assert got == _ALL_NULL
 
 
 def test_invalid_grouping_and_band_rejected(client, tenant):
@@ -76,3 +86,14 @@ def test_invalid_grouping_and_band_rejected(client, tenant):
     assert client.put(
         f"/portfolios/{pid}/holdings-view", json={"visible_bands": ["Nope"]}, headers=_hdr(tenant)
     ).status_code == 422
+    assert client.put(
+        f"/portfolios/{pid}/holdings-view", json={"valuation": "delayed"}, headers=_hdr(tenant)
+    ).status_code == 422
+
+
+def test_valuation_mode_roundtrips(client, tenant):
+    """The saved valuation regime (metron-ops#153) persists and clears like the other facets."""
+    pid = _portfolio(client, tenant)
+    r = client.put(f"/portfolios/{pid}/holdings-view", json={"valuation": "live"}, headers=_hdr(tenant))
+    assert r.status_code == 200
+    assert client.get(f"/portfolios/{pid}/holdings-view", headers=_hdr(tenant)).json()["valuation"] == "live"

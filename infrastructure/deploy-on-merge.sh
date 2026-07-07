@@ -61,12 +61,26 @@ rm -f "$BLOCK"
 echo "  hydrated ${HYDRATED} var(s) from SSM (values not logged)"
 
 sudo systemctl restart metron-api metron-web
-sleep 6
 
-# Health checks — non-zero exit (red deploy) if either service didn't come back.
-curl -fsS http://127.0.0.1:8000/health >/dev/null || { echo "metron-api health FAILED"; exit 1; }
-code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/)
-case "$code" in
-  200 | 307) echo "deploy OK — metron-api healthy, metron-web HTTP $code" ;;
-  *) echo "metron-web check FAILED (HTTP $code)"; exit 1 ;;
-esac
+# Health checks — poll with a bounded retry instead of a fixed sleep. A fixed sleep races
+# cold-start time (credential-provider lookups, first-import cost, Next.js server boot)
+# that varies run to run; a fixed `sleep 6` here false-failed an otherwise-good deploy on
+# 2026-07-06 when the API took ~6-7s to bind, exiting red even though the service came up
+# correctly moments later. Poll up to 30s (1s interval) per service and only fail loud if
+# it never comes up in that window.
+wait_for_200() {
+  local url=$1 label=$2 tries=30 code
+  for ((i = 1; i <= tries; i++)); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
+    case "$code" in
+      200 | 307) echo "${label} healthy (HTTP $code, ${i}s)"; return 0 ;;
+    esac
+    sleep 1
+  done
+  echo "${label} health FAILED (last HTTP $code after ${tries}s)"
+  return 1
+}
+
+wait_for_200 "http://127.0.0.1:8000/health" "metron-api" || exit 1
+wait_for_200 "http://127.0.0.1:3000/" "metron-web" || exit 1
+echo "deploy OK — metron-api + metron-web both healthy"

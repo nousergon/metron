@@ -1,5 +1,6 @@
 // Holdings metrics (Holdings metrics feature): the Valuation / Fundamentals / Technicals
-// column bands on HoldingsTable, and the sector → country grouping with SP1500 median bands.
+// column bands on HoldingsTable (Fundamentals includes balance-sheet/debt metrics as of
+// metron-ops#140), and the sector → country grouping with SP1500 median bands.
 
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -57,14 +58,17 @@ describe("HoldingsTable metric bands", () => {
       />,
     );
     expect(screen.getByText("Valuation")).toBeInTheDocument();
-    expect(screen.getByText("Fundamentals")).toBeInTheDocument();
-    expect(screen.getByText("Balance Sheet")).toBeInTheDocument();
+    // Fundamentals now covers the full financial-statement picture — growth/margins AND
+    // balance-sheet leverage/liquidity in one band (metron-ops#140) — so there's a single
+    // "Fundamentals" header, not a separate "Balance Sheet" one.
+    expect(screen.getAllByText("Fundamentals").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Balance Sheet")).not.toBeInTheDocument();
     expect(screen.getByText("Technicals")).toBeInTheDocument();
     expect(screen.getByText("30.2×")).toBeInTheDocument(); // P/E multiple
     expect(screen.getByText("$3.0T")).toBeInTheDocument(); // market cap
     expect(screen.getByText("+5.0%")).toBeInTheDocument(); // % above 50d MA (signed)
-    expect(screen.getByText("$60.0B")).toBeInTheDocument(); // cash balance
-    expect(screen.getByText("$50.0B")).toBeInTheDocument(); // net debt
+    expect(screen.getByText("$60.0B")).toBeInTheDocument(); // cash balance — now a Fundamentals column
+    expect(screen.getByText("$50.0B")).toBeInTheDocument(); // net debt — now a Fundamentals column
   });
 
   it("renders — for a metric coverage gap (null), never a fabricated 0", () => {

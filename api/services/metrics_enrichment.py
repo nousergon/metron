@@ -22,7 +22,6 @@ from api.services import (
     tearsheet as tearsheet_service,
 )
 from api.services import technicals as technicals_service
-from api.services import valuation_medians as valuation_medians_service
 
 
 def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
@@ -35,10 +34,7 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
     techs = technicals_service.load_technicals().by_symbol
     analysts = analyst_service.load_analyst().by_symbol
     sentiments = sentiment_service.load_sentiment().by_symbol
-    # Sector/country median multiples — the peer benchmark for the attractiveness valuation
-    # component (metron-ops#106). Fail-soft: a missing artifact leaves medians empty → the
-    # valuation component is simply dropped from the renormalized blend.
-    medians = valuation_medians_service.load_valuation_medians()
+    universe_att = attractiveness_service.compute_universe()
     for h in held:
         yf = yf_map.get(h.ticker, h.ticker)
         f = funds.get(yf)
@@ -91,33 +87,14 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
         if s is not None:
             h.news_sentiment = s.sentiment
             h.news_articles = s.n_articles
-        # Composite attractiveness score (metron-ops#106, Phase 2) — a transparent blend of the
-        # fields just set. The valuation leg bands fwd-P/E against the holding's sector median
-        # (country median as a fallback), exactly as the Holdings "by sector → country" view
-        # does. Components with no input drop out and the weights renormalize (never fabricated).
-        sec_grp = medians.by_sector.get(h.sector) if h.sector else None
-        cty_grp = medians.by_country.get(h.country) if h.country else None
-        median_fwd_pe = (sec_grp.forward_pe if sec_grp else None)
-        if median_fwd_pe is None and cty_grp is not None:
-            median_fwd_pe = cty_grp.forward_pe
-        att = attractiveness_service.compute(
-            fwd_pe=h.fwd_pe,
-            median_fwd_pe=median_fwd_pe,
-            price_target_upside=h.price_target_upside,
-            consensus_score=h.consensus_score,
-            estimate_revision_trend=(a.estimate_revision_trend if a is not None else None),
-            news_sentiment=h.news_sentiment,
-        )
+        att = attractiveness_service.lookup(yf, universe_att)
         if att is not None:
             h.attractiveness = att.score
             h.attractiveness_coverage = att.coverage
-            # Surface the same component sub-scores the tearsheet gauge shows onto the
-            # Holdings/watchlist row too, so the "Attractiveness" band doesn't require a
-            # tearsheet click. A component absent from `att.components` (input missing,
-            # dropped from the renormalized blend) leaves its field None — never fabricated.
-            by_key = {c.key: c.sub_score for c in att.components}
-            h.attractiveness_valuation = by_key.get("valuation")
-            h.attractiveness_upside = by_key.get("upside")
-            h.attractiveness_rating = by_key.get("rating")
-            h.attractiveness_revision = by_key.get("revision")
-            h.attractiveness_sentiment = by_key.get("sentiment")
+            by_key = {p.key: p.score for p in att.pillars}
+            h.attractiveness_quality = by_key.get("quality")
+            h.attractiveness_value = by_key.get("value")
+            h.attractiveness_momentum = by_key.get("momentum")
+            h.attractiveness_growth = by_key.get("growth")
+            h.attractiveness_stewardship = by_key.get("stewardship")
+            h.attractiveness_defensiveness = by_key.get("defensiveness")

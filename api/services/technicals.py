@@ -34,6 +34,7 @@ class TickerTechnicals:
     high_52w: float | None
     low_52w: float | None
     pct_in_52w_range: float | None  # (last − low)/(high − low), 0-1
+    pct_from_52wk_high: float | None  # last/high_52w − 1 (fraction)
     mom_20d: float | None         # 20-session return (fraction)
     mom_60d: float | None         # 60-session return (fraction)
 
@@ -79,6 +80,7 @@ def _parse(yf_symbol: str, d: dict) -> TickerTechnicals:
         high_52w=_f(d, "high_52w"),
         low_52w=_f(d, "low_52w"),
         pct_in_52w_range=_f(d, "pct_in_52w_range"),
+        pct_from_52wk_high=_f(d, "pct_from_52wk_high"),
         mom_20d=_f(d, "mom_20d"),
         mom_60d=_f(d, "mom_60d"),
     )

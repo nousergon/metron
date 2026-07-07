@@ -49,36 +49,52 @@ def _seed(session, closes: list[tuple[date, float]]):
 
 # History spans >1y: pre-year-start + year-start + as-of, so both windows resolve.
 _CLOSES = [
-    (date(2024, 1, 2), 100.0),   # before LTM start
-    (date(2024, 6, 3), 120.0),   # first close on/after LTM start (2025-06-12)? no — see below
-    (date(2025, 1, 2), 150.0),   # first close on/after YTD start (2025-01-01) for as_of 2025
+    (date(2024, 1, 2), 100.0),
+    (date(2024, 6, 3), 120.0),
+    (date(2025, 1, 2), 150.0),
     (date(2025, 6, 1), 180.0),
 ]
 
+_PERF_ART = {
+    "as_of": "2025-06-01",
+    "performance": {
+        "AAPL": {"ytd_pct": 0.20, "ltm_pct": 0.50},
+    },
+}
 
-def test_ytd_and_ltm_from_cached_closes(db_session):
+
+def test_ytd_and_ltm_from_spine(db_session):
     tid, pid = _seed(db_session, _CLOSES)
     out = security_perf.per_security_returns(
-        db_session, tid, pid, ["AAPL"], as_of=date(2025, 6, 1), feed_entitled=False
+        db_session, tid, pid, ["AAPL"], as_of=date(2025, 6, 1), feed_entitled=True,
+        performance_reader=lambda: _PERF_ART,
     )
     sr = out["AAPL"]
-    # YTD: first close on/after 2025-01-01 is 150 (2025-01-02); latest 180 → +20%.
     assert sr.ytd_pct == pytest.approx(0.20)
-    # LTM: first close on/after 2024-06-01 is 120 (2024-06-03); latest 180 → +50%.
     assert sr.ltm_pct == pytest.approx(0.50)
-    # No feed → no day legs.
-    assert sr.day_pct is None and sr.overnight_pct is None and sr.intraday_pct is None
+    assert sr.day_pct is None
+
+
+def test_ytd_and_ltm_blank_off_feed(db_session):
+    tid, pid = _seed(db_session, _CLOSES)
+    out = security_perf.per_security_returns(
+        db_session, tid, pid, ["AAPL"], as_of=date(2025, 6, 1), feed_entitled=False,
+        performance_reader=lambda: _PERF_ART,
+    )
+    sr = out["AAPL"]
+    assert sr.ytd_pct is None
+    assert sr.ltm_pct is None
 
 
 def test_window_omitted_when_history_too_short(db_session):
-    # Only recent bars — history does not reach back to the YTD/LTM window start.
     tid, pid = _seed(db_session, [(date(2025, 5, 1), 170.0), (date(2025, 6, 1), 180.0)])
     out = security_perf.per_security_returns(
-        db_session, tid, pid, ["AAPL"], as_of=date(2025, 6, 1), feed_entitled=False
+        db_session, tid, pid, ["AAPL"], as_of=date(2025, 6, 1), feed_entitled=True,
+        performance_reader=lambda: {"performance": {}},
     )
     sr = out["AAPL"]
-    assert sr.ytd_pct is None  # no bar on/before 2025-01-01
-    assert sr.ltm_pct is None  # no bar on/before 2024-06-01
+    assert sr.ytd_pct is None
+    assert sr.ltm_pct is None
 
 
 def test_day_legs_from_intraday_feed(db_session):
@@ -96,7 +112,10 @@ def test_day_legs_from_intraday_feed(db_session):
 def test_enrich_holdings_populates_holding_fields(db_session):
     tid, pid = _seed(db_session, _CLOSES)
     held = analytics.valued_holdings(db_session, tid, pid)
-    security_perf.enrich_holdings(db_session, tid, pid, held, as_of=date(2025, 6, 1), feed_entitled=False)
+    security_perf.enrich_holdings(
+        db_session, tid, pid, held, as_of=date(2025, 6, 1), feed_entitled=True,
+        performance_reader=lambda: _PERF_ART,
+    )
     h = next(h for h in held if h.ticker == "AAPL")
     assert h.ytd_pct == pytest.approx(0.20)
     assert h.ltm_pct == pytest.approx(0.50)
@@ -111,6 +130,9 @@ def test_enrich_holdings_populates_holding_fields(db_session):
         (date(2026, 6, 23), date(2026, 6, 25), 2),   # one full session skipped → stale
         (date(2026, 6, 19), date(2026, 6, 22), 1),   # Fri close read Mon — weekend skipped
         (date(2026, 6, 19), date(2026, 6, 23), 2),   # Fri close still unrefreshed Tue → stale
+        # 2026-07-03 is an NYSE holiday (Independence Day observed, 7/4 fell on a Saturday).
+        (date(2026, 7, 2), date(2026, 7, 6), 1),      # Thu close read Mon after the holiday — fresh
+        (date(2026, 7, 2), date(2026, 7, 7), 2),      # Thu close still unrefreshed Tue → stale
     ],
 )
 def test_sessions_behind(price_date, today, expected):
@@ -150,3 +172,49 @@ def test_enrich_does_not_flag_broker_snapshot(db_session):
     )
     security_perf.enrich_holdings(db_session, tid, pid, [broker], as_of=date(2026, 6, 25), feed_entitled=False, now=_NOW_0625)
     assert broker.last_price_stale is False
+
+
+def test_enrich_flags_stale_positions(db_session):
+    # A broker-snapshot holding whose as_of is 2+ trading sessions behind "today" means
+    # the daily re-sync hasn't run recently — the metron-ops#150 failure mode (a sold
+    # PLTR position still showing its pre-sale share count).
+    tid, pid = _seed(db_session, _CLOSES)
+    broker = analytics.Holding(
+        ticker="PLTR", quantity=100, avg_cost=20.0, cost_basis=2000.0,
+        broker_as_of=date(2026, 6, 22),
+    )
+    security_perf.enrich_holdings(db_session, tid, pid, [broker], as_of=date(2026, 6, 25), feed_entitled=False, now=_NOW_0625)
+    assert broker.positions_stale is True
+
+
+def test_enrich_does_not_flag_fresh_positions(db_session):
+    tid, pid = _seed(db_session, _CLOSES)
+    broker = analytics.Holding(
+        ticker="PLTR", quantity=100, avg_cost=20.0, cost_basis=2000.0,
+        broker_as_of=date(2026, 6, 24),
+    )
+    security_perf.enrich_holdings(db_session, tid, pid, [broker], as_of=date(2026, 6, 25), feed_entitled=False, now=_NOW_0625)
+    assert broker.positions_stale is False  # 1 session behind = normal before a sync fires
+
+
+def test_enrich_does_not_flag_ledger_only_holdings(db_session):
+    # A CSV/OFX ledger-derived holding has no broker snapshot to go stale — broker_as_of
+    # stays None, so positions_stale must stay False regardless of "today".
+    tid, pid = _seed(db_session, _CLOSES)
+    held = analytics.valued_holdings(db_session, tid, pid)
+    security_perf.enrich_holdings(db_session, tid, pid, held, as_of=date(2025, 6, 1), feed_entitled=True, performance_reader=lambda: _PERF_ART)
+    h = next(h for h in held if h.ticker == "AAPL")
+    assert h.broker_as_of is None
+    assert h.positions_stale is False
+
+
+def test_ltm_from_spine_artifact(db_session):
+    """Holdings LTM reads the security_performance spine — not local price_bars."""
+    tid, pid = _seed(db_session, [(date(2025, 7, 6), 518.0), (date(2026, 7, 2), 193.98)])
+    ltm = 193.98 / 126.36 - 1.0
+    perf_art = {"performance": {"AAPL": {"ltm_pct": ltm, "ytd_pct": ltm}}}
+    out = security_perf.per_security_returns(
+        db_session, tid, pid, ["AAPL"], as_of=date(2026, 7, 6), feed_entitled=True,
+        performance_reader=lambda: perf_art,
+    )
+    assert out["AAPL"].ltm_pct == pytest.approx(ltm, rel=1e-3)

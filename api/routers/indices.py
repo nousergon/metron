@@ -11,19 +11,12 @@ serving the data.
 
 from __future__ import annotations
 
-import logging
-from datetime import date
-
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Header
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.orm import Session
 
 from api import entitlements
 from api.config import settings
-from api.db.session import get_session
 from api.services import indices, security_perf
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["indices"])
 
@@ -61,7 +54,6 @@ class IndicesOut(BaseModel):
 def get_indices_intraday(
     x_preview_tier: str | None = Header(default=None),
     x_preview_feed: str | None = Header(default=None),
-    session: Session = Depends(get_session),
 ) -> IndicesOut:
     """Latest intraday levels for the major-index ETF proxies. Feed-gated: an unentitled
     deployment (the no-feed beta) gets ``available=false`` with ``required_tier`` so the
@@ -79,23 +71,10 @@ def get_indices_intraday(
         return IndicesOut(available=False, reason=feat["reason"], required_tier=feat["required_tier"])
 
     snap = indices.load_indices()
-    # Enrich each index with YTD/LTM returns from cached daily closes (metron-ops#87) — so
-    # Markets reads Today/YTD/LTM, TWR-comparable to the perf tiles. Best-effort: a symbol
-    # with no cached history keeps None.
+    # YTD/LTM from the security_performance spine (SP1500 ∪ index proxies on the producer).
     if snap.available and snap.indices:
         syms = [q.symbol for q in snap.indices]
-        today = date.today()
-        # Ensure this endpoint owns its own close-history coverage instead of relying on a
-        # prior Performance-page visit to have warmed price_bars for these proxies (else
-        # YTD/LTM render "—" on the Overview). Best-effort: the underlying close fetch is a
-        # SECONDARY enrichment — the primary deliverable (live levels + Today, from S3) is
-        # already built, so a fetch failure is logged (recording surface) and the period
-        # columns fall back to None rather than failing the whole strip.
-        try:
-            security_perf.ensure_index_history(session, syms, as_of=today)
-        except Exception as e:
-            logger.warning("index close-history backfill failed; YTD/LTM may be blank: %s", e)
-        periods = security_perf.index_period_returns(session, syms, as_of=today)
+        periods = security_perf.index_period_returns(syms)
         for q in snap.indices:
             r = periods.get(q.symbol)
             if r is not None:

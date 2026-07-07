@@ -1,11 +1,13 @@
 "use client";
 
 // Watchlist comparison table (metron-ops#121) — add tickers you don't hold and sort them
-// alongside the Holdings metrics (valuation/fundamentals/balance-sheet/technicals/
-// consensus/attractiveness) for side-by-side comparison. Renders through the SAME
-// HoldingsTable column/band/sort machinery as real positions, restricted to the
-// comparison-relevant bands (no Position/Value/Returns — a watchlist entry has no
-// position). Mutations never touch NAV/performance: entries.
+// alongside the Holdings metrics (valuation/fundamentals/technicals/consensus/attractiveness
+// — fundamentals now includes balance-sheet/debt metrics, metron-ops#140) for side-by-side
+// comparison. Renders through the SAME HoldingsTable column/band/sort machinery as real
+// positions, restricted to the comparison-relevant bands (no Position/Value/Returns — a
+// watchlist entry has no position; `showMarketValue={false}` also drops the frozen Market
+// Value spine column, which would otherwise be all "—"). Mutations never touch NAV/performance
+// entries.
 //
 // entries carry no quantity/cost/market-value fields at all (see WatchlistEntry in
 // lib/api.ts) — the shell Holding built below hard-codes those to zero/null so a glance at
@@ -23,7 +25,6 @@ const WATCHLIST_BANDS: ColumnBand[] = [
   "Attractiveness",
   "Valuation",
   "Fundamentals",
-  "Balance Sheet",
   "Technicals",
   "Consensus",
 ];
@@ -40,6 +41,8 @@ function toShellHolding(e: WatchlistEntry): Holding {
     last_price_date: null,
     last_price_stale: false,
     is_estimated: false,
+    broker_as_of: null,
+    positions_stale: false,
     market_value_local: null,
     cost_basis_base: null,
     market_value: null,
@@ -95,11 +98,12 @@ function toShellHolding(e: WatchlistEntry): Holding {
     news_articles: e.news_articles,
     attractiveness: e.attractiveness,
     attractiveness_coverage: e.attractiveness_coverage,
-    attractiveness_valuation: e.attractiveness_valuation,
-    attractiveness_upside: e.attractiveness_upside,
-    attractiveness_rating: e.attractiveness_rating,
-    attractiveness_revision: e.attractiveness_revision,
-    attractiveness_sentiment: e.attractiveness_sentiment,
+    attractiveness_quality: e.attractiveness_quality,
+    attractiveness_value: e.attractiveness_value,
+    attractiveness_momentum: e.attractiveness_momentum,
+    attractiveness_growth: e.attractiveness_growth,
+    attractiveness_stewardship: e.attractiveness_stewardship,
+    attractiveness_defensiveness: e.attractiveness_defensiveness,
   };
 }
 
@@ -182,6 +186,7 @@ export function WatchlistCompareTable({
             portfolioId={portfolioId}
             visibleBands={WATCHLIST_BANDS}
             showTotals={false}
+            showMarketValue={false}
             onRemove={remove}
           />
           {alsoHeld.length > 0 ? (

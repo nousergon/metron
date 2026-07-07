@@ -78,50 +78,6 @@ class TestLoadQuotes:
         assert quotes == {} and as_of is None and stale is True
 
 
-class TestSnapshotCache:
-    """The default reader collapses a page's 5–7 snapshot reads into one S3 GetObject per TTL
-    (the Holdings-page latency fix). Freshness is still judged per-call in load_quotes, so a
-    cached-but-aged artifact still reports stale — covered by TestLoadQuotes."""
-
-    @pytest.fixture(autouse=True)
-    def _reset(self, monkeypatch):
-        # Fully reset the module cache + a controllable monotonic clock for each test.
-        self.clock = [1000.0]
-        monkeypatch.setattr(intraday.time, "monotonic", lambda: self.clock[0])
-        monkeypatch.setattr(intraday, "_snapshot_cache", None, raising=False)
-        monkeypatch.setattr(intraday, "_snapshot_fetched_monotonic", 0.0, raising=False)
-
-    def test_reads_once_within_ttl(self, monkeypatch):
-        calls = {"n": 0}
-
-        def _reader():
-            calls["n"] += 1
-            return _art({"AAPL": {"last": 130.0}})
-
-        monkeypatch.setattr(intraday, "_read_snapshot_s3", _reader)
-        first = intraday._default_reader()
-        for _ in range(5):
-            assert intraday._default_reader() == first
-        assert calls["n"] == 1  # one S3 read serves the whole fan-out
-
-    def test_refetches_after_ttl(self, monkeypatch):
-        calls = {"n": 0}
-        monkeypatch.setattr(intraday, "_read_snapshot_s3", lambda: calls.__setitem__("n", calls["n"] + 1) or _art({}))
-        intraday._default_reader()
-        self.clock[0] += intraday._SNAPSHOT_TTL_S + 1  # advance past the window
-        intraday._default_reader()
-        assert calls["n"] == 2
-
-    def test_failed_read_cached_for_window(self, monkeypatch):
-        """A transient S3 failure within a page load isn't retried 5–7×; it degrades to EOD
-        (None) for the window, then recovers after the TTL."""
-        calls = {"n": 0}
-        monkeypatch.setattr(intraday, "_read_snapshot_s3", lambda: calls.__setitem__("n", calls["n"] + 1) or None)
-        assert intraday._default_reader() is None
-        assert intraday._default_reader() is None
-        assert calls["n"] == 1
-
-
 class TestLivePrices:
     def test_not_applied_without_feed(self, db_session):
         tid, pid = _seed_one_holding(db_session)
@@ -144,9 +100,21 @@ class TestLivePrices:
             db_session, ["AAPL"], feed_entitled=True,
             reader=lambda: _art({"AAPL": {"last": 130.0, "session_date": "2026-06-12"}}), now=_NOW,
         )
-        assert meta.applied is True and meta.n_priced == 1
+        assert meta.applied is True and meta.n_priced == 1 and meta.n_total == 1
         assert prices["AAPL"].close == 130.0  # intraday last, not the 120 EOD close
         assert prices["AAPL"].bar_date == date(2026, 6, 12)
+
+    def test_partial_coverage_disclosed(self, db_session):
+        """Only one of two held tickers gets a usable quote — the other silently keeps its
+        EOD close inside the same valuation, so the meta must disclose the partial live
+        coverage (n_priced < n_total drives the UI's "n/N live" label, metron-ops#146)."""
+        _seed_one_holding(db_session)
+        prices, meta = intraday.live_prices(
+            db_session, ["AAPL", "MSFT"], feed_entitled=True,
+            reader=lambda: _art({"AAPL": {"last": 130.0}}), now=_NOW,
+        )
+        assert meta.applied is True
+        assert meta.n_priced == 1 and meta.n_total == 2
 
     def test_suspect_quote_skipped(self, db_session):
         _seed_one_holding(db_session)
@@ -395,6 +363,201 @@ class TestIntradayStatusEndpoint:
         assert r.status_code == 200
         body = r.json()
         assert body["applied"] is False and body["reason"] == "off"
+        # Coverage fields (metron-ops#146) are additive with safe defaults.
+        assert body["n_total"] == 0 and body["n_estimated"] == 0
+
+
+def _seed_portfolio_multi(session, specs, *, intraday_enabled=True, base="USD"):
+    """N holdings in one portfolio/account — ``specs`` is a list of dicts with ``symbol``,
+    ``qty``, ``buy_px``, optional ``eod_close`` (None = no cached close bar) and
+    ``currency``. The metron-ops#152 pricing-source / coverage tests need mixed-coverage
+    portfolios the single-holding seeder can't express."""
+    tenant = models.Tenant(name="t")
+    session.add(tenant)
+    session.flush()
+    pf = models.Portfolio(tenant_id=tenant.id, name="P", base_currency=base)
+    session.add(pf)
+    session.flush()
+    if intraday_enabled:
+        session.add(
+            models.InvestorPreferences(tenant_id=tenant.id, portfolio_id=pf.id, intraday_enabled=True)
+        )
+    acct = models.Account(
+        tenant_id=tenant.id, portfolio_id=pf.id, broker="csv", external_id="A1", currency=base
+    )
+    session.add(acct)
+    session.flush()
+    for i, s in enumerate(specs):
+        ccy = s.get("currency", "USD")
+        sec = models.Security(symbol=s["symbol"], yf_symbol=s.get("yf_symbol", s["symbol"]), currency=ccy)
+        session.add(sec)
+        session.flush()
+        session.add(
+            models.Transaction(
+                tenant_id=tenant.id, account_id=acct.id, security_id=sec.id,
+                txn_type="BUY", quantity=s["qty"], price=s["buy_px"], amount=s["qty"] * s["buy_px"],
+                currency=ccy, trade_date=date(2024, 1, 1), source_key=f"buy-{i}",
+            )
+        )
+        if s.get("eod_close") is not None:
+            session.add(
+                models.PriceBar(security_id=sec.id, bar_date=date(2026, 6, 11), close=s["eod_close"], currency=ccy)
+            )
+    session.commit()
+    return tenant.id, pf.id
+
+
+class TestPricingSources:
+    """Per-position pricing source (metron-ops#152) — DERIVED from quote availability +
+    freshness, never a manual per-account flag. The covered live basis is exactly
+    {delayed, estimated}; {last_close, unpriced} fall back and must be disclosed."""
+
+    def test_full_enum_classification(self, db_session):
+        # AAPL: usable quote → delayed. MSFT: no quote, cached EOD close → last_close.
+        # NOPX: no quote AND no EOD close → unpriced.
+        _seed_portfolio_multi(db_session, [
+            {"symbol": "AAPL", "qty": 10, "buy_px": 100.0, "eod_close": 120.0},
+            {"symbol": "MSFT", "qty": 1, "buy_px": 100.0, "eod_close": 100.0},
+            {"symbol": "NOPX", "qty": 1, "buy_px": 100.0, "eod_close": None},
+        ])
+        _, meta = intraday.live_prices(
+            db_session, ["AAPL", "MSFT", "NOPX"], feed_entitled=True,
+            reader=lambda: _art({"AAPL": {"last": 130.0}}), now=_NOW,
+        )
+        assert meta.applied is True
+        assert meta.source_by_ticker == {
+            "AAPL": intraday.SOURCE_DELAYED,
+            "MSFT": intraday.SOURCE_LAST_CLOSE,
+            "NOPX": intraday.SOURCE_UNPRICED,
+        }
+
+    def test_synthesized_fund_estimate_source(self, db_session):
+        _seed_portfolio_multi(db_session, [{"symbol": "FNILX", "qty": 5, "buy_px": 20.0, "eod_close": 20.0}])
+        art = _fund_art({"SPY": {"last": 102.0, "prev_close": 100.0, "session_date": "2026-06-12"}})
+        _, meta = intraday.live_prices(
+            db_session, ["FNILX"], feed_entitled=True, reader=lambda: art, now=_NOW,
+        )
+        assert meta.source_by_ticker == {"FNILX": intraday.SOURCE_ESTIMATED}
+
+
+class TestNavWeightedCoverage:
+    """``weigh_coverage`` (metron-ops#152): coverage is NAV-weighted — a ticker count
+    misstates partial coverage whenever position sizes differ."""
+
+    def test_nav_weighted_not_ticker_counted(self, db_session):
+        # AAPL $900 of MV (covered), MSFT $100 (no quote): 90% of NAV covered while the
+        # ticker count reads 1/2 — the count and the NAV fraction must disagree here.
+        tid, pid = _seed_portfolio_multi(db_session, [
+            {"symbol": "AAPL", "qty": 9, "buy_px": 50.0, "eod_close": 100.0},
+            {"symbol": "MSFT", "qty": 1, "buy_px": 50.0, "eod_close": 100.0},
+        ])
+        prices, meta = intraday.live_prices(
+            db_session, ["AAPL", "MSFT"], feed_entitled=True,
+            reader=lambda: _art({"AAPL": {"last": 100.0}}), now=_NOW,
+        )
+        held = analytics.valued_holdings(db_session, tid, pid, prices=prices)
+        intraday.weigh_coverage(meta, held)
+        assert meta.n_priced == 1 and meta.n_total == 2
+        assert meta.covered_nav == 900.0 and meta.total_nav == 1000.0
+
+    def test_covered_and_total_in_live_nav_terms(self, db_session):
+        # The covered leg is valued at the intraday last (130), not the EOD close (120) —
+        # covered/total must be in the SAME live-NAV terms as the headline NAV.
+        tid, pid = _seed_portfolio_multi(db_session, [
+            {"symbol": "AAPL", "qty": 10, "buy_px": 100.0, "eod_close": 120.0},
+            {"symbol": "MSFT", "qty": 10, "buy_px": 100.0, "eod_close": 100.0},
+        ])
+        prices, meta = intraday.live_prices(
+            db_session, ["AAPL", "MSFT"], feed_entitled=True,
+            reader=lambda: _art({"AAPL": {"last": 130.0}}), now=_NOW,
+        )
+        held = analytics.valued_holdings(db_session, tid, pid, prices=prices)
+        intraday.weigh_coverage(meta, held)
+        assert meta.covered_nav == 1300.0        # 10 × 130 (live), not 10 × 120 (EOD)
+        assert meta.total_nav == 2300.0          # + 10 × 100 at last close
+
+    def test_no_fx_downgrades_source_to_unpriced(self, db_session):
+        # A foreign holding with no cached FX rate has no base-currency MV — it enters
+        # neither NAV figure, and its source is downgraded so the disclosure never claims
+        # coverage the NAV math didn't include.
+        tid, pid = _seed_portfolio_multi(db_session, [
+            {"symbol": "AAPL", "qty": 10, "buy_px": 100.0, "eod_close": 120.0},
+            {"symbol": "0005.HK", "qty": 10, "buy_px": 50.0, "eod_close": 60.0, "currency": "HKD"},
+        ])
+        prices, meta = intraday.live_prices(
+            db_session, ["AAPL", "0005.HK"], feed_entitled=True,
+            reader=lambda: _art({"AAPL": {"last": 130.0}}), now=_NOW,
+        )
+        assert meta.source_by_ticker["0005.HK"] == intraday.SOURCE_LAST_CLOSE  # pre-valuation
+        held = analytics.valued_holdings(db_session, tid, pid, prices=prices)
+        intraday.weigh_coverage(meta, held)
+        assert meta.source_by_ticker["0005.HK"] == intraday.SOURCE_UNPRICED   # no FX → not in NAV
+        assert meta.covered_nav == 1300.0 and meta.total_nav == 1300.0
+
+    def test_not_applied_meta_passes_through(self, db_session):
+        meta = intraday.IntradayMeta(applied=False, reason="off")
+        out = intraday.weigh_coverage(meta, [])
+        assert out.covered_nav is None and out.total_nav is None
+
+
+class TestCoveredBasisConvention:
+    """The covered-basis rule (metron-ops#152): exclusion is by OBSERVABILITY (no usable
+    quote), never by movement. A priced-but-flat holding stays in the denominator; an
+    unquoted holding is in neither the numerator nor the denominator — and is named."""
+
+    def test_flat_quoted_position_stays_in_denominator(self, db_session):
+        # AAPL +10% on $1000 prev MV; MSFT quoted but flat on $1000 prev MV.
+        # Portfolio day% = 100/2000 = 5% — the flat position correctly dilutes, because
+        # a real 0% move is information, not a coverage gap.
+        tid, pid = _seed_portfolio_multi(db_session, [
+            {"symbol": "AAPL", "qty": 10, "buy_px": 50.0, "eod_close": 100.0},
+            {"symbol": "MSFT", "qty": 10, "buy_px": 50.0, "eod_close": 100.0},
+        ])
+        t = intraday.today_view(
+            db_session, tid, pid, feed_entitled=True, now=_NOW,
+            reader=lambda: _art({
+                "AAPL": {"prev_close": 100.0, "open": 100.0, "last": 110.0},
+                "MSFT": {"prev_close": 100.0, "open": 100.0, "last": 100.0},
+            }),
+        )
+        assert t.n_priced == 2 and t.n_excluded == 0
+        assert t.covered_prev_mv == 2000.0
+        assert t.day_gain == 100.0 and t.day_pct == pytest.approx(0.05)
+
+    def test_unquoted_absent_from_numerator_and_denominator(self, db_session):
+        # MSFT has no quote: the portfolio day% stays the covered position's own 10% —
+        # never diluted toward zero by a coverage gap — and MSFT is named with a reason.
+        tid, pid = _seed_portfolio_multi(db_session, [
+            {"symbol": "AAPL", "qty": 10, "buy_px": 50.0, "eod_close": 100.0},
+            {"symbol": "MSFT", "qty": 10, "buy_px": 50.0, "eod_close": 100.0},
+        ])
+        t = intraday.today_view(
+            db_session, tid, pid, feed_entitled=True, now=_NOW,
+            reader=lambda: _art({"AAPL": {"prev_close": 100.0, "open": 100.0, "last": 110.0}}),
+        )
+        assert t.n_priced == 1 and t.n_excluded == 1
+        assert t.covered_prev_mv == 1000.0
+        assert t.day_pct == pytest.approx(0.10)
+        assert [(e.ticker, e.reason) for e in t.excluded_rows] == [("MSFT", "no_quote")]
+
+    def test_exclusion_reasons_suspect_and_no_fx(self, db_session):
+        # SUSP carries a suspect-flagged quote; 0005.HK decomposes but has no FX to base.
+        tid, pid = _seed_portfolio_multi(db_session, [
+            {"symbol": "AAPL", "qty": 10, "buy_px": 50.0, "eod_close": 100.0},
+            {"symbol": "SUSP", "qty": 10, "buy_px": 50.0, "eod_close": 100.0},
+            {"symbol": "0005.HK", "qty": 10, "buy_px": 50.0, "eod_close": 60.0, "currency": "HKD"},
+        ])
+        t = intraday.today_view(
+            db_session, tid, pid, feed_entitled=True, now=_NOW,
+            reader=lambda: _art({
+                "AAPL": {"prev_close": 100.0, "open": 100.0, "last": 110.0},
+                "SUSP": {"prev_close": 100.0, "open": 100.0, "last": 250.0, "suspect": True},
+                "0005.HK": {"prev_close": 60.0, "open": 60.0, "last": 66.0},
+            }),
+        )
+        reasons = {e.ticker: e.reason for e in t.excluded_rows}
+        assert reasons == {"SUSP": "suspect", "0005.HK": "no_fx"}
+        assert t.n_priced == 1 and t.covered_prev_mv == 1000.0
 
 
 class TestHoldingsEndpointIsEstimated:
@@ -456,14 +619,75 @@ class TestHoldingsEndpointIsEstimated:
         return pid
 
     def test_synthesized_fund_row_flagged_estimated(self, client, db_session, tenant, monkeypatch):
+        # ?valuation=live — the overlay (and thus the estimate) is live-mode-only now
+        # (metron-ops#153); the settled default never synthesizes.
         pid = self._seed_portfolio(client, db_session, tenant, monkeypatch)
-        rows = client.get(f"/portfolios/{pid}/holdings", headers={"X-Tenant-Id": tenant}).json()
+        rows = client.get(f"/portfolios/{pid}/holdings?valuation=live", headers={"X-Tenant-Id": tenant}).json()
         by_ticker = {r["ticker"]: r for r in rows}
         assert by_ticker["FNILX"]["is_estimated"] is True
         assert by_ticker["FNILX"]["last_price"] == pytest.approx(20.0 * 1.02)
 
     def test_normally_quoted_holding_not_flagged_estimated(self, client, db_session, tenant, monkeypatch):
         pid = self._seed_portfolio(client, db_session, tenant, monkeypatch)
-        rows = client.get(f"/portfolios/{pid}/holdings", headers={"X-Tenant-Id": tenant}).json()
+        rows = client.get(f"/portfolios/{pid}/holdings?valuation=live", headers={"X-Tenant-Id": tenant}).json()
         by_ticker = {r["ticker"]: r for r in rows}
         assert by_ticker["AAPL"]["is_estimated"] is False
+
+    def test_settled_default_never_serves_live_values(self, client, db_session, tenant, monkeypatch):
+        """The regime contract (metron-ops#153/#154): a holdings read that doesn't ask for
+        live gets the official close — no overlay, no estimate, no session day legs — even
+        with the feed on, the toggle on, and a fresh snapshot available."""
+        pid = self._seed_portfolio(client, db_session, tenant, monkeypatch)
+        rows = client.get(f"/portfolios/{pid}/holdings", headers={"X-Tenant-Id": tenant}).json()
+        by_ticker = {r["ticker"]: r for r in rows}
+        assert by_ticker["AAPL"]["last_price"] is None or by_ticker["AAPL"]["last_price"] != 130.0
+        assert by_ticker["FNILX"]["is_estimated"] is False
+        assert by_ticker["FNILX"]["last_price"] == pytest.approx(20.0)  # its own EOD close
+        assert all(r["day_pct"] is None for r in rows)  # session legs are live-mode-only
+
+
+class TestIntradayStatusCoverageEndpoint:
+    """``GET .../intraday`` carries the NAV-weighted coverage + per-ticker sources
+    (metron-ops#152) end-to-end through the router when the overlay is applied."""
+
+    def test_applied_reports_nav_weighted_coverage(self, client, db_session, tenant, monkeypatch):
+        import io
+
+        monkeypatch.setattr(settings, "feed_entitled", True)
+        monkeypatch.setattr(intraday, "_snapshot_cache", None, raising=False)
+        monkeypatch.setattr(intraday, "_snapshot_fetched_monotonic", 0.0, raising=False)
+
+        pid = client.post("/portfolios", json={"name": "P"}, headers={"X-Tenant-Id": tenant}).json()["id"]
+        client.put(
+            f"/portfolios/{pid}/preferences",
+            json={"intraday_enabled": True}, headers={"X-Tenant-Id": tenant},
+        )
+        csv = (
+            "date,type,symbol,quantity,price,amount,account\n"
+            "2024-01-02,BUY,AAPL,10,100,1000,Brokerage\n"
+            "2024-01-02,BUY,MSFT,10,100,1000,Brokerage\n"
+        )
+        r = client.post(
+            f"/portfolios/{pid}/import/csv",
+            files={"file": ("t.csv", io.BytesIO(csv.encode()), "text/csv")},
+            headers={"X-Tenant-Id": tenant},
+        )
+        assert r.status_code == 200
+        for sym, close in (("AAPL", 120.0), ("MSFT", 100.0)):
+            sec = db_session.scalar(select(models.Security).where(models.Security.symbol == sym))
+            db_session.add(models.PriceBar(security_id=sec.id, bar_date=date(2026, 6, 11), close=close, currency="USD"))
+        db_session.commit()
+
+        art = {
+            "schema_version": 2,
+            "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "quotes": {"AAPL": {"last": 130.0}},
+        }
+        monkeypatch.setattr(intraday, "_default_reader", lambda: art)
+
+        body = client.get(f"/portfolios/{pid}/intraday", headers={"X-Tenant-Id": tenant}).json()
+        assert body["applied"] is True
+        assert body["n_priced"] == 1 and body["n_total"] == 2
+        # NAV-weighted, in live-NAV terms: AAPL 10 × 130 covered; MSFT 10 × 100 at last close.
+        assert body["covered_nav"] == 1300.0 and body["total_nav"] == 2300.0
+        assert body["sources"] == {"AAPL": "delayed", "MSFT": "last_close"}

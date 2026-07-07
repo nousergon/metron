@@ -164,9 +164,10 @@ def backfill_prices(
     session: Session, symbols: list[str], start: date, end: date, *, source: HistorySource | None = None
 ) -> int:
     """Backfill the daily close history for symbols over ``[start, end]`` into the
-    cache. Idempotent: existing (security, day) bars are left as-is; only missing days
-    are inserted. Symbols without a securities row (and unresolvable ones) are skipped.
-    Returns the number of bars inserted."""
+    cache. Idempotent: missing (security, day) bars are inserted; existing bars whose
+    close differs from the source (e.g. a post-split spine refresh correcting stale
+    pre-split closes) are updated. Symbols without a securities row (and unresolvable
+    ones) are skipped. Returns the number of bars inserted or updated."""
     symbols = [s for s in dict.fromkeys(symbols) if s]
     if not symbols or start > end:
         return 0
@@ -179,38 +180,37 @@ def backfill_prices(
     history = fetch_close_history(list(fetch_targets), start, end, source=source)
     if not history:
         return 0
-    # Preload the (security, day) bars already cached for these securities so the
-    # backfill is one query + plain inserts, not a select-per-day. Preload ALL dates
-    # for the securities (not just [start, end]): a source may return points outside
-    # the requested window, or a prior refresh may have written a bar the window
-    # doesn't cover — a window-filtered preload would miss those and the insert would
-    # then hit the (security, day) unique constraint.
+    # Preload existing (security, day) bars so the backfill is one query + plain
+    # inserts/updates, not a select-per-day. Preload ALL dates for the securities (not
+    # just [start, end]): a source may return points outside the requested window.
     sec_ids = [sec.id for sec in fetch_targets.values()]
-    existing = {
-        (sid, bd)
-        for sid, bd in session.execute(
-            select(models.PriceBar.security_id, models.PriceBar.bar_date).where(
-                models.PriceBar.security_id.in_(sec_ids),
-            )
-        ).all()
+    existing_rows = session.execute(
+        select(models.PriceBar).where(models.PriceBar.security_id.in_(sec_ids))
+    ).scalars().all()
+    by_key: dict[tuple[uuid.UUID, date], models.PriceBar] = {
+        (row.security_id, row.bar_date): row for row in existing_rows
     }
-    inserted = 0
+    written = 0
     for yf_sym, series in history.items():
         sec = fetch_targets.get(yf_sym)
         if sec is None:
             continue
         for point in series:
-            if (sec.id, point.bar_date) in existing:
-                continue
-            session.add(
-                models.PriceBar(
+            key = (sec.id, point.bar_date)
+            row = by_key.get(key)
+            if row is None:
+                row = models.PriceBar(
                     security_id=sec.id, bar_date=point.bar_date, close=point.close, currency=sec.currency
                 )
-            )
-            existing.add((sec.id, point.bar_date))
-            inserted += 1
+                session.add(row)
+                by_key[key] = row
+                written += 1
+            elif float(row.close) != float(point.close):
+                row.close = point.close
+                row.currency = sec.currency
+                written += 1
     session.commit()
-    return inserted
+    return written
 
 
 def close_history_by_symbol(session: Session, symbols: list[str]) -> dict[str, list[ClosePoint]]:

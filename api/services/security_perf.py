@@ -4,10 +4,9 @@ YTD, and LTM, per ticker.
 - **Day legs** (overnight/intraday/day) reuse ``intraday.today_view`` (the canonical
   prior-close / open / latest decomposition from the yfinance intraday spine). Owner-build
   only (``feed_entitled``); blank otherwise — never fabricated.
-- **YTD / LTM** are total returns of the SECURITY from its cached daily closes
-  (``prices.close_history_by_symbol``): first close on/after the window start vs the latest
-  close. A window with no cached bar reaching back that far is omitted (None), like the
-  tearsheet's ``_period_returns`` — never a partial-window number that reads as full.
+- **YTD / LTM** are read from the spine ``security_performance/latest.json`` artifact
+  (producer: alpha-engine-data ``collect_security_performance``). Feed-entitled only —
+  Metron never recomputes these from local ``price_bars``.
 """
 
 from __future__ import annotations
@@ -15,14 +14,15 @@ from __future__ import annotations
 import uuid
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
+from krepis.trading_calendar import count_trading_days
 from sqlalchemy.orm import Session
 
 from api.services import intraday
-from api.services import prices as price_service
-from portfolio_analytics.prices import ClosePoint, HistorySource
+from api.services import security_performance as performance_service
+from api.services import tearsheet as tearsheet_service
 
 # The EOD close feed is keyed by NYSE trading days, so freshness is judged in market time.
 _MARKET_TZ = ZoneInfo("America/New_York")
@@ -33,22 +33,17 @@ _STALE_AFTER_SESSIONS = 2
 
 
 def sessions_behind(price_date: date, today: date) -> int:
-    """How many weekday sessions ``price_date`` lags ``today`` — weekdays strictly after
-    ``price_date`` through ``today`` inclusive (0 when priced today or in the future).
+    """How many NYSE trading sessions ``price_date`` lags ``today`` — trading sessions
+    strictly after ``price_date`` through ``today`` inclusive (0 when priced today or in
+    the future).
 
-    Weekday-based by design (no dependency on a NYSE holiday calendar): weekends never
-    count, so a Friday close read on Monday is 1 (fresh). The only imprecision is the
-    morning after a market holiday, where the prior session can read one session high —
-    acceptable because the always-visible "prices as of {date}" caption stays literally
-    true and over-warning is the safe direction for a freshness guard."""
-    if price_date >= today:
-        return 0
-    n, d = 0, price_date
-    while d < today:
-        d += timedelta(days=1)
-        if d.weekday() < 5:  # Mon–Fri
-            n += 1
-    return n
+    NYSE-holiday-aware via ``krepis.trading_calendar.count_trading_days`` (the fleet-wide
+    trading-day calendar, per the two-axis date doctrine, config#1610 2026-07-02): a
+    Friday close read on the Monday after a normal weekend is 1 (fresh), and so is a
+    Thursday close read on the Monday after a Friday NYSE holiday — the previous
+    weekday-only version double-counted that holiday as a missed session and mis-flagged
+    it stale (fixed 2026-07-06)."""
+    return count_trading_days(price_date, today)
 
 
 def market_today(now: datetime | None = None) -> date:
@@ -67,76 +62,20 @@ class SecurityReturns:
     ltm_pct: float | None = None        # vs first close on/after as_of − 1y
 
 
-def _year_start(as_of: date) -> date:
-    return date(as_of.year, 1, 1)
-
-
-def _year_ago(as_of: date) -> date:
-    try:
-        return as_of.replace(year=as_of.year - 1)
-    except ValueError:  # Feb-29 → Feb-28
-        return as_of.replace(year=as_of.year - 1, day=28)
-
-
-def _window_return(series: list[ClosePoint], start: date) -> float | None:
-    """Total return from the first close on/after ``start`` to the latest close — only when
-    the cached history actually reaches back to ``start`` (else None, no partial window)."""
-    if len(series) < 2 or series[0].bar_date > start:
-        return None
-    ref = next((p.close for p in series if p.bar_date >= start), None)
-    last = series[-1].close
-    if ref is None or ref <= 0:
-        return None
-    return last / ref - 1.0
-
-
-# A cached close may legitimately lag the latest session over a weekend / holiday; only
-# refetch once the gap exceeds this many calendar days (mirrors performance.py's slack).
-_INDEX_COVERAGE_SLACK_DAYS = 4
-
-
-def ensure_index_history(
-    session: Session, symbols: Collection[str], *, as_of: date, source: HistorySource | None = None
-) -> None:
-    """Backfill the cached daily closes for the index/ETF proxies so the YTD **and** LTM
-    windows resolve for every proxy — not just the ones a perf-page visit happened to warm.
-
-    The Markets strip lives on the Overview, which can load without the Performance page
-    ever populating ``price_bars`` for these proxies; without this the strip shows "—" for
-    YTD/LTM. Idempotent and network-light, mirroring ``performance._ensure_benchmark_coverage``:
-    skips the fetch when the cache already spans ``[start, as_of]`` within the weekend/holiday
-    slack. ``start`` is the earlier of Jan-1 and one year ago so both windows are covered."""
-    start = min(_year_start(as_of), _year_ago(as_of))
-    for sym in symbols:
-        price_service.ensure_security(session, sym)
-    hist = price_service.close_history_by_symbol(session, list(symbols))
-    need = [
-        sym
-        for sym in symbols
-        if (
-            (series := hist.get(sym)) is None
-            or series[0].bar_date > start
-            or (as_of - series[-1].bar_date).days > _INDEX_COVERAGE_SLACK_DAYS
-        )
-    ]
-    if need:
-        price_service.backfill_prices(session, need, start, as_of, source=source)
-
-
 def index_period_returns(
-    session: Session, symbols: Collection[str], *, as_of: date
+    symbols: Collection[str],
+    *,
+    performance_reader=None,
 ) -> dict[str, tuple[float | None, float | None]]:
-    """``{symbol: (ytd_pct, ltm_pct)}`` for index/ETF proxies, from cached daily closes —
-    the Markets-strip period returns, TWR-comparable to the per-account/portfolio tiles
-    (metron-ops#87). A symbol with no cached history (or none reaching back to the window
-    start) is omitted / None — never a partial-window number."""
-    hist = price_service.close_history_by_symbol(session, list(symbols))
-    ytd_start, ltm_start = _year_start(as_of), _year_ago(as_of)
+    """``{symbol: (ytd_pct, ltm_pct)}`` for index/ETF proxies from the
+    ``security_performance`` spine (metron-ops#87). Symbols absent from the artifact
+    are omitted — never locally recomputed from ``price_bars``."""
+    snap = performance_service.load_security_performance(reader=performance_reader)
     out: dict[str, tuple[float | None, float | None]] = {}
     for sym in symbols:
-        series = hist.get(sym)
-        if series:
-            out[sym] = (_window_return(series, ytd_start), _window_return(series, ltm_start))
+        row = snap.by_symbol.get(sym)
+        if row is not None:
+            out[sym] = (row.ytd_pct, row.ltm_pct)
     return out
 
 
@@ -150,24 +89,29 @@ def per_security_returns(
     feed_entitled: bool,
     account_ids: Collection[uuid.UUID] | None = None,
     reader=None,
+    performance_reader=None,
     now: datetime | None = None,
+    day_legs: bool = True,
 ) -> dict[str, SecurityReturns]:
-    """``{ticker: SecurityReturns}`` for the given held tickers. Tickers absent from the
-    price cache simply carry None YTD/LTM; day legs are None off a feed-entitled build."""
+    """``{ticker: SecurityReturns}`` for the given held tickers. YTD/LTM come from the
+    security_performance spine when ``feed_entitled``; day legs from intraday when entitled
+    AND ``day_legs`` (the settled Holdings valuation mode passes False — session legs are
+    live-quote-derived and belong only to the live surface, metron-ops#154)."""
     out: dict[str, SecurityReturns] = {t: SecurityReturns() for t in tickers}
     if not out:
         return out
 
-    hist = price_service.close_history_by_symbol(session, list(out))
-    ytd_start, ltm_start = _year_start(as_of), _year_ago(as_of)
-    for ticker, sr in out.items():
-        series = hist.get(ticker)
-        if series:
-            sr.ytd_pct = _window_return(series, ytd_start)
-            sr.ltm_pct = _window_return(series, ltm_start)
-
-    # Day decomposition from the intraday spine (owner build only).
     if feed_entitled:
+        snap = performance_service.load_security_performance(reader=performance_reader)
+        yf_map = tearsheet_service._yf_symbol_map(session, list(out))
+        for ticker, sr in out.items():
+            row = snap.by_symbol.get(yf_map.get(ticker, ticker))
+            if row is not None:
+                sr.ytd_pct = row.ytd_pct
+                sr.ltm_pct = row.ltm_pct
+
+    # Day decomposition from the intraday spine (owner build only, live mode only).
+    if feed_entitled and day_legs:
         today = intraday.today_view(
             session, tenant_id, portfolio_id,
             feed_entitled=True, account_ids=account_ids, reader=reader, now=now or datetime.now(UTC),
@@ -191,14 +135,18 @@ def enrich_holdings(
     feed_entitled: bool,
     account_ids: Collection[uuid.UUID] | None = None,
     reader=None,
+    performance_reader=None,
     now: datetime | None = None,
+    day_legs: bool = True,
 ) -> list:
     """Populate ``overnight_pct`` / ``intraday_pct`` / ``day_pct`` / ``ytd_pct`` /
     ``ltm_pct`` and the ``last_price_stale`` freshness flag on each ``analytics.Holding``
-    in place, then return the list."""
+    in place, then return the list. ``day_legs=False`` (settled valuation mode) leaves the
+    session legs None — they are live-quote-derived (metron-ops#154)."""
     returns = per_security_returns(
         session, tenant_id, portfolio_id, [h.ticker for h in held],
-        as_of=as_of, feed_entitled=feed_entitled, account_ids=account_ids, reader=reader, now=now,
+        as_of=as_of, feed_entitled=feed_entitled, account_ids=account_ids,
+        reader=reader, performance_reader=performance_reader, now=now, day_legs=day_legs,
     )
     today = market_today(now)
     for h in held:
@@ -216,5 +164,16 @@ def enrich_holdings(
             h.last_price_from_close
             and h.last_price_date is not None
             and sessions_behind(h.last_price_date, today) >= _STALE_AFTER_SESSIONS
+        )
+        # Positions staleness (metron-ops#150) — DISTINCT from last_price_stale: this is
+        # about how current the broker-reported SHARE COUNT is (has the daily broker
+        # re-sync actually run recently?), not the per-share price. A fresh close price
+        # multiplied by a stale share count still produces a wrong, but fresh-LOOKING,
+        # market value — this flag is what makes that failure mode visible. None
+        # (h.broker_as_of is None) for ledger-only (CSV/OFX) holdings, which have no
+        # broker snapshot to go stale.
+        h.positions_stale = (
+            h.broker_as_of is not None
+            and sessions_behind(h.broker_as_of, today) >= _STALE_AFTER_SESSIONS
         )
     return held

@@ -119,74 +119,56 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
     assert zzz.pe is None and zzz.rsi_14 is None and zzz.market_cap is None
 
 
-# ── attractiveness component sub-scores (metron-ops#130) ────────────────────
+# ── SOTA attractiveness pillar scores ───────────────────────────────────────
 
-def test_enrich_metrics_maps_attractiveness_component_sub_scores(monkeypatch):
-    """The Holdings "Attractiveness" band shows each component sub-score, not just the
-    composite — pin that `enrich_metrics` copies `Attractiveness.components` onto the
-    holding's `attractiveness_*` fields, matching `attractiveness_service.compute` exactly."""
+_PROFILES = {
+    "AAPL": {
+        "quality_score": 90.0, "value_score": 30.0, "momentum_score": 85.0,
+        "growth_score": 80.0, "stewardship_score": 70.0, "low_vol_score": 60.0,
+    },
+    "MSFT": {
+        "quality_score": 60.0, "value_score": 50.0, "momentum_score": 55.0,
+        "growth_score": 45.0, "stewardship_score": 40.0, "low_vol_score": 35.0,
+    },
+}
+
+
+def test_enrich_metrics_maps_attractiveness_pillar_scores(monkeypatch):
     from api.services import attractiveness as attractiveness_service
-    from api.services import valuation_medians
 
     held = [analytics.Holding(
         ticker="AAPL", quantity=1, avg_cost=1, cost_basis=1,
         last_price=100.0, sector="Technology",
     )]
-
-    real_funds = fundamentals.load_fundamentals
-    real_techs = technicals.load_technicals
-    real_medians = valuation_medians.load_valuation_medians
     monkeypatch.setattr(metrics_enrichment.tearsheet_service, "_yf_symbol_map",
                         lambda session, syms: {"AAPL": "AAPL"})
-    monkeypatch.setattr(
-        metrics_enrichment.fundamentals_service, "load_fundamentals",
-        lambda: real_funds(reader=lambda: {"fundamentals": {"AAPL": {"forwardPE": 25.0}}}),
-    )
-    monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals", lambda: real_techs(reader=lambda: None))
-    monkeypatch.setattr(
-        metrics_enrichment.valuation_medians_service, "load_valuation_medians",
-        lambda: real_medians(reader=lambda: {"by_sector": {"Technology": {"n": 100, "forward_pe": 40.0}}}),
-    )
+    monkeypatch.setattr(metrics_enrichment.fundamentals_service, "load_fundamentals",
+                        lambda: type("S", (), {"by_symbol": {}})())
+    monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals",
+                        lambda: type("S", (), {"by_symbol": {}})())
+    monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst",
+                        lambda: type("S", (), {"by_symbol": {}})())
+    monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment",
+                        lambda: type("S", (), {"by_symbol": {}})())
 
-    class _Analyst:
-        consensus_rating = "buy"
-        rating_score = 0.6
-        mean_target = 115.0
-        median_target = 115.0
-        num_analysts = 20
-        estimate_revision_trend = None
+    def _test_profiles_reader():
+        # load_factor_profiles(reader=...) parses a RAW dict into a snapshot itself —
+        # a reader returning an already-built FactorProfilesSnapshot fails its
+        # isinstance(raw, dict) check and silently yields an empty universe.
+        return _PROFILES
 
-        def target_upside(self, price):
-            return 0.15 if price else None
-
-    class _AnalystSnap:
-        by_symbol = {"AAPL": _Analyst()}
-
-    monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst", lambda: _AnalystSnap())
-
-    class _Sent:
-        sentiment = 0.2
-        n_articles = 5
-
-    class _SentSnap:
-        by_symbol = {"AAPL": _Sent()}
-
-    monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment", lambda: _SentSnap())
+    # Directly call the uncached computation with test profiles to avoid cache recursion
+    original_compute_universe = attractiveness_service._compute_universe_uncached
+    def _mock_compute_universe(profiles_reader=None, weights_reader=None):
+        return original_compute_universe(
+            profiles_reader=profiles_reader or _test_profiles_reader,
+            weights_reader=weights_reader,
+        )
+    monkeypatch.setattr(attractiveness_service, "compute_universe", _mock_compute_universe)
 
     metrics_enrichment.enrich_metrics(session=None, held=held)
-
     aapl = held[0]
-    expected = attractiveness_service.compute(
-        fwd_pe=25.0, median_fwd_pe=40.0, price_target_upside=0.15,
-        consensus_score=0.6, estimate_revision_trend=None, news_sentiment=0.2,
-    )
-    by_key = {c.key: c.sub_score for c in expected.components}
-    assert aapl.attractiveness == expected.score
-    assert aapl.attractiveness_coverage == expected.coverage
-    assert aapl.attractiveness_valuation == by_key["valuation"]
-    assert aapl.attractiveness_upside == by_key["upside"]
-    assert aapl.attractiveness_rating == by_key["rating"]
-    assert aapl.attractiveness_sentiment == by_key["sentiment"]
-    # Revision input was missing (paid feed) → dropped from the blend, never fabricated.
-    assert aapl.attractiveness_revision is None
-    assert "revision" not in by_key
+    assert aapl.attractiveness is not None
+    assert aapl.attractiveness_coverage == 6
+    assert aapl.attractiveness_quality == 90.0
+    assert aapl.attractiveness_value == 30.0

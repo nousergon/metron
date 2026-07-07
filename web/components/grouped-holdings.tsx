@@ -45,6 +45,38 @@ function PricesAsOf({ holdings }: { holdings: Holding[] }) {
   return <p className="text-xs text-muted">Prices as of {isoDate(asOf)}.</p>;
 }
 
+/** The OLDEST broker sync date across snapshot-sourced holdings (the worst-case
+ *  contributor, not the freshest — a stale account must not hide behind a fresh one) +
+ *  whether any holding's position sync is stale (metron-ops#150). null when every
+ *  holding is ledger-derived (CSV/OFX), which has no broker snapshot to go stale. */
+function positionsFreshness(holdings: Holding[]): { asOf: string | null; stale: boolean } {
+  let asOf: string | null = null;
+  let stale = false;
+  for (const h of holdings) {
+    if (h.broker_as_of && (asOf === null || h.broker_as_of < asOf)) asOf = h.broker_as_of;
+    if (h.positions_stale) stale = true;
+  }
+  return { asOf, stale };
+}
+
+/** "Positions synced through {date}" caption — DISTINCT from PricesAsOf: this is about
+ *  how current the broker-reported SHARE COUNT is, not the per-share price. Escalates to
+ *  an amber warning when the daily broker re-sync has fallen behind, so a real trade at
+ *  the broker can't silently sit unreflected behind a fresh-looking price. */
+function PositionsAsOf({ holdings }: { holdings: Holding[] }) {
+  const { asOf, stale } = positionsFreshness(holdings);
+  if (!asOf) return null;
+  if (stale) {
+    return (
+      <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+        ⚠ Positions synced through {isoDate(asOf)} — a more recent trade at the broker may
+        not be reflected yet.
+      </p>
+    );
+  }
+  return <p className="text-xs text-muted">Positions synced through {isoDate(asOf)}.</p>;
+}
+
 // Display order + labels for the security types classify_security_type emits. The
 // fixed-income family is split into Treasuries / Bonds / CDs (metron-ops#114).
 const TYPE_LABELS: [string, string][] = [
@@ -112,6 +144,7 @@ export function GroupedHoldings({
   return (
     <div className="space-y-5">
       {priced ? <PricesAsOf holdings={holdings} /> : null}
+      <PositionsAsOf holdings={holdings} />
       {showBar ? (
         <PortfolioTotalBar holdings={holdings} baseCurrency={baseCurrency} priced={priced} below={belowTotal} />
       ) : null}

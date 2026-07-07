@@ -400,6 +400,9 @@ class InvestorPreferences(Base):
     # Hidden instrument types — the faceted type-filter chips (metron-ops#115), comma-separated
     # security_type keys. NULL/empty = nothing hidden (all types shown).
     holdings_hidden_types: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Holdings valuation regime (metron-ops#153): "live" | "settled". NULL = the page default
+    # (live when the feed + intraday toggle allow it, settled otherwise). Nullable → auto-ALTER.
+    holdings_valuation: Mapped[str | None] = mapped_column(String(12), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 

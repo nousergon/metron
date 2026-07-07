@@ -70,6 +70,23 @@ def excluded_account_keys(
     return {s.strip() for s in (raw or "").split(",") if s.strip()}
 
 
+def snaptrade_excluded_ids(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID
+) -> set[str]:
+    """Authorization ids of SnapTrade connections this portfolio's sync skips (the
+    rare opt-out for a broker sourced elsewhere, e.g. IBKR via Flex — syncing it from
+    SnapTrade too would double-count). Shared by the interactive sync route and the
+    automated ``broker_sync`` re-sync so the opt-out is honored identically either way."""
+    pref = session.scalars(
+        select(models.InvestorPreferences).where(
+            models.InvestorPreferences.tenant_id == tenant_id,
+            models.InvestorPreferences.portfolio_id == portfolio_id,
+        )
+    ).first()
+    raw = pref.snaptrade_excluded_connections if pref is not None else None
+    return {s.strip() for s in (raw or "").split(",") if s.strip()}
+
+
 def _upsert_securities(
     session: Session, snapshot: ConnectorSnapshot, result: PersistResult
 ) -> dict[str, models.Security]:
