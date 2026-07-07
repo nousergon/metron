@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { getAccounts, getHoldings, getHoldingsPerformanceSeries, getIndices, getIntradayLegs, getPerformanceTiles, getPlugins, getPortfolio, getSummary, getToday, MetronApiError, type Account, type Holding, type HoldingsPerfSeries, type IntradayLegHistory, type PeriodTiles, type Portfolio, type PluginNav, type Summary, type Today } from "@/lib/api";
+import { getAccounts, getHoldings, getHoldingsPerformanceSeries, getIndices, getIntradayLegs, getIntradayStatus, getPerformanceTiles, getPlugins, getPortfolio, getSummary, getToday, MetronApiError, type Account, type Holding, type HoldingsPerfSeries, type IntradayLegHistory, type PeriodTiles, type Portfolio, type PluginNav, type Summary, type Today } from "@/lib/api";
 import { accountingMoneyWhole, moneyWhole, percent, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard } from "@/components/ui";
 import { AllocationBreakdown } from "@/components/allocation-breakdown";
@@ -284,22 +284,34 @@ async function UnrealizedSplit({
   // only one with a tax consequence.
   const taxableUnreal = sumOrNull(activeAccts.filter(isTaxable), (a) => a.unrealized_gain);
   const advUnreal = sumOrNull(activeAccts.filter((a) => !isTaxable(a)), (a) => a.unrealized_gain);
+  // Declared blend (metron-ops#147): unrealized = market value − cost basis, so while the
+  // live overlay is applied the MV leg moves with delayed quotes against a settled basis.
+  // Best-effort — on a failed status read the hint stays off (conservative settled claim).
+  const live = await getIntradayStatus(tenantId, id).catch(() => null);
+  const blendTitle = live?.applied
+    ? "Market-value leg is live (~15-min delayed intraday); cost basis is settled"
+    : undefined;
   return (
     <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
       <Link href={`/portfolios/${id}/tax${navQuery}`} className="rounded-md border border-line p-3 transition hover:border-muted hover:bg-white/5">
         <div className="text-xs uppercase tracking-wide text-muted">Taxable unrealized →</div>
-        <div className={`mt-1 text-xl font-semibold tabular-nums ${signClass(taxableUnreal ?? 0)}`}>
+        <div className={`mt-1 text-xl font-semibold tabular-nums ${signClass(taxableUnreal ?? 0)}`} title={blendTitle}>
           {taxableUnreal != null ? accountingMoneyWhole(taxableUnreal, ccy) : "—"}
         </div>
         <div className="mt-1 text-xs text-muted">the only unrealized with a tax consequence</div>
       </Link>
       <div className="rounded-md border border-line/60 p-3">
         <div className="text-xs uppercase tracking-wide text-muted/70">Tax-advantaged unrealized</div>
-        <div className="mt-1 text-xl font-semibold tabular-nums text-muted">
+        <div className="mt-1 text-xl font-semibold tabular-nums text-muted" title={blendTitle}>
           {advUnreal != null ? accountingMoneyWhole(advUnreal, ccy) : "—"}
         </div>
         <div className="mt-1 text-xs text-muted/70">IRA / 401(k) / Roth — never taxed</div>
       </div>
+      {live?.applied ? (
+        <p className="text-[11px] text-muted sm:col-span-2">
+          unrealized moves with the live market value (~15-min delayed) against settled cost basis
+        </p>
+      ) : null}
     </div>
   );
 }

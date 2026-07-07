@@ -3,6 +3,7 @@ import { acctParams, getAccounts, getHoldings, getHoldingsView, getIntradayStatu
 import { Empty, Section } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { HoldingsView } from "@/components/holdings-view";
+import { LiveValuationProvider } from "@/components/live-valuation-context";
 import { RefreshPrices } from "@/components/refresh-prices";
 import { IntradayRefresher } from "@/components/intraday-refresher";
 import { PortfolioNav } from "@/components/portfolio-nav";
@@ -181,7 +182,12 @@ async function HoldingsSection({
       {holdings.length === 0 ? (
         <Empty>No open positions.</Empty>
       ) : (
-        <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedBands={savedView?.visible_bands ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} />
+        // The provider carries the overlay state to the table's live/close provenance
+        // markers (metron-ops#147) — the Watchlist section below stays outside it, so its
+        // table (same component) makes no live claims.
+        <LiveValuationProvider live={live?.applied ?? false}>
+          <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedBands={savedView?.visible_bands ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} />
+        </LiveValuationProvider>
       )}
     </Section>
   );
