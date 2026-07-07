@@ -1,11 +1,13 @@
 import { Suspense } from "react";
-import { acctParams, getAccounts, getHoldings, getHoldingsView, getIntradayStatus, getSummary, getValuationMedians, getWatchlist, MetronApiError, type Entitlements, type Holding, type HoldingsViewPrefs, type IntradayStatus, type Summary, type ValuationMedians, type WatchlistEntry } from "@/lib/api";
+import { acctParams, getAccounts, getHoldings, getHoldingsView, getIntradayLegs, getIntradayStatus, getSummary, getToday, getValuationMedians, getWatchlist, MetronApiError, type Entitlements, type Holding, type HoldingsViewPrefs, type IntradayLegHistory, type IntradayStatus, type Summary, type Today, type ValuationMedians, type WatchlistEntry } from "@/lib/api";
 import { Empty, Section } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { HoldingsView } from "@/components/holdings-view";
 import { LiveValuationProvider } from "@/components/live-valuation-context";
 import { RefreshPrices } from "@/components/refresh-prices";
 import { IntradayRefresher } from "@/components/intraday-refresher";
+import { SettledRefresher } from "@/components/settled-refresher";
+import { SessionPanel } from "@/components/session-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { WatchlistCompareTable } from "@/components/watchlist-compare-table";
 import { loadEntitlements, navFeatureStates } from "@/lib/entitlements";
@@ -48,7 +50,7 @@ export default async function HoldingsPage({
   searchParams,
 }: {
   params: { id: string };
-  searchParams: { account_id?: string | string[]; combine?: string };
+  searchParams: { account_id?: string | string[]; combine?: string; val?: string };
 }) {
   const { id } = params;
   const tenantId = await requireTenantId();
@@ -58,12 +60,28 @@ export default async function HoldingsPage({
   // page anchors on the whole portfolio rather than restoring a saved subset — the account
   // panel still filters within the session via the URL. The saved view (metron-ops#114)
   // hydrates the toolbar so grouping / bands / combine survive reloads.
-  const [featureStates, entitlements, accountIds, savedView] = await Promise.all([
+  const [featureStates, entitlements, accountIds, savedView, live] = await Promise.all([
     navFeatureStates(tenantId),
     loadEntitlements(tenantId),
     resolveAccountIds(tenantId, id, `/portfolios/${id}/holdings`, searchParams.account_id, { applySaved: false }),
     getHoldingsView(tenantId, id).catch((): HoldingsViewPrefs | null => null),
+    getIntradayStatus(tenantId, id).catch((): IntradayStatus | null => null),
   ]);
+
+  // Valuation regime (metron-ops#153). Holdings is the ONLY surface with a live mode; the
+  // regime is an explicit, visible selection — never an implicit blend. Resolution:
+  // `?val=` (session) → saved view → default LIVE when available (parity with the old
+  // always-live behavior for a user whose intraday toggle is on). Live is AVAILABLE only
+  // when the deployment has the feed and the user's intraday toggle is on — reasons "off"
+  // and "feed" mean neither will change within this session.
+  const liveAvailable = !!live && live.reason !== "off" && live.reason !== "feed";
+  const requested =
+    searchParams.val === "live" || searchParams.val === "settled"
+      ? searchParams.val
+      : savedView?.valuation === "live" || savedView?.valuation === "settled"
+        ? savedView.valuation
+        : "live";
+  const valuation: "live" | "settled" = liveAvailable && requested === "live" ? "live" : "settled";
 
   // Combine across accounts (metron-ops#114): an explicit `?combine=` in the URL wins for the
   // session; on a fresh load (no param) the saved preference seeds it. `combine=accounts`
@@ -81,10 +99,10 @@ export default async function HoldingsPage({
 
   // The one CHEAP scoped read blocks the shell (≈0.3s): summary gives base currency +
   // priced state used throughout (and resolves portfolio-not-found). The expensive reads
-  // (accounts / holdings) stream below.
+  // (accounts / holdings) stream below. Valued per the resolved regime.
   let summary: Summary;
   try {
-    summary = await getSummary(tenantId, id, accountIds);
+    summary = await getSummary(tenantId, id, accountIds, valuation);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Portfolio not found.</Empty>;
@@ -101,19 +119,30 @@ export default async function HoldingsPage({
 
       <div className="mt-3 flex items-baseline gap-2">
         <h1 className="text-lg font-semibold">Holdings</h1>
-        {/* Position values revalue from intraday balances every ~5 min while open (#79). */}
-        <IntradayRefresher portfolioId={id} />
+        {/* Live mode: position values revalue from intraday balances every ~5 min while
+            open (#79), with the honest coverage label. Settled mode: a quiet slow poll so
+            an all-day-open tab still catches the EOD snapshot advance (metron-ops#154). */}
+        {valuation === "live" ? <IntradayRefresher portfolioId={id} /> : <SettledRefresher />}
       </div>
       <p className="text-sm text-muted">
         All accounts are included by default. (De)activate accounts below to filter the positions for this view.
       </p>
 
+      {/* Live-session panel (metron-ops#153): coverage banner + covered-basis session strip
+          + excluded-holdings disclosure. Live mode only — the settled regime shows no
+          session figures anywhere on the page. */}
+      {valuation === "live" && priced && live ? (
+        <Suspense fallback={<SectionSkeleton rows={2} />}>
+          <SessionSection tenantId={tenantId} id={id} ccy={ccy} accountIds={accountIds} status={live} />
+        </Suspense>
+      ) : null}
+
       <Suspense fallback={<SectionSkeleton rows={2} />}>
-        <AccountsSection tenantId={tenantId} id={id} ccy={ccy} scoped={scoped} nSelected={summary.n_accounts} />
+        <AccountsSection tenantId={tenantId} id={id} ccy={ccy} scoped={scoped} nSelected={summary.n_accounts} showDay={valuation === "live"} />
       </Suspense>
 
       <Suspense fallback={<SectionSkeleton rows={6} />}>
-        <HoldingsSection tenantId={tenantId} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} savedView={savedView} />
+        <HoldingsSection tenantId={tenantId} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} savedView={savedView} valuation={valuation} liveAvailable={liveAvailable} />
       </Suspense>
 
       <Suspense fallback={<SectionSkeleton rows={3} />}>
@@ -125,16 +154,31 @@ export default async function HoldingsPage({
 
 // --- streamed sections -----------------------------------------------------
 
-async function AccountsSection({
-  tenantId, id, ccy, scoped, nSelected,
+/** The live-session panel's data (scoped like the table): the covered-basis Today
+ *  decomposition + the drift history, joined with the coverage status fetched upstream. */
+async function SessionSection({
+  tenantId, id, ccy, accountIds, status,
 }: {
-  tenantId: string; id: string; ccy: string; scoped: boolean; nSelected: number;
+  tenantId: string; id: string; ccy: string; accountIds: string[]; status: IntradayStatus;
+}) {
+  const [today, legs] = await Promise.all([
+    getToday(tenantId, id, accountIds).catch((): Today | null => null),
+    getIntradayLegs(tenantId, id).catch((): IntradayLegHistory | null => null),
+  ]);
+  if (!today) return null;
+  return <SessionPanel status={status} today={today} legs={legs} ccy={ccy} />;
+}
+
+async function AccountsSection({
+  tenantId, id, ccy, scoped, nSelected, showDay,
+}: {
+  tenantId: string; id: string; ccy: string; scoped: boolean; nSelected: number; showDay: boolean;
 }) {
   const accounts = await getAccounts(tenantId, id).catch(() => null);
   if (!accounts) return null;
   return (
     <Section title="Accounts">
-      <AccountPanel accounts={accounts} baseCurrency={ccy} portfolioId={id} deletable />
+      <AccountPanel accounts={accounts} baseCurrency={ccy} portfolioId={id} deletable showDay={showDay} />
       {scoped ? (
         <p className="mt-2 text-xs text-muted">
           Showing {nSelected} of {accounts.length} account{accounts.length === 1 ? "" : "s"} — the holdings below
@@ -146,13 +190,13 @@ async function AccountsSection({
 }
 
 async function HoldingsSection({
-  tenantId, id, accountIds, ccy, priced, entitlements, byAccount, savedView,
+  tenantId, id, accountIds, ccy, priced, entitlements, byAccount, savedView, valuation, liveAvailable,
 }: {
-  tenantId: string; id: string; accountIds: string[]; ccy: string; priced: boolean; entitlements: Entitlements | null; byAccount: boolean; savedView: HoldingsViewPrefs | null;
+  tenantId: string; id: string; accountIds: string[]; ccy: string; priced: boolean; entitlements: Entitlements | null; byAccount: boolean; savedView: HoldingsViewPrefs | null; valuation: "live" | "settled"; liveAvailable: boolean;
 }) {
   let holdings: Holding[];
   try {
-    holdings = await getHoldings(tenantId, id, accountIds, byAccount);
+    holdings = await getHoldings(tenantId, id, accountIds, byAccount, valuation);
   } catch {
     return (
       <Section title="Holdings">
@@ -162,17 +206,27 @@ async function HoldingsSection({
   }
   // SP1500-broad sector/country median bands — best-effort + feed-gated.
   const medians = await getValuationMedians(tenantId, id, accountIds).catch((): ValuationMedians | null => null);
-  // Provenance-honest header (metron-ops#146): only the live overlay status may claim
-  // intraday freshness — the note was previously hard-coded "last EOD close" even while
-  // positions were revaluing live. Best-effort: on a failed status read, claim the
-  // conservative settled state. The IntradayRefresher's poll re-renders this server
-  // component, so the note tracks live→stale transitions (e.g. after the close).
-  const live: IntradayStatus | null = priced
-    ? await getIntradayStatus(tenantId, id).catch((): IntradayStatus | null => null)
-    : null;
+  // Provenance-honest header (metron-ops#146/#153): the regime is explicit. Live mode may
+  // claim intraday freshness only while the overlay actually applies (post-close the same
+  // mode reads "as of close"); settled mode names the close date it's valued at. On a
+  // failed status read, claim the conservative settled state.
+  const live: IntradayStatus | null =
+    priced && valuation === "live"
+      ? await getIntradayStatus(tenantId, id).catch((): IntradayStatus | null => null)
+      : null;
+  // The settled as-of date, from the data itself (the freshest priced date on the page —
+  // the close date for close-fed rows) — static copy never makes freshness claims
+  // (metron-ops#145).
+  const settledAsOf = holdings
+    .map((h) => h.last_price_date)
+    .filter((d): d is string => d != null)
+    .sort()
+    .pop();
   const valuationNote = live?.applied
     ? `all values in ${ccy} · market value ~15-min delayed intraday`
-    : `all values in ${ccy} · market value from last close`;
+    : valuation === "live"
+      ? `all values in ${ccy} · session closed — market value as of last close`
+      : `all values in ${ccy} · settled at ${settledAsOf ?? "last"} close`;
 
   return (
     <Section title="Holdings" note={priced ? valuationNote : "cost basis — refresh for market value"}>
@@ -183,10 +237,10 @@ async function HoldingsSection({
         <Empty>No open positions.</Empty>
       ) : (
         // The provider carries the overlay state to the table's live/close provenance
-        // markers (metron-ops#147) — the Watchlist section below stays outside it, so its
-        // table (same component) makes no live claims.
-        <LiveValuationProvider live={live?.applied ?? false}>
-          <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedBands={savedView?.visible_bands ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} />
+        // markers (metron-ops#147) — settled mode mounts it with live=false so the table
+        // makes zero live claims; the Watchlist section below stays outside it entirely.
+        <LiveValuationProvider live={valuation === "live" && (live?.applied ?? false)}>
+          <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedBands={savedView?.visible_bands ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} valuation={valuation} liveAvailable={liveAvailable} />
         </LiveValuationProvider>
       )}
     </Section>

@@ -619,17 +619,31 @@ class TestHoldingsEndpointIsEstimated:
         return pid
 
     def test_synthesized_fund_row_flagged_estimated(self, client, db_session, tenant, monkeypatch):
+        # ?valuation=live — the overlay (and thus the estimate) is live-mode-only now
+        # (metron-ops#153); the settled default never synthesizes.
         pid = self._seed_portfolio(client, db_session, tenant, monkeypatch)
-        rows = client.get(f"/portfolios/{pid}/holdings", headers={"X-Tenant-Id": tenant}).json()
+        rows = client.get(f"/portfolios/{pid}/holdings?valuation=live", headers={"X-Tenant-Id": tenant}).json()
         by_ticker = {r["ticker"]: r for r in rows}
         assert by_ticker["FNILX"]["is_estimated"] is True
         assert by_ticker["FNILX"]["last_price"] == pytest.approx(20.0 * 1.02)
 
     def test_normally_quoted_holding_not_flagged_estimated(self, client, db_session, tenant, monkeypatch):
         pid = self._seed_portfolio(client, db_session, tenant, monkeypatch)
-        rows = client.get(f"/portfolios/{pid}/holdings", headers={"X-Tenant-Id": tenant}).json()
+        rows = client.get(f"/portfolios/{pid}/holdings?valuation=live", headers={"X-Tenant-Id": tenant}).json()
         by_ticker = {r["ticker"]: r for r in rows}
         assert by_ticker["AAPL"]["is_estimated"] is False
+
+    def test_settled_default_never_serves_live_values(self, client, db_session, tenant, monkeypatch):
+        """The regime contract (metron-ops#153/#154): a holdings read that doesn't ask for
+        live gets the official close — no overlay, no estimate, no session day legs — even
+        with the feed on, the toggle on, and a fresh snapshot available."""
+        pid = self._seed_portfolio(client, db_session, tenant, monkeypatch)
+        rows = client.get(f"/portfolios/{pid}/holdings", headers={"X-Tenant-Id": tenant}).json()
+        by_ticker = {r["ticker"]: r for r in rows}
+        assert by_ticker["AAPL"]["last_price"] is None or by_ticker["AAPL"]["last_price"] != 130.0
+        assert by_ticker["FNILX"]["is_estimated"] is False
+        assert by_ticker["FNILX"]["last_price"] == pytest.approx(20.0)  # its own EOD close
+        assert all(r["day_pct"] is None for r in rows)  # session legs are live-mode-only
 
 
 class TestIntradayStatusCoverageEndpoint:

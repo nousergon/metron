@@ -620,9 +620,16 @@ export function HoldingsTable({
 }) {
   // Visible columns grouped by band, in canonical order, with priced-only bands dropped in
   // the cost-basis-only view (a band whose every column is priced collapses to nothing).
+  // The Day column is DATA-DRIVEN (metron-ops#153): session day legs are served only in the
+  // live valuation mode, so a settled-mode row set (every day_pct null) drops the column
+  // instead of rendering a dash for every row.
+  const hasDayLegs = holdings.some((h) => h.day_pct != null);
   const visibleSet = new Set(visibleBands);
   const colsByBand = BAND_ORDER.filter((b) => visibleSet.has(b))
-    .map((b) => [b, ALL_COLUMNS.filter((c) => c.band === b && (priced || !c.priced))] as const)
+    .map(
+      (b) =>
+        [b, ALL_COLUMNS.filter((c) => c.band === b && (priced || !c.priced) && (c.key !== "day_pct" || hasDayLegs))] as const,
+    )
     .filter(([, cols]) => cols.length > 0);
   const visibleColumns = colsByBand.flatMap(([, cols]) => cols);
   const marketValueVisible = priced && showMarketValue;

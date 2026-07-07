@@ -191,7 +191,6 @@ class TestTodayDateGuard:
         assert today.twr == pytest.approx(1320 / 1300 - 1)
         assert today.end_date == date(2024, 6, 28)
         assert today.note == "as of 2024-06-28"
-        assert today.intraday is False
         ytd = next(t for t in res.tiles if t.period == "ytd")
         assert ytd.gain is not None and ytd.note is None
 
@@ -226,76 +225,35 @@ class TestLongWeekend:
         assert today.note == "as of 2026-07-02"
 
 
-class TestLiveIntradayToday:
-    """The TODAY tile is a live intraday number (metron-ops#95) when the overlay is in
-    effect: prior trading session's close → current live NAV, flow-neutralized."""
+class TestTilesSettledByConstruction:
+    """The tiles are SETTLED BY CONSTRUCTION (metron-ops#154): the live-intraday TODAY
+    variant (metron-ops#95's ``_live_today_tile``) was retired for mixing a covered-only
+    numerator with a full-portfolio denominator. Live session detail lives exclusively in
+    the Holdings live valuation mode (metron-ops#153)."""
 
-    def test_intraday_today_anchors_prior_session_to_live_nav(self, db_session, tenant):
+    def test_live_today_path_is_gone(self):
+        # Grep-level guard: neither the mixed-basis helper nor its LiveToday endpoint
+        # exists any more, and period_tiles accepts no `live` input.
+        import inspect
+
+        assert not hasattr(perf, "_live_today_tile")
+        assert not hasattr(perf, "LiveToday")
+        assert "live" not in inspect.signature(perf.period_tiles).parameters
+
+    def test_today_is_snapshot_to_snapshot_midday(self, db_session, tenant):
+        # Mid-session, the TODAY tile still shows the last settled close-to-close window
+        # with the honest "as of" label — never a live-moving number.
         pid = uuid.uuid4()
         for when, nav in _SERIES:
             _snap(db_session, tenant, pid, when, nav)
-        live = perf.LiveToday(
-            nav=1353.0,
-            intraday_applied=True,
-            as_of_utc="2024-07-01T17:30:00Z",
-            bench={"SPY": (101.0, 100.0), "QQQ": (None, None), "IWM": (200.0, 0.0)},
-        )
-        res = perf.period_tiles(
-            db_session, uuid.UUID(tenant), pid, today=date(2024, 7, 1), with_benchmarks=True,
-            live=live, now=_MONDAY_MIDDAY,
-        )
-        today = next(t for t in res.tiles if t.period == "today")
-        assert today.intraday is True
-        assert today.note is None
-        assert today.start_date == date(2024, 6, 28)
-        assert today.end_date == date(2024, 7, 1)
-        assert today.gain == pytest.approx(33.0)
-        assert today.twr == pytest.approx(1353 / 1320 - 1)
-        spy = next(b for b in today.benchmarks if b.symbol == "SPY")
-        assert spy.ret == pytest.approx(0.01)
-        assert next(b for b in today.benchmarks if b.symbol == "QQQ").ret is None
-        assert next(b for b in today.benchmarks if b.symbol == "IWM").ret is None
-
-    def test_intraday_today_neutralizes_a_same_day_flow(self, db_session, tenant):
-        pid = uuid.uuid4()
-        _snap(db_session, tenant, pid, date(2024, 6, 27), 1000.0)
-        _snap(db_session, tenant, pid, date(2024, 6, 28), 1200.0)  # Fri prior close
-        _txn(db_session, tenant, pid, date(2024, 7, 1), "BUY", 300.0)
-        live = perf.LiveToday(nav=1530.0, intraday_applied=True)
         res = perf.period_tiles(
             db_session, uuid.UUID(tenant), pid, today=date(2024, 7, 1), with_benchmarks=False,
-            live=live, now=_MONDAY_MIDDAY,
+            now=_MONDAY_MIDDAY,
         )
         today = next(t for t in res.tiles if t.period == "today")
-        assert today.gain == pytest.approx(30.0)
-        assert today.twr == pytest.approx(1230 / 1200 - 1)
-
-    def test_falls_back_to_snapshot_path_when_overlay_not_applied(self, db_session, tenant):
-        pid = uuid.uuid4()
-        for when, nav in _SERIES:
-            _snap(db_session, tenant, pid, when, nav)
-        live = perf.LiveToday(nav=9999.0, intraday_applied=False)
-        res = perf.period_tiles(
-            db_session, uuid.UUID(tenant), pid, today=date(2024, 7, 1), with_benchmarks=False,
-            live=live, now=_MONDAY_MIDDAY,
-        )
-        today = next(t for t in res.tiles if t.period == "today")
-        assert today.intraday is False
-        assert today.gain == pytest.approx(20.0) and today.note == "as of 2024-06-28"
-
-    def test_intraday_skipped_when_no_prior_session_to_anchor(self, db_session, tenant):
-        pid = uuid.uuid4()
-        _snap(db_session, tenant, pid, date(2024, 6, 28), 1000.0)
-        _snap(db_session, tenant, pid, date(2024, 7, 1), 1010.0)
-        live = perf.LiveToday(nav=1020.0, intraday_applied=True)
-        res = perf.period_tiles(
-            db_session, uuid.UUID(tenant), pid, today=date(2024, 7, 1), with_benchmarks=False,
-            live=live, now=_MONDAY_MIDDAY,
-        )
-        today = next(t for t in res.tiles if t.period == "today")
-        assert today.intraday is True
-        assert today.start_date == date(2024, 6, 28)
         assert today.gain == pytest.approx(20.0)
+        assert today.twr == pytest.approx(1320 / 1300 - 1)
+        assert today.note == "as of 2024-06-28"
 
 
 class TestTodaySettledBenchmarkFromIndexStrip:

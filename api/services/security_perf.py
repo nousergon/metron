@@ -91,9 +91,12 @@ def per_security_returns(
     reader=None,
     performance_reader=None,
     now: datetime | None = None,
+    day_legs: bool = True,
 ) -> dict[str, SecurityReturns]:
     """``{ticker: SecurityReturns}`` for the given held tickers. YTD/LTM come from the
-    security_performance spine when ``feed_entitled``; day legs from intraday when entitled."""
+    security_performance spine when ``feed_entitled``; day legs from intraday when entitled
+    AND ``day_legs`` (the settled Holdings valuation mode passes False — session legs are
+    live-quote-derived and belong only to the live surface, metron-ops#154)."""
     out: dict[str, SecurityReturns] = {t: SecurityReturns() for t in tickers}
     if not out:
         return out
@@ -107,8 +110,8 @@ def per_security_returns(
                 sr.ytd_pct = row.ytd_pct
                 sr.ltm_pct = row.ltm_pct
 
-    # Day decomposition from the intraday spine (owner build only).
-    if feed_entitled:
+    # Day decomposition from the intraday spine (owner build only, live mode only).
+    if feed_entitled and day_legs:
         today = intraday.today_view(
             session, tenant_id, portfolio_id,
             feed_entitled=True, account_ids=account_ids, reader=reader, now=now or datetime.now(UTC),
@@ -134,14 +137,16 @@ def enrich_holdings(
     reader=None,
     performance_reader=None,
     now: datetime | None = None,
+    day_legs: bool = True,
 ) -> list:
     """Populate ``overnight_pct`` / ``intraday_pct`` / ``day_pct`` / ``ytd_pct`` /
     ``ltm_pct`` and the ``last_price_stale`` freshness flag on each ``analytics.Holding``
-    in place, then return the list."""
+    in place, then return the list. ``day_legs=False`` (settled valuation mode) leaves the
+    session legs None — they are live-quote-derived (metron-ops#154)."""
     returns = per_security_returns(
         session, tenant_id, portfolio_id, [h.ticker for h in held],
         as_of=as_of, feed_entitled=feed_entitled, account_ids=account_ids,
-        reader=reader, performance_reader=performance_reader, now=now,
+        reader=reader, performance_reader=performance_reader, now=now, day_legs=day_legs,
     )
     today = market_today(now)
     for h in held:
