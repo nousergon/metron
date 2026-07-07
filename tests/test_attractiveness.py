@@ -9,7 +9,12 @@ from __future__ import annotations
 from datetime import date
 
 from api.db import models
-from api.services import analytics, attractiveness, metrics_enrichment, tearsheet
+from api.services import (
+    analytics,
+    attractiveness,
+    metrics_enrichment,
+    tearsheet,
+)
 
 _PROFILES = {
     "AAPL": {
@@ -62,13 +67,21 @@ def test_enrich_metrics_attaches_sota_attractiveness(db_session, monkeypatch):
     monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals", lambda: type("S", (), {"by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst", lambda: type("S", (), {"by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment", lambda: type("S", (), {"by_symbol": {}})())
-    from api.services import factor_profiles as factor_profiles_service
 
-    monkeypatch.setattr(
-        factor_profiles_service, "load_factor_profiles",
-        lambda reader=None: factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES),
-    )
-    monkeypatch.setattr(factor_profiles_service, "load_pillar_weights", lambda reader=None: None)
+    def _test_profiles_reader():
+        # load_factor_profiles(reader=...) parses a RAW dict into a snapshot itself —
+        # a reader returning an already-built FactorProfilesSnapshot fails its
+        # isinstance(raw, dict) check and silently yields an empty universe.
+        return _PROFILES
+
+    # Directly call the uncached computation with test profiles to avoid cache recursion
+    original_compute_universe = attractiveness._compute_universe_uncached
+    def _mock_compute_universe(profiles_reader=None, weights_reader=None):
+        return original_compute_universe(
+            profiles_reader=profiles_reader or _test_profiles_reader,
+            weights_reader=weights_reader,
+        )
+    monkeypatch.setattr(attractiveness, "compute_universe", _mock_compute_universe)
 
     metrics_enrichment.enrich_metrics(db_session, held)
     aapl = held[0]
@@ -101,13 +114,22 @@ def _seed_aapl(session):
 
 def test_tearsheet_gauge_populates_when_profiles_available(db_session, monkeypatch):
     tenant_id, pid = _seed_aapl(db_session)
-    from api.services import factor_profiles as factor_profiles_service
 
-    monkeypatch.setattr(
-        factor_profiles_service, "load_factor_profiles",
-        lambda reader=None: factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES),
-    )
-    monkeypatch.setattr(factor_profiles_service, "load_pillar_weights", lambda reader=None: None)
+    def _test_profiles_reader():
+        # load_factor_profiles(reader=...) parses a RAW dict into a snapshot itself —
+        # a reader returning an already-built FactorProfilesSnapshot fails its
+        # isinstance(raw, dict) check and silently yields an empty universe.
+        return _PROFILES
+
+    # Directly call the uncached computation with test profiles to avoid cache recursion
+    original_compute_universe = attractiveness._compute_universe_uncached
+    def _mock_compute_universe(profiles_reader=None, weights_reader=None):
+        return original_compute_universe(
+            profiles_reader=profiles_reader or _test_profiles_reader,
+            weights_reader=weights_reader,
+        )
+    monkeypatch.setattr(attractiveness, "compute_universe", _mock_compute_universe)
+
     sheet = tearsheet.tearsheet(db_session, tenant_id, pid, "AAPL", feed_enabled=True)
     att = sheet.attractiveness
     assert att.available is True
