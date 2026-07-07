@@ -16,15 +16,13 @@ pass-through last/prev_close. The source is injectable for tests.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-logger = logging.getLogger(__name__)
+from api.services import market_snapshot
 
-INTRADAY_KEY = "market_data/intraday/latest.json"
+logger = logging.getLogger(__name__)
 
 # Display order + the index each ETF proxy tracks (label shown in the strip). Both Nasdaq
 # proxies are shown — ONEQ tracks the broad Nasdaq Composite (the "Nasdaq" the financial
@@ -69,19 +67,12 @@ class IndicesSnapshot:
     indices: list[IndexQuote] = field(default_factory=list)
 
 
-def _bucket() -> str:
-    return os.environ.get("MARKET_DATA_BUCKET", "alpha-engine-research")
-
-
 def _default_reader() -> dict | None:
-    import boto3
-
-    try:
-        obj = boto3.client("s3").get_object(Bucket=_bucket(), Key=INTRADAY_KEY)
-        return json.loads(obj["Body"].read())
-    except Exception as e:  # fail-soft: the consumer degrades to "markets unavailable"
-        logger.warning("data-spine read failed %s: %s", INTRADAY_KEY, e)
-        return None
+    """The intraday snapshot dict (or None on read failure), via the shared ``market_snapshot``
+    cache so the Markets strip and the Holdings overlay (``intraday.py``) share a single S3 read
+    per TTL window. Previously this consumer read S3 uncached on every call. The ``reader=``
+    injection path bypasses this entirely, so tests are unaffected."""
+    return market_snapshot.read_cached_snapshot()
 
 
 def _f(d: dict, key: str) -> float | None:
