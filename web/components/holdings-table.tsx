@@ -179,7 +179,19 @@ const POSITION_COLUMNS: ColumnDef[] = [
     band: "Position",
     defaultDesc: true,
     sort: (h) => h.quantity,
-    cell: (h) => quantity(h.quantity),
+    cell: (h) => (
+      <span
+        className={h.positions_stale ? "text-amber-500" : undefined}
+        title={
+          h.positions_stale && h.broker_as_of
+            ? `Stale — broker positions last synced ${h.broker_as_of}; a more recent trade may not be reflected yet`
+            : undefined
+        }
+      >
+        {quantity(h.quantity)}
+        {h.positions_stale ? <span className="ml-0.5" aria-hidden>⚠</span> : null}
+      </span>
+    ),
   },
   {
     key: "avg_cost",

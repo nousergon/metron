@@ -29,6 +29,16 @@ export type Holding = {
   // hasn't struck its own NAV yet today. Not a problem flag like last_price_stale — an
   // expected, clearly-labeled estimate, reconciled to the true struck NAV tomorrow.
   is_estimated: boolean;
+  // Broker-reported "as of" date for this position (IBKR Flex statement / SnapTrade
+  // last_holdings_sync) — how current the SHARE COUNT is, distinct from last_price_date
+  // (how current the PRICE is). null for ledger-only (CSV/OFX) holdings, which have no
+  // broker snapshot to go stale.
+  broker_as_of: string | null;
+  // True when a snapshot-sourced holding's broker_as_of is stale (metron-ops#150) — the
+  // daily broker re-sync hasn't run recently, so a real trade at the broker may not yet
+  // be reflected here even though last_price looks fresh. Drives the Holdings "positions
+  // as of" staleness warning. Always false for ledger-only holdings.
+  positions_stale: boolean;
   market_value_local: number | null;
   cost_basis_base: number | null;
   market_value: number | null;

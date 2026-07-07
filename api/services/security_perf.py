@@ -160,4 +160,15 @@ def enrich_holdings(
             and h.last_price_date is not None
             and sessions_behind(h.last_price_date, today) >= _STALE_AFTER_SESSIONS
         )
+        # Positions staleness (metron-ops#150) — DISTINCT from last_price_stale: this is
+        # about how current the broker-reported SHARE COUNT is (has the daily broker
+        # re-sync actually run recently?), not the per-share price. A fresh close price
+        # multiplied by a stale share count still produces a wrong, but fresh-LOOKING,
+        # market value — this flag is what makes that failure mode visible. None
+        # (h.broker_as_of is None) for ledger-only (CSV/OFX) holdings, which have no
+        # broker snapshot to go stale.
+        h.positions_stale = (
+            h.broker_as_of is not None
+            and sessions_behind(h.broker_as_of, today) >= _STALE_AFTER_SESSIONS
+        )
     return held

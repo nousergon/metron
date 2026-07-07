@@ -40,6 +40,33 @@ function PricesAsOf({ holdings }: { holdings: Holding[] }) {
   return <p className="text-xs text-muted">Prices as of {isoDate(asOf)}.</p>;
 }
 
+/** The OLDEST broker sync date across snapshot-sourced holdings + whether any holding's
+ *  position sync is stale (metron-ops#150) — see grouped-holdings.tsx's PositionsAsOf for
+ *  the full rationale (distinct from PricesAsOf: share count freshness, not price freshness). */
+function positionsFreshness(holdings: Holding[]): { asOf: string | null; stale: boolean } {
+  let asOf: string | null = null;
+  let stale = false;
+  for (const h of holdings) {
+    if (h.broker_as_of && (asOf === null || h.broker_as_of < asOf)) asOf = h.broker_as_of;
+    if (h.positions_stale) stale = true;
+  }
+  return { asOf, stale };
+}
+
+function PositionsAsOf({ holdings }: { holdings: Holding[] }) {
+  const { asOf, stale } = positionsFreshness(holdings);
+  if (!asOf) return null;
+  if (stale) {
+    return (
+      <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+        ⚠ Positions synced through {isoDate(asOf)} — a more recent trade at the broker may
+        not be reflected yet.
+      </p>
+    );
+  }
+  return <p className="text-xs text-muted">Positions synced through {isoDate(asOf)}.</p>;
+}
+
 type Total = { cost: number | null; mv: number | null; unreal: number | null };
 
 function totalsOf(holdings: Holding[]): Total {
@@ -108,6 +135,7 @@ export function GroupedByAccount({
   return (
     <div className="space-y-5">
       {priced ? <PricesAsOf holdings={holdings} /> : null}
+      <PositionsAsOf holdings={holdings} />
       {showBar ? (
         <PortfolioTotalBar holdings={holdings} baseCurrency={baseCurrency} priced={priced} below={belowTotal} />
       ) : null}
