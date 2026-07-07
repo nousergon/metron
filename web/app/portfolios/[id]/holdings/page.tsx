@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { acctParams, getAccounts, getHoldings, getHoldingsView, getSummary, getValuationMedians, getWatchlist, MetronApiError, type Entitlements, type Holding, type HoldingsViewPrefs, type Summary, type ValuationMedians, type WatchlistEntry } from "@/lib/api";
+import { acctParams, getAccounts, getHoldings, getHoldingsView, getIntradayStatus, getSummary, getValuationMedians, getWatchlist, MetronApiError, type Entitlements, type Holding, type HoldingsViewPrefs, type IntradayStatus, type Summary, type ValuationMedians, type WatchlistEntry } from "@/lib/api";
 import { Empty, Section } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { HoldingsView } from "@/components/holdings-view";
@@ -161,9 +161,20 @@ async function HoldingsSection({
   }
   // SP1500-broad sector/country median bands — best-effort + feed-gated.
   const medians = await getValuationMedians(tenantId, id, accountIds).catch((): ValuationMedians | null => null);
+  // Provenance-honest header (metron-ops#146): only the live overlay status may claim
+  // intraday freshness — the note was previously hard-coded "last EOD close" even while
+  // positions were revaluing live. Best-effort: on a failed status read, claim the
+  // conservative settled state. The IntradayRefresher's poll re-renders this server
+  // component, so the note tracks live→stale transitions (e.g. after the close).
+  const live: IntradayStatus | null = priced
+    ? await getIntradayStatus(tenantId, id).catch((): IntradayStatus | null => null)
+    : null;
+  const valuationNote = live?.applied
+    ? `all values in ${ccy} · market value ~15-min delayed intraday`
+    : `all values in ${ccy} · market value from last close`;
 
   return (
-    <Section title="Holdings" note={priced ? `all values in ${ccy} · market value from last EOD close` : "cost basis — refresh for market value"}>
+    <Section title="Holdings" note={priced ? valuationNote : "cost basis — refresh for market value"}>
       <div className="mb-3">
         <RefreshPrices portfolioId={id} feedOn={entitlements?.feed_enabled} />
       </div>
@@ -187,7 +198,7 @@ async function WatchlistSection({ tenantId, id, ccy }: { tenantId: string; id: s
     return null; // best-effort — the Holdings table above already rendered
   }
   return (
-    <Section title="Watchlist" note="tracked tickers, compared side-by-side — never affects NAV or performance">
+    <Section title="Watchlist" note="tracked tickers, compared side-by-side · metrics as of last close — never affects NAV or performance">
       <WatchlistCompareTable portfolioId={id} baseCurrency={ccy} entries={entries} />
     </Section>
   );

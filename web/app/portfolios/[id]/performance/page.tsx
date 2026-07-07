@@ -4,7 +4,7 @@ import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { BuildHistory } from "@/components/build-history";
 import { NavChart } from "@/components/nav-chart";
-import { IntradayRefresher } from "@/components/intraday-refresher";
+import { AsOfClose } from "@/components/as-of-close";
 import { NavBridge } from "@/components/nav-bridge";
 import { RiskOverTime } from "@/components/risk-over-time";
 import { TierSimulator } from "@/components/tier-simulator";
@@ -98,9 +98,9 @@ export default async function PerformancePage({
 
       <div className="mt-3 flex items-baseline gap-2">
         <h1 className="text-lg font-semibold">Performance</h1>
-        {/* Current value reflects intraday balances while open; the recorded NAV history
-            (chart) stays EOD-close (metron-ops#79). */}
-        <IntradayRefresher portfolioId={id} />
+        {/* SETTLED tab (metron-ops#145/#146): every figure here is from the recorded
+            EOD-close NAV history — the live intraday label belongs to Overview/Holdings only. */}
+        <AsOfClose date={perf.last_date} />
       </div>
       <p className="text-sm text-muted">
         NAV records forward each time you refresh prices. To get instant history, build it from past prices.

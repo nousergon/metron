@@ -1427,6 +1427,12 @@ export type IntradayStatus = {
   as_of_utc: string | null;
   stale: boolean;
   n_priced: number;
+  // Live coverage (metron-ops#146): positions in scope vs positions that actually got a
+  // fresh quote — un-priced ones silently keep their EOD close, so a partial overlay is
+  // disclosed ("n/N live") rather than reading as fully live. n_estimated counts the
+  // late-striking-fund proxy estimates (metron-ops#112) inside n_priced.
+  n_total: number;
+  n_estimated: number;
   reason: string | null;
 };
 

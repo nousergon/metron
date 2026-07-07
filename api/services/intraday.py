@@ -53,6 +53,10 @@ class IntradayMeta:
     as_of_utc: str | None = None  # ISO8601 Z — the producer's write time
     stale: bool = False
     n_priced: int = 0             # held tickers that got an intraday last-price
+    # Held tickers in scope for the overlay — ``n_priced``/``n_total`` is the live COVERAGE.
+    # The per-symbol merge silently keeps the EOD close for any un-quoted symbol, so a
+    # partially-live NAV must be disclosed by the UI rather than read as fully live.
+    n_total: int = 0
     reason: str | None = None     # why not applied ("feed" / "stale" / "unavailable")
     # Held tickers whose intraday price was SYNTHESIZED from a tracking-proxy ETF's
     # same-day return rather than read from the ticker's own intraday quote — the
@@ -280,7 +284,7 @@ def live_prices(
     merged = dict(eod_closes)
     merged.update(overlay)
     return merged, IntradayMeta(
-        applied=True, as_of_utc=as_of, stale=False, n_priced=len(overlay),
+        applied=True, as_of_utc=as_of, stale=False, n_priced=len(overlay), n_total=len(tickers),
         estimated_tickers=frozenset(estimated),
     )
 
