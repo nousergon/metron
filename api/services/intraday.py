@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
 from sqlalchemy import select
@@ -37,6 +37,17 @@ logger = logging.getLogger(__name__)
 # Match the Markets strip: a snapshot older than this is "stale" — the market closed or the
 # demand-gated feed paused — so we fall back to EOD close rather than imply a live tick.
 STALE_AFTER_SECONDS = 20 * 60
+
+# Per-position pricing source for the live valuation (metron-ops#152) — DERIVED per ticker
+# from quote availability + freshness, never a manual per-account flag. The live-session
+# COVERED basis is exactly the {delayed, estimated} sources; {last_close, unpriced} are
+# excluded from live-session metrics (numerator AND denominator) and disclosed instead.
+# "realtime" is reserved for a future true-realtime feed; today's feed is ~15-min delayed.
+SOURCE_DELAYED = "delayed"        # revalued from a usable intraday quote (~15-min delayed)
+SOURCE_ESTIMATED = "estimated"    # synthesized fund estimate (metron-ops#112 mechanism B)
+SOURCE_LAST_CLOSE = "last_close"  # no usable quote — valued at the latest EOD close
+SOURCE_UNPRICED = "unpriced"      # no usable quote and no EOD close (or no FX to base)
+COVERED_SOURCES = frozenset({SOURCE_DELAYED, SOURCE_ESTIMATED})
 
 
 @dataclass
@@ -59,6 +70,17 @@ class IntradayMeta:
     # intraday quote of its own. Drives the "estimated" UI badge; restated by mechanism A
     # once the fund's true NAV lands (next data run).
     estimated_tickers: frozenset[str] = frozenset()
+    # Per-ticker pricing source (metron-ops#152): SOURCE_DELAYED / SOURCE_ESTIMATED /
+    # SOURCE_LAST_CLOSE / SOURCE_UNPRICED. Populated on the applied overlay path; a ticker
+    # later found unvaluable in base currency (no FX) is downgraded by ``weigh_coverage``.
+    source_by_ticker: dict[str, str] = field(default_factory=dict)
+    # NAV-weighted live coverage (metron-ops#152): base-currency market value of the
+    # COVERED (delayed/estimated) positions vs the whole valued portfolio — the honest
+    # "covers $X of $Y NAV" disclosure. A per-ticker count (n_priced/n_total) can wildly
+    # misstate coverage when position sizes differ. Filled by ``weigh_coverage`` (needs
+    # valued holdings, which this module doesn't compute); None until then.
+    covered_nav: float | None = None
+    total_nav: float | None = None
 
 
 def _default_reader() -> dict | None:
@@ -238,9 +260,20 @@ def live_prices(
         return None, IntradayMeta(applied=False, as_of_utc=as_of, stale=stale, reason="unavailable")
     merged = dict(eod_closes)
     merged.update(overlay)
+    # Per-ticker pricing source (metron-ops#152) — derived, never a manual flag. The
+    # un-overlaid remainder splits by whether an EOD close exists to fall back on; a
+    # source may later be downgraded to unpriced by ``weigh_coverage`` when the position
+    # can't be valued in base currency (no FX).
+    sources: dict[str, str] = {}
+    for t in tickers:
+        if t in overlay:
+            sources[t] = SOURCE_ESTIMATED if t in estimated else SOURCE_DELAYED
+        else:
+            eod = eod_closes.get(t)
+            sources[t] = SOURCE_LAST_CLOSE if (eod is not None and eod.close is not None) else SOURCE_UNPRICED
     return merged, IntradayMeta(
         applied=True, as_of_utc=as_of, stale=False, n_priced=len(overlay), n_total=len(tickers),
-        estimated_tickers=frozenset(estimated),
+        estimated_tickers=frozenset(estimated), source_by_ticker=sources,
     )
 
 
@@ -269,6 +302,32 @@ def for_portfolio(
     held = analytics.holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     tickers = [h.ticker for h in held if h.ticker]
     return live_prices(session, tickers, feed_entitled=feed_entitled, reader=reader, now=now)
+
+
+def weigh_coverage(meta: IntradayMeta, held: list) -> IntradayMeta:
+    """Fill ``meta.covered_nav`` / ``meta.total_nav`` from VALUED holdings (metron-ops#152)
+    — the NAV-weighted live-coverage disclosure ("covers $X of $Y NAV"). ``held`` must be
+    valued with the SAME merged price map ``live_prices`` returned, so both figures are in
+    live-NAV terms and ``total_nav`` equals the headline live NAV.
+
+    A position with no base-currency market value (no FX rate cached, or no price at all)
+    is in neither figure — it also gets its source downgraded to ``unpriced`` so the
+    per-ticker disclosure never claims coverage the NAV math didn't include. Mutates and
+    returns ``meta``; a not-applied meta passes through untouched."""
+    if not meta.applied:
+        return meta
+    covered = total = 0.0
+    for h in held:
+        if h.market_value is None:
+            if h.ticker in meta.source_by_ticker:
+                meta.source_by_ticker[h.ticker] = SOURCE_UNPRICED
+            continue
+        total += h.market_value
+        if meta.source_by_ticker.get(h.ticker) in COVERED_SOURCES:
+            covered += h.market_value
+    meta.covered_nav = covered
+    meta.total_nav = total
+    return meta
 
 
 # ── Today view: prior-close / open / latest + overnight·intraday·day decomposition ──────
@@ -302,6 +361,16 @@ class TodayRow:
 
 
 @dataclass
+class ExcludedRow:
+    """A held position NOT in the covered live-session basis (metron-ops#152) — named,
+    with the reason, so partial coverage is disclosed instead of silently dropped."""
+
+    ticker: str
+    label: str
+    reason: str  # "suspect" / "no_quote" / "no_fx"
+
+
+@dataclass
 class TodaySummary:
     available: bool
     base_currency: str = "USD"
@@ -316,11 +385,20 @@ class TodaySummary:
     overnight_pct: float | None = None   # leg $ / prior-close MV (decomposable rows)
     intraday_pct: float | None = None
     day_pct: float | None = None
+    # The covered-basis denominator (metron-ops#152): prior-close base-$ market value of
+    # the DECOMPOSABLE rows only — the % legs above are legs$/THIS. Excluded holdings are
+    # in neither the numerator nor here (never blended); None when nothing decomposed.
+    covered_prev_mv: float | None = None
     rows: list[TodayRow] = None  # type: ignore[assignment]
+    # Every excluded holding, named with its reason (metron-ops#152) — the disclosure
+    # companion to ``n_excluded``.
+    excluded_rows: list[ExcludedRow] = None  # type: ignore[assignment]
 
     def __post_init__(self):
         if self.rows is None:
             self.rows = []
+        if self.excluded_rows is None:
+            self.excluded_rows = []
 
 
 def today_view(
@@ -374,8 +452,8 @@ def _today_summary(
     intraday snapshot quotes. Shared by ``today_view`` (one scope) and ``today_by_account``
     (every account off ONE snapshot decode), so the per-holding math is single-sourced."""
     rows: list[TodayRow] = []
+    excluded_rows: list[ExcludedRow] = []
     tot_prev_mv = tot_on = tot_id = tot_day = 0.0
-    excluded = 0
     for h in held:
         q = quotes.get(yf_by_ticker.get(h.ticker, h.ticker))
         prev = _f(q, "prev_close") if isinstance(q, dict) else None
@@ -384,7 +462,11 @@ def _today_summary(
         fx = h.fx_rate if h.fx_rate is not None else (1.0 if (h.currency or "USD") == base else None)
         suspect = bool(q.get("suspect")) if isinstance(q, dict) else False
         if suspect or prev is None or opn is None or last is None or not prev or not opn or fx is None:
-            excluded += 1
+            # Named + reasoned exclusion (metron-ops#152): covered basis only — never
+            # blended in flat. Reason priority: a suspect quote is a quote problem even
+            # when fields are also missing; FX only matters once the quote is decomposable.
+            reason = "suspect" if suspect else ("no_quote" if (prev is None or opn is None or last is None or not prev or not opn) else "no_fx")
+            excluded_rows.append(ExcludedRow(ticker=h.ticker, label=h.user_label or h.ticker, reason=reason))
             continue
         qty = h.quantity
         on_g = qty * (opn - prev) * fx
@@ -424,14 +506,16 @@ def _today_summary(
         as_of_utc=as_of,
         stale=stale,
         n_priced=len(rows),
-        n_excluded=excluded,
+        n_excluded=len(excluded_rows),
         overnight_gain=tot_on if has else None,
         intraday_gain=tot_id if has else None,
         day_gain=tot_day if has else None,
         overnight_pct=pct(tot_on) if has else None,
         intraday_pct=pct(tot_id) if has else None,
         day_pct=pct(tot_day) if has else None,
+        covered_prev_mv=tot_prev_mv if has else None,
         rows=rows,
+        excluded_rows=excluded_rows,
     )
 
 

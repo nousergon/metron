@@ -363,6 +363,15 @@ class IntradayStatusOut(BaseModel):
     n_total: int = 0               # held positions in scope — un-priced ones keep EOD close
     n_estimated: int = 0           # of n_priced, synthesized fund estimates (metron-ops#112)
     reason: str | None = None      # why not applied ("feed" / "stale" / "unavailable")
+    # NAV-weighted coverage (metron-ops#152): base-$ market value of the covered
+    # (delayed/estimated) positions vs the whole valued portfolio, both in live-NAV terms —
+    # the "covers $X of $Y NAV" disclosure. A ticker count misstates coverage whenever
+    # position sizes differ; these don't. None when the overlay isn't applied.
+    covered_nav: float | None = None
+    total_nav: float | None = None
+    # Per-ticker pricing source (metron-ops#152): "delayed" / "estimated" / "last_close" /
+    # "unpriced" — derived, never a manual flag. Empty when the overlay isn't applied.
+    sources: dict[str, str] = {}
 
 
 class TodayRowOut(BaseModel):
@@ -383,9 +392,22 @@ class TodayRowOut(BaseModel):
     day_gain: float | None = None
 
 
+class ExcludedRowOut(BaseModel):
+    """A held position excluded from the covered live-session basis, with the reason
+    (metron-ops#152) — drives the explicit not-in-live-session disclosure."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    label: str
+    reason: str  # "suspect" / "no_quote" / "no_fx"
+
+
 class TodayOut(BaseModel):
     """The Today view — per-holding overnight·intraday·day decomposition + totals
-    (metron-ops#23)."""
+    (metron-ops#23). Covered-basis by construction: excluded holdings are in neither the
+    leg $ nor the % denominator (``covered_prev_mv``), and are named in ``excluded_rows``
+    (metron-ops#152)."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -402,7 +424,9 @@ class TodayOut(BaseModel):
     overnight_pct: float | None = None
     intraday_pct: float | None = None
     day_pct: float | None = None
+    covered_prev_mv: float | None = None
     rows: list[TodayRowOut] = []
+    excluded_rows: list[ExcludedRowOut] = []
 
 
 class AccountDetailOut(BaseModel):
@@ -2628,12 +2652,20 @@ def get_intraday_status(
     held positions got a fresh quote. Drives the "intraday · ~15-min delayed · as of HH:MM"
     label and the client poll. The poll hits ``_owned_portfolio``, which touches the
     data-spine UI heartbeat — so an open Metron keeps the intraday producer publishing."""
-    _, m = intraday.for_portfolio(
+    prices, m = intraday.for_portfolio(
         session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled, account_ids=account_ids
     )
+    if m.applied and prices is not None:
+        # NAV-weighted coverage (metron-ops#152): value the holdings off the SAME merged
+        # price map the live NAV uses, so covered/total are in live-NAV terms.
+        held = analytics.valued_holdings(
+            session, portfolio.tenant_id, portfolio.id, account_ids=account_ids, prices=prices
+        )
+        intraday.weigh_coverage(m, held)
     return IntradayStatusOut(
         applied=m.applied, as_of_utc=m.as_of_utc, stale=m.stale, n_priced=m.n_priced,
         n_total=m.n_total, n_estimated=len(m.estimated_tickers), reason=m.reason,
+        covered_nav=m.covered_nav, total_nav=m.total_nav, sources=dict(m.source_by_ticker),
     )
 
 
