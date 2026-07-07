@@ -18,7 +18,13 @@ function open() {
 }
 
 describe("PortfolioNav", () => {
-  it("shows the current page on the trigger (Overview at the portfolio root)", () => {
+  it("shows the current page on the trigger (Holdings at the portfolio root, metron-ops-I156)", () => {
+    render(<PortfolioNav portfolioId="p" navQuery="" />);
+    expect(screen.getByRole("button")).toHaveTextContent("Holdings");
+  });
+
+  it("resolves the Overview at its own route", () => {
+    pathname = "/portfolios/p/overview";
     render(<PortfolioNav portfolioId="p" navQuery="" />);
     expect(screen.getByRole("button")).toHaveTextContent("Overview");
   });
@@ -34,7 +40,9 @@ describe("PortfolioNav", () => {
     open();
     const href = (name: string) => screen.getByRole("menuitem", { name })!.getAttribute("href");
     expect(href("Performance")).toBe("/portfolios/p/performance?account_id=a1");
-    expect(href("Holdings")).toBe("/portfolios/p/holdings?account_id=a1");
+    // Holdings is the landing page (base route); Overview never scopes.
+    expect(href("Holdings")).toBe("/portfolios/p?account_id=a1");
+    expect(href("Overview")).toBe("/portfolios/p/overview");
     expect(href("Tax")).toBe("/portfolios/p/tax?account_id=a1");
     // Calendar/Settings are whole-portfolio surfaces — no selection query.
     expect(href("Calendar")).toBe("/portfolios/p/calendar");

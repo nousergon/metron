@@ -328,7 +328,7 @@ export async function addWatchlistAction(portfolioId: string, symbol: string, no
     const tenantId = await requireTenantId();
     await addWatchlist(tenantId, portfolioId, sym, note?.trim() || null);
     revalidatePath(`/portfolios/${portfolioId}/watchlist`);
-    revalidatePath(`/portfolios/${portfolioId}/holdings`);
+    revalidatePath(`/portfolios/${portfolioId}`);
     return { ok: true, message: `Added ${sym} to the watchlist.` };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t add — backend reachable?" };
@@ -340,7 +340,7 @@ export async function removeWatchlistAction(portfolioId: string, symbol: string)
     const tenantId = await requireTenantId();
     await removeWatchlist(tenantId, portfolioId, symbol);
     revalidatePath(`/portfolios/${portfolioId}/watchlist`);
-    revalidatePath(`/portfolios/${portfolioId}/holdings`);
+    revalidatePath(`/portfolios/${portfolioId}`);
     return { ok: true, message: `Removed ${symbol}.` };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t remove — backend reachable?" };
@@ -378,7 +378,7 @@ export async function setSecurityClassificationAction(
     const key = field === "type" ? "instrument_type" : field;
     // Empty string clears just this field (reverts to the spine/classified value, if any).
     await setSecurityClassification(tenantId, portfolioId, symbol, { [key]: value.trim() || null });
-    revalidatePath(`/portfolios/${portfolioId}/holdings`);
+    revalidatePath(`/portfolios/${portfolioId}`);
     revalidatePath(`/portfolios/${portfolioId}`);
     const label = field === "sector" ? "Sector" : field === "country" ? "Country" : "Type";
     return { ok: true, message: `${label} saved.` };

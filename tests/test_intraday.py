@@ -363,8 +363,10 @@ class TestIntradayStatusEndpoint:
         assert r.status_code == 200
         body = r.json()
         assert body["applied"] is False and body["reason"] == "off"
-        # Coverage fields (metron-ops#146) are additive with safe defaults.
+        # Coverage fields (metron-ops#146) are additive with safe defaults, and the
+        # session state (metron-ops-I156) defaults to the conservative "closed".
         assert body["n_total"] == 0 and body["n_estimated"] == 0
+        assert body["session_state"] == "closed"
 
 
 def _seed_portfolio_multi(session, specs, *, intraday_enabled=True, base="USD"):
@@ -691,3 +693,41 @@ class TestIntradayStatusCoverageEndpoint:
         # NAV-weighted, in live-NAV terms: AAPL 10 × 130 covered; MSFT 10 × 100 at last close.
         assert body["covered_nav"] == 1300.0 and body["total_nav"] == 2300.0
         assert body["sources"] == {"AAPL": "delayed", "MSFT": "last_close"}
+
+
+class TestSessionState:
+    """``session_state`` (metron-ops-I156): the valuation toggle's honest label — "live"
+    in session, "recap" post-close same trading day, "closed" pre-market/weekend/holiday
+    (and as the conservative fallback for a mid-session feed outage)."""
+
+    def _meta(self, *, applied=False, as_of=None):
+        return intraday.IntradayMeta(applied=applied, as_of_utc=as_of, stale=not applied)
+
+    def test_applied_is_live(self):
+        m = self._meta(applied=True, as_of="2026-07-07T17:00:00Z")
+        assert intraday.session_state(m, now=datetime(2026, 7, 7, 17, 3, tzinfo=UTC)) == "live"
+
+    def test_post_close_same_day_is_recap(self):
+        # Tue 2026-07-07 21:30 UTC (5:30 PM ET, session closed); snapshot written 20:05 UTC
+        # the same session → the completed session's closing state.
+        m = self._meta(as_of="2026-07-07T20:05:35Z")
+        assert intraday.session_state(m, now=datetime(2026, 7, 7, 21, 30, tzinfo=UTC)) == "recap"
+
+    def test_pre_market_next_day_is_closed(self):
+        # Mon 2026-07-06 12:00 UTC (8 AM ET pre-market after the 7/3 holiday weekend);
+        # the snapshot is THU 7/2's close — a prior session, nothing live can add.
+        m = self._meta(as_of="2026-07-02T20:05:00Z")
+        assert intraday.session_state(m, now=datetime(2026, 7, 6, 12, 0, tzinfo=UTC)) == "closed"
+
+    def test_weekend_is_closed(self):
+        m = self._meta(as_of="2026-07-10T20:05:00Z")  # Friday's close, viewed Saturday
+        assert intraday.session_state(m, now=datetime(2026, 7, 11, 15, 0, tzinfo=UTC)) == "closed"
+
+    def test_mid_session_feed_outage_falls_back_closed(self):
+        # Tue midday with a stale snapshot (feed died >20 min ago): today's session hasn't
+        # closed, so this is NOT a recap — gray conservatively rather than fake live-ness.
+        m = self._meta(as_of="2026-07-07T15:00:00Z")
+        assert intraday.session_state(m, now=datetime(2026, 7, 7, 17, 0, tzinfo=UTC)) == "closed"
+
+    def test_no_snapshot_is_closed(self):
+        assert intraday.session_state(self._meta(), now=datetime(2026, 7, 7, 21, 30, tzinfo=UTC)) == "closed"

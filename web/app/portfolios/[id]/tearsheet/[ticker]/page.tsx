@@ -35,7 +35,7 @@ export default async function TearsheetPage({ params }: { params: { id: string; 
     if (e instanceof MetronApiError && e.status === 404) {
       return (
         <div>
-          <Link href={`/portfolios/${id}/holdings`} className="text-sm text-muted hover:text-ink">
+          <Link href={`/portfolios/${id}`} className="text-sm text-muted hover:text-ink">
             ← Holdings
           </Link>
           <Empty>{decodeURIComponent(ticker).toUpperCase()} isn&apos;t a current holding.</Empty>
@@ -51,7 +51,7 @@ export default async function TearsheetPage({ params }: { params: { id: string; 
 
   return (
     <div>
-      <Link href={`/portfolios/${id}/holdings`} className="text-sm text-muted hover:text-ink">
+      <Link href={`/portfolios/${id}`} className="text-sm text-muted hover:text-ink">
         ← Holdings
       </Link>
 

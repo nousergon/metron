@@ -304,6 +304,41 @@ def for_portfolio(
     return live_prices(session, tickers, feed_entitled=feed_entitled, reader=reader, now=now)
 
 
+def session_state(meta: IntradayMeta, *, now: datetime | None = None) -> str:
+    """The market/session state behind an intraday status (metron-ops-I156) — drives the
+    valuation toggle's honest label:
+
+    - ``"live"`` — the overlay is applied (fresh in-session snapshot): "Live session".
+    - ``"recap"`` — today's session has CLOSED and the (stale) snapshot is that completed
+      session's closing state: same data, honestly framed as "Today's session". The
+      evening what-happened-today view.
+    - ``"closed"`` — pre-market / weekend / holiday (the snapshot is a PRIOR session —
+      nothing live mode can add over settled), or no readable snapshot at all. Also the
+      conservative fallback for a mid-session feed outage (stale while the market is
+      open): the toggle grays rather than implying live-ness a dead feed can't deliver.
+    """
+    from zoneinfo import ZoneInfo
+
+    from krepis.trading_calendar import last_closed_trading_day
+
+    now = now or datetime.now(UTC)
+    if meta.applied:
+        return "live"
+    if not meta.as_of_utc:
+        return "closed"
+    try:
+        beat = datetime.fromisoformat(str(meta.as_of_utc).replace("Z", "+00:00"))
+    except ValueError:
+        return "closed"
+    et = ZoneInfo("America/New_York")
+    today_et = now.astimezone(et).date()
+    # Today's session has closed AND the snapshot was written on that session's date —
+    # i.e. the snapshot IS the completed session's closing state.
+    if last_closed_trading_day(now) == today_et and beat.astimezone(et).date() == today_et:
+        return "recap"
+    return "closed"
+
+
 def weigh_coverage(meta: IntradayMeta, held: list) -> IntradayMeta:
     """Fill ``meta.covered_nav`` / ``meta.total_nav`` from VALUED holdings (metron-ops#152)
     — the NAV-weighted live-coverage disclosure ("covers $X of $Y NAV"). ``held`` must be

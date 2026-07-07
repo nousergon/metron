@@ -372,6 +372,11 @@ class IntradayStatusOut(BaseModel):
     # Per-ticker pricing source (metron-ops#152): "delayed" / "estimated" / "last_close" /
     # "unpriced" — derived, never a manual flag. Empty when the overlay isn't applied.
     sources: dict[str, str] = {}
+    # Market/session state (metron-ops-I156): "live" (overlay applied, in session) /
+    # "recap" (today's session closed; the stale snapshot IS its closing state) /
+    # "closed" (pre-market / weekend / holiday / unreadable). Drives the valuation
+    # toggle's label — "Live session" vs "Today's session" vs grayed out.
+    session_state: str = "closed"
 
 
 class TodayRowOut(BaseModel):
@@ -2674,6 +2679,7 @@ def get_intraday_status(
         applied=m.applied, as_of_utc=m.as_of_utc, stale=m.stale, n_priced=m.n_priced,
         n_total=m.n_total, n_estimated=len(m.estimated_tickers), reason=m.reason,
         covered_nav=m.covered_nav, total_nav=m.total_nav, sources=dict(m.source_by_ticker),
+        session_state=intraday.session_state(m),
     )
 
 
