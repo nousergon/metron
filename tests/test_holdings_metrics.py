@@ -135,7 +135,6 @@ _PROFILES = {
 
 def test_enrich_metrics_maps_attractiveness_pillar_scores(monkeypatch):
     from api.services import attractiveness as attractiveness_service
-    from api.services import factor_profiles as factor_profiles_service
 
     held = [analytics.Holding(
         ticker="AAPL", quantity=1, avg_cost=1, cost_basis=1,
@@ -153,7 +152,10 @@ def test_enrich_metrics_maps_attractiveness_pillar_scores(monkeypatch):
                         lambda: type("S", (), {"by_symbol": {}})())
 
     def _test_profiles_reader():
-        return factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES)
+        # load_factor_profiles(reader=...) parses a RAW dict into a snapshot itself —
+        # a reader returning an already-built FactorProfilesSnapshot fails its
+        # isinstance(raw, dict) check and silently yields an empty universe.
+        return _PROFILES
 
     # Directly call the uncached computation with test profiles to avoid cache recursion
     original_compute_universe = attractiveness_service._compute_universe_uncached

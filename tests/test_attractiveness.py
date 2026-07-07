@@ -54,8 +54,6 @@ def test_lookup_misses_outside_universe():
 
 
 def test_enrich_metrics_attaches_sota_attractiveness(db_session, monkeypatch):
-    from api.services import factor_profiles as factor_profiles_service
-
     held = [
         analytics.Holding(
             ticker="AAPL", quantity=10.0, avg_cost=100.0, cost_basis=1000.0, currency="USD",
@@ -71,7 +69,10 @@ def test_enrich_metrics_attaches_sota_attractiveness(db_session, monkeypatch):
     monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment", lambda: type("S", (), {"by_symbol": {}})())
 
     def _test_profiles_reader():
-        return factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES)
+        # load_factor_profiles(reader=...) parses a RAW dict into a snapshot itself —
+        # a reader returning an already-built FactorProfilesSnapshot fails its
+        # isinstance(raw, dict) check and silently yields an empty universe.
+        return _PROFILES
 
     # Directly call the uncached computation with test profiles to avoid cache recursion
     original_compute_universe = attractiveness._compute_universe_uncached
@@ -112,12 +113,13 @@ def _seed_aapl(session):
 
 
 def test_tearsheet_gauge_populates_when_profiles_available(db_session, monkeypatch):
-    from api.services import factor_profiles as factor_profiles_service
-
     tenant_id, pid = _seed_aapl(db_session)
 
     def _test_profiles_reader():
-        return factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES)
+        # load_factor_profiles(reader=...) parses a RAW dict into a snapshot itself —
+        # a reader returning an already-built FactorProfilesSnapshot fails its
+        # isinstance(raw, dict) check and silently yields an empty universe.
+        return _PROFILES
 
     # Directly call the uncached computation with test profiles to avoid cache recursion
     original_compute_universe = attractiveness._compute_universe_uncached
