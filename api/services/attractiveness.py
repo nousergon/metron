@@ -13,11 +13,13 @@ Design:
   * A pillar absent for a ticker is dropped and remaining weights renormalize.
   * Holdings outside the scanner universe get honest ``None`` (never fabricated).
 
-Pure lookup after the universe blend is computed once per request.
+Pure lookup after the universe blend is computed once per request (cached to avoid
+redundant S3 reads and blending computation within the same request).
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from nousergon_lib.quant.attractiveness import (
@@ -28,6 +30,10 @@ from nousergon_lib.quant.attractiveness import (
 )
 
 from api.services import factor_profiles as factor_profiles_service
+
+_COMPUTE_CACHE_TTL_S = 3600.0  # 1 hour; matches factor profile update cadence
+_compute_universe_cache: dict[str, object | None] = {}  # None = empty universe, else dict[str, Attractiveness]
+_compute_universe_cache_time: float = 0.0
 
 
 @dataclass
@@ -88,7 +94,32 @@ def compute_universe(
     profiles_reader=None,
     weights_reader=None,
 ) -> dict[str, Attractiveness]:
-    """Blend the full scanner-universe factor profiles into per-ticker attractiveness."""
+    """Blend the full scanner-universe factor profiles into per-ticker attractiveness, cached for 1 hour.
+
+    When custom readers are supplied (tests), bypass the cache entirely."""
+    if profiles_reader is not None or weights_reader is not None:
+        # Test path: always compute fresh.
+        return _compute_universe_uncached(profiles_reader, weights_reader)
+
+    # Production path: check module-level cache first.
+    global _compute_universe_cache, _compute_universe_cache_time
+    now = time.time()
+    if now - _compute_universe_cache_time < _COMPUTE_CACHE_TTL_S and "" in _compute_universe_cache:
+        cached = _compute_universe_cache[""]
+        return cached if cached is not None else {}
+
+    result = _compute_universe_uncached(None, None)
+    now = time.time()
+    _compute_universe_cache_time = now
+    _compute_universe_cache[""] = result if result else None
+    return result
+
+
+def _compute_universe_uncached(
+    profiles_reader=None,
+    weights_reader=None,
+) -> dict[str, Attractiveness]:
+    """Compute universe blend without caching — internal helper."""
     snap = factor_profiles_service.load_factor_profiles(reader=profiles_reader)
     if not snap.by_ticker:
         return {}
