@@ -18,6 +18,13 @@ function AuthShell({ title, children }: { title: string; children: React.ReactNo
 // Passwordless sign-in: enter email → emailed a one-time link → click → in. The same
 // flow for new and returning users (first link creates the workspace), so there's no
 // separate signup screen.
+//
+// Private beta (metron-ops#18): new signups are invite-gated server-side (see
+// lib/invite-gate.ts) — a brand-new email must submit a valid invite code, sent along
+// as `metadata.inviteCode` on the magic-link request. Returning users (an account
+// already exists for the email) are never gated, so the code field only matters the
+// first time; showing it unconditionally keeps the form simple (the server can't tell
+// the client "this email is new" without leaking whether an address is registered).
 export function MagicLinkForm() {
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -25,10 +32,16 @@ export function MagicLinkForm() {
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const email = String(new FormData(e.currentTarget).get("email"));
+    const form = new FormData(e.currentTarget);
+    const email = String(form.get("email"));
+    const inviteCode = String(form.get("inviteCode") ?? "").trim();
     setError(null);
     start(async () => {
-      const { error } = await signIn.magicLink({ email, callbackURL: "/" });
+      const { error } = await signIn.magicLink({
+        email,
+        callbackURL: "/",
+        ...(inviteCode ? { metadata: { inviteCode } } : {}),
+      });
       if (error) setError(error.message ?? "Couldn't send the sign-in link.");
       else setSentTo(email);
     });
@@ -53,6 +66,13 @@ export function MagicLinkForm() {
       <p className="text-sm text-muted">Enter your email and we&apos;ll send you a one-time sign-in link.</p>
       <form onSubmit={onSubmit} className="space-y-3">
         <input className={inputClass} type="email" name="email" placeholder="Email" required autoComplete="email" />
+        <input
+          className={inputClass}
+          type="text"
+          name="inviteCode"
+          placeholder="Invite code (new accounts only)"
+          autoComplete="off"
+        />
         {error ? <p className="text-sm text-negative">{error}</p> : null}
         <button className={buttonClass} disabled={pending} type="submit">
           {pending ? "Sending…" : "Send sign-in link"}

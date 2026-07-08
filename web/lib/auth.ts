@@ -17,6 +17,7 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { betterAuth } from "better-auth";
 import { magicLink } from "better-auth/plugins";
+import { inviteGate } from "@/lib/invite-gate";
 
 // Dev/personal: a local SQLite file. M2: point AUTH_DATABASE_URL at Postgres + swap the
 // dialect (deferred — the beta runs on SQLite).
@@ -89,6 +90,12 @@ export const auth = betterAuth({
     },
   },
   plugins: [
+    // Listed first: `inviteGate` registers a `hooks.before` middleware matched on
+    // `/sign-in/magic-link` (see lib/invite-gate.ts) that throws for an un-invited new
+    // signup. `hooks.before` runs ahead of the endpoint handler itself, so an un-invited
+    // request is rejected before magicLink's handler ever mints a verification token or
+    // calls `sendMagicLink` — no email goes out and no token is created.
+    inviteGate(),
     magicLink({
       // Server-side send of the one-time sign-in link. Throws (fails loud) when email
       // isn't configured, so a sign-in request surfaces the reason instead of a link
