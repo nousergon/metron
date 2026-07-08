@@ -1,5 +1,6 @@
-// Saved Holdings-table view (metron-ops#114): HoldingsView hydrates the grouping + visible
-// bands from the saved values and persists every control change fire-and-forget.
+// Saved Holdings-table view (metron-ops#114): HoldingsView hydrates the grouping from the
+// saved value and persists every control change fire-and-forget. The COLUMN PRESET is
+// session-only since 2026-07-08 — landing always opens on Overview, never a saved band set.
 
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -45,7 +46,7 @@ const h = (ticker: string): Holding =>
   }) as Holding;
 
 describe("HoldingsView saved-view hydration", () => {
-  it("hydrates the grouping + visible bands from the saved values", () => {
+  it("hydrates the grouping from the saved value but ALWAYS lands on the Overview preset", () => {
     render(
       <HoldingsView
         holdings={[h("AAPL")]}
@@ -54,13 +55,14 @@ describe("HoldingsView saved-view hydration", () => {
         medians={null}
         portfolioId="p1"
         savedGrouping="classification"
-        savedBands={["Attractiveness", "Valuation"]}
       />,
     );
     // Saved grouping is active...
     expect(screen.getByRole("button", { name: "By sector → country" })).toHaveAttribute("aria-pressed", "true");
-    // ...and the saved Valuation band is shown — P/E (30.2×) is a Valuation-only cell.
-    expect(screen.getByText("30.2×")).toBeInTheDocument();
+    // ...but the column set is the lean Overview default — no analytic band leaks in
+    // from a prior session (P/E 30.2× is a Valuation-only cell).
+    expect(screen.getByRole("button", { name: "Overview" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByText("30.2×")).not.toBeInTheDocument();
   });
 
   it("defaults to asset-class + the lean Overview preset when nothing is saved", () => {
@@ -76,17 +78,28 @@ describe("HoldingsView saved-view hydration", () => {
     expect(screen.getByText("Columns")).toBeInTheDocument();
   });
 
-  it("persists the full view when a control changes", () => {
+  it("persists the full view when a control changes — with visible_bands always null", () => {
     render(<HoldingsView holdings={[h("AAPL")]} baseCurrency="USD" priced medians={null} portfolioId="p1" />);
     saveHoldingsViewAction.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "By sector → country" }));
     expect(saveHoldingsViewAction).toHaveBeenCalledWith("p1", {
       grouping: "classification",
-      visible_bands: ["Position", "Value"],
+      // Session-only preset: never persisted; null also clears pre-2026-07-08 saved sets.
+      visible_bands: null,
       combine_by_account: false,
       hidden_types: [],
       valuation: "settled",
     });
+  });
+
+  it("does NOT persist a column-preset switch (session-only by design)", () => {
+    render(<HoldingsView holdings={[h("AAPL")]} baseCurrency="USD" priced medians={null} portfolioId="p1" />);
+    saveHoldingsViewAction.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Valuation" }));
+    // The preset switches in-session (Valuation band renders)...
+    expect(screen.getByText("30.2×")).toBeInTheDocument();
+    // ...but nothing is written to the saved view.
+    expect(saveHoldingsViewAction).not.toHaveBeenCalled();
   });
 
   it("offers the valuation toggle only when live is available, and persists + routes the switch", () => {

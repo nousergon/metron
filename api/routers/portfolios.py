@@ -1203,6 +1203,9 @@ _VALUATION_MODES = {"live", "settled"}
 
 class HoldingsViewOut(BaseModel):
     grouping: str | None = None
+    # DEPRECATED 2026-07-08: the web no longer hydrates or persists the column preset —
+    # Holdings always lands on Overview. Field kept (accepted + returned) for contract
+    # stability; the client always PUTs null, which clears any pre-2026-07-08 stored set.
     visible_bands: list[str] | None = None
     combine_by_account: bool | None = None
     hidden_types: list[str] | None = None

@@ -1290,10 +1290,12 @@ export async function putAccountSelection(
   }
 }
 
-// Saved Holdings-table view (metron-ops#114): grouping mode + visible metric bands +
-// combine-across-accounts. All null = the page default.
+// Saved Holdings-table view (metron-ops#114): grouping mode + combine-across-accounts +
+// hidden types + valuation regime. All null = the page default.
 export type HoldingsViewPrefs = {
   grouping: string | null;
+  // DEPRECATED 2026-07-08 — the column preset is session-only (landing always opens on
+  // Overview); the client sends null and ignores the returned value.
   visible_bands: string[] | null;
   combine_by_account: boolean | null;
   hidden_types: string[] | null;
