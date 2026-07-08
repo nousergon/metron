@@ -157,6 +157,12 @@ def enrich_holdings(
             h.day_pct = sr.day_pct
             h.ytd_pct = sr.ytd_pct
             h.ltm_pct = sr.ltm_pct
+            # Position-level day value change in base currency ($): back out the prior-close
+            # value from today's market value and the day price return — price-move component
+            # only, at today's qty/FX. Same live-quote gating as day_pct (None when settled).
+            mv = getattr(h, "market_value", None)
+            if sr.day_pct is not None and mv is not None and (1 + sr.day_pct) > 0:
+                h.day_change = mv * sr.day_pct / (1 + sr.day_pct)
         # Stale only on the close-fed path: a broker snapshot is legitimately old and is
         # not the upstream feed stalling. An intraday-overlaid holding carries today's
         # bar_date, so it reads fresh (0 sessions behind).
