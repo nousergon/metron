@@ -117,6 +117,18 @@ async def _demo_read_only(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def _clear_request_cache(request: Request, call_next):
+    """Clear request-scoped caches (e.g., attractiveness universe) at end of each request.
+    Prevents stale data leakage across requests while avoiding redundant S3 reads within
+    a single request that spans multiple endpoints (metron-ops#142)."""
+    try:
+        return await call_next(request)
+    finally:
+        from api.services import attractiveness
+        attractiveness.clear_request_cache()
+
+
 @app.get("/health", tags=["system"])
 def health() -> dict:
     return {"status": "ok", "env": settings.env}

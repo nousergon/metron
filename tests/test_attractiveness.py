@@ -145,3 +145,31 @@ def test_tearsheet_gauge_gated_off_when_feed_disabled(db_session):
     sheet = tearsheet.tearsheet(db_session, tenant_id, pid, "AAPL", feed_enabled=False)
     assert sheet.attractiveness.available is False
     assert sheet.attractiveness.score is None
+
+
+def test_request_scoped_cache_deduplicates_within_request():
+    """Multiple compute_universe() calls within the same request should read S3 once."""
+    call_count = 0
+
+    def _counting_profiles_reader():
+        nonlocal call_count
+        call_count += 1
+        return _PROFILES
+
+    # Clear all caches to start fresh
+    attractiveness.clear_cache()
+
+    # First call: computes fresh, increments call_count
+    universe1 = attractiveness.compute_universe(profiles_reader=_counting_profiles_reader)
+    assert call_count == 1
+
+    # Second call in same request-context: should use request-scoped cache, NO S3 read
+    universe2 = attractiveness.compute_universe(profiles_reader=_counting_profiles_reader)
+    assert call_count == 1  # No increment — cache hit
+    assert universe1 is not universe2  # Different dict objects (cache returns a copy)
+    assert universe1 == universe2      # But same content
+
+    # After clearing request cache, next call should read again
+    attractiveness.clear_request_cache()
+    universe3 = attractiveness.compute_universe(profiles_reader=_counting_profiles_reader)
+    assert call_count == 2  # Incremented after request-cache clear
