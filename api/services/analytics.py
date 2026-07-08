@@ -203,6 +203,11 @@ class TransactionRow:
     amount: float
     fees: float
     currency: str
+    # Base-currency conversion at the trade-date rate; None when that rate isn't cached
+    # (no fabrication — the native amount is still shown). Mirrors RealizedLot's
+    # proceeds_base/cost_basis_base pattern.
+    fx_rate: float | None = None
+    amount_base: float | None = None
 
 
 def _portfolio_rows(
@@ -982,20 +987,32 @@ def transactions(
     account_id: uuid.UUID | None = None,
     account_ids: Collection[uuid.UUID] | None = None,
 ) -> list[TransactionRow]:
-    """The portfolio's stored transactions, oldest first (optionally one account or a set)."""
-    return [
-        TransactionRow(
-            trade_date=row.trade_date,
-            txn_type=row.txn_type,
-            ticker=ticker or "",
-            quantity=float(row.quantity),
-            price=float(row.price),
-            amount=float(row.amount),
-            fees=float(row.fees),
-            currency=row.currency,
+    """The portfolio's stored transactions, oldest first (optionally one account or a set).
+
+    ``amount`` is converted to the portfolio base currency at the FX rate **as of the
+    trade date** — the same as-of-date convention ``realized()`` uses for proceeds/basis.
+    A currency with no cached as-of rate keeps ``amount_base`` None (native still shown)."""
+    base = _base_currency(session, portfolio_id)
+    rows = list(_portfolio_rows(session, tenant_id, portfolio_id, account_id, account_ids))
+    out: list[TransactionRow] = []
+    for row, ticker in rows:
+        rate = fx_service.rate_as_of(session, row.currency, row.trade_date, base=base)
+        amount = float(row.amount)
+        out.append(
+            TransactionRow(
+                trade_date=row.trade_date,
+                txn_type=row.txn_type,
+                ticker=ticker or "",
+                quantity=float(row.quantity),
+                price=float(row.price),
+                amount=amount,
+                fees=float(row.fees),
+                currency=row.currency,
+                fx_rate=rate,
+                amount_base=(amount * rate) if rate is not None else None,
+            )
         )
-        for row, ticker in _portfolio_rows(session, tenant_id, portfolio_id, account_id, account_ids)
-    ]
+    return out
 
 
 @dataclass

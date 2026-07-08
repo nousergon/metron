@@ -288,6 +288,8 @@ class TransactionOut(BaseModel):
     amount: float
     fees: float
     currency: str
+    fx_rate: float | None = None       # trade-date base-per-unit (1.0 for USD)
+    amount_base: float | None = None
 
 
 class IncomeOut(BaseModel):

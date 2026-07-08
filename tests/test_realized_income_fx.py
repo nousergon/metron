@@ -89,6 +89,28 @@ class TestRealizedFx:
         assert lot.gain_base == pytest.approx(2000 * 0.127)
 
 
+class TestTransactionsFx:
+    """metron-ops#11: transaction-table amount converts to base currency at the
+    trade-date FX rate, mirroring realized lots' proceeds_base/cost_basis_base."""
+
+    def test_amount_converts_at_trade_date_rate(self, db_session, hk_world):
+        tid, pid = hk_world
+        rows = {r.txn_type: r for r in analytics.transactions(db_session, tid, pid)}
+        dividend = rows["DIVIDEND"]
+        assert dividend.currency == "HKD"
+        assert dividend.amount == pytest.approx(50.0)  # native still populated
+        assert dividend.fx_rate == pytest.approx(0.127)  # pay-date (03-01) carries fwd from 02-28
+        assert dividend.amount_base == pytest.approx(50 * 0.127)
+
+    def test_missing_rate_excludes_amount_base(self, db_session, hk_world):
+        tid, pid = hk_world
+        db_session.query(models.FxRate).delete()
+        db_session.commit()
+        dividend = next(r for r in analytics.transactions(db_session, tid, pid) if r.txn_type == "DIVIDEND")
+        assert dividend.amount == pytest.approx(50.0)  # native still shown
+        assert dividend.amount_base is None and dividend.fx_rate is None  # no fabrication
+
+
 class TestForeignTransactionSpan:
     def test_span(self, db_session, hk_world):
         tid, pid = hk_world
