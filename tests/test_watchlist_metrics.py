@@ -47,9 +47,7 @@ def test_watchlist_metrics_populate_via_data_spine_when_feed_entitled(db_session
     monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals", lambda: _Snap({}))
     monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst", lambda: _Snap({}))
     monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment", lambda: _Snap({}))
-    monkeypatch.setattr(
-        metrics_enrichment.valuation_medians_service, "load_valuation_medians", lambda: _Snap({})
-    )
+    monkeypatch.setattr(metrics_enrichment.attractiveness_service, "compute_universe", lambda: {})
 
     entries = watchlist.list_watchlist(db_session, tenant.id, pf.id, feed_entitled=True)
     assert len(entries) == 1

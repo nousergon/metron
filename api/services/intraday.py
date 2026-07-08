@@ -20,29 +20,34 @@ close. A stale / missing / suspect quote falls back per-symbol — never fabrica
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import threading
-import time
 import uuid
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.db import models
-from api.services import fund_proxy
+from api.services import fund_proxy, market_snapshot
 from portfolio_analytics.prices import ClosePoint
 
 logger = logging.getLogger(__name__)
-
-INTRADAY_KEY = "market_data/intraday/latest.json"
 # Match the Markets strip: a snapshot older than this is "stale" — the market closed or the
 # demand-gated feed paused — so we fall back to EOD close rather than imply a live tick.
 STALE_AFTER_SECONDS = 20 * 60
+
+# Per-position pricing source for the live valuation (metron-ops#152) — DERIVED per ticker
+# from quote availability + freshness, never a manual per-account flag. The live-session
+# COVERED basis is exactly the {delayed, estimated} sources; {last_close, unpriced} are
+# excluded from live-session metrics (numerator AND denominator) and disclosed instead.
+# "realtime" is reserved for a future true-realtime feed; today's feed is ~15-min delayed.
+SOURCE_DELAYED = "delayed"        # revalued from a usable intraday quote (~15-min delayed)
+SOURCE_ESTIMATED = "estimated"    # synthesized fund estimate (metron-ops#112 mechanism B)
+SOURCE_LAST_CLOSE = "last_close"  # no usable quote — valued at the latest EOD close
+SOURCE_UNPRICED = "unpriced"      # no usable quote and no EOD close (or no FX to base)
+COVERED_SOURCES = frozenset({SOURCE_DELAYED, SOURCE_ESTIMATED})
 
 
 @dataclass
@@ -53,6 +58,10 @@ class IntradayMeta:
     as_of_utc: str | None = None  # ISO8601 Z — the producer's write time
     stale: bool = False
     n_priced: int = 0             # held tickers that got an intraday last-price
+    # Held tickers in scope for the overlay — ``n_priced``/``n_total`` is the live COVERAGE.
+    # The per-symbol merge silently keeps the EOD close for any un-quoted symbol, so a
+    # partially-live NAV must be disclosed by the UI rather than read as fully live.
+    n_total: int = 0
     reason: str | None = None     # why not applied ("feed" / "stale" / "unavailable")
     # Held tickers whose intraday price was SYNTHESIZED from a tracking-proxy ETF's
     # same-day return rather than read from the ticker's own intraday quote — the
@@ -61,53 +70,25 @@ class IntradayMeta:
     # intraday quote of its own. Drives the "estimated" UI badge; restated by mechanism A
     # once the fund's true NAV lands (next data run).
     estimated_tickers: frozenset[str] = frozenset()
-
-
-def _bucket() -> str:
-    return os.environ.get("MARKET_DATA_BUCKET", "alpha-engine-research")
-
-
-# Process-level TTL cache for the intraday snapshot S3 read. A single page load fans out to
-# ~5–7 endpoints (Holdings + Accounts + Today + intraday-legs + per-security day legs), each
-# of which reads the SAME ``latest.json`` artifact — so without this the snapshot was fetched
-# from S3 5–7× per render, serially, dominating the Holdings page latency. The producer writes
-# every ~5 min and the snapshot's own staleness window is 20 min (STALE_AFTER_SECONDS), so a
-# short TTL well under both collapses the fan-out to one read while never serving a snapshot
-# materially older than an un-cached read would. Freshness is still judged per-call in
-# ``load_quotes`` against live ``now`` (the cache holds the artifact, not a freshness verdict),
-# so a cached-but-aged snapshot still correctly reports ``stale``. Mirrors the monotonic-throttle
-# pattern in ``data_spine.touch_ui_heartbeat``. The ``reader`` injection path bypasses this
-# entirely, so tests are unaffected.
-_SNAPSHOT_TTL_S = 30.0
-_snapshot_lock = threading.Lock()
-_snapshot_cache: dict | None = None
-_snapshot_fetched_monotonic: float = 0.0
-
-
-def _read_snapshot_s3() -> dict | None:
-    import boto3
-
-    try:
-        obj = boto3.client("s3").get_object(Bucket=_bucket(), Key=INTRADAY_KEY)
-        return json.loads(obj["Body"].read())
-    except Exception as e:  # fail-soft: degrade to EOD valuation, never break the page
-        logger.warning("data-spine read failed %s: %s", INTRADAY_KEY, e)
-        return None
+    # Per-ticker pricing source (metron-ops#152): SOURCE_DELAYED / SOURCE_ESTIMATED /
+    # SOURCE_LAST_CLOSE / SOURCE_UNPRICED. Populated on the applied overlay path; a ticker
+    # later found unvaluable in base currency (no FX) is downgraded by ``weigh_coverage``.
+    source_by_ticker: dict[str, str] = field(default_factory=dict)
+    # NAV-weighted live coverage (metron-ops#152): base-currency market value of the
+    # COVERED (delayed/estimated) positions vs the whole valued portfolio — the honest
+    # "covers $X of $Y NAV" disclosure. A per-ticker count (n_priced/n_total) can wildly
+    # misstate coverage when position sizes differ. Filled by ``weigh_coverage`` (needs
+    # valued holdings, which this module doesn't compute); None until then.
+    covered_nav: float | None = None
+    total_nav: float | None = None
 
 
 def _default_reader() -> dict | None:
-    """The cached intraday snapshot dict (or None on read failure). At most one S3 read per
-    ``_SNAPSHOT_TTL_S`` across all consumers in this process; concurrent callers within the
-    window share the cached value. A failed read is also cached for the window so a transient
-    S3 blip during a page load doesn't trigger 5–7 retries (recovery lag ≤ TTL is acceptable
-    — fail-soft already degrades to EOD close)."""
-    global _snapshot_cache, _snapshot_fetched_monotonic
-    with _snapshot_lock:
-        if time.monotonic() - _snapshot_fetched_monotonic < _SNAPSHOT_TTL_S:
-            return _snapshot_cache
-        _snapshot_cache = _read_snapshot_s3()
-        _snapshot_fetched_monotonic = time.monotonic()
-        return _snapshot_cache
+    """The cached intraday snapshot dict (or None on read failure), via the shared
+    ``market_snapshot`` cache so this consumer and the Markets strip (``indices.py``) share a
+    single S3 read per TTL window rather than each fetching the same artifact. The ``reader=``
+    injection path bypasses this entirely, so tests are unaffected."""
+    return market_snapshot.read_cached_snapshot()
 
 
 def _is_stale(as_of_utc: str | None, now: datetime) -> bool:
@@ -279,9 +260,20 @@ def live_prices(
         return None, IntradayMeta(applied=False, as_of_utc=as_of, stale=stale, reason="unavailable")
     merged = dict(eod_closes)
     merged.update(overlay)
+    # Per-ticker pricing source (metron-ops#152) — derived, never a manual flag. The
+    # un-overlaid remainder splits by whether an EOD close exists to fall back on; a
+    # source may later be downgraded to unpriced by ``weigh_coverage`` when the position
+    # can't be valued in base currency (no FX).
+    sources: dict[str, str] = {}
+    for t in tickers:
+        if t in overlay:
+            sources[t] = SOURCE_ESTIMATED if t in estimated else SOURCE_DELAYED
+        else:
+            eod = eod_closes.get(t)
+            sources[t] = SOURCE_LAST_CLOSE if (eod is not None and eod.close is not None) else SOURCE_UNPRICED
     return merged, IntradayMeta(
-        applied=True, as_of_utc=as_of, stale=False, n_priced=len(overlay),
-        estimated_tickers=frozenset(estimated),
+        applied=True, as_of_utc=as_of, stale=False, n_priced=len(overlay), n_total=len(tickers),
+        estimated_tickers=frozenset(estimated), source_by_ticker=sources,
     )
 
 
@@ -310,6 +302,67 @@ def for_portfolio(
     held = analytics.holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     tickers = [h.ticker for h in held if h.ticker]
     return live_prices(session, tickers, feed_entitled=feed_entitled, reader=reader, now=now)
+
+
+def session_state(meta: IntradayMeta, *, now: datetime | None = None) -> str:
+    """The market/session state behind an intraday status (metron-ops-I156) — drives the
+    valuation toggle's honest label:
+
+    - ``"live"`` — the overlay is applied (fresh in-session snapshot): "Live session".
+    - ``"recap"`` — today's session has CLOSED and the (stale) snapshot is that completed
+      session's closing state: same data, honestly framed as "Today's session". The
+      evening what-happened-today view.
+    - ``"closed"`` — pre-market / weekend / holiday (the snapshot is a PRIOR session —
+      nothing live mode can add over settled), or no readable snapshot at all. Also the
+      conservative fallback for a mid-session feed outage (stale while the market is
+      open): the toggle grays rather than implying live-ness a dead feed can't deliver.
+    """
+    from zoneinfo import ZoneInfo
+
+    from krepis.trading_calendar import last_closed_trading_day
+
+    now = now or datetime.now(UTC)
+    if meta.applied:
+        return "live"
+    if not meta.as_of_utc:
+        return "closed"
+    try:
+        beat = datetime.fromisoformat(str(meta.as_of_utc).replace("Z", "+00:00"))
+    except ValueError:
+        return "closed"
+    et = ZoneInfo("America/New_York")
+    today_et = now.astimezone(et).date()
+    # Today's session has closed AND the snapshot was written on that session's date —
+    # i.e. the snapshot IS the completed session's closing state.
+    if last_closed_trading_day(now) == today_et and beat.astimezone(et).date() == today_et:
+        return "recap"
+    return "closed"
+
+
+def weigh_coverage(meta: IntradayMeta, held: list) -> IntradayMeta:
+    """Fill ``meta.covered_nav`` / ``meta.total_nav`` from VALUED holdings (metron-ops#152)
+    — the NAV-weighted live-coverage disclosure ("covers $X of $Y NAV"). ``held`` must be
+    valued with the SAME merged price map ``live_prices`` returned, so both figures are in
+    live-NAV terms and ``total_nav`` equals the headline live NAV.
+
+    A position with no base-currency market value (no FX rate cached, or no price at all)
+    is in neither figure — it also gets its source downgraded to ``unpriced`` so the
+    per-ticker disclosure never claims coverage the NAV math didn't include. Mutates and
+    returns ``meta``; a not-applied meta passes through untouched."""
+    if not meta.applied:
+        return meta
+    covered = total = 0.0
+    for h in held:
+        if h.market_value is None:
+            if h.ticker in meta.source_by_ticker:
+                meta.source_by_ticker[h.ticker] = SOURCE_UNPRICED
+            continue
+        total += h.market_value
+        if meta.source_by_ticker.get(h.ticker) in COVERED_SOURCES:
+            covered += h.market_value
+    meta.covered_nav = covered
+    meta.total_nav = total
+    return meta
 
 
 # ── Today view: prior-close / open / latest + overnight·intraday·day decomposition ──────
@@ -343,6 +396,16 @@ class TodayRow:
 
 
 @dataclass
+class ExcludedRow:
+    """A held position NOT in the covered live-session basis (metron-ops#152) — named,
+    with the reason, so partial coverage is disclosed instead of silently dropped."""
+
+    ticker: str
+    label: str
+    reason: str  # "suspect" / "no_quote" / "no_fx"
+
+
+@dataclass
 class TodaySummary:
     available: bool
     base_currency: str = "USD"
@@ -357,11 +420,20 @@ class TodaySummary:
     overnight_pct: float | None = None   # leg $ / prior-close MV (decomposable rows)
     intraday_pct: float | None = None
     day_pct: float | None = None
+    # The covered-basis denominator (metron-ops#152): prior-close base-$ market value of
+    # the DECOMPOSABLE rows only — the % legs above are legs$/THIS. Excluded holdings are
+    # in neither the numerator nor here (never blended); None when nothing decomposed.
+    covered_prev_mv: float | None = None
     rows: list[TodayRow] = None  # type: ignore[assignment]
+    # Every excluded holding, named with its reason (metron-ops#152) — the disclosure
+    # companion to ``n_excluded``.
+    excluded_rows: list[ExcludedRow] = None  # type: ignore[assignment]
 
     def __post_init__(self):
         if self.rows is None:
             self.rows = []
+        if self.excluded_rows is None:
+            self.excluded_rows = []
 
 
 def today_view(
@@ -415,8 +487,8 @@ def _today_summary(
     intraday snapshot quotes. Shared by ``today_view`` (one scope) and ``today_by_account``
     (every account off ONE snapshot decode), so the per-holding math is single-sourced."""
     rows: list[TodayRow] = []
+    excluded_rows: list[ExcludedRow] = []
     tot_prev_mv = tot_on = tot_id = tot_day = 0.0
-    excluded = 0
     for h in held:
         q = quotes.get(yf_by_ticker.get(h.ticker, h.ticker))
         prev = _f(q, "prev_close") if isinstance(q, dict) else None
@@ -425,7 +497,11 @@ def _today_summary(
         fx = h.fx_rate if h.fx_rate is not None else (1.0 if (h.currency or "USD") == base else None)
         suspect = bool(q.get("suspect")) if isinstance(q, dict) else False
         if suspect or prev is None or opn is None or last is None or not prev or not opn or fx is None:
-            excluded += 1
+            # Named + reasoned exclusion (metron-ops#152): covered basis only — never
+            # blended in flat. Reason priority: a suspect quote is a quote problem even
+            # when fields are also missing; FX only matters once the quote is decomposable.
+            reason = "suspect" if suspect else ("no_quote" if (prev is None or opn is None or last is None or not prev or not opn) else "no_fx")
+            excluded_rows.append(ExcludedRow(ticker=h.ticker, label=h.user_label or h.ticker, reason=reason))
             continue
         qty = h.quantity
         on_g = qty * (opn - prev) * fx
@@ -465,14 +541,16 @@ def _today_summary(
         as_of_utc=as_of,
         stale=stale,
         n_priced=len(rows),
-        n_excluded=excluded,
+        n_excluded=len(excluded_rows),
         overnight_gain=tot_on if has else None,
         intraday_gain=tot_id if has else None,
         day_gain=tot_day if has else None,
         overnight_pct=pct(tot_on) if has else None,
         intraday_pct=pct(tot_id) if has else None,
         day_pct=pct(tot_day) if has else None,
+        covered_prev_mv=tot_prev_mv if has else None,
         rows=rows,
+        excluded_rows=excluded_rows,
     )
 
 

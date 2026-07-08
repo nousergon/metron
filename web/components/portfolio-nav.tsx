@@ -62,10 +62,10 @@ export function PortfolioNav({
   const base = `/portfolios/${portfolioId}`;
   // Selection-scoped pages carry navQuery; whole-portfolio pages don't.
   const pages: NavPage[] = [
-    { label: "Overview", href: `${base}${navQuery}`, feature: "overview" },
-    // Holdings now carries the intraday Day decomposition + per-security YTD/LTM; the
-    // standalone Today page was folded in and /today redirects here (metron-ops#87).
-    { label: "Holdings", href: `${base}/holdings${navQuery}`, feature: "overview" },
+    // Holdings IS the landing page (metron-ops-I156) — the daily-driver live surface.
+    { label: "Holdings", href: `${base}${navQuery}`, feature: "overview" },
+    // The analytical dashboard (settled tiles / chart / allocation / account management).
+    { label: "Overview", href: `${base}/overview`, feature: "overview" },
     { label: "Performance", href: `${base}/performance${navQuery}`, feature: "performance" },
     { label: "Risk", href: `${base}/risk${navQuery}`, feature: "risk" },
     { label: "Attribution", href: `${base}/attribution${navQuery}`, feature: "attribution" },

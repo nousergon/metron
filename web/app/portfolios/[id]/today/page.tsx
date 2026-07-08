@@ -16,5 +16,5 @@ export default function TodayRedirect({
 }) {
   const ids = searchParams.account_id;
   const list = ids == null ? [] : Array.isArray(ids) ? ids : [ids];
-  redirect(`/portfolios/${params.id}/holdings${acctParams(list)}`);
+  redirect(`/portfolios/${params.id}${acctParams(list)}`);
 }

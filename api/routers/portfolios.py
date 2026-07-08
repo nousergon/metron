@@ -15,7 +15,7 @@ value, performance, risk) arrive in later PH1–PH3 increments.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict
@@ -152,6 +152,16 @@ class HoldingOut(BaseModel):
     # its own NAV yet today. Not a problem flag like last_price_stale — an expected,
     # clearly-labeled estimate, reconciled to the true struck NAV by mechanism A tomorrow.
     is_estimated: bool = False
+    # Broker-reported "as of" date for this position (IBKR Flex statement / SnapTrade
+    # last_holdings_sync) — how current the SHARE COUNT is, distinct from
+    # last_price_date (how current the PRICE is). None for ledger-only (CSV/OFX)
+    # holdings, which have no broker snapshot to go stale.
+    broker_as_of: date | None = None
+    # True when a snapshot-sourced holding's broker_as_of is stale (metron-ops#150) —
+    # e.g. the daily broker re-sync hasn't run recently, so a real trade at the broker
+    # may not yet be reflected here even though last_price looks fresh. Drives the
+    # Holdings "positions as of" staleness warning. Always False for ledger-only holdings.
+    positions_stale: bool = False
     market_value_local: float | None = None
     cost_basis_base: float | None = None
     market_value: float | None = None
@@ -218,17 +228,14 @@ class HoldingOut(BaseModel):
     num_analysts: int | None = None
     news_sentiment: float | None = None
     news_articles: int | None = None
-    # Composite attractiveness score (metron-ops#106, Phase 2) — transparent 0–100 blend of the
-    # fields above. None off-feed or on a total coverage gap, never fabricated.
     attractiveness: float | None = None
     attractiveness_coverage: int | None = None
-    # Unit sub-scores ∈ [0, 1] behind the composite — the same breakdown the tearsheet gauge
-    # shows. None when that component's input was missing and dropped from the blend.
-    attractiveness_valuation: float | None = None
-    attractiveness_upside: float | None = None
-    attractiveness_rating: float | None = None
-    attractiveness_revision: float | None = None
-    attractiveness_sentiment: float | None = None
+    attractiveness_quality: float | None = None
+    attractiveness_value: float | None = None
+    attractiveness_momentum: float | None = None
+    attractiveness_growth: float | None = None
+    attractiveness_stewardship: float | None = None
+    attractiveness_defensiveness: float | None = None
 
 
 class GroupMediansOut(BaseModel):
@@ -346,14 +353,30 @@ class SummaryOut(BaseModel):
 
 
 class IntradayStatusOut(BaseModel):
-    """Live-valuation status for the Overview/Holdings/Performance "intraday" label +
-    poll (metron-ops#79)."""
+    """Live-valuation status for the Overview/Holdings "intraday" label + poll
+    (metron-ops#79); coverage disclosure per metron-ops#146."""
 
     applied: bool                  # the intraday overlay is currently in effect
     as_of_utc: str | None = None   # producer write time of the snapshot in use
     stale: bool = False            # snapshot older than the freshness window (market closed?)
     n_priced: int = 0              # held positions revalued from a fresh intraday quote
+    n_total: int = 0               # held positions in scope — un-priced ones keep EOD close
+    n_estimated: int = 0           # of n_priced, synthesized fund estimates (metron-ops#112)
     reason: str | None = None      # why not applied ("feed" / "stale" / "unavailable")
+    # NAV-weighted coverage (metron-ops#152): base-$ market value of the covered
+    # (delayed/estimated) positions vs the whole valued portfolio, both in live-NAV terms —
+    # the "covers $X of $Y NAV" disclosure. A ticker count misstates coverage whenever
+    # position sizes differ; these don't. None when the overlay isn't applied.
+    covered_nav: float | None = None
+    total_nav: float | None = None
+    # Per-ticker pricing source (metron-ops#152): "delayed" / "estimated" / "last_close" /
+    # "unpriced" — derived, never a manual flag. Empty when the overlay isn't applied.
+    sources: dict[str, str] = {}
+    # Market/session state (metron-ops-I156): "live" (overlay applied, in session) /
+    # "recap" (today's session closed; the stale snapshot IS its closing state) /
+    # "closed" (pre-market / weekend / holiday / unreadable). Drives the valuation
+    # toggle's label — "Live session" vs "Today's session" vs grayed out.
+    session_state: str = "closed"
 
 
 class TodayRowOut(BaseModel):
@@ -374,9 +397,22 @@ class TodayRowOut(BaseModel):
     day_gain: float | None = None
 
 
+class ExcludedRowOut(BaseModel):
+    """A held position excluded from the covered live-session basis, with the reason
+    (metron-ops#152) — drives the explicit not-in-live-session disclosure."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    label: str
+    reason: str  # "suspect" / "no_quote" / "no_fx"
+
+
 class TodayOut(BaseModel):
     """The Today view — per-holding overnight·intraday·day decomposition + totals
-    (metron-ops#23)."""
+    (metron-ops#23). Covered-basis by construction: excluded holdings are in neither the
+    leg $ nor the % denominator (``covered_prev_mv``), and are named in ``excluded_rows``
+    (metron-ops#152)."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -393,7 +429,9 @@ class TodayOut(BaseModel):
     overnight_pct: float | None = None
     intraday_pct: float | None = None
     day_pct: float | None = None
+    covered_prev_mv: float | None = None
     rows: list[TodayRowOut] = []
+    excluded_rows: list[ExcludedRowOut] = []
 
 
 class AccountDetailOut(BaseModel):
@@ -619,11 +657,12 @@ class WatchlistEntryOut(BaseModel):
     news_articles: int | None = None
     attractiveness: float | None = None
     attractiveness_coverage: int | None = None
-    attractiveness_valuation: float | None = None
-    attractiveness_upside: float | None = None
-    attractiveness_rating: float | None = None
-    attractiveness_revision: float | None = None
-    attractiveness_sentiment: float | None = None
+    attractiveness_quality: float | None = None
+    attractiveness_value: float | None = None
+    attractiveness_momentum: float | None = None
+    attractiveness_growth: float | None = None
+    attractiveness_stewardship: float | None = None
+    attractiveness_defensiveness: float | None = None
 
 
 class WatchlistIn(BaseModel):
@@ -1158,6 +1197,8 @@ _HOLDINGS_GROUPINGS = {"asset", "classification", "account"}
 _HOLDINGS_BANDS = {"Attractiveness", "Valuation", "Fundamentals", "Balance Sheet", "Technicals", "Consensus"}
 # Valid instrument-type override values — the set classify_security_type emits (metron-ops#115).
 _INSTRUMENT_TYPES = {"cash", "treasury", "cd", "bond", "equity", "etf", "fund", "option", "other"}
+# The two valuation regimes (metron-ops#153): settled EOD close vs the live intraday overlay.
+_VALUATION_MODES = {"live", "settled"}
 
 
 class HoldingsViewOut(BaseModel):
@@ -1165,6 +1206,7 @@ class HoldingsViewOut(BaseModel):
     visible_bands: list[str] | None = None
     combine_by_account: bool | None = None
     hidden_types: list[str] | None = None
+    valuation: str | None = None  # "live" | "settled" (metron-ops#153) — null = default
 
 
 class HoldingsViewIn(BaseModel):
@@ -1174,6 +1216,7 @@ class HoldingsViewIn(BaseModel):
     visible_bands: list[str] | None = None
     combine_by_account: bool | None = None
     hidden_types: list[str] | None = None
+    valuation: str | None = None
 
 
 @router.get("/{portfolio_id}/holdings-view", response_model=HoldingsViewOut)
@@ -1202,6 +1245,7 @@ def get_holdings_view(
         visible_bands=bands,
         combine_by_account=pref.holdings_combine_by_account,
         hidden_types=hidden,
+        valuation=pref.holdings_valuation if pref.holdings_valuation in _VALUATION_MODES else None,
     )
 
 
@@ -1218,6 +1262,8 @@ def put_holdings_view(
         raise HTTPException(status_code=422, detail="Unknown grouping")
     if body.visible_bands is not None and any(b not in _HOLDINGS_BANDS for b in body.visible_bands):
         raise HTTPException(status_code=422, detail="Unknown metric band")
+    if body.valuation is not None and body.valuation not in _VALUATION_MODES:
+        raise HTTPException(status_code=422, detail="Unknown valuation mode")
     # Hidden types are filtered to known values rather than rejected — an unrecognized held
     # type (a raw security_type key) simply isn't persisted, never a 422 on a best-effort save.
     hidden = [t for t in (body.hidden_types or []) if t in _INSTRUMENT_TYPES]
@@ -1226,12 +1272,14 @@ def put_holdings_view(
     pref.holdings_visible_bands = ", ".join(body.visible_bands) if body.visible_bands else None
     pref.holdings_combine_by_account = body.combine_by_account
     pref.holdings_hidden_types = ", ".join(hidden) if hidden else None
+    pref.holdings_valuation = body.valuation
     session.commit()
     return HoldingsViewOut(
         grouping=body.grouping,
         visible_bands=body.visible_bands,
         combine_by_account=body.combine_by_account,
         hidden_types=hidden or None,
+        valuation=body.valuation,
     )
 
 
@@ -1389,15 +1437,9 @@ def _snaptrade_excluded_ids(session: Session, portfolio: models.Portfolio) -> se
     elsewhere (e.g. IBKR via Flex — syncing it from SnapTrade too would double-count).
     Keyed by the connection's stable authorization id — never by institution-name
     matching, which proved fragile (SnapTrade reports "E-Trade" on accounts but
-    "E*Trade" on the connection)."""
-    pref = session.scalars(
-        select(models.InvestorPreferences).where(
-            models.InvestorPreferences.tenant_id == portfolio.tenant_id,
-            models.InvestorPreferences.portfolio_id == portfolio.id,
-        )
-    ).first()
-    raw = pref.snaptrade_excluded_connections if pref is not None else None
-    return {s.strip() for s in (raw or "").split(",") if s.strip()}
+    "E*Trade" on the connection). Shared with the automated ``broker_sync`` re-sync
+    via ``persistence.snaptrade_excluded_ids``."""
+    return persistence.snaptrade_excluded_ids(session, portfolio.tenant_id, portfolio.id)
 
 
 @router.post("/{portfolio_id}/import/snaptrade", response_model=ImportOut)
@@ -1661,16 +1703,27 @@ def get_holdings(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
     by_account: bool = False,
+    valuation: str = "settled",
     session: Session = Depends(get_session),
 ) -> list[analytics.Holding]:
     # Valued when a cached close exists for the ticker; cost-basis-only otherwise.
     # ``?account_id=`` (repeatable) scopes to the selected accounts; absent = all.
     # ``?by_account=1`` returns the UNCOMBINED view — one row per (account, ticker), each
     # tagged with account_id/account_label (metron-ops#114); default consolidates per ticker.
-    # LIVE intraday overlay (metron-ops#79): during trading hours on a feed-entitled build,
-    # each position revalues from the intraday last; otherwise this is None → EOD close.
-    prices, meta = intraday.for_portfolio(
-        session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled, account_ids=account_ids
+    # ``?valuation=`` selects the regime (metron-ops#153): DEFAULT "settled" — official EOD
+    # close, no intraday anywhere. "live" is the explicit per-request opt-in for the Holdings
+    # live mode: positions revalue from the ~15-min-delayed intraday overlay (metron-ops#79),
+    # still subordinate to feed entitlement + the user's intraday toggle. The conservative
+    # default means a consumer that doesn't ask never gets a live-moving value.
+    if valuation not in _VALUATION_MODES:
+        raise HTTPException(status_code=422, detail="valuation must be 'live' or 'settled'")
+    live_mode = valuation == "live"
+    prices, meta = (
+        intraday.for_portfolio(
+            session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled, account_ids=account_ids
+        )
+        if live_mode
+        else (None, intraday.IntradayMeta(applied=False, reason="settled"))
     )
     held = (
         analytics.valued_holdings_by_account_flat(
@@ -1688,10 +1741,12 @@ def get_holdings(
         for h in held:
             if h.ticker in meta.estimated_tickers:
                 h.is_estimated = True
-    # Per-security Day / YTD / LTM returns for the Holdings table (metron-ops#87).
+    # Per-security Day / YTD / LTM returns for the Holdings table (metron-ops#87). Session
+    # day legs are live-quote-derived → live mode only; settled mode keeps YTD/LTM (close-fed).
     held = security_perf.enrich_holdings(
         session, portfolio.tenant_id, portfolio.id, held,
         as_of=date.today(), feed_entitled=settings.feed_entitled, account_ids=account_ids,
+        day_legs=live_mode,
     )
     # GICS sector + country of domicile for the table columns + the performers/geo
     # section. Both are cached reference data from the data spine; ensure_* only sources
@@ -1907,7 +1962,6 @@ class PeriodTileOut(BaseModel):
     twr: float | None
     benchmarks: list[BenchmarkReturnOut] = []
     note: str | None = None  # honest empty-state reason (e.g. TODAY "as of <prior date>")
-    intraday: bool = False  # the live intraday TODAY tile (prior-session close → live NAV)
 
 
 class PeriodTilesOut(BaseModel):
@@ -1926,27 +1980,25 @@ def get_performance_tiles(
     """Overview hero tiles (metron-ops#83): aggregate holdings performance over Today / YTD
     / LTM as $ gain + %TWR, plus per-benchmark return and alpha.
 
+    SETTLED BY CONSTRUCTION (metron-ops#154): every tile — TODAY included — is a
+    snapshot-to-snapshot close window. The live-intraday TODAY variant (metron-ops#95) was
+    retired: it mixed a covered-only numerator with a full-portfolio denominator, silently
+    diluting the shown %TWR under partial quote coverage. Live session detail lives in the
+    Holdings live valuation mode (metron-ops#153). The date-guarded snapshot path
+    (metron#119) labels a pre-open/prior-session TODAY "as of <date>".
+
     Benchmark comparison is **feed-gated** (metron-ops#44/#83): the no-feed beta gets
     portfolio-only tiles (``with_benchmarks=False`` — no yfinance-derived index data, per
     metron-ops#52); the owner/Pro feed build gets the SPY/QQQ/IWM columns. Account-scoped
-    to the same ``?account_id=`` selection as the rest of the Overview.
-
-    The TODAY tile is a LIVE intraday number (metron-ops#95) when the intraday overlay is in
-    effect — its endpoint is the same live NAV the headline TOTAL VALUE shows, valued off
-    the same overlay, with benchmark TODAY taken from the Markets-strip index quotes. When
-    the overlay is absent (pre-open / stale / no feed) TODAY falls back to the date-guarded
-    snapshot path (metron#119) for the portfolio side, but its benchmark comparison is STILL
-    sourced from the same live index-strip quotes (metron-ops#131) — the multi-day-tolerant
-    `price_bars` benchmark cache (correct for YTD/LTM) is fresh enough for QQQ/IWM only within
-    a several-day slack, since they're pure comparison proxies never held as a position (only
-    a genuinely-held ticker like SPY gets a same-day cache refresh for free). Reading TODAY's
-    return from the SAME index-strip artifact the Markets strip already displays correctly
-    keeps the two panels consistent and immune to that cache-staleness gap."""
+    to the same ``?account_id=`` selection as the rest of the Overview. TODAY's benchmark
+    comparison is sourced from the live index-strip quotes (metron-ops#131) — the
+    multi-day-tolerant `price_bars` benchmark cache (correct for YTD/LTM) is fresh enough
+    for QQQ/IWM only within a several-day slack, since they're pure comparison proxies
+    never held as a position."""
     with_benchmarks = _external_market_data_allowed(x_preview_feed)
     # A benchmark quote only carries a real "today" move when it's dated for the live NYSE
-    # session (indices.load_indices already suppresses change_pct off-session) — reused as
-    # both the live-overlay TODAY benchmark AND the settled-snapshot TODAY benchmark below,
-    # so a genuinely-today TODAY tile never reads a stale/off-session index quote as today's.
+    # session (indices.load_indices already suppresses change_pct off-session), so the
+    # settled-snapshot TODAY tile never reads a stale/off-session index quote as today's.
     today_bench: dict[str, tuple[float | None, float | None]] = {}
     if with_benchmarks:
         idx_snap = indices.load_indices()
@@ -1954,23 +2006,6 @@ def get_performance_tiles(
             today_bench = {
                 q.symbol: (q.last, q.prev_close) for q in idx_snap.indices if q.change_pct is not None
             }
-    # LIVE intraday endpoint for the TODAY tile: the same overlay + valuation the headline
-    # NAV uses (metron-ops#79/#95), so the tile and TOTAL VALUE move together. None when the
-    # overlay isn't applied → the snapshot path takes over inside period_tiles.
-    live: performance.LiveToday | None = None
-    prices, meta = intraday.for_portfolio(
-        session, portfolio.tenant_id, portfolio.id,
-        feed_entitled=settings.feed_entitled, account_ids=account_ids,
-    )
-    if meta.applied and prices is not None:
-        held = analytics.valued_holdings(
-            session, portfolio.tenant_id, portfolio.id, account_ids=account_ids, prices=prices
-        )
-        priced = [h.market_value for h in held if h.market_value is not None]
-        live_nav = sum(priced) if priced else None
-        live = performance.LiveToday(
-            nav=live_nav, intraday_applied=True, as_of_utc=meta.as_of_utc, bench=today_bench
-        )
     return performance.period_tiles(
         session,
         portfolio.tenant_id,
@@ -1978,8 +2013,8 @@ def get_performance_tiles(
         today=date.today(),
         account_ids=account_ids,
         with_benchmarks=with_benchmarks,
-        live=live,
         today_bench=today_bench,
+        now=datetime.now(UTC),
     )
 
 
@@ -2114,6 +2149,7 @@ class TearsheetPerformanceOut(BaseModel):
     max_drawdown: float | None = None
     beta_vs_spy: float | None = None
     vs_spy: float | None = None
+    vs_spy_1y: float | None = None
     n_bars: int = 0
     history_from: date | None = None
 
@@ -2187,18 +2223,17 @@ class TearsheetConsensusOut(BaseModel):
 
 
 class TearsheetAttractivenessComponentOut(BaseModel):
-    """One inspectable line of the attractiveness breakdown — the gauge tooltip renders these
-    so the weighting is never a black box (metron-ops#106)."""
+    """One inspectable pillar line of the attractiveness breakdown."""
     model_config = ConfigDict(from_attributes=True)
 
     key: str
     weight: float
-    sub_score: float
+    score: float
+    contribution: float | None = None
 
 
 class TearsheetAttractivenessOut(BaseModel):
-    """Composite attractiveness gauge (metron-ops#106, Phase 2) — the 0–100 headline score plus
-    its per-component breakdown. ``available`` is false off-feed or on a total coverage gap."""
+    """SOTA 6-pillar attractiveness gauge — cross-sectional percentile + pillar breakdown."""
     model_config = ConfigDict(from_attributes=True)
 
     available: bool = False
@@ -2598,15 +2633,22 @@ def get_account_detail(
 def get_summary(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
+    valuation: str = "settled",
     session: Session = Depends(get_session),
 ) -> analytics.PortfolioSummary:
     """Portfolio home totals — cost basis, realized, income, plus market value /
     unrealized when prices are cached. ``?account_id=`` scopes every total to the
-    selected accounts (absent = whole portfolio). The headline market value (NAV)
-    recomputes from the LIVE intraday balances on a feed-entitled build (metron-ops#79)."""
-    prices, _ = intraday.for_portfolio(
-        session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled, account_ids=account_ids
-    )
+    selected accounts (absent = whole portfolio). ``?valuation=`` selects the regime
+    (metron-ops#153): DEFAULT "settled" — the official EOD-close NAV, so Overview and every
+    other consumer that doesn't ask never shows a live-moving value. "live" (the Holdings
+    live mode) revalues from the intraday overlay (metron-ops#79)."""
+    if valuation not in _VALUATION_MODES:
+        raise HTTPException(status_code=422, detail="valuation must be 'live' or 'settled'")
+    prices = None
+    if valuation == "live":
+        prices, _ = intraday.for_portfolio(
+            session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled, account_ids=account_ids
+        )
     return analytics.summary(
         session, portfolio.tenant_id, portfolio.id, account_ids=account_ids, prices=prices
     )
@@ -2623,11 +2665,21 @@ def get_intraday_status(
     held positions got a fresh quote. Drives the "intraday · ~15-min delayed · as of HH:MM"
     label and the client poll. The poll hits ``_owned_portfolio``, which touches the
     data-spine UI heartbeat — so an open Metron keeps the intraday producer publishing."""
-    _, m = intraday.for_portfolio(
+    prices, m = intraday.for_portfolio(
         session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled, account_ids=account_ids
     )
+    if m.applied and prices is not None:
+        # NAV-weighted coverage (metron-ops#152): value the holdings off the SAME merged
+        # price map the live NAV uses, so covered/total are in live-NAV terms.
+        held = analytics.valued_holdings(
+            session, portfolio.tenant_id, portfolio.id, account_ids=account_ids, prices=prices
+        )
+        intraday.weigh_coverage(m, held)
     return IntradayStatusOut(
-        applied=m.applied, as_of_utc=m.as_of_utc, stale=m.stale, n_priced=m.n_priced, reason=m.reason
+        applied=m.applied, as_of_utc=m.as_of_utc, stale=m.stale, n_priced=m.n_priced,
+        n_total=m.n_total, n_estimated=len(m.estimated_tickers), reason=m.reason,
+        covered_nav=m.covered_nav, total_nav=m.total_nav, sources=dict(m.source_by_ticker),
+        session_state=intraday.session_state(m),
     )
 
 

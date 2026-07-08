@@ -10,6 +10,7 @@
 // itself is server-fetched and passed in.
 
 import { useState } from "react";
+import Link from "next/link";
 import type { BenchmarkReturn, PeriodTile } from "@/lib/api";
 import { isoDate, percent, signClass, signedMoneyWhole } from "@/lib/format";
 
@@ -31,7 +32,7 @@ function AlphaRow({ b }: { b: BenchmarkReturn }) {
   );
 }
 
-function Tile({ tile, selected }: { tile: PeriodTile; selected: Set<string> }) {
+function Tile({ tile, selected, sessionHref }: { tile: PeriodTile; selected: Set<string>; sessionHref?: string }) {
   const has = tile.twr != null || tile.gain != null;
   const shown = tile.benchmarks.filter((b) => selected.has(b.symbol));
   // Only YTD/LTM carry a meaningful span worth labeling; Today is self-evident.
@@ -39,17 +40,27 @@ function Tile({ tile, selected }: { tile: PeriodTile; selected: Set<string> }) {
 
   return (
     <div className="rounded-lg border border-line p-4">
-      <div className="flex items-baseline justify-between">
+      <div className="flex items-baseline justify-between gap-2">
         <div className="text-xs font-medium uppercase tracking-wide text-muted">{tile.label}</div>
-        {tile.intraday ? (
-          <div className="text-[10px] text-accent/80">live · ~15m delay</div>
-        ) : tile.note ? (
-          // TODAY valued from a prior session's close (intraday off / pre-open) — label it so
-          // a completed-session change is never read as a live "today" move.
-          <div className="text-[10px] text-muted/70">{tile.note}</div>
-        ) : span ? (
-          <div className="text-[10px] text-muted/70">since {span}</div>
-        ) : null}
+        <div className="flex items-baseline gap-2">
+          {tile.note ? (
+            // TODAY is settled by construction (metron-ops#154) — a window ending before the
+            // current session carries "as of <date>" so a completed-session change is never
+            // read as a live "today" move.
+            <div className="text-[10px] text-muted/70">{tile.note}</div>
+          ) : span ? (
+            <div className="text-[10px] text-muted/70">since {span}</div>
+          ) : null}
+          {tile.period === "today" && sessionHref ? (
+            <Link
+              href={sessionHref}
+              className="text-[10px] text-accent/80 transition hover:text-accent"
+              title="Live session detail — Holdings in the live valuation mode"
+            >
+              live →
+            </Link>
+          ) : null}
+        </div>
       </div>
       {has ? (
         <>
@@ -77,9 +88,12 @@ function Tile({ tile, selected }: { tile: PeriodTile; selected: Set<string> }) {
 export function PerfTiles({
   tiles,
   benchmarksAvailable,
+  sessionHref,
 }: {
   tiles: PeriodTile[];
   benchmarksAvailable: boolean;
+  /** Link into the Holdings live valuation mode, shown on the (settled) Today tile. */
+  sessionHref?: string;
 }) {
   const meta = benchmarksAvailable ? benchmarkMeta(tiles) : [];
   const [selected, setSelected] = useState<Set<string>>(() => new Set(meta.map((m) => m.symbol)));
@@ -121,7 +135,7 @@ export function PerfTiles({
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         {tiles.map((t) => (
-          <Tile key={t.period} tile={t} selected={selected} />
+          <Tile key={t.period} tile={t} selected={selected} sessionHref={sessionHref} />
         ))}
       </div>
     </div>

@@ -94,11 +94,13 @@ def _factor_returns(hist: dict[str, list[ClosePoint]]) -> dict[str, pd.Series] |
 
 def _align(
     factor_series: dict[str, pd.Series], holding_series: dict[str, pd.Series]
-) -> tuple[dict[str, list[float]], dict[str, list[float]]] | None:
+) -> tuple[dict[str, list[float]], dict[str, list[float]], date] | None:
     """Align factors + holdings onto the common grid the factors define (port of
     robodashboard's ``align_returns``): trim trailing dates the holdings broadly lack
     (today's forming factor-ETF bar), then keep only holdings present on every grid
-    date (a recent buy can't be regressed over the full window — it's excluded)."""
+    date (a recent buy can't be regressed over the full window — it's excluded).
+    Also returns the grid's last date — the model's true data horizon, reported as
+    ``as_of`` (the compute-call date would overstate freshness off a stale cache)."""
     fframe = pd.DataFrame(factor_series).dropna()
     if len(fframe) < _MIN_OBS:
         return None
@@ -121,7 +123,7 @@ def _align(
     if not holdings:
         return None
     factors = {f: fframe[f].to_numpy(dtype=float).tolist() for f in fframe.columns}
-    return factors, holdings
+    return factors, holdings, max(idx)
 
 
 def compute_risk(
@@ -163,7 +165,7 @@ def compute_risk(
     aligned = _align(factor_series, holding_series)
     if aligned is None:
         return RiskSummary(False, reason="Too few aligned observations to fit the model.")
-    factor_returns, holding_returns = aligned
+    factor_returns, holding_returns, data_through = aligned
 
     model = estimate_factor_model(holding_returns, factor_returns)
     risk = portfolio_risk(model, weights)
@@ -172,7 +174,7 @@ def compute_risk(
     modeled = set(holding_returns)
     return RiskSummary(
         computable=True,
-        as_of=today,
+        as_of=data_through,
         n_obs=len(factor_returns["Market"]),
         n_modeled=len(modeled),
         excluded=sorted(t for t in tickers if t not in modeled),
