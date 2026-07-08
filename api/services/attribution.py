@@ -198,6 +198,14 @@ def compute_attribution(
             lookback_days=lookback_days,
         )
 
+    # The decomposition's true data horizon: the freshest close bar across the held +
+    # sector-ETF series the window returns were computed from. Reported as ``as_of``
+    # — the compute-call date would overstate freshness off a stale price cache.
+    data_through = max(
+        (s[-1].bar_date for s in (hist.get(sym) for sym in [*tickers, *etfs]) if s),
+        default=today,
+    )
+
     result: BrinsonResult = brinson_fachler(w_p, r_p, w_b, r_b)
     effects = [
         SectorEffect(
@@ -216,7 +224,7 @@ def compute_attribution(
     effects.sort(key=lambda e: e.total)  # biggest detractors first → read at a glance
     return AttributionSummary(
         computable=True,
-        as_of=today,
+        as_of=data_through,
         start_date=start,
         lookback_days=lookback_days,
         coverage=coverage,

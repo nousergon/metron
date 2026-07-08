@@ -85,6 +85,57 @@ describe("HoldingsView saved-view hydration", () => {
       visible_bands: ["Position", "Value"],
       combine_by_account: false,
       hidden_types: [],
+      valuation: "settled",
     });
+  });
+
+  it("offers the valuation toggle only when live is available, and persists + routes the switch", () => {
+    // Not offered without liveAvailable (no feed / intraday toggle off) — the settled
+    // regime is then the only regime (metron-ops#153).
+    const { unmount } = render(
+      <HoldingsView holdings={[h("AAPL")]} baseCurrency="USD" priced medians={null} portfolioId="p1" />,
+    );
+    expect(screen.queryByRole("button", { name: "Live session" })).not.toBeInTheDocument();
+    unmount();
+
+    render(
+      <HoldingsView
+        holdings={[h("AAPL")]}
+        baseCurrency="USD"
+        priced
+        medians={null}
+        portfolioId="p1"
+        valuation="live"
+        liveAvailable
+        sessionState="live"
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Live session" })).toHaveAttribute("aria-pressed", "true");
+    saveHoldingsViewAction.mockClear();
+    push.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Settled close" }));
+    // Persists the full view including the regime, and re-fetches via the URL (?val=).
+    expect(saveHoldingsViewAction).toHaveBeenCalledWith("p1", expect.objectContaining({ valuation: "settled" }));
+    expect(push).toHaveBeenCalledWith("/portfolios/p1/holdings?val=settled");
+  });
+
+  it("labels and gates the session option by market state (metron-ops-I156)", () => {
+    // recap: post-close same day — same data, honestly framed, still clickable.
+    const { unmount } = render(
+      <HoldingsView holdings={[h("AAPL")]} baseCurrency="USD" priced medians={null} portfolioId="p1" valuation="live" liveAvailable sessionState="recap" />,
+    );
+    expect(screen.getByRole("button", { name: "Today's session" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Today's session" })).not.toBeDisabled();
+    unmount();
+
+    // closed: pre-market / weekend — grayed + disabled; settled reads as active.
+    render(
+      <HoldingsView holdings={[h("AAPL")]} baseCurrency="USD" priced medians={null} portfolioId="p1" valuation="settled" liveAvailable sessionState="closed" />,
+    );
+    const liveBtn = screen.getByRole("button", { name: "Live session" });
+    expect(liveBtn).toBeDisabled();
+    fireEvent.click(liveBtn);
+    expect(push).not.toHaveBeenCalledWith(expect.stringContaining("val=live"));
+    expect(screen.getByRole("button", { name: "Settled close" })).toHaveAttribute("aria-pressed", "true");
   });
 });

@@ -15,10 +15,11 @@ import { GroupedByAccount } from "@/components/grouped-by-account";
 import { GroupedByClassification } from "@/components/grouped-by-classification";
 import { GroupedHoldings } from "@/components/grouped-holdings";
 import { TypeFilterChips } from "@/components/holdings-type-filter";
+import { AccountScopeChip } from "@/components/account-scope-chip";
 import { ColumnPresetControl, DEFAULT_VISIBLE_GROUPS } from "@/components/holdings-column-presets";
 import { BAND_ORDER, type ColumnBand } from "@/components/holdings-table";
 import { saveHoldingsViewAction } from "@/app/portfolios/[id]/actions";
-import type { Holding, ValuationMedians } from "@/lib/api";
+import type { Account, Holding, ValuationMedians } from "@/lib/api";
 
 type Mode = "account" | "asset" | "classification";
 
@@ -62,6 +63,56 @@ function CombineToggle({ byAccount, onChange }: { byAccount: boolean; onChange: 
   );
 }
 
+/** The valuation-regime selector (metron-ops#153/#156): the session view vs Settled close
+ *  (the official EOD valuation). URL-driven like Combine — it changes the holdings DATA
+ *  (the server re-fetches with `?valuation=`), and the whole page follows the regime.
+ *  MARKET-STATE-AWARE (metron-ops-I156): the first option is labeled "Live session" only
+ *  while the market is open ("live"); post-close the same data is honestly "Today's
+ *  session" ("recap"); pre-market/weekend/holiday ("closed") the option grays out — a
+ *  prior session has nothing live mode can add over settled, and a control must never
+ *  imply live-ness after hours. */
+function ValuationToggle({
+  live,
+  sessionState,
+  onChange,
+}: {
+  live: boolean;
+  sessionState: "live" | "recap" | "closed";
+  onChange: (live: boolean) => void;
+}) {
+  const closed = sessionState === "closed";
+  const liveLabel = sessionState === "recap" ? "Today's session" : "Live session";
+  const liveTitle = closed
+    ? "Market closed — no session data beyond the settled close"
+    : sessionState === "recap"
+      ? "The completed session's decomposition — session closed, values as of the close"
+      : "Value positions from delayed intraday quotes while the session is open, with covered-basis session detail";
+  return (
+    <div className="inline-flex rounded-lg border border-line p-0.5 text-xs">
+      <button
+        type="button"
+        onClick={closed ? undefined : () => onChange(true)}
+        disabled={closed}
+        className={closed ? "cursor-not-allowed rounded-md px-2.5 py-1 text-muted/40" : SEG_BTN(live)}
+        aria-pressed={live && !closed}
+        aria-disabled={closed}
+        title={liveTitle}
+      >
+        {liveLabel}
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(false)}
+        className={SEG_BTN(!live || closed)}
+        aria-pressed={!live || closed}
+        title="Value positions from the official end-of-day close — the settled record"
+      >
+        Settled close
+      </button>
+    </div>
+  );
+}
+
 export function HoldingsView({
   holdings,
   baseCurrency,
@@ -72,6 +123,11 @@ export function HoldingsView({
   savedGrouping = null,
   savedBands = null,
   savedHiddenTypes = null,
+  valuation = "settled",
+  liveAvailable = false,
+  sessionState = "closed",
+  accounts,
+  selectedAccountIds,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -84,6 +140,17 @@ export function HoldingsView({
   savedGrouping?: string | null;
   savedBands?: string[] | null;
   savedHiddenTypes?: string[] | null;
+  /** The active valuation regime (metron-ops#153) — resolved server-side (URL param →
+   *  saved view → default). The toggle re-fetches via `?val=`. */
+  valuation?: "live" | "settled";
+  /** Whether the live regime is offered at all (feed entitled + intraday toggle on). */
+  liveAvailable?: boolean;
+  /** Market/session state (metron-ops-I156) — labels/gates the toggle's session option. */
+  sessionState?: "live" | "recap" | "closed";
+  /** Accounts for the toolbar scope chip (metron-ops-I156); omitted → no chip. */
+  accounts?: Account[];
+  /** The active `?account_id=` selection (empty = whole portfolio). */
+  selectedAccountIds?: string[];
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -107,14 +174,16 @@ export function HoldingsView({
   );
 
   // Persist the full view on any control change (fire-and-forget). Always sends every field
-  // (the PUT is a full replace), defaulting unspecified facets to current state.
-  const persist = (next: { grouping?: Mode; bands?: ColumnBand[]; combine?: boolean; hidden?: string[] }) => {
+  // (the PUT is a full replace), defaulting unspecified facets to current state — including
+  // the valuation regime, so a grouping change never silently clears the saved mode.
+  const persist = (next: { grouping?: Mode; bands?: ColumnBand[]; combine?: boolean; hidden?: string[]; valuation?: "live" | "settled" }) => {
     if (!portfolioId) return;
     void saveHoldingsViewAction(portfolioId, {
       grouping: next.grouping !== undefined ? next.grouping : mode,
       visible_bands: next.bands !== undefined ? next.bands : visibleGroups,
       combine_by_account: next.combine !== undefined ? next.combine : byAccount,
       hidden_types: next.hidden !== undefined ? next.hidden : [...hiddenTypes],
+      valuation: next.valuation !== undefined ? next.valuation : valuation,
     });
   };
 
@@ -133,6 +202,14 @@ export function HoldingsView({
     sp.set("combine", on ? "accounts" : "combined"); // explicit both ways → URL wins this session
     router.push(`${pathname}?${sp.toString()}`);
   };
+  const changeValuation = (liveOn: boolean) => {
+    const next = liveOn ? "live" : "settled";
+    if (next === valuation) return;
+    persist({ valuation: next }); // remember across fresh loads
+    const sp = new URLSearchParams(params.toString());
+    sp.set("val", next); // explicit both ways → URL wins this session
+    router.push(`${pathname}?${sp.toString()}`);
+  };
 
   // "By account" grouping is only valid on the by-account data; in Combined mode it's not
   // offered and a stale selection falls back to asset-class.
@@ -149,6 +226,12 @@ export function HoldingsView({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
+        {liveAvailable && priced ? (
+          <ValuationToggle live={valuation === "live"} sessionState={sessionState} onChange={changeValuation} />
+        ) : null}
+        {accounts && accounts.length > 0 && portfolioId ? (
+          <AccountScopeChip accounts={accounts} baseCurrency={baseCurrency} portfolioId={portfolioId} />
+        ) : null}
         <CombineToggle byAccount={byAccount} onChange={changeCombine} />
         <div className="inline-flex rounded-lg border border-line p-0.5 text-xs">
           {modes.map((m) => (

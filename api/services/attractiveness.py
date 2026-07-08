@@ -1,148 +1,149 @@
-"""Composite per-holding **attractiveness score** (metron-ops#106, Phase 2).
+"""Composite per-holding **attractiveness score** — SOTA 6-pillar cross-sectional blend.
 
-A transparent, inspectable 0–100 score that blends the free Phase-1 component inputs already
-on the spine — forward-P/E vs the holding's sector/country median, analyst price-target
-upside, consensus rating, estimate-revision momentum, and news sentiment — into one
-"see attractiveness at a glance" number for the Holdings headline column + the tearsheet gauge.
+Ports the institutional method from crucible-research ``scoring/universe_board.py``
+(schema v3) via ``nousergon_lib.quant.attractiveness``: sector-neutral pillar
+percentiles from NE factor profiles → per-pillar cross-sectional z-scores →
+coverage-renormalized weighted blend → terminal cross-sectional percentile (0–100).
 
-Design (deliberately NOT a black box):
-  * Each component is mapped to a unit sub-score ∈ [0, 1] by an EXPLICIT, documented transform
-    (`_score_*` below). 0.5 is neutral; >0.5 is more attractive.
-  * Component weights are module-level constants (`WEIGHTS`) — readable and unit-pinned.
-  * A component whose input is missing (coverage gap / paid-feed-only) is DROPPED and the
-    remaining weights are renormalized, so a partial-coverage holding still gets an honest
-    score (never fabricated, never penalized for a feed it can't see). `coverage` reports how
-    many of the components actually contributed.
-  * The final score is `100 × Σ(wᵢ·sᵢ) / Σ wᵢ` over the present components. None when nothing
-    is present (honest "—", never a fake 50).
+Design:
+  * The cross-section is the full ~900-name scanner universe in
+    ``factors/profiles/latest.json`` — NOT the user's holdings in isolation — so
+    scores are byte-identical to the NE console universe board.
+  * Each pillar is a 0–100 within-sector percentile from the factor substrate.
+  * A pillar absent for a ticker is dropped and remaining weights renormalize.
+  * Holdings outside the scanner universe get honest ``None`` (never fabricated).
 
-Pure function of already-loaded values — no S3, no DB, no I/O — so it is trivially testable and
-identical across every consumer of `metrics_enrichment.enrich_metrics` (Holdings, watchlist)
-and the tearsheet path.
+Pure lookup after the universe blend is computed once per request (cached to avoid
+redundant S3 reads and blending computation within the same request).
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
-# ── Component weights (must sum to 1.0; inspectable + unit-pinned). ───────────────────────────
-# Chosen to favor forward-looking, analyst-grounded signals over the noisier news channel:
-#   valuation (cheap vs peers) and price-target upside lead, consensus rating + revision
-#   momentum reinforce, news sentiment is a light tie-breaker. Edit here to retune — the gauge
-#   breakdown surfaces the weights so the blend is always auditable.
-WEIGHTS: dict[str, float] = {
-    "valuation": 0.30,      # forward-P/E vs the sector/country median (cheaper = better)
-    "upside": 0.25,         # mean analyst price target vs the live price
-    "rating": 0.20,         # analyst consensus rating (signed score)
-    "revision": 0.15,       # estimate-revision momentum (paid feed; dropped until it lands)
-    "sentiment": 0.10,      # news sentiment (trust-weighted LM composite)
-}
+from nousergon_lib.quant.attractiveness import (
+    PILLAR_ORDER,
+    PILLAR_TO_FACTOR_KEY,
+    attractiveness_from_factor_profiles,
+    normalize_pillar_weights,
+)
 
-# Saturation bounds for the unbounded inputs — beyond these a component is fully (un)attractive.
-# Documented so the transforms are reproducible by hand.
-_UPSIDE_CAP = 0.50          # ±50% target upside saturates the upside sub-score
-_VALUATION_CAP = 0.50       # ±50% fwd-P/E discount/premium vs median saturates valuation
-_REVISION_CAP = 0.20        # ±20% revision trend saturates the revision sub-score
+from api.services import factor_profiles as factor_profiles_service
+
+_COMPUTE_CACHE_TTL_S = 3600.0  # 1 hour; matches factor profile update cadence
+_compute_universe_cache: dict[str, object | None] = {}  # None = empty universe, else dict[str, Attractiveness]
+_compute_universe_cache_time: float = 0.0
 
 
 @dataclass
-class Component:
-    """One inspectable line of the score breakdown (drives the tearsheet gauge tooltip)."""
+class PillarComponent:
+    """One inspectable pillar line — drives the tearsheet gauge + Holdings band."""
 
     key: str
-    weight: float           # the (pre-renormalization) catalog weight
-    sub_score: float        # unit sub-score ∈ [0, 1]
+    weight: float
+    score: float
+    contribution: float | None = None
 
 
 @dataclass
 class Attractiveness:
-    """A holding's composite attractiveness + its fully-inspectable component breakdown."""
+    """A holding's SOTA attractiveness + its fully-inspectable pillar breakdown."""
 
-    score: float                                   # 0–100 headline number
-    coverage: int                                  # # of components that contributed
-    components: list[Component] = field(default_factory=list)
-
-
-def _clamp01(x: float) -> float:
-    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+    score: float | None
+    coverage: int
+    pillars: list[PillarComponent] = field(default_factory=list)
 
 
-def _score_valuation(fwd_pe: float | None, median_fwd_pe: float | None) -> float | None:
-    """Cheaper-than-peers → more attractive. Discount = 1 − fwd_pe/median; a `_VALUATION_CAP`
-    discount maps to 1.0, an equal premium to 0.0, parity to 0.5. None unless both legs are
-    usable positive multiples (a negative/zero fwd P/E is not a meaningful valuation signal)."""
-    if fwd_pe is None or median_fwd_pe is None or fwd_pe <= 0 or median_fwd_pe <= 0:
-        return None
-    discount = 1.0 - fwd_pe / median_fwd_pe        # >0 cheaper than peers, <0 richer
-    return _clamp01(0.5 + 0.5 * discount / _VALUATION_CAP)
-
-
-def _score_upside(upside: float | None) -> float | None:
-    """Price-target upside (mean target / price − 1). +cap → 1.0, −cap → 0.0, flat → 0.5."""
-    if upside is None:
-        return None
-    return _clamp01(0.5 + 0.5 * upside / _UPSIDE_CAP)
-
-
-def _score_rating(rating_score: float | None) -> float | None:
-    """Consensus rating is already signed in [-1, +1] (strongBuy=+1 … strongSell=−1).
-    Linearly remap to [0, 1] (hold=0.5)."""
-    if rating_score is None:
-        return None
-    return _clamp01(0.5 + 0.5 * rating_score)
-
-
-def _score_revision(trend: float | None) -> float | None:
-    """Estimate-revision momentum (fractional trend). +cap → 1.0, −cap → 0.0, flat → 0.5.
-    The free producer does not emit this (paid feed, metron-ops#107) → None → dropped."""
-    if trend is None:
-        return None
-    return _clamp01(0.5 + 0.5 * trend / _REVISION_CAP)
-
-
-def _score_sentiment(sentiment: float | None) -> float | None:
-    """News sentiment is already in [-1, +1]; linearly remap to [0, 1] (neutral=0.5)."""
-    if sentiment is None:
-        return None
-    return _clamp01(0.5 + 0.5 * sentiment)
-
-
-def compute(
-    *,
-    fwd_pe: float | None = None,
-    median_fwd_pe: float | None = None,
-    price_target_upside: float | None = None,
-    consensus_score: float | None = None,
-    estimate_revision_trend: float | None = None,
-    news_sentiment: float | None = None,
+def _build_result(
+    ticker: str,
+    profile: dict,
+    blended: dict,
+    catalog_weights: dict[str, float],
 ) -> Attractiveness | None:
-    """Blend the present components into a 0–100 attractiveness score with renormalized
-    weights. Returns None when NO component is present (honest "—", never a fabricated 50).
-
-    All inputs are already-loaded values from the spine (no I/O), so this is identical on the
-    Holdings-list and tearsheet paths and trivially unit-testable.
-    """
-    raw: dict[str, float | None] = {
-        "valuation": _score_valuation(fwd_pe, median_fwd_pe),
-        "upside": _score_upside(price_target_upside),
-        "rating": _score_rating(consensus_score),
-        "revision": _score_revision(estimate_revision_trend),
-        "sentiment": _score_sentiment(news_sentiment),
-    }
-    components = [
-        Component(key=k, weight=WEIGHTS[k], sub_score=s)
-        for k, s in raw.items()
-        if s is not None
-    ]
-    if not components:
+    score = blended.get("attractiveness_score")
+    contribs = blended.get("pillar_contributions") or {}
+    pillars: list[PillarComponent] = []
+    for p in PILLAR_ORDER:
+        raw = profile.get(PILLAR_TO_FACTOR_KEY[p])
+        if raw is None:
+            continue
+        try:
+            pillar_score = float(raw)
+        except (TypeError, ValueError):
+            continue
+        pillars.append(
+            PillarComponent(
+                key=p,
+                weight=catalog_weights.get(p, 0.0),
+                score=round(pillar_score, 1),
+                contribution=contribs.get(p),
+            )
+        )
+    if score is None and not pillars:
         return None
-    total_w = sum(c.weight for c in components)
-    if total_w <= 0:                                # defensive: all-zero weights → no signal
-        return None
-    blended = sum(c.weight * c.sub_score for c in components) / total_w
     return Attractiveness(
-        score=round(100.0 * blended, 1),
-        coverage=len(components),
-        # Stable catalog order (matches WEIGHTS) so the gauge breakdown reads consistently.
-        components=sorted(components, key=lambda c: list(WEIGHTS).index(c.key)),
+        score=round(score, 1) if score is not None else None,
+        coverage=len(pillars),
+        pillars=pillars,
     )
+
+
+def compute_universe(
+    *,
+    profiles_reader=None,
+    weights_reader=None,
+) -> dict[str, Attractiveness]:
+    """Blend the full scanner-universe factor profiles into per-ticker attractiveness, cached for 1 hour.
+
+    When custom readers are supplied (tests), bypass the cache entirely."""
+    if profiles_reader is not None or weights_reader is not None:
+        # Test path: always compute fresh.
+        return _compute_universe_uncached(profiles_reader, weights_reader)
+
+    # Production path: check module-level cache first.
+    global _compute_universe_cache, _compute_universe_cache_time
+    now = time.time()
+    if now - _compute_universe_cache_time < _COMPUTE_CACHE_TTL_S and "" in _compute_universe_cache:
+        cached = _compute_universe_cache[""]
+        return cached if cached is not None else {}
+
+    result = _compute_universe_uncached(None, None)
+    now = time.time()
+    _compute_universe_cache_time = now
+    _compute_universe_cache[""] = result if result else None
+    return result
+
+
+def _compute_universe_uncached(
+    profiles_reader=None,
+    weights_reader=None,
+) -> dict[str, Attractiveness]:
+    """Compute universe blend without caching — internal helper."""
+    snap = factor_profiles_service.load_factor_profiles(reader=profiles_reader)
+    if not snap.by_ticker:
+        return {}
+    raw_weights = factor_profiles_service.load_pillar_weights(reader=weights_reader)
+    catalog_weights = normalize_pillar_weights(raw_weights)
+    blended = attractiveness_from_factor_profiles(snap.by_ticker, pillar_weights=raw_weights)
+    return {
+        ticker.upper(): result
+        for ticker, rec in blended.items()
+        if (result := _build_result(ticker, snap.by_ticker.get(ticker, {}), rec, catalog_weights))
+        is not None
+    }
+
+
+def lookup(
+    yf_symbol: str,
+    universe: dict[str, Attractiveness],
+) -> Attractiveness | None:
+    """Resolve one holding's attractiveness from a pre-computed universe map."""
+    return universe.get(yf_symbol.upper())
+
+
+def clear_cache() -> None:
+    """Clear the module-level compute cache — for tests."""
+    global _compute_universe_cache, _compute_universe_cache_time
+    _compute_universe_cache.clear()
+    _compute_universe_cache_time = 0.0

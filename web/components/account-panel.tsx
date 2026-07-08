@@ -18,8 +18,9 @@
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { deleteAccountAction, saveAccountSelectionAction } from "@/app/portfolios/[id]/actions";
+import { useRouter } from "next/navigation";
+import { deleteAccountAction } from "@/app/portfolios/[id]/actions";
+import { useAccountSelection } from "@/lib/use-account-selection";
 import type { Account } from "@/lib/api";
 import { accountingMoneyWhole, accountingPercent, moneyWhole, signClass } from "@/lib/format";
 import { isReferencePortfolio } from "@/lib/demo";
@@ -84,14 +85,14 @@ const COL_PERIOD = "w-16"; // Day / YTD / LTM % (metron-ops#87)
 /** A single column-header row for the metric columns — replaces the per-row labels with
  *  one header. Unrealized is split into $ and % columns (metron-ops#80); Day/YTD/LTM are
  *  per-account period returns (metron-ops#87). */
-function MetricHeader() {
+function MetricHeader({ showDay = true }: { showDay?: boolean }) {
   return (
     <div className="flex shrink-0 gap-x-6 text-right text-[10px] uppercase tracking-wide text-muted">
       <div className={COL_COST}>Cost</div>
       <div className={COL_UNREAL}>Unrealized $</div>
       <div className={COL_UNREAL_PCT}>Unrealized %</div>
       <div className={COL_MARKET}>Market</div>
-      <div className={COL_PERIOD}>Day</div>
+      {showDay ? <div className={COL_PERIOD}>Day</div> : null}
       <div className={COL_PERIOD}>YTD</div>
       <div className={COL_PERIOD}>LTM</div>
     </div>
@@ -118,6 +119,7 @@ function MetricCells({
   dayPct,
   ytdPct,
   ltmPct,
+  showDay = true,
 }: {
   cost: number | null;
   unreal: number | null;
@@ -127,6 +129,9 @@ function MetricCells({
   dayPct?: number | null;
   ytdPct?: number | null;
   ltmPct?: number | null;
+  /** Session Day % is live-quote-derived — hidden entirely in the settled valuation
+   *  regime (metron-ops#153) rather than rendered as a column of dashes. */
+  showDay?: boolean;
 }) {
   const pct = unreal != null && cost ? unreal / cost : null;
   const unrealClass = unreal != null ? signClass(unreal) : "text-muted";
@@ -142,7 +147,7 @@ function MetricCells({
       <div className={`${COL_MARKET} ${muted ? "text-muted" : ""}`}>
         {mv != null ? moneyWhole(mv, baseCurrency) : "—"}
       </div>
-      <PeriodCell pct={dayPct} />
+      {showDay ? <PeriodCell pct={dayPct} /> : null}
       <PeriodCell pct={ytdPct} />
       <PeriodCell pct={ltmPct} />
     </div>
@@ -155,6 +160,7 @@ export function AccountPanel({
   portfolioId,
   selectable = true,
   deletable = false,
+  showDay = true,
 }: {
   accounts: Account[];
   baseCurrency: string;
@@ -166,6 +172,8 @@ export function AccountPanel({
    *  Orthogonal to selectable so each page opts into the right capability. Tax-treatment
    *  editing lives on the Settings page, not here. */
   deletable?: boolean;
+  /** Render the per-account session Day % (live valuation mode only, metron-ops#153). */
+  showDay?: boolean;
 }) {
   // The Reference Rate showcase (metron-ops#120) is a live, real-tenant-visible read-only
   // mirror (metron#162) — the API 403s account delete for it regardless of caller tenant
@@ -173,32 +181,17 @@ export function AccountPanel({
   // Holdings filter view never renders a delete affordance in the first place.
   const readOnly = deletable && isReferencePortfolio(portfolioId);
   const router = useRouter();
-  const pathname = usePathname();
-  const params = useSearchParams();
   const [deleting, startDelete] = useTransition();
-  const [navPending, startNav] = useTransition();
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const allIds = useMemo(() => accounts.map((a) => a.account_id), [accounts]);
-  // The selection, as a stable comma-key, so the memo + callbacks below don't rebuild
-  // a new Set every render (and trip the exhaustive-deps lint).
-  const urlKey = params.getAll("account_id").join(",");
-  // Empty URL selection = viewing the whole portfolio → every box reads as checked.
-  const selectedFromUrl = useMemo(() => new Set(urlKey ? urlKey.split(",") : allIds), [urlKey, allIds]);
-
-  // OPTIMISTIC selection: the checkbox state is normally derived from the URL, which only
-  // updates AFTER the server round-trip (~0.5–1s) commits — so a click felt unresponsive
-  // ("did nothing, then snapped"). We flip the boxes instantly via a local pending set and
-  // reconcile to the URL once the navigation lands (urlKey changes → clear it). The data
-  // sections below still re-fetch, but `navPending` drives a subtle "Updating…" cue so the
-  // delay reads as in-progress, not broken.
-  const [pendingSel, setPendingSel] = useState<Set<string> | null>(null);
-  useEffect(() => {
-    // The URL caught up with (or diverged from) the optimistic guess — drop the override.
-    setPendingSel(null);
-  }, [urlKey]);
-  const selected = pendingSel ?? selectedFromUrl;
-  const viewingAll = selected.size === allIds.length;
+  // Selection machinery lifted to the shared hook (metron-ops-I156) — the Holdings
+  // toolbar's accounts scope chip drives the SAME optimistic `?account_id=` push, so
+  // the two surfaces can't drift.
+  const { selected, viewingAll, navPending, push: pushSelection, toggle } = useAccountSelection(
+    portfolioId,
+    allIds,
+  );
 
   // Group accounts by tax status (preserving the incoming order within each group), in a
   // stable display order. One group → no subtotals (they'd duplicate the grand total).
@@ -225,49 +218,6 @@ export function AccountPanel({
     [accounts, selected],
   );
   const grand = useMemo(() => subtotal(selectedAccounts), [selectedAccounts]);
-
-  const pushSelection = useCallback(
-    async (ids: string[]) => {
-      // Optimistic: flip the boxes NOW (an empty `ids` means "all", so show every box on).
-      setPendingSel(new Set(ids.length === 0 ? allIds : ids));
-      const qs = new URLSearchParams();
-      // Preserve any other query params; replace the account_id set.
-      params.forEach((value, key) => {
-        if (key !== "account_id") qs.append(key, value);
-      });
-      ids.forEach((id) => qs.append("account_id", id));
-      const s = qs.toString();
-      if (ids.length === 0) {
-        // Clearing to "All" empties the URL — the page then applies the SAVED
-        // selection, so the save must land first or it redirects back into the
-        // stale filter. (Errors swallowed: filtering still works URL-driven.)
-        await saveAccountSelectionAction(portfolioId, ids).catch(() => undefined);
-      } else {
-        // Persist server-side so the selection survives reloads. Fire-and-forget: a
-        // save failure must never block the URL-driven filtering.
-        void saveAccountSelectionAction(portfolioId, ids);
-      }
-      // Drive the soft navigation through a transition so `navPending` reflects the
-      // in-flight re-fetch of the data sections below (the optimistic boxes already moved).
-      startNav(() => {
-        router.replace(s ? `${pathname}?${s}` : pathname, { scroll: false });
-      });
-    },
-    [params, pathname, router, portfolioId, allIds],
-  );
-
-  const toggle = useCallback(
-    (id: string) => {
-      const next = new Set(selected);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      // Normalize "all" or "none" back to the whole-portfolio view (empty URL) so the
-      // page never goes blank and the All toggle stays in sync.
-      const ids = next.size === 0 || next.size === allIds.length ? [] : [...next];
-      pushSelection(ids);
-    },
-    [selected, allIds.length, pushSelection],
-  );
 
   // Toggle a whole tax-status group at once (metron-ops#64): if every account in the
   // group is already selected, drop them all; otherwise add them all.
@@ -370,6 +320,7 @@ export function AccountPanel({
           dayPct={a.day_pct}
           ytdPct={a.ytd_pct}
           ltmPct={a.ltm_pct}
+          showDay={showDay}
         />
         {deletable && !readOnly ? (
           <button
@@ -424,7 +375,7 @@ export function AccountPanel({
       <div className="flex items-center gap-3 border-b border-line bg-surface px-4 py-2">
         <span className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         <div className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-muted">Account</div>
-        <MetricHeader />
+        <MetricHeader showDay={showDay} />
         <span className="w-6 shrink-0" aria-hidden="true" />
       </div>
       {groups.map(([label, accts]) => {
@@ -461,7 +412,7 @@ export function AccountPanel({
                 <div className="min-w-0 flex-1 pl-7 text-[11px] uppercase tracking-wide text-muted">
                   {label} subtotal
                 </div>
-                <MetricCells cost={sub.cost} unreal={sub.unreal} mv={sub.mv} baseCurrency={baseCurrency} muted />
+                <MetricCells cost={sub.cost} unreal={sub.unreal} mv={sub.mv} baseCurrency={baseCurrency} muted showDay={showDay} />
                 <span className="w-6 shrink-0" aria-hidden="true" />
               </div>
             ) : null}
@@ -472,7 +423,7 @@ export function AccountPanel({
         <div className="min-w-0 flex-1 pl-7 text-[11px] uppercase tracking-wide text-muted">
           {viewingAll ? "All accounts total" : "Selected accounts total"}
         </div>
-        <MetricCells cost={grand.cost} unreal={grand.unreal} mv={grand.mv} baseCurrency={baseCurrency} />
+        <MetricCells cost={grand.cost} unreal={grand.unreal} mv={grand.mv} baseCurrency={baseCurrency} showDay={showDay} />
         <span className="w-6 shrink-0" aria-hidden="true" />
       </div>
     </div>

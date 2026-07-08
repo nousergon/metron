@@ -195,6 +195,69 @@ def test_daily_refresh_weekend_run_is_not_gated(client, db_session, monkeypatch)
     assert db_session.scalars(_navsnaps(pid)).first() is not None
 
 
+def test_daily_refresh_syncs_broker_positions_and_counts_them(client, db_session, monkeypatch):
+    # Wiring check for metron-ops#150: the broker re-sync runs per portfolio, before
+    # holdings/prices are computed, and a successful sync is counted in the result.
+    monkeypatch.setattr("api.services.prices.fetch_latest_closes", _price_src)
+    monkeypatch.setattr("api.services.performance.fetch_latest_closes", _spy_src)
+    monkeypatch.setattr("api.maintenance.fetch_latest_closes", _spy_src)
+    _no_derived(monkeypatch)
+    calls = []
+
+    def _fake_flex(session, portfolio):
+        calls.append(portfolio.id)
+        return object()  # any non-None return counts as "synced"
+
+    monkeypatch.setattr("api.maintenance.broker_sync.sync_flex_for_portfolio", _fake_flex)
+    monkeypatch.setattr("api.maintenance.broker_sync.sync_snaptrade_for_portfolio", lambda s, p: None)
+    _seed(client, str(uuid.uuid4()))
+    result = daily_refresh(db_session, today=date(2024, 6, 3))
+    assert result.broker_flex_synced == 1
+    assert result.broker_snaptrade_synced == 0
+    assert len(calls) == 1
+
+
+def test_daily_refresh_broker_sync_failure_is_best_effort(client, db_session, monkeypatch):
+    # A Flex/SnapTrade outage must not cost the price refresh / NAV snapshot, which have
+    # already committed by the time the derived backfills run — same posture as the
+    # existing derived-backfill best-effort guarantee.
+    monkeypatch.setattr("api.services.prices.fetch_latest_closes", _price_src)
+    monkeypatch.setattr("api.services.performance.fetch_latest_closes", _spy_src)
+    monkeypatch.setattr("api.maintenance.fetch_latest_closes", _spy_src)
+    _no_derived(monkeypatch)
+
+    def _boom(session, portfolio):
+        raise RuntimeError("Flex outage")
+
+    monkeypatch.setattr("api.maintenance.broker_sync.sync_flex_for_portfolio", _boom)
+    monkeypatch.setattr("api.maintenance.broker_sync.sync_snaptrade_for_portfolio", lambda s, p: None)
+    _seed(client, str(uuid.uuid4()))
+    result = daily_refresh(db_session, today=date(2024, 6, 3))  # must not raise
+    assert result.broker_flex_synced == 0
+    assert result.snapshots_recorded == 1  # primary path survived the broker-sync failure
+
+
+def test_daily_refresh_skips_broker_sync_for_reference_rate_portfolio(db_session, monkeypatch):
+    # The reference-rate showcase has no real brokerage attached (its NAV is sole-sourced
+    # from the engine's artifact, metron-ops#141) — the broker re-sync must never probe it.
+    from api.services.demo import REFERENCE_PORTFOLIO_ID
+
+    monkeypatch.setattr("api.maintenance.fetch_latest_closes", _spy_src)
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("broker sync must be skipped for the reference-rate portfolio")
+
+    monkeypatch.setattr("api.maintenance.broker_sync.sync_flex_for_portfolio", _fail_if_called)
+    monkeypatch.setattr("api.maintenance.broker_sync.sync_snaptrade_for_portfolio", _fail_if_called)
+    tenant = models.Tenant(name="ref")
+    db_session.add(tenant)
+    db_session.flush()
+    db_session.add(models.Portfolio(id=REFERENCE_PORTFOLIO_ID, tenant_id=tenant.id, name="Reference Rate"))
+    db_session.commit()
+    result = daily_refresh(db_session, today=date(2024, 6, 3))  # must not raise
+    assert result.portfolios == 1
+
+
 def test_cli_unknown_command_errors():
     import pytest
 

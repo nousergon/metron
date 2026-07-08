@@ -76,6 +76,9 @@ class TestComputeRisk:
             db_session, uuid.UUID(tenant), uuid.UUID(pid), today=date(2024, 2, 15), do_backfill=True, source=_full_hist
         )
         assert r.computable is True
+        # as_of is the aligned grid's LAST date — the model's true data horizon (last
+        # synthetic close bar = 2024-02-09), never the compute-call date (2024-02-15).
+        assert r.as_of == date(2024, 2, 9)
         assert r.n_modeled == 2 and r.excluded == []
         assert set(r.factor_exposures) == set(risk.FACTORS)  # Market + 5 styles
         assert r.total_vol > 0

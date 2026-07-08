@@ -11,11 +11,12 @@ const PERIODS = ["1Y", "3Y", "5Y", "10Y"];
 // Attractiveness component keys → human labels for the inspectable gauge breakdown
 // (metron-ops#106). The count is the catalog size — the gauge note reads "N of M inputs".
 const ATTRACTIVENESS_COMPONENT_LABELS: Record<string, string> = {
-  valuation: "Valuation (fwd P/E vs sector)",
-  upside: "Price-target upside",
-  rating: "Consensus rating",
-  revision: "Revision momentum",
-  sentiment: "News sentiment",
+  quality: "Quality",
+  value: "Value",
+  momentum: "Momentum",
+  growth: "Growth",
+  stewardship: "Stewardship",
+  defensiveness: "Defensiveness",
 };
 const COMPONENT_LABELS_COUNT = Object.keys(ATTRACTIVENESS_COMPONENT_LABELS).length;
 
@@ -35,7 +36,7 @@ export default async function TearsheetPage(props: { params: Promise<{ id: strin
     if (e instanceof MetronApiError && e.status === 404) {
       return (
         <div>
-          <Link href={`/portfolios/${id}/holdings`} className="text-sm text-muted hover:text-ink">
+          <Link href={`/portfolios/${id}`} className="text-sm text-muted hover:text-ink">
             ← Holdings
           </Link>
           <Empty>{decodeURIComponent(ticker).toUpperCase()} isn&apos;t a current holding.</Empty>
@@ -51,7 +52,7 @@ export default async function TearsheetPage(props: { params: Promise<{ id: strin
 
   return (
     <div>
-      <Link href={`/portfolios/${id}/holdings`} className="text-sm text-muted hover:text-ink">
+      <Link href={`/portfolios/${id}`} className="text-sm text-muted hover:text-ink">
         ← Holdings
       </Link>
 
@@ -80,10 +81,11 @@ export default async function TearsheetPage(props: { params: Promise<{ id: strin
       </Section>
 
       {/* 2 — Performance */}
-      <Section title="Performance" note={hasHistory ? `from price history since ${perf.history_from ? isoDate(perf.history_from) : "—"} (${perf.n_bars} bars)` : "return vs cost only — no price history cached"}>
+      <Section title="Performance" note={hasHistory ? `data spine as of ${perf.history_from ? isoDate(perf.history_from) : "—"} (${perf.n_bars} bars)` : "return vs cost only — market metrics require feed entitlement"}>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <StatCard label="Return vs cost" value={num(perf.return_vs_cost, percent)} valueClass={signClass(perf.return_vs_cost ?? 0)} />
-          <StatCard label="vs SPY" value={num(perf.vs_spy, percent)} valueClass={signClass(perf.vs_spy ?? 0)} hint="over cached window" />
+          <StatCard label="vs SPY (1Y)" value={num(perf.vs_spy_1y, percent)} valueClass={signClass(perf.vs_spy_1y ?? 0)} />
+          <StatCard label="vs SPY (window)" value={num(perf.vs_spy, percent)} valueClass={signClass(perf.vs_spy ?? 0)} hint="overlap window" />
           <StatCard label="Beta vs SPY" value={num(perf.beta_vs_spy, (v) => v.toFixed(2))} />
           <StatCard label="Max drawdown" value={num(perf.max_drawdown, percent)} valueClass={signClass(perf.max_drawdown ?? 0)} />
           <StatCard label="Volatility (ann.)" value={num(perf.volatility, (v) => `${(v * 100).toFixed(1)}%`)} />
@@ -195,12 +197,12 @@ export default async function TearsheetPage(props: { params: Promise<{ id: strin
               </div>
               {/* Inspectable weighting — the deliberate "not a black box" deliverable. */}
               <div className="mt-4">
-                <Table head={["Component", "Weight", "Sub-score"]}>
+                <Table head={["Pillar", "Weight", "Score"]}>
                   {a.components.map((c) => (
                     <tr key={c.key} className="border-b border-line last:border-0">
                       <td className="px-4 py-2">{ATTRACTIVENESS_COMPONENT_LABELS[c.key] ?? c.key}</td>
                       <td className="px-4 py-2 text-right tabular-nums">{percent(c.weight)}</td>
-                      <td className="px-4 py-2 text-right tabular-nums">{c.sub_score.toFixed(2)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">{c.score.toFixed(0)}</td>
                     </tr>
                   ))}
                 </Table>

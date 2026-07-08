@@ -29,6 +29,16 @@ export type Holding = {
   // hasn't struck its own NAV yet today. Not a problem flag like last_price_stale — an
   // expected, clearly-labeled estimate, reconciled to the true struck NAV tomorrow.
   is_estimated: boolean;
+  // Broker-reported "as of" date for this position (IBKR Flex statement / SnapTrade
+  // last_holdings_sync) — how current the SHARE COUNT is, distinct from last_price_date
+  // (how current the PRICE is). null for ledger-only (CSV/OFX) holdings, which have no
+  // broker snapshot to go stale.
+  broker_as_of: string | null;
+  // True when a snapshot-sourced holding's broker_as_of is stale (metron-ops#150) — the
+  // daily broker re-sync hasn't run recently, so a real trade at the broker may not yet
+  // be reflected here even though last_price looks fresh. Drives the Holdings "positions
+  // as of" staleness warning. Always false for ledger-only holdings.
+  positions_stale: boolean;
   market_value_local: number | null;
   cost_basis_base: number | null;
   market_value: number | null;
@@ -95,17 +105,15 @@ export type Holding = {
   num_analysts: number | null;
   news_sentiment: number | null; // trust-weighted LM composite ∈ [-1, +1]
   news_articles: number | null;
-  // Composite attractiveness score (metron-ops#106, Phase 2) — transparent 0–100 blend of the
-  // fields above. null off-feed or on a total coverage gap, never fabricated.
+  // SOTA 6-pillar attractiveness from NE factor profiles. null off-feed or outside scanner universe.
   attractiveness: number | null;
-  attractiveness_coverage: number | null; // # of components that contributed
-  // Unit sub-scores ∈ [0, 1] behind the composite — the same breakdown the tearsheet gauge
-  // shows. null when that component's input was missing and dropped from the blend.
-  attractiveness_valuation: number | null;
-  attractiveness_upside: number | null;
-  attractiveness_rating: number | null;
-  attractiveness_revision: number | null;
-  attractiveness_sentiment: number | null;
+  attractiveness_coverage: number | null;
+  attractiveness_quality: number | null;
+  attractiveness_value: number | null;
+  attractiveness_momentum: number | null;
+  attractiveness_growth: number | null;
+  attractiveness_stewardship: number | null;
+  attractiveness_defensiveness: number | null;
 };
 
 // Sector- / country-level median multiples (SP1500-broad peer benchmark) for the Holdings
@@ -278,7 +286,6 @@ export type PeriodTile = {
   twr: number | null;   // % time-weighted return over the window
   benchmarks: BenchmarkReturn[];
   note?: string | null; // honest empty-state reason (e.g. TODAY "as of <prior date>")
-  intraday?: boolean;   // live intraday TODAY tile (prior-session close → live NAV)
 };
 
 /** Overview performance-vs-market tiles. Benchmark comparison is feed-gated (Pro):
@@ -395,11 +402,12 @@ export type WatchlistEntry = {
   news_articles: number | null;
   attractiveness: number | null;
   attractiveness_coverage: number | null;
-  attractiveness_valuation: number | null;
-  attractiveness_upside: number | null;
-  attractiveness_rating: number | null;
-  attractiveness_revision: number | null;
-  attractiveness_sentiment: number | null;
+  attractiveness_quality: number | null;
+  attractiveness_value: number | null;
+  attractiveness_momentum: number | null;
+  attractiveness_growth: number | null;
+  attractiveness_stewardship: number | null;
+  attractiveness_defensiveness: number | null;
 };
 
 export const getWatchlist = (tenantId: string, id: string) =>
@@ -583,13 +591,25 @@ export const renamePortfolio = (tenantId: string, id: string, name: string) =>
 // The reads below take an optional `accountIds` selection (from the account panel's
 // checkboxes); omitted/empty = whole portfolio. `getAccounts` is always unscoped — it
 // IS the selector, so it lists every account with its own valuation.
-export const getSummary = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<Summary>(tenantId, `/portfolios/${id}/summary${acctParams(accountIds)}`);
+// `valuation` selects the regime (metron-ops#153): omitted/"settled" = official EOD close
+// (the conservative default — Overview and every non-asking consumer); "live" = the
+// Holdings live mode's intraday overlay.
+export const getSummary = (tenantId: string, id: string, accountIds?: string[], valuation?: "live" | "settled") => {
+  const base = acctParams(accountIds);
+  const q = valuation === "live" ? (base ? `${base}&valuation=live` : "?valuation=live") : base;
+  return get<Summary>(tenantId, `/portfolios/${id}/summary${q}`);
+};
 // `byAccount` requests the UNCOMBINED view — one row per (account, ticker), each tagged
 // with account_id/account_label (metron-ops#114). Default consolidates per ticker.
-export const getHoldings = (tenantId: string, id: string, accountIds?: string[], byAccount?: boolean) => {
+// `valuation` (metron-ops#153): omitted/"settled" = official EOD close (session day legs
+// null); "live" = the intraday overlay + session day legs, feed/toggle permitting.
+export const getHoldings = (tenantId: string, id: string, accountIds?: string[], byAccount?: boolean, valuation?: "live" | "settled") => {
+  const parts: string[] = [];
   const base = acctParams(accountIds);
-  const q = byAccount ? (base ? `${base}&by_account=1` : "?by_account=1") : base;
+  if (base) parts.push(base.slice(1));
+  if (byAccount) parts.push("by_account=1");
+  if (valuation === "live") parts.push("valuation=live");
+  const q = parts.length ? `?${parts.join("&")}` : "";
   return get<Holding[]>(tenantId, `/portfolios/${id}/holdings${q}`);
 };
 // SP1500-broad sector & country median multiples for the Holdings "by sector → country"
@@ -675,57 +695,6 @@ export type Tax = {
 export const getTax = (tenantId: string, id: string, accountIds?: string[]) =>
   get<Tax>(tenantId, `/portfolios/${id}/tax${acctParams(accountIds)}`);
 
-// Tax planning — the telos year-round projection artifact (metron-ops#133). Tenant-level
-// (per-taxpayer, not per-portfolio); rides the same "tax" entitlement as the tax page.
-// Money/rate fields are decimal STRINGS — the artifact preserves exact decimals
-// (nousergon/telos contracts/tax_projection.schema.json, v1.x).
-export type TaxProjectionQuarter = {
-  quarter: number;
-  due_date: string;
-  required: string;
-  paid: string;
-  shortfall: string;
-  status: "paid" | "overdue" | "upcoming";
-};
-export type TaxProjection = {
-  schema_version: string;
-  tax_year: number;
-  as_of: string;
-  filing_status: string;
-  pack_status: string;
-  projected: {
-    agi: string;
-    taxable_income: string;
-    total_tax: string;
-    total_withholding: string;
-    estimated_payments_made: string;
-    balance_due: string;
-    effective_rate_on_agi: string;
-    marginal_ordinary_rate: string;
-  };
-  safe_harbor: {
-    basis: string;
-    required_annual_payment: string;
-    total_estimated_tax_due: string;
-  };
-  quarters: TaxProjectionQuarter[];
-  headline: {
-    payment_recommended: boolean;
-    recommended_amount: string;
-    next_due_date: string | null;
-    message: string;
-  };
-};
-export type TaxPlanning = {
-  available: boolean;
-  reason: string | null;
-  required_tier: string | null;
-  stale: boolean | null;
-  schema_error: string | null;
-  projection: TaxProjection | null;
-};
-export const getTaxPlanning = (tenantId: string) => get<TaxPlanning>(tenantId, "/tax-planning");
-
 export type Tearsheet = {
   ticker: string;
   base_currency: string;
@@ -751,6 +720,7 @@ export type Tearsheet = {
     max_drawdown: number | null;
     beta_vs_spy: number | null;
     vs_spy: number | null;
+    vs_spy_1y: number | null;
     n_bars: number;
     history_from: string | null;
   };
@@ -775,15 +745,16 @@ export type Tearsheet = {
 };
 
 export type TearsheetAttractivenessComponent = {
-  key: string; // valuation / upside / rating / revision / sentiment
-  weight: number; // catalog weight (pre-renormalization)
-  sub_score: number; // unit sub-score ∈ [0, 1]
+  key: string; // quality / value / momentum / growth / stewardship / defensiveness
+  weight: number;
+  score: number; // 0–100 sector-neutral pillar percentile
+  contribution: number | null;
 };
 
 export type TearsheetAttractiveness = {
   available: boolean;
-  score: number | null; // 0–100
-  coverage: number | null; // # of components that contributed
+  score: number | null;
+  coverage: number | null;
   components: TearsheetAttractivenessComponent[];
 };
 
@@ -1326,6 +1297,7 @@ export type HoldingsViewPrefs = {
   visible_bands: string[] | null;
   combine_by_account: boolean | null;
   hidden_types: string[] | null;
+  valuation: string | null; // "live" | "settled" (metron-ops#153); null = page default
 };
 
 export const getHoldingsView = (tenantId: string, id: string) =>
@@ -1477,7 +1449,25 @@ export type IntradayStatus = {
   as_of_utc: string | null;
   stale: boolean;
   n_priced: number;
+  // Live coverage (metron-ops#146): positions in scope vs positions that actually got a
+  // fresh quote — un-priced ones silently keep their EOD close, so a partial overlay is
+  // disclosed ("n/N live") rather than reading as fully live. n_estimated counts the
+  // late-striking-fund proxy estimates (metron-ops#112) inside n_priced.
+  n_total: number;
+  n_estimated: number;
   reason: string | null;
+  // NAV-weighted coverage (metron-ops#152): base-$ market value of the covered
+  // (delayed/estimated) positions vs the whole valued portfolio, in live-NAV terms —
+  // the honest "covers $X of $Y NAV" disclosure. Null when the overlay isn't applied.
+  covered_nav: number | null;
+  total_nav: number | null;
+  // Per-ticker pricing source (metron-ops#152): "delayed" | "estimated" | "last_close" |
+  // "unpriced" — derived, never a manual flag. Empty when the overlay isn't applied.
+  sources: Record<string, string>;
+  // Market/session state (metron-ops-I156): "live" (in session) / "recap" (today's
+  // session closed — the snapshot is its closing state) / "closed" (pre-market /
+  // weekend / holiday). Drives the valuation toggle's label + availability.
+  session_state: "live" | "recap" | "closed";
 };
 
 export async function getIntradayStatus(tenantId: string, id: string): Promise<IntradayStatus> {
@@ -1502,6 +1492,14 @@ export type TodayRow = {
   day_gain: number | null;
 };
 
+// A held position excluded from the covered live-session basis, with the reason
+// (metron-ops#152) — drives the explicit not-in-live-session disclosure.
+export type TodayExcludedRow = {
+  ticker: string;
+  label: string;
+  reason: string; // "suspect" | "no_quote" | "no_fx"
+};
+
 export type Today = {
   available: boolean;
   base_currency: string;
@@ -1516,7 +1514,11 @@ export type Today = {
   overnight_pct: number | null;
   intraday_pct: number | null;
   day_pct: number | null;
+  // Covered-basis denominator (metron-ops#152): prior-close base-$ MV of the decomposable
+  // rows only — excluded holdings are in neither the leg $ nor this.
+  covered_prev_mv: number | null;
   rows: TodayRow[];
+  excluded_rows: TodayExcludedRow[];
 };
 
 export const getToday = (tenantId: string, id: string, accountIds?: string[]) =>

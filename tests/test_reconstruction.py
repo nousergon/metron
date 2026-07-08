@@ -15,6 +15,7 @@ from datetime import date
 
 import pytest
 
+from api.db import models
 from api.services import performance, prices
 from portfolio_analytics.prices import ClosePoint, fetch_close_history
 
@@ -81,7 +82,33 @@ class TestBackfill:
         n1 = prices.backfill_prices(db_session, ["AAPL", "MSFT"], date(2024, 1, 1), date(2024, 4, 1), source=_hist_src)
         assert n1 == 5  # 3 AAPL + 2 MSFT bars
         n2 = prices.backfill_prices(db_session, ["AAPL", "MSFT"], date(2024, 1, 1), date(2024, 4, 1), source=_hist_src)
-        assert n2 == 0  # already cached → no duplicates
+        assert n2 == 0  # already cached and unchanged → no writes
+
+    def test_backfill_updates_stale_close(self, client, db_session, tenant):
+        """A spine refresh correcting a pre-split (or otherwise stale) close must overwrite."""
+        _seed(client, tenant)  # creates AAPL security
+        db_session.add(
+            models.PriceBar(
+                security_id=prices.ensure_security(db_session, "AAPL"),
+                bar_date=date(2025, 7, 7),
+                close=518.0,  # stale pre-split anchor
+                currency="USD",
+            )
+        )
+        db_session.commit()
+
+        def corrected_src(symbols, start, end, *, source=None):
+            return {
+                "AAPL": [ClosePoint(date(2025, 7, 7), 126.36), ClosePoint(date(2026, 7, 2), 193.98)],
+            }
+
+        n = prices.backfill_prices(
+            db_session, ["AAPL"], date(2025, 1, 1), date(2026, 7, 2), source=corrected_src
+        )
+        assert n == 2  # 1 update + 1 insert
+        hist = prices.close_history_by_symbol(db_session, ["AAPL"])
+        assert hist["AAPL"][0].close == pytest.approx(126.36)
+        assert hist["AAPL"][-1].close == pytest.approx(193.98)
 
     def test_ensure_security_get_or_create(self, db_session):
         a = prices.ensure_security(db_session, "SPY")

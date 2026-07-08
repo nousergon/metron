@@ -20,7 +20,9 @@ from collections import defaultdict
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
+from krepis.trading_calendar import last_closed_trading_day, previous_trading_day
 from nousergon_lib.quant.returns import ValuationPoint, annualize, time_weighted_return
 from nousergon_lib.quant.riskstats import max_drawdown, sharpe_ratio, sortino_ratio, volatility
 from sqlalchemy import select
@@ -30,6 +32,7 @@ from api.db import models
 from api.services import analytics, compute_cache, fund_proxy
 from api.services import fx as fx_service
 from api.services import prices as price_service
+from api.services.security_perf import market_today
 from portfolio_analytics.domain.ledger import TxnType
 from portfolio_analytics.prices import ClosePoint, HistorySource, fetch_latest_closes
 
@@ -725,29 +728,6 @@ class PeriodTile:
     # Honest empty-state reason when the window can't be formed (e.g. "as of 2026-06-25"
     # for a TODAY tile whose freshest valuation predates today). None for a formed tile.
     note: str | None = None
-    # True when this is the live intraday TODAY tile (prior-session close → live NAV,
-    # metron-ops#95) rather than a settled close-to-close window — the UI marks it live.
-    intraday: bool = False
-
-
-@dataclass
-class LiveToday:
-    """The live endpoint for the intraday TODAY tile (metron-ops#95), built by the router
-    from the SAME intraday plumbing the Overview headline NAV uses, so the tile and the
-    TOTAL VALUE move together:
-
-    - ``nav``: current portfolio NAV valued off the live intraday overlay.
-    - ``intraday_applied``: the overlay is actually in effect (feed-entitled + fresh quote).
-      False (pre-open / stale / no feed) → the TODAY tile falls back to the snapshot path
-      (date-guarded, metron#119) — we never fabricate an intraday move.
-    - ``as_of_utc``: the intraday snapshot's producer write time (UI freshness label).
-    - ``bench``: per-benchmark live ``(last, prev_close)`` from the index-strip artifact —
-      the TODAY benchmark return is the same ``(last/prev − 1)`` the Markets strip shows."""
-
-    nav: float | None
-    intraday_applied: bool = False
-    as_of_utc: str | None = None
-    bench: dict[str, tuple[float | None, float | None]] = field(default_factory=dict)
 
 
 @dataclass
@@ -963,32 +943,64 @@ def _window_twr(window: list[PerfPoint]) -> float | None:
     return cum - 1.0
 
 
-def _window_base_index(points: list[PerfPoint], period: str, today: date) -> int | None:
-    """Index of the ANCHOR point whose NAV is a window's starting value (the window is
-    ``points[base:]``), or None when the series can't form the window.
+_MARKET_TZ = ZoneInfo("America/New_York")
 
-    - ``today``: the prior recorded snapshot (the latest close-to-close daily change). When
-      the freshest valuation predates ``today`` (pre-open, weekend/holiday, intraday-off owner
-      build), the change still forms, but ``period_tiles`` labels the tile "as of <date>" so a
-      completed session is never read as a live "today" move (the metron-ops −$10k-before-open
-      bug was the missing label, not the value).
-    - ``ytd``: the last snapshot in a PRIOR year (year-end carry); if the series starts
-      this year, its first point (return measured from the first recorded day of the year).
-    - ``ltm``: the last snapshot on/before today−365d; if the series is shorter, its first
-      point (return measured over all available history).
-    The honest start_date the tile carries tells the user the actual span in the last two
-    cases. Returns None if the anchor would be the final point (no window)."""
+
+def _tile_now(today: date, now: datetime | None) -> datetime:
+    """NYSE-time as-of for period tiles — injectable in tests; defaults to midday ET on
+    ``today`` so unit tests that pass only a calendar date still land in-session."""
+    if now is not None:
+        return now.astimezone(_MARKET_TZ) if now.tzinfo else now.replace(tzinfo=_MARKET_TZ)
+    return datetime.combine(today, datetime.min.time().replace(hour=12), tzinfo=_MARKET_TZ)
+
+
+def _snapshot_asof_index(points: list[PerfPoint], when: date) -> int | None:
+    """Index of the last snapshot with ``snap_date <= when``."""
+    i = bisect.bisect_right([p.snap_date for p in points], when) - 1
+    return i if i >= 0 else None
+
+
+def _snapshot_on_trading_session(points: list[PerfPoint], session: date) -> int | None:
+    """Snapshot index for an NYSE session — the last row on/before ``session`` whose
+    ``snap_date`` is itself a trading day (skips weekend/holiday carry-forward rows that
+    daily-refresh stamps at stale EOD prices)."""
+    from krepis.trading_calendar import is_trading_day
+
+    i = _snapshot_asof_index(points, session)
+    while i is not None and i >= 0:
+        if is_trading_day(points[i].snap_date):
+            return i
+        i -= 1
+    return None
+
+
+def _today_window_indices(points: list[PerfPoint], now: datetime) -> tuple[int, int] | None:
+    """``(base_i, end_i)`` for the settled TODAY tile: the last *closed* NYSE session's
+    close-to-close change (``previous_trading_day(lcd) → lcd``), not the last two calendar
+    rows — weekend carry-forward snapshots at an unchanged NAV were reading as $0."""
+    lcd = last_closed_trading_day(now)
+    end_i = _snapshot_on_trading_session(points, lcd)
+    if end_i is None:
+        return None
+    base_i = _snapshot_on_trading_session(points, previous_trading_day(lcd))
+    if base_i is None or base_i >= end_i:
+        return None
+    return base_i, end_i
+
+
+def _window_indices(
+    points: list[PerfPoint], period: str, today: date, *, now: datetime | None = None
+) -> tuple[int, int] | None:
+    """``(base_i, end_i)`` inclusive window into ``points``, or None when the period can't
+    form. TODAY uses trading sessions (``last_closed_trading_day``); YTD/LTM end at the
+    latest snapshot."""
     n = len(points)
     if n < 2:
         return None
     end_i = n - 1
     if period == "today":
-        # The latest recorded close-to-close change. When the freshest snapshot predates
-        # ``today`` (pre-open / weekend / intraday-off owner build), the tile still shows it,
-        # but ``period_tiles`` labels it "as of <date>" so a prior session is never read as a
-        # live "today" move (the −$10k-before-open bug was the MISLABEL, not the value).
-        base = end_i - 1
-    elif period == "ytd":
+        return _today_window_indices(points, _tile_now(today, now))
+    if period == "ytd":
         year = points[end_i].snap_date.year
         base = next((i for i in range(end_i, -1, -1) if points[i].snap_date.year < year), 0)
     elif period == "ltm":
@@ -996,7 +1008,7 @@ def _window_base_index(points: list[PerfPoint], period: str, today: date) -> int
         base = next((i for i in range(end_i, -1, -1) if points[i].snap_date <= cutoff), 0)
     else:
         return None
-    return base if base < end_i else None
+    return (base, end_i) if base < end_i else None
 
 
 def _ensure_benchmark_coverage(
@@ -1056,44 +1068,6 @@ def _index_bench_return(bench: dict[str, tuple[float | None, float | None]], sym
     return (last / prev - 1.0) if (last is not None and prev) else None
 
 
-def _live_today_tile(
-    session: Session,
-    tenant_id: uuid.UUID,
-    portfolio_id: uuid.UUID,
-    account_ids: Collection[uuid.UUID] | None,
-    points: list[PerfPoint],
-    today: date,
-    with_benchmarks: bool,
-    live: LiveToday | None,
-) -> PeriodTile | None:
-    """The intraday TODAY tile (metron-ops#95): prior trading session's close → current
-    LIVE NAV, flow-neutralized exactly as the snapshot path is. Returns None when the live
-    overlay isn't in effect (no feed / stale / pre-open) or there's no prior session to
-    anchor on — the caller then falls back to the date-guarded snapshot path (metron#119).
-
-    The base is the most recent snapshot STRICTLY BEFORE today (the prior session's close),
-    not ``points[-2]`` — so it's correct whether or not a same-day snapshot already exists.
-    Today's external flow is neutralized with the same ``_scoped_net_purchases`` the daily
-    snapshot uses, so an intraday deposit/withdrawal never reads as a return."""
-    if live is None or not live.intraday_applied or live.nav is None:
-        return None
-    prior = next((p for p in reversed(points) if p.snap_date < today), None)
-    if prior is None or prior.nav <= 0:
-        return None
-    flow = _scoped_net_purchases(
-        session, tenant_id, portfolio_id, account_ids, after=prior.snap_date, through=today
-    )
-    gain = live.nav - prior.nav - flow
-    twr = (live.nav - flow) / prior.nav - 1.0
-    benches: list[BenchmarkReturn] = []
-    if with_benchmarks:
-        for sym, blabel in BENCHMARKS:
-            ret = _index_bench_return(live.bench, sym)
-            alpha = (twr - ret) if ret is not None else None
-            benches.append(BenchmarkReturn(symbol=sym, label=blabel, ret=ret, alpha=alpha))
-    return PeriodTile("today", "Today", prior.snap_date, today, gain, twr, benches, intraday=True)
-
-
 def period_tiles(
     session: Session,
     tenant_id: uuid.UUID,
@@ -1103,11 +1077,20 @@ def period_tiles(
     account_ids: Collection[uuid.UUID] | None = None,
     with_benchmarks: bool = True,
     benchmark_source: HistorySource | None = None,
-    live: LiveToday | None = None,
     today_bench: dict[str, tuple[float | None, float | None]] | None = None,
+    now: datetime | None = None,
 ) -> PeriodTilesResult:
     """Overview hero tiles (metron-ops#83): aggregate holdings performance over Today / YTD
     / LTM, each as $ investment gain + %TWR, plus the per-benchmark return and alpha.
+
+    SETTLED BY CONSTRUCTION (metron-ops#154): every tile — TODAY included — is a
+    snapshot-to-snapshot close window. The former live-intraday TODAY variant
+    (metron-ops#95's ``_live_today_tile``) was retired for mixing bases: its numerator
+    moved only the live-covered positions while its denominator was the full prior-session
+    NAV, silently diluting the shown %TWR whenever coverage was partial. Live session
+    detail now lives exclusively in the Holdings live valuation mode (metron-ops#153).
+    The date-guarded snapshot path (metron#119) labels a pre-open/prior-session TODAY
+    "as of <date>", so a completed session is never relabeled as today.
 
     Benchmark comparison is FEED-GATED: ``with_benchmarks=False`` (the no-feed beta) yields
     portfolio-only tiles (no benchmark columns). YTD/LTM benchmark returns come from the
@@ -1115,33 +1098,31 @@ def period_tiles(
     feed-entitled) backfills any window the cache doesn't already span — a multi-day cache
     slack is immaterial over a months-wide window.
 
-    ``live`` (metron-ops#95) makes the TODAY tile a true intraday number — the prior trading
-    session's close → the current LIVE NAV — whenever the intraday overlay is in effect.
-    Without it (pre-open / stale feed / no-feed beta) TODAY falls back to the date-guarded
-    snapshot-to-snapshot path (metron#119), so a prior session is never relabeled as today.
-
-    ``today_bench`` (metron-ops#131) is the SAME live index-strip ``(last, prev_close)`` quotes
-    ``live.bench`` carries, sourced independently of whether the intraday NAV overlay applies.
-    TODAY's benchmark return — in EITHER the live-intraday tile or this settled-snapshot path
-    — always prefers it over the multi-day-tolerant price_bars cache: QQQ/IWM are pure
-    comparison proxies never held as a position, so price_bars only refreshes them on a lenient
-    multi-day slack that's fine for YTD/LTM but can silently serve a several-day-stale close for
-    a 1-day TODAY window (b_start == b_end → a fabricated-looking 0% return). Falls back to
-    price_bars only when the settled TODAY window isn't actually today (stale/pre-open "as of
-    <date>" tile) or the index-strip quote itself isn't available."""
+    ``today_bench`` (metron-ops#131) is the live index-strip ``(last, prev_close)`` quotes.
+    TODAY's benchmark return always prefers it over the multi-day-tolerant price_bars cache:
+    QQQ/IWM are pure comparison proxies never held as a position, so price_bars only
+    refreshes them on a lenient multi-day slack that's fine for YTD/LTM but can silently
+    serve a several-day-stale close for a 1-day TODAY window (b_start == b_end → a
+    fabricated-looking 0% return). Falls back to price_bars only when the settled TODAY
+    window isn't actually today (stale/pre-open "as of <date>" tile) or the index-strip
+    quote itself isn't available."""
     points = _load_perf_points(session, tenant_id, portfolio_id, account_ids)
     result = PeriodTilesResult(last_date=points[-1].snap_date if points else None)
     if len(points) < 2:
         return result
 
-    # The anchor index per period, computed first so benchmark coverage spans only what the
-    # earliest window actually needs (no over-fetch).
-    bases = {p: _window_base_index(points, p, today) for p, _ in PERIOD_TILES}
+    at = _tile_now(today, now)
+    lcd = last_closed_trading_day(at)
+    cal = market_today(at)
+
+    # Inclusive (base_i, end_i) per period — TODAY anchors on trading sessions, not the
+    # last two calendar snapshot rows (weekend carry-forward stamps read as $0).
+    anchors = {p: _window_indices(points, p, today, now=at) for p, _ in PERIOD_TILES}
 
     bench_history: dict[str, list[ClosePoint]] = {}
     if with_benchmarks:
         symbols = [s for s, _ in BENCHMARKS]
-        formed = [b for b in bases.values() if b is not None]
+        formed = [a[0] for a in anchors.values() if a is not None]
         if formed:
             # benchmark_source=None resolves to the default spine source inside backfill;
             # coverage is a no-op (no network) when the cache already spans the window.
@@ -1151,30 +1132,25 @@ def period_tiles(
         bench_history = price_service.close_history_by_symbol(session, symbols)
         result.benchmarks_available = any(bench_history.get(s) for s in symbols)
 
-    # Intraday TODAY (metron-ops#95): when the live overlay is in effect, the TODAY tile is
-    # (prior-session close → live NAV), so it moves intraday with the headline NAV instead
-    # of sitting flat at the last settled close until EOD.
-    live_today = _live_today_tile(
-        session, tenant_id, portfolio_id, account_ids, points, today, with_benchmarks, live
-    )
-
     for period, label in PERIOD_TILES:
-        if period == "today" and live_today is not None:
-            result.tiles.append(live_today)
-            continue
-        base_i = bases[period]
-        if base_i is None:
-            # Only YTD/LTM reach here (a thin series); TODAY always forms with ≥2 snapshots.
+        anchor = anchors[period]
+        if anchor is None:
             result.tiles.append(PeriodTile(period, label, None, None, None, None, [], None))
             continue
-        window = points[base_i:]
+        base_i, end_i = anchor
+        window = points[base_i : end_i + 1]
         base, end = window[0], window[-1]
         twr = _window_twr(window)
         gain = end.nav - base.nav - sum(p.external_flow for p in window[1:])
-        # TODAY's benchmark is only genuinely "today" when the settled snapshot itself is
-        # dated today (else it's the "as of <date>" completed-session case below, which the
-        # index strip's TODAY quote doesn't describe — price_bars is correct there).
-        use_today_bench = period == "today" and end.snap_date == today and today_bench is not None
+        # TODAY's benchmark from the index strip when the settled window is the last closed
+        # session on the current calendar day (post-close); pre-open / prior-session tiles
+        # use price_bars + an "as of" label keyed on calendar date.
+        use_today_bench = (
+            period == "today"
+            and end.snap_date == lcd
+            and end.snap_date == cal
+            and today_bench is not None
+        )
         benches: list[BenchmarkReturn] = []
         if with_benchmarks:
             for sym, blabel in BENCHMARKS:
@@ -1187,11 +1163,11 @@ def period_tiles(
                     ret = (b_end / b_start - 1.0) if (b_start and b_end and b_start > 0) else None
                 alpha = (twr - ret) if (twr is not None and ret is not None) else None
                 benches.append(BenchmarkReturn(symbol=sym, label=blabel, ret=ret, alpha=alpha))
-        # TODAY whose freshest snapshot predates today (pre-open / intraday-off) carries an
-        # "as of <date>" label so the completed-session change isn't read as a live move.
+        # Settled TODAY whose end session predates the calendar day carries "as of <date>"
+        # (Mon pre-open showing Thu's close); post-close same-day does not.
         note = (
             f"as of {end.snap_date.isoformat()}"
-            if period == "today" and end.snap_date != today
+            if period == "today" and end.snap_date != cal
             else None
         )
         result.tiles.append(PeriodTile(period, label, base.snap_date, end.snap_date, gain, twr, benches, note))

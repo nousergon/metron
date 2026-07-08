@@ -100,9 +100,11 @@ describe("PerfTiles", () => {
     expect(screen.queryByText("history building…")).toBeNull();
   });
 
-  it("marks the TODAY tile live when it's the intraday number", () => {
-    const live: PeriodTile[] = [{ ...tiles[0], intraday: true }, ...tiles.slice(1)];
-    render(<PerfTiles tiles={live} benchmarksAvailable />);
-    expect(screen.getByText("live · ~15m delay")).toBeTruthy();
+  it("links the settled TODAY tile into the Holdings live session", () => {
+    // Tiles are settled by construction (metron-ops#154) — no live tile variant exists;
+    // the Today tile instead carries a link into the Holdings live valuation mode.
+    render(<PerfTiles tiles={tiles} benchmarksAvailable sessionHref="/portfolios/p1/holdings?val=live" />);
+    const link = screen.getByText("live →");
+    expect(link.getAttribute("href")).toBe("/portfolios/p1/holdings?val=live");
   });
 });

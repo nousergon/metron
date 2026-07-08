@@ -1,9 +1,7 @@
-"""Composite attractiveness score (metron-ops#106, Phase 2).
+"""Composite attractiveness score — SOTA 6-pillar cross-sectional blend.
 
-Pins the transparent scoring contract: the per-component transforms, the renormalize-over-
-present-components blend, graceful coverage gaps (incl. the paid revision feed always absent),
-and the no-signal → None rule. Also pins that the Holdings endpoint + tearsheet attach the
-same score. Pure unit tests — injected readers / monkeypatched yf map, no S3, no DB.
+Pins the NE factor-profile consumer contract: full-universe cross-section, per-pillar
+lookup, graceful coverage gaps, and honest None for tickers outside the scanner universe.
 """
 
 from __future__ import annotations
@@ -11,168 +9,86 @@ from __future__ import annotations
 from datetime import date
 
 from api.db import models
-from api.services import analytics, attractiveness, metrics_enrichment, tearsheet
+from api.services import (
+    analytics,
+    attractiveness,
+    metrics_enrichment,
+    tearsheet,
+)
 
-# ── component transforms ─────────────────────────────────────────────────────
-
-def test_neutral_inputs_score_50():
-    # Rating + sentiment at the neutral midpoint, fwd P/E exactly at the peer median,
-    # zero upside → every present component is 0.5 → blended 50.0.
-    att = attractiveness.compute(
-        fwd_pe=20.0, median_fwd_pe=20.0,
-        price_target_upside=0.0, consensus_score=0.0, news_sentiment=0.0,
-    )
-    assert att is not None
-    assert att.score == 50.0
-    assert att.coverage == 4  # revision absent (paid feed) → dropped
-
-
-def test_cheap_high_upside_strong_buy_scores_high():
-    att = attractiveness.compute(
-        fwd_pe=10.0, median_fwd_pe=20.0,        # 50% discount → valuation sub 1.0
-        price_target_upside=0.50,               # +50% → upside sub 1.0
-        consensus_score=1.0,                    # strongBuy → rating sub 1.0
-        news_sentiment=1.0,                     # max sentiment → sub 1.0
-    )
-    assert att is not None and att.score == 100.0
-
-
-def test_rich_negative_signals_score_low():
-    att = attractiveness.compute(
-        fwd_pe=40.0, median_fwd_pe=20.0,        # 100% premium → clamps to 0.0
-        price_target_upside=-0.80,              # large downside → clamps to 0.0
-        consensus_score=-1.0,                   # strongSell → 0.0
-        news_sentiment=-1.0,                    # min sentiment → 0.0
-    )
-    assert att is not None and att.score == 0.0
+_PROFILES = {
+    "AAPL": {
+        "sector": "Information Technology",
+        "quality_score": 90.0,
+        "value_score": 30.0,
+        "momentum_score": 85.0,
+        "growth_score": 80.0,
+        "stewardship_score": 70.0,
+        "low_vol_score": 60.0,
+    },
+    "MSFT": {
+        "sector": "Information Technology",
+        "quality_score": 60.0,
+        "value_score": 50.0,
+        "momentum_score": 55.0,
+        "growth_score": 45.0,
+        "stewardship_score": 40.0,
+        "low_vol_score": 35.0,
+    },
+}
 
 
-def test_negative_or_zero_forward_pe_drops_valuation_leg():
-    # A non-positive fwd P/E is not a meaningful valuation signal → valuation component drops,
-    # weights renormalize over the remaining components (here only rating).
-    att = attractiveness.compute(fwd_pe=-5.0, median_fwd_pe=20.0, consensus_score=1.0)
-    assert att is not None
-    assert att.coverage == 1
-    assert {c.key for c in att.components} == {"rating"}
-    assert att.score == 100.0
-
-
-def test_renormalizes_over_present_components():
-    # Only upside present → its sub-score IS the blend, regardless of the catalog weight.
-    att = attractiveness.compute(price_target_upside=0.25)  # +25% → 0.5 + 0.5*0.25/0.5 = 0.75
-    assert att is not None
-    assert att.coverage == 1 and att.score == 75.0
-
-
-def test_no_components_returns_none():
-    # Everything missing (off-feed / total coverage gap) → honest None, never a fabricated 50.
-    assert attractiveness.compute() is None
-
-
-def test_components_in_catalog_order_and_weights_reported():
-    att = attractiveness.compute(
-        news_sentiment=0.2, consensus_score=0.4, price_target_upside=0.1,
-    )
-    assert att is not None
-    assert [c.key for c in att.components] == ["upside", "rating", "sentiment"]
-    # Catalog weights surfaced verbatim for the inspectable gauge.
-    by_key = {c.key: c.weight for c in att.components}
-    assert by_key == {
-        "upside": attractiveness.WEIGHTS["upside"],
-        "rating": attractiveness.WEIGHTS["rating"],
-        "sentiment": attractiveness.WEIGHTS["sentiment"],
+def test_compute_universe_returns_cross_sectional_scores():
+    universe = attractiveness.compute_universe(profiles_reader=lambda: _PROFILES)
+    assert "AAPL" in universe and "MSFT" in universe
+    assert universe["AAPL"].score is not None
+    assert universe["AAPL"].coverage == 6
+    assert {p.key for p in universe["AAPL"].pillars} == {
+        "quality", "value", "momentum", "growth", "stewardship", "defensiveness",
     }
 
 
-def test_weights_sum_to_one():
-    assert abs(sum(attractiveness.WEIGHTS.values()) - 1.0) < 1e-9
+def test_lookup_misses_outside_universe():
+    universe = attractiveness.compute_universe(profiles_reader=lambda: _PROFILES)
+    assert attractiveness.lookup("ZZZ", universe) is None
 
 
-# ── Holdings endpoint wiring ─────────────────────────────────────────────────
-
-def _holding(ticker="AAPL"):
-    h = analytics.Holding(
-        ticker=ticker, quantity=10.0, avg_cost=100.0, cost_basis=1000.0, currency="USD"
-    )
-    h.last_price = 200.0
-    h.sector = "Technology"
-    return h
-
-
-def test_enrich_metrics_attaches_attractiveness(db_session, monkeypatch):
-    held = [_holding()]
+def test_enrich_metrics_attaches_sota_attractiveness(db_session, monkeypatch):
+    held = [
+        analytics.Holding(
+            ticker="AAPL", quantity=10.0, avg_cost=100.0, cost_basis=1000.0, currency="USD",
+            last_price=200.0, sector="Technology",
+        )
+    ]
     monkeypatch.setattr(
-        metrics_enrichment.tearsheet_service, "_yf_symbol_map", lambda s, t: {"AAPL": "AAPL"}
+        metrics_enrichment.tearsheet_service, "_yf_symbol_map", lambda s, t: {"AAPL": "AAPL"},
     )
+    monkeypatch.setattr(metrics_enrichment.fundamentals_service, "load_fundamentals", lambda: type("S", (), {"by_symbol": {}})())
+    monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals", lambda: type("S", (), {"by_symbol": {}})())
+    monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst", lambda: type("S", (), {"by_symbol": {}})())
+    monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment", lambda: type("S", (), {"by_symbol": {}})())
 
-    class _Snap:
-        def __init__(self, by):
-            self.by_symbol = by
-            self.as_of = date(2026, 6, 26)
-            self.by_sector = by
-            self.by_country = {}
+    def _test_profiles_reader():
+        # load_factor_profiles(reader=...) parses a RAW dict into a snapshot itself —
+        # a reader returning an already-built FactorProfilesSnapshot fails its
+        # isinstance(raw, dict) check and silently yields an empty universe.
+        return _PROFILES
 
-    class _Fund:
-        forward_pe = 15.0
-        # everything else the enrich path reads → None-safe defaults
-        def __getattr__(self, _):
-            return None
-
-    monkeypatch.setattr(
-        metrics_enrichment.fundamentals_service, "load_fundamentals",
-        lambda: _Snap({"AAPL": _Fund()}),
-    )
-    monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals", lambda: _Snap({}))
-
-    class _Analyst:
-        consensus_rating = "buy"
-        rating_score = 0.5
-        mean_target = 240.0
-        median_target = 235.0
-        num_analysts = 30
-        estimate_revision_trend = None
-        def target_upside(self, price):
-            return self.mean_target / price - 1.0
-
-    monkeypatch.setattr(
-        metrics_enrichment.analyst_service, "load_analyst", lambda: _Snap({"AAPL": _Analyst()})
-    )
-
-    class _Sent:
-        sentiment = 0.3
-        n_articles = 10
-
-    monkeypatch.setattr(
-        metrics_enrichment.sentiment_service, "load_sentiment", lambda: _Snap({"AAPL": _Sent()})
-    )
-
-    class _Median:
-        forward_pe = 20.0
-
-    monkeypatch.setattr(
-        metrics_enrichment.valuation_medians_service, "load_valuation_medians",
-        lambda: _Snap({"Technology": _Median()}),
-    )
+    # Directly call the uncached computation with test profiles to avoid cache recursion
+    original_compute_universe = attractiveness._compute_universe_uncached
+    def _mock_compute_universe(profiles_reader=None, weights_reader=None):
+        return original_compute_universe(
+            profiles_reader=profiles_reader or _test_profiles_reader,
+            weights_reader=weights_reader,
+        )
+    monkeypatch.setattr(attractiveness, "compute_universe", _mock_compute_universe)
 
     metrics_enrichment.enrich_metrics(db_session, held)
-    h = held[0]
-    assert h.attractiveness is not None
-    assert h.attractiveness_coverage == 4  # valuation+upside+rating+sentiment, revision absent
-    # Cheaper than peers (15 vs 20), +20% upside, buy rating, +0.3 sentiment → clearly > 50.
-    assert h.attractiveness > 50.0
-
-
-# ── tearsheet gauge wiring (DB-backed) ───────────────────────────────────────
-
-_ANALYST_ART = {
-    "schema_version": 1, "as_of": "2026-06-26", "source": "yfinance",
-    "analyst": {"AAPL": {"consensus_rating": "buy", "rating_score": 0.5,
-                         "mean_target": 240.0, "median_target": 235.0, "num_analysts": 30}},
-}
-_SENTIMENT_ART = {
-    "schema_version": 1, "as_of": "2026-06-26", "source": "lm",
-    "sentiment": {"AAPL": {"sentiment": 0.3, "n_articles": 10, "as_of": "2026-06-25"}},
-}
+    aapl = held[0]
+    assert aapl.attractiveness is not None
+    assert aapl.attractiveness_coverage == 6
+    assert aapl.attractiveness_quality == 90.0
+    assert aapl.attractiveness_value == 30.0
 
 
 def _seed_aapl(session):
@@ -182,8 +98,7 @@ def _seed_aapl(session):
     pf = models.Portfolio(tenant_id=tenant.id, name="P", base_currency="USD")
     session.add(pf)
     session.flush()
-    acct = models.Account(tenant_id=tenant.id, portfolio_id=pf.id, broker="csv",
-                          external_id="CSV-1", currency="USD")
+    acct = models.Account(tenant_id=tenant.id, portfolio_id=pf.id, broker="csv", external_id="CSV-1", currency="USD")
     aapl = models.Security(symbol="AAPL", currency="USD")
     session.add_all([acct, aapl])
     session.flush()
@@ -192,32 +107,41 @@ def _seed_aapl(session):
         quantity=10, price=100.0, amount=1000.0, currency="USD",
         trade_date=date(2025, 1, 1), source_key="buy-aapl",
     ))
-    session.add(models.PriceBar(security_id=aapl.id, bar_date=date(2025, 1, 2),
-                                close=200.0, currency="USD"))
+    session.add(models.PriceBar(security_id=aapl.id, bar_date=date(2025, 1, 2), close=200.0, currency="USD"))
     session.commit()
     return tenant.id, pf.id
 
 
-def test_tearsheet_gauge_populates_when_feed_enabled(db_session):
+def test_tearsheet_gauge_populates_when_profiles_available(db_session, monkeypatch):
     tenant_id, pid = _seed_aapl(db_session)
-    sheet = tearsheet.tearsheet(
-        db_session, tenant_id, pid, "AAPL", feed_enabled=True,
-        analyst_reader=lambda: _ANALYST_ART, sentiment_reader=lambda: _SENTIMENT_ART,
-    )
-    # Fundamentals/medians artifacts are absent (default S3 reader fails soft → None), so the
-    # gauge blends only the consensus legs: upside (+20%), rating (buy), sentiment (+0.3).
+
+    def _test_profiles_reader():
+        # load_factor_profiles(reader=...) parses a RAW dict into a snapshot itself —
+        # a reader returning an already-built FactorProfilesSnapshot fails its
+        # isinstance(raw, dict) check and silently yields an empty universe.
+        return _PROFILES
+
+    # Directly call the uncached computation with test profiles to avoid cache recursion
+    original_compute_universe = attractiveness._compute_universe_uncached
+    def _mock_compute_universe(profiles_reader=None, weights_reader=None):
+        return original_compute_universe(
+            profiles_reader=profiles_reader or _test_profiles_reader,
+            weights_reader=weights_reader,
+        )
+    monkeypatch.setattr(attractiveness, "compute_universe", _mock_compute_universe)
+
+    sheet = tearsheet.tearsheet(db_session, tenant_id, pid, "AAPL", feed_enabled=True)
     att = sheet.attractiveness
     assert att.available is True
-    assert att.coverage == 3
-    assert {c.key for c in att.components} == {"upside", "rating", "sentiment"}
-    assert att.score is not None and att.score > 50.0
+    assert att.score is not None
+    assert att.coverage == 6
+    assert {c.key for c in att.components} == {
+        "quality", "value", "momentum", "growth", "stewardship", "defensiveness",
+    }
 
 
 def test_tearsheet_gauge_gated_off_when_feed_disabled(db_session):
     tenant_id, pid = _seed_aapl(db_session)
-    sheet = tearsheet.tearsheet(
-        db_session, tenant_id, pid, "AAPL", feed_enabled=False,
-        analyst_reader=lambda: _ANALYST_ART, sentiment_reader=lambda: _SENTIMENT_ART,
-    )
+    sheet = tearsheet.tearsheet(db_session, tenant_id, pid, "AAPL", feed_enabled=False)
     assert sheet.attractiveness.available is False
     assert sheet.attractiveness.score is None

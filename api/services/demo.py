@@ -262,13 +262,17 @@ def _apply_reference_sectors(session: Session, positions: list[dict]) -> None:
 
 
 def _seed_reference_nav(session: Session, artifact: dict) -> None:
-    """Upsert the NAV-vs-SPY history into ``NavSnapshot`` (idempotent by snap_date).
+    """Upsert the NAV-vs-SPY history into ``NavSnapshot`` (idempotent by snap_date) — the
+    SOLE writer of this portfolio's NAV series. ``daily_refresh`` excludes
+    ``REFERENCE_PORTFOLIO_ID`` from its generic per-portfolio NAV writers
+    (``record_snapshot`` et al.) precisely so nothing re-derives and clobbers what's
+    written here from Metron's own price/FX cache (metron-ops#141) — every row this
+    portfolio ever has comes from this function alone.
 
     ``external_flow`` is 0 — the showcase models no external contributions, so the
     flow-neutralized return series IS the portfolio return (the illustrative alpha-vs-
     SPY curve). ``cost_basis`` is the current total cost basis (constant; it only feeds
-    the total-return-vs-cost display, not the TWR curve — and the daily ``record_snapshot``
-    refreshes the latest row natively)."""
+    the total-return-vs-cost display, not the TWR curve)."""
     history = artifact.get("nav_history") or []
     if not history:
         return
