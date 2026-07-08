@@ -48,10 +48,22 @@ def flex_ok(monkeypatch):
     )
 
 
-def test_sync_flex_noop_without_stored_credentials(db_session, monkeypatch, flex_ok):
+def test_sync_flex_raises_when_connected_but_credentials_missing(db_session, monkeypatch, flex_ok):
+    """Fail-loud (2026-07-08 incident): a Flex-connected portfolio with no stored
+    credentials means positions silently freeze — that's a WARN-surfaced error via
+    daily_refresh's best-effort wrapper, never a silent no-op."""
     monkeypatch.setattr(broker_sync.settings, "flex_token", "")
     monkeypatch.setattr(broker_sync.settings, "flex_query_id", "")
     pf = _seed_portfolio(db_session, broker="ibkr_flex")
+    with pytest.raises(RuntimeError, match="no stored Flex credentials"):
+        broker_sync.sync_flex_for_portfolio(db_session, pf)
+    assert db_session.query(models.Position).count() == 0
+
+
+def test_sync_flex_noop_without_credentials_when_never_connected(db_session, monkeypatch, flex_ok):
+    monkeypatch.setattr(broker_sync.settings, "flex_token", "")
+    monkeypatch.setattr(broker_sync.settings, "flex_query_id", "")
+    pf = _seed_portfolio(db_session, broker="csv")
     assert broker_sync.sync_flex_for_portfolio(db_session, pf) is None
     assert db_session.query(models.Position).count() == 0
 
@@ -88,9 +100,18 @@ def test_sync_flex_raises_on_fetch_failure(db_session, monkeypatch):
 
 
 # ── SnapTrade ──────────────────────────────────────────────────────────────────
-def test_sync_snaptrade_noop_when_disabled(db_session, monkeypatch):
+def test_sync_snaptrade_raises_when_connected_but_disabled(db_session, monkeypatch):
+    """Same fail-loud class as Flex: SnapTrade accounts exist but personal-mode sync is
+    off — silent staleness, so it must surface as an error, not a no-op."""
     monkeypatch.setattr(broker_sync.settings, "snaptrade_personal", False)
     pf = _seed_portfolio(db_session, broker="snaptrade")
+    with pytest.raises(RuntimeError, match="personal-mode SnapTrade sync is off"):
+        broker_sync.sync_snaptrade_for_portfolio(db_session, pf)
+
+
+def test_sync_snaptrade_noop_when_disabled_and_never_connected(db_session, monkeypatch):
+    monkeypatch.setattr(broker_sync.settings, "snaptrade_personal", False)
+    pf = _seed_portfolio(db_session, broker="csv")
     assert broker_sync.sync_snaptrade_for_portfolio(db_session, pf) is None
 
 

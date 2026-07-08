@@ -60,6 +60,27 @@ cat "$BLOCK" >> "$ENVF"
 rm -f "$BLOCK"
 echo "  hydrated ${HYDRATED} var(s) from SSM (values not logged)"
 
+# Install tracked systemd units when the repo copy differs from the live one, so a unit
+# edit deploys via the merge button alone (metron-ops DEPLOY.md declares
+# infrastructure/systemd/ the source of truth — before this step the box copy drifted
+# until someone hand-copied it; the 2026-07-08 flex-sync env-overlay fix is the case in
+# point). First-time unit INSTALLS still need a manual `systemctl enable` (see DEPLOY.md);
+# this handles updates to already-enabled units.
+UNITS_DIR="$REPO/../metron-ops/infrastructure/systemd"
+UNITS_CHANGED=0
+for f in "$UNITS_DIR"/*.service "$UNITS_DIR"/*.timer; do
+  [ -e "$f" ] || continue
+  dest="/etc/systemd/system/$(basename "$f")"
+  if ! cmp -s "$f" "$dest"; then
+    sudo cp "$f" "$dest" || { echo "unit install FAILED: $(basename "$f")"; exit 1; }
+    UNITS_CHANGED=1
+    echo "  installed unit $(basename "$f")"
+  fi
+done
+if [ "$UNITS_CHANGED" = 1 ]; then
+  sudo systemctl daemon-reload
+fi
+
 sudo systemctl restart metron-api metron-web
 
 # Health checks — poll with a bounded retry instead of a fixed sleep. A fixed sleep races

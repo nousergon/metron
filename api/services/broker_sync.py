@@ -49,14 +49,21 @@ def sync_flex_for_portfolio(session: Session, portfolio: models.Portfolio) -> pe
     """Re-sync this portfolio's IBKR Flex-sourced accounts from the deployment's stored
     token/query id — the automated counterpart to ``POST /sync/flex``.
 
-    Returns ``None`` (a no-op, not an error) when no stored Flex credentials are
-    configured, or this portfolio has never connected Flex before. Raises on a real
-    fetch failure — the caller (``daily_refresh``) wraps this in its own best-effort
-    try/except so a Flex outage never costs the price refresh / NAV snapshot."""
-    if not (settings.flex_token and settings.flex_query_id):
-        return None
+    Returns ``None`` (a no-op, not an error) only when this portfolio has never
+    connected Flex before. A portfolio WITH Flex-sourced accounts but no stored
+    credentials raises — that combination means its positions silently go stale
+    (the 2026-07-08 incident: the refresh unit missed the env overlay carrying
+    FLEX_TOKEN, so every run logged ``flex_synced=False`` with no warning while
+    77 positions froze for weeks). Raises on a real fetch failure too — the caller
+    (``daily_refresh``) wraps this in its own best-effort try/except so a Flex
+    outage never costs the price refresh / NAV snapshot."""
     if "ibkr_flex" not in _synced_brokers(session, portfolio):
         return None
+    if not (settings.flex_token and settings.flex_query_id):
+        raise RuntimeError(
+            "portfolio has IBKR Flex accounts but no stored Flex credentials are "
+            "configured (FLEX_TOKEN/FLEX_QUERY_ID) — positions will go stale until fixed"
+        )
     connector = IbkrFlexConnector(settings.flex_token, settings.flex_query_id, persist_bronze=False)
     snapshot = connector.sync()
     if snapshot.error:
@@ -71,13 +78,19 @@ def sync_snaptrade_for_portfolio(session: Session, portfolio: models.Portfolio) 
     brokerages — the automated counterpart to ``POST /import/snaptrade``, honoring the
     same per-portfolio connection exclusions.
 
-    Returns ``None`` (a no-op, not an error) when personal-mode SnapTrade sync is off,
-    unconfigured, or this portfolio has never synced SnapTrade before. Raises on a real
-    fetch failure — the caller wraps this in its own best-effort try/except."""
-    if not settings.snaptrade_personal:
-        return None
+    Returns ``None`` (a no-op, not an error) only when this portfolio has never synced
+    SnapTrade before. A portfolio WITH SnapTrade-sourced accounts on a deploy where
+    personal-mode sync is off/unconfigured raises — same silent-staleness class as the
+    Flex guard above (positions freeze with no signal). M2's per-user connection-portal
+    flow replaces personal mode and reworks this gate. Raises on a real fetch failure
+    too — the caller wraps this in its own best-effort try/except."""
     if not any(b.startswith("snaptrade") for b in _synced_brokers(session, portfolio)):
         return None
+    if not settings.snaptrade_personal:
+        raise RuntimeError(
+            "portfolio has SnapTrade accounts but personal-mode SnapTrade sync is off "
+            "(SNAPTRADE_PERSONAL) — positions will go stale until fixed"
+        )
     try:
         reader = SnapTradeReader.from_env()
     except KeyError as e:
