@@ -55,6 +55,7 @@ function toShellHolding(e: WatchlistEntry): Holding {
     overnight_pct: null,
     intraday_pct: null,
     day_pct: null,
+    day_change: null,
     ytd_pct: null,
     ltm_pct: null,
     sector: e.sector,

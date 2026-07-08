@@ -107,7 +107,15 @@ const COUNTRY_OPTIONS = [
 type SortValue = string | number | null;
 
 // Portfolio totals over the base-currency aggregates (computed once per render).
-type Totals = { cost: number; mv: number; unreal: number; unrealPct: number | null; excluded: number };
+type Totals = {
+  cost: number;
+  mv: number;
+  unreal: number;
+  unrealPct: number | null;
+  // Σ position day_change ($, base) — null when no holding carries one (settled regime).
+  day: number | null;
+  excluded: number;
+};
 
 // Per-row context handed to each column's cell renderer — base currency, the editable
 // portfolio id, and the no-fabrication FX fallback bound to this holding.
@@ -247,6 +255,46 @@ const POSITION_COLUMNS: ColumnDef[] = [
       );
     },
   },
+  // The day-change pair (Brian, 2026-07-08): Day is the primary session metric, so its $
+  // and % live in the VALUE band — i.e. on the Overview landing view, beside the Market
+  // Value they move — not buried in the Returns preset. day_pct is deliberately rendered
+  // in BOTH bands (here as the pair's %; in Returns as the period-return headline whose
+  // overnight/intraday components sit beside it): presets show one band at a time, so the
+  // duplication is only visible on All/Custom, and each rendering anchors its own band.
+  {
+    key: "day_change",
+    label: "Day $",
+    band: "Value",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title:
+      "Today's change in this position's market value (base currency) — price move only, at today's quantity and FX. Needs the live feed.",
+    sort: (h) => h.day_change,
+    cell: (h, ctx) => (
+      <span className={h.day_change != null ? signClass(h.day_change) : "text-muted"}>
+        {h.day_change != null ? accountingMoneyWhole(h.day_change, ctx.baseCurrency) : "—"}
+      </span>
+    ),
+    foot: (t, ccy) =>
+      t.day != null ? <span className={signClass(t.day)}>{accountingMoneyWhole(t.day, ccy)}</span> : "—",
+  },
+  {
+    key: "day_change_pct",
+    label: "Day %",
+    band: "Value",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title:
+      "Today's price return — overnight (open vs prior close) + intraday (latest vs open). Needs the live feed.",
+    sort: (h) => h.day_pct,
+    cell: (h) => (
+      <span className={h.day_pct != null ? signClass(h.day_pct) : "text-muted"}>
+        {h.day_pct != null ? accountingPercent(h.day_pct) : "—"}
+      </span>
+    ),
+  },
   {
     key: "unrealized",
     label: "Unrealized $",
@@ -283,7 +331,10 @@ const POSITION_COLUMNS: ColumnDef[] = [
       <span className={signClass(t.unrealPct ?? 0)}>{t.unrealPct != null ? accountingPercent(t.unrealPct) : "—"}</span>
     ),
   },
-  // Returns — per-security period returns (metron-ops#87): Day (overnight/intraday), YTD, LTM.
+  // Returns — per-security period returns (metron-ops#87): Day + its overnight/intraday
+  // decomposition, then YTD, LTM. Day is the primary metric; Overnight and Intraday are
+  // its two legs shown as explicit (visually subordinate) columns rather than a hover
+  // tooltip (Brian, 2026-07-08).
   {
     key: "day_pct",
     label: "Day",
@@ -291,18 +342,46 @@ const POSITION_COLUMNS: ColumnDef[] = [
     priced: true,
     defaultDesc: true,
     live: true,
-    title: "Today's price return — overnight (open vs prior close) + intraday (latest vs open). Needs the live feed.",
+    title:
+      "Today's price return — the sum of its two legs, shown beside it: overnight (open vs prior close) + intraday (latest vs open). Needs the live feed.",
     sort: (h) => h.day_pct,
     cell: (h) => (
-      <span
-        className={h.day_pct != null ? signClass(h.day_pct) : "text-muted"}
-        title={
-          h.overnight_pct != null && h.intraday_pct != null
-            ? `overnight ${accountingPercent(h.overnight_pct)} · intraday ${accountingPercent(h.intraday_pct)}`
-            : undefined
-        }
-      >
+      <span className={h.day_pct != null ? signClass(h.day_pct) : "text-muted"}>
         {h.day_pct != null ? accountingPercent(h.day_pct) : "—"}
+      </span>
+    ),
+  },
+  {
+    key: "overnight_pct",
+    label: "· O/N",
+    band: "Returns",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title: "Component of Day: the overnight leg — today's open vs the prior close.",
+    sort: (h) => h.overnight_pct,
+    cell: (h) => (
+      <span className="text-xs opacity-70">
+        <span className={h.overnight_pct != null ? signClass(h.overnight_pct) : "text-muted"}>
+          {h.overnight_pct != null ? accountingPercent(h.overnight_pct) : "—"}
+        </span>
+      </span>
+    ),
+  },
+  {
+    key: "intraday_pct",
+    label: "· Intra",
+    band: "Returns",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title: "Component of Day: the intraday leg — the latest price vs today's open.",
+    sort: (h) => h.intraday_pct,
+    cell: (h) => (
+      <span className="text-xs opacity-70">
+        <span className={h.intraday_pct != null ? signClass(h.intraday_pct) : "text-muted"}>
+          {h.intraday_pct != null ? accountingPercent(h.intraday_pct) : "—"}
+        </span>
       </span>
     ),
   },
@@ -671,6 +750,7 @@ export function HoldingsTable({
     let cost = 0;
     let mv = 0;
     let unreal = 0;
+    let day: number | null = null;
     let excluded = 0;
     for (const h of holdings) {
       const foreign = h.currency !== baseCurrency;
@@ -681,10 +761,11 @@ export function HoldingsTable({
       if (priced) {
         if (mvBase != null) mv += mvBase;
         if (h.unrealized_gain != null) unreal += h.unrealized_gain;
+        if (h.day_change != null) day = (day ?? 0) + h.day_change;
       }
     }
     const unrealPct = priced && cost !== 0 ? unreal / cost : null;
-    return { cost, mv, unreal, unrealPct, excluded };
+    return { cost, mv, unreal, unrealPct, day, excluded };
   }, [holdings, baseCurrency, priced]);
 
   // Header sort-control (shared by the spine + band column headers).

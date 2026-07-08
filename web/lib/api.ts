@@ -57,6 +57,8 @@ export type Holding = {
   overnight_pct: number | null;
   intraday_pct: number | null;
   day_pct: number | null;
+  // Position-level day value change in base currency ($) — live-gated like day_pct.
+  day_change: number | null;
   ytd_pct: number | null;
   ltm_pct: number | null;
   // Reference classification (cached from the data spine). GICS sector + country of

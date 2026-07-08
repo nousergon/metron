@@ -92,6 +92,9 @@ class Holding:
     overnight_pct: float | None = None
     intraday_pct: float | None = None
     day_pct: float | None = None
+    # Position-level day value change in BASE currency ($): market_value × day_pct/(1+day_pct)
+    # — the price-move component only, at today's qty/FX. Live-quote-derived like day_pct.
+    day_change: float | None = None
     ytd_pct: float | None = None
     ltm_pct: float | None = None
     # True when the close-fed last_price is ≥1 full trading session behind the latest

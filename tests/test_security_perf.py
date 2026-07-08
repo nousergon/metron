@@ -121,6 +121,33 @@ def test_enrich_holdings_populates_holding_fields(db_session):
     assert h.ltm_pct == pytest.approx(0.50)
 
 
+def test_enrich_holdings_day_change_dollars(db_session):
+    """day_change = market_value × day_pct/(1+day_pct) — the base-currency $ the position
+    moved today (price leg only). Live-gated exactly like day_pct."""
+    tid, pid = _seed(db_session, [(date(2026, 6, 11), 100.0)])
+    held = analytics.valued_holdings(db_session, tid, pid)
+    security_perf.enrich_holdings(
+        db_session, tid, pid, held, as_of=_TODAY, feed_entitled=True, now=_NOW,
+        reader=lambda: _art({"AAPL": {"prev_close": 100.0, "open": 110.0, "last": 130.0}}),
+    )
+    h = next(h for h in held if h.ticker == "AAPL")
+    assert h.day_pct == pytest.approx(0.30)
+    # valued at the settled close here (prices override not passed), so market_value is
+    # qty × 100; the backed-out prior-close value is mv/(1.30) → day_change = mv × 0.3/1.3.
+    assert h.day_change == pytest.approx(h.market_value * 0.30 / 1.30)
+
+
+def test_enrich_holdings_day_change_none_when_settled(db_session):
+    """No day leg (settled regime / day_legs=False) → day_change stays None, never 0."""
+    tid, pid = _seed(db_session, [(date(2026, 6, 11), 100.0)])
+    held = analytics.valued_holdings(db_session, tid, pid)
+    security_perf.enrich_holdings(
+        db_session, tid, pid, held, as_of=_TODAY, feed_entitled=True, now=_NOW, day_legs=False,
+    )
+    h = next(h for h in held if h.ticker == "AAPL")
+    assert h.day_pct is None and h.day_change is None
+
+
 @pytest.mark.parametrize(
     "price_date,today,expected",
     [
