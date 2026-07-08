@@ -132,6 +132,44 @@ class TestLivePrices:
         )
         assert prices is None and meta.applied is False
 
+    def test_wrong_scale_quote_falls_back_to_settled_close(self, db_session):
+        """Cross-source scale coherence (the 2026-07-08 MARUY incident): the quote feed
+        returned 30.17 for a security whose settled close — and broker valuation — was
+        308.40 (an ADR-ratio scale mismatch the producer's own-tick move guard cannot see).
+        Such a quote must be unusable: the position keeps the settled close (disclosed as
+        last_close), never a silently 10x-wrong live NAV."""
+        _seed_one_holding(db_session, eod_close=308.40)
+        prices, meta = intraday.live_prices(
+            db_session, ["AAPL"], feed_entitled=True,
+            reader=lambda: _art({"AAPL": {"last": 30.17}}), now=_NOW,
+        )
+        # The only held ticker's quote is incoherent → no overlay applies at all.
+        assert prices is None and meta.applied is False
+
+    def test_wrong_scale_quote_excluded_but_others_overlay(self, db_session):
+        """The coherence guard is per-symbol: the wrong-scaled ticker keeps its settled
+        close (source=last_close) while a coherent quote still overlays."""
+        _seed_one_holding(db_session, eod_close=308.40)  # AAPL plays the MARUY role
+        prices, meta = intraday.live_prices(
+            db_session, ["AAPL", "MSFT"], feed_entitled=True,
+            reader=lambda: _art({"AAPL": {"last": 30.17}, "MSFT": {"last": 130.0}}), now=_NOW,
+        )
+        assert meta.applied is True and meta.n_priced == 1 and meta.n_total == 2
+        assert prices["AAPL"].close == 308.40  # settled close kept, not the wrong-scale quote
+        assert prices["MSFT"].close == 130.0
+        assert meta.source_by_ticker["AAPL"] == intraday.SOURCE_LAST_CLOSE
+        assert meta.source_by_ticker["MSFT"] == intraday.SOURCE_DELAYED
+
+    def test_large_but_coherent_move_still_overlays(self, db_session):
+        """A big real move inside the bounds (+40%) is NOT excluded — the guard targets
+        scale classes (10x/100x), not volatility."""
+        _seed_one_holding(db_session, eod_close=100.0)
+        prices, meta = intraday.live_prices(
+            db_session, ["AAPL"], feed_entitled=True,
+            reader=lambda: _art({"AAPL": {"last": 140.0}}), now=_NOW,
+        )
+        assert meta.applied is True and prices["AAPL"].close == 140.0
+
 
 def _fund_art(fund_proxies: dict, quotes: dict | None = None) -> dict:
     return {
