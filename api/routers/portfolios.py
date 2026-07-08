@@ -180,6 +180,8 @@ class HoldingOut(BaseModel):
     overnight_pct: float | None = None
     intraday_pct: float | None = None
     day_pct: float | None = None
+    # Position-level day value change in base currency ($) — see analytics.Holding.
+    day_change: float | None = None
     ytd_pct: float | None = None
     ltm_pct: float | None = None
     # Reference classification (cached from the data spine). GICS sector + country of
