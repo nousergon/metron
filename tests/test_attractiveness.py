@@ -171,5 +171,5 @@ def test_request_scoped_cache_deduplicates_within_request():
 
     # After clearing request cache, next call should read again
     attractiveness.clear_request_cache()
-    universe3 = attractiveness.compute_universe(profiles_reader=_counting_profiles_reader)
+    _ = attractiveness.compute_universe(profiles_reader=_counting_profiles_reader)
     assert call_count == 2  # Incremented after request-cache clear
