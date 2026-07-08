@@ -225,7 +225,7 @@ async function HoldingsSection({
         // markers (metron-ops#147) — settled mode mounts it with live=false so the table
         // makes zero live claims; the Watchlist section below stays outside it entirely.
         <LiveValuationProvider live={valuation === "live" && (live?.applied ?? false)}>
-          <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedBands={savedView?.visible_bands ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} accounts={accounts ?? undefined} selectedAccountIds={accountIds} />
+          <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} accounts={accounts ?? undefined} selectedAccountIds={accountIds} />
         </LiveValuationProvider>
       )}
     </Section>

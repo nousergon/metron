@@ -5,9 +5,12 @@
 // column) — the GROUPING — "By asset class" / "By sector → country" / "By account" — and the
 // COLUMN PRESET (which metric bands show, over the always-on position spine). Combine is
 // URL-driven (it changes the holdings DATA shape, fetched server-side); grouping + preset are
-// client-side presentational state. ALL THREE persist to InvestorPreferences (metron-ops#114)
-// so the view survives reloads — hydrated from the saved values, saved fire-and-forget on
-// change.
+// client-side presentational state. Grouping / combine / type-filter / valuation persist to
+// InvestorPreferences (metron-ops#114) so the view survives reloads. The COLUMN PRESET is
+// deliberately session-only: Holdings is the landing page, and landing must always open on
+// the lean Overview set — an analytic lens (Attractiveness, Valuation, …) left selected
+// yesterday must not become today's landing view (Brian, 2026-07-08). Switching presets
+// mid-session works as before; a fresh load resets to Overview.
 
 import { useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -17,7 +20,7 @@ import { GroupedHoldings } from "@/components/grouped-holdings";
 import { TypeFilterChips } from "@/components/holdings-type-filter";
 import { AccountScopeChip } from "@/components/account-scope-chip";
 import { ColumnPresetControl, DEFAULT_VISIBLE_GROUPS } from "@/components/holdings-column-presets";
-import { BAND_ORDER, type ColumnBand } from "@/components/holdings-table";
+import { type ColumnBand } from "@/components/holdings-table";
 import { saveHoldingsViewAction } from "@/app/portfolios/[id]/actions";
 import type { Account, Holding, ValuationMedians } from "@/lib/api";
 
@@ -39,13 +42,6 @@ const SEG_BTN = (active: boolean) =>
 /** Saved grouping → a valid Mode (defaults to asset-class). */
 function initialMode(saved: string | null): Mode {
   return ALL_MODES.includes(saved as Mode) ? (saved as Mode) : "asset";
-}
-
-/** Saved band names → a valid, canonical-ordered ColumnBand[] (defaults to the lean set). */
-function initialBands(saved: string[] | null): ColumnBand[] {
-  if (!saved || saved.length === 0) return DEFAULT_VISIBLE_GROUPS;
-  const valid = BAND_ORDER.filter((g) => saved.includes(g));
-  return valid.length ? valid : DEFAULT_VISIBLE_GROUPS;
 }
 
 /** Combined vs By-account, driven by the `?combine=` URL param (server re-fetches the
@@ -121,7 +117,6 @@ export function HoldingsView({
   portfolioId,
   byAccount = false,
   savedGrouping = null,
-  savedBands = null,
   savedHiddenTypes = null,
   valuation = "settled",
   liveAvailable = false,
@@ -136,9 +131,9 @@ export function HoldingsView({
   portfolioId?: string;
   /** Uncombined view — holdings carry per-account rows; render the Account column. */
   byAccount?: boolean;
-  /** Saved view (metron-ops#114/#115) — hydrate grouping / visible bands / hidden types. */
+  /** Saved view (metron-ops#114/#115) — hydrate grouping / hidden types. The column
+   *  preset is NOT hydrated: landing always opens on Overview (see header comment). */
   savedGrouping?: string | null;
-  savedBands?: string[] | null;
   savedHiddenTypes?: string[] | null;
   /** The active valuation regime (metron-ops#153) — resolved server-side (URL param →
    *  saved view → default). The toggle re-fetches via `?val=`. */
@@ -156,7 +151,8 @@ export function HoldingsView({
   const pathname = usePathname();
   const params = useSearchParams();
   const [mode, setMode] = useState<Mode>(() => initialMode(savedGrouping));
-  const [visibleGroups, setVisibleGroups] = useState<ColumnBand[]>(() => initialBands(savedBands));
+  // Always lands on the lean Overview set — deliberately not hydrated from the saved view.
+  const [visibleGroups, setVisibleGroups] = useState<ColumnBand[]>(DEFAULT_VISIBLE_GROUPS);
   // Faceted type filter (metron-ops#115) — the set of HIDDEN security_types (empty = all
   // shown), hydrated from + persisted to the saved view like the other controls.
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(() => new Set(savedHiddenTypes ?? []));
@@ -176,11 +172,13 @@ export function HoldingsView({
   // Persist the full view on any control change (fire-and-forget). Always sends every field
   // (the PUT is a full replace), defaulting unspecified facets to current state — including
   // the valuation regime, so a grouping change never silently clears the saved mode.
-  const persist = (next: { grouping?: Mode; bands?: ColumnBand[]; combine?: boolean; hidden?: string[]; valuation?: "live" | "settled" }) => {
+  // visible_bands is always null: the column preset is session-only (landing = Overview),
+  // and nulling it here also self-heals any band set persisted before 2026-07-08.
+  const persist = (next: { grouping?: Mode; combine?: boolean; hidden?: string[]; valuation?: "live" | "settled" }) => {
     if (!portfolioId) return;
     void saveHoldingsViewAction(portfolioId, {
       grouping: next.grouping !== undefined ? next.grouping : mode,
-      visible_bands: next.bands !== undefined ? next.bands : visibleGroups,
+      visible_bands: null,
       combine_by_account: next.combine !== undefined ? next.combine : byAccount,
       hidden_types: next.hidden !== undefined ? next.hidden : [...hiddenTypes],
       valuation: next.valuation !== undefined ? next.valuation : valuation,
@@ -191,10 +189,8 @@ export function HoldingsView({
     setMode(m);
     persist({ grouping: m });
   };
-  const changeBands = (b: ColumnBand[]) => {
-    setVisibleGroups(b);
-    persist({ bands: b });
-  };
+  // Session-only by design — no persist (see header comment).
+  const changeBands = (b: ColumnBand[]) => setVisibleGroups(b);
   const changeCombine = (on: boolean) => {
     if (on === byAccount) return;
     persist({ combine: on }); // remember across fresh loads
