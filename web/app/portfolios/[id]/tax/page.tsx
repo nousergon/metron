@@ -220,7 +220,15 @@ export default async function TaxPage({
                 <td className="px-4 py-2 text-right text-muted">{isoDate(l.open_date)}</td>
                 <td className="px-4 py-2 text-right text-muted">{l.term === "Long-term" ? "LT" : l.term === "Short-term" ? "ST" : "?"}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{quantity(l.quantity)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(l.cost_basis, l.currency)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">
+                  {l.cost_basis_base != null ? (
+                    money(l.cost_basis_base, ccy)
+                  ) : (
+                    <span className="text-muted" title={`No ${ccy} FX rate for ${l.currency}`}>
+                      {money(l.cost_basis, l.currency)}*
+                    </span>
+                  )}
+                </td>
                 <td className="px-4 py-2 text-right tabular-nums">{l.market_value != null ? money(l.market_value, ccy) : "—"}</td>
                 <td className={`px-4 py-2 text-right tabular-nums ${signClass(l.unrealized_gain ?? 0)}`}>
                   {l.unrealized_gain != null ? accountingMoney(l.unrealized_gain, ccy) : "—"}
@@ -238,7 +246,7 @@ export default async function TaxPage({
         )}
       </Section>
 
-      <Section title="Realized lots" note={`closed positions — FIFO; gain in ${ccy} at the close-date FX rate`}>
+      <Section title="Realized lots" note={`closed positions — FIFO; proceeds/basis/gain in ${ccy} at the close-date FX rate`}>
         {lots.length === 0 ? (
           <Empty>No closed lots yet.</Empty>
         ) : (
@@ -250,8 +258,24 @@ export default async function TaxPage({
                 <td className="px-4 py-2 text-right text-muted">{isoDate(r.open_date)}</td>
                 <td className="px-4 py-2 text-right text-muted">{isoDate(r.close_date)}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{quantity(r.quantity)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(r.proceeds, r.currency)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(r.cost_basis, r.currency)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">
+                  {r.proceeds_base != null ? (
+                    money(r.proceeds_base, ccy)
+                  ) : (
+                    <span className="text-muted" title={`No ${ccy} FX rate for ${isoDate(r.close_date)}`}>
+                      {money(r.proceeds, r.currency)}*
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-2 text-right tabular-nums">
+                  {r.cost_basis_base != null ? (
+                    money(r.cost_basis_base, ccy)
+                  ) : (
+                    <span className="text-muted" title={`No ${ccy} FX rate for ${isoDate(r.close_date)}`}>
+                      {money(r.cost_basis, r.currency)}*
+                    </span>
+                  )}
+                </td>
                 <td className={`px-4 py-2 text-right font-medium tabular-nums ${signClass(r.gain_base ?? r.gain)}`}>
                   {r.gain_base != null ? (
                     accountingMoney(r.gain_base, ccy)
@@ -268,7 +292,7 @@ export default async function TaxPage({
         )}
       </Section>
 
-      <Section title="Transactions" note={`${txns.length} imported — newest first`}>
+      <Section title="Transactions" note={`${txns.length} imported — newest first — amount in ${ccy} at the trade-date FX rate`}>
         {txns.length === 0 ? (
           <Empty>No transactions imported yet.</Empty>
         ) : (
@@ -281,7 +305,15 @@ export default async function TaxPage({
                 <td className="px-4 py-2 text-right text-muted">{t.currency}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{t.quantity ? quantity(t.quantity) : "—"}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{t.price ? money(t.price, t.currency) : "—"}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{money(t.amount, t.currency)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">
+                  {t.amount_base != null ? (
+                    money(t.amount_base, ccy)
+                  ) : (
+                    <span className="text-muted" title={`No ${ccy} FX rate for ${isoDate(t.trade_date)}`}>
+                      {money(t.amount, t.currency)}*
+                    </span>
+                  )}
+                </td>
                 <td className="px-4 py-2 text-right tabular-nums text-muted">{t.fees ? money(t.fees, t.currency) : "—"}</td>
               </tr>
             ))}

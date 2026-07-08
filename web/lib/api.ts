@@ -185,9 +185,11 @@ export type Transaction = {
   ticker: string;
   quantity: number;
   price: number;
-  amount: number;
+  amount: number; // native
   fees: number;
   currency: string;
+  fx_rate: number | null; // trade-date base-per-unit (1.0 for USD)
+  amount_base: number | null;
 };
 
 export type RealizedLot = {
