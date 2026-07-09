@@ -52,6 +52,7 @@ from api.services import (
 from api.services import (
     countries as countries_service,
 )
+from api.services import diagnostics as diagnostics_service
 from api.services import fx as fx_service
 from api.services import prices as price_service
 from api.services import (
@@ -607,6 +608,67 @@ class AttributionOut(BaseModel):
     selection: float | None
     interaction: float | None
     sectors: list[SectorEffectOut]
+
+
+class DiagnosticsSectorRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    sector: str
+    weight: float
+    market_value: float
+    benchmark_weight: float | None
+    delta: float | None
+
+
+class DiagnosticsGeoRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    bucket: str
+    weight: float
+    market_value: float
+
+
+class DiagnosticsConcentrationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    n_positions: int
+    hhi: float
+    effective_n: float
+    top5_share: float
+    top10_share: float
+    max_position_ticker: str
+    max_position_weight: float
+
+
+class TargetDriftRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    kind: str  # "allocation" | "max_position" | "avoid_sector"
+    label: str
+    target: float | None
+    actual: float | None
+    breach: bool | None
+    detail: str | None
+
+
+class DiagnosticsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    computable: bool
+    reason: str | None
+    required_tier: str | None = None
+    as_of: date | None
+    base_currency: str
+    total_market_value: float
+    benchmark: str
+    benchmark_available: bool
+    benchmark_reason: str | None
+    benchmark_required_tier: str | None = None
+    concentration: DiagnosticsConcentrationOut | None
+    sectors: list[DiagnosticsSectorRowOut]
+    geography: list[DiagnosticsGeoRowOut]
+    # null = the user has authored no targets (the drift section doesn't render).
+    target_drift: list[TargetDriftRowOut] | None
 
 
 class CalendarEventOut(BaseModel):
@@ -2409,6 +2471,42 @@ def compute_attribution(
     return attribution.compute_attribution(
         session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=True, account_ids=account_ids
     )
+
+
+@router.get("/{portfolio_id}/diagnostics", response_model=DiagnosticsOut)
+def get_diagnostics(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
+    session: Session = Depends(get_session),
+    x_preview_tier: str | None = Header(default=None),
+    x_preview_feed: str | None = Header(default=None),
+) -> diagnostics_service.DiagnosticsSummary:
+    """Concentration & diversification diagnostics (metron-ops-I167) — deterministic
+    portfolio-structure FACTS on the SETTLED context: sector weights vs the benchmark,
+    the US/International geography split, HHI / top-N concentration, and a mechanical
+    evaluation of the user's own stated targets (rendered only when authored).
+    ``?account_id=`` scopes the holdings. Core analytics (the ``concentration``
+    feature — free/beta tier); ONLY the benchmark-weight columns ride the licensed
+    ``benchmark`` source, so they degrade honestly (with the upsell tier) on a
+    deployment that excludes it rather than locking the whole card."""
+    feat = _effective_entitlement("concentration", x_preview_tier, x_preview_feed)
+    if not feat["available"]:
+        return diagnostics_service.DiagnosticsSummary(
+            computable=False, reason=feat["reason"], required_tier=feat["required_tier"]
+        )
+    bench_feat = _effective_entitlement("benchmark", x_preview_tier, x_preview_feed)
+    summary = diagnostics_service.compute_portfolio_diagnostics(
+        session,
+        portfolio.tenant_id,
+        portfolio.id,
+        base_currency=portfolio.base_currency or "USD",
+        account_ids=account_ids,
+        include_benchmark=bench_feat["available"],
+    )
+    if not bench_feat["available"]:
+        summary.benchmark_reason = bench_feat["reason"]
+        summary.benchmark_required_tier = bench_feat["required_tier"]
+    return summary
 
 
 @router.get("/{portfolio_id}/calendar", response_model=CalendarOut)

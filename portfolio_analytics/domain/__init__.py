@@ -5,6 +5,17 @@ attribution, returns, VaR/CVaR, riskstats), which is imported directly rather
 than duplicated here.
 """
 
+from portfolio_analytics.domain.diagnostics import (
+    ConcentrationMetrics,
+    DiagnosticsPosition,
+    DiagnosticsResult,
+    GeoRow,
+    SectorRow,
+    StatedTargets,
+    TargetDriftRow,
+    compute_diagnostics,
+    evaluate_target_drift,
+)
 from portfolio_analytics.domain.ledger import (
     Ledger,
     Lot,
@@ -29,6 +40,15 @@ from portfolio_analytics.domain.tax import (
 )
 
 __all__ = [
+    "ConcentrationMetrics",
+    "DiagnosticsPosition",
+    "DiagnosticsResult",
+    "GeoRow",
+    "SectorRow",
+    "StatedTargets",
+    "TargetDriftRow",
+    "compute_diagnostics",
+    "evaluate_target_drift",
     "Ledger",
     "Lot",
     "RealizedGain",

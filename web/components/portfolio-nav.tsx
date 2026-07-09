@@ -66,6 +66,9 @@ export function PortfolioNav({
     { label: "Holdings", href: `${base}${navQuery}`, feature: "overview" },
     // The analytical dashboard (settled tiles / chart / allocation / account management).
     { label: "Overview", href: `${base}/overview`, feature: "overview" },
+    // Concentration & diversification diagnostics (metron-ops-I167) — deterministic
+    // structure FACTS on the settled context; free/beta core analytics.
+    { label: "Diagnostics", href: `${base}/diagnostics${navQuery}`, feature: "concentration" },
     { label: "Performance", href: `${base}/performance${navQuery}`, feature: "performance" },
     { label: "Risk", href: `${base}/risk${navQuery}`, feature: "risk" },
     { label: "Attribution", href: `${base}/attribution${navQuery}`, feature: "attribution" },
