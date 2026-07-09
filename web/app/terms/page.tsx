@@ -5,10 +5,9 @@ export const metadata: Metadata = {
   description: "Metron Terms of Service",
 };
 
-// DRAFT — pending legal entity formation and counsel review. See metron-ops#18.
-// [[ENTITY_NAME]] / [[ENTITY_JURISDICTION]] are placeholders until the LLC is formed and named;
-// do not treat this page as binding or publish it live until those are filled in and reviewed.
-const LAST_UPDATED = "TBD — draft pending LLC formation (see metron-ops#18)";
+// DRAFT — pending counsel review. Entity facts filled 2026-07-09 (Nous Ergon LLC / WA).
+// Do not link from signup or treat as published until reviewed by counsel (metron-ops#18).
+const LAST_UPDATED = "July 9, 2026";
 
 export default function TermsPage() {
   return (
@@ -18,7 +17,7 @@ export default function TermsPage() {
 
       <p>
         These Terms of Service (&ldquo;Terms&rdquo;) govern your access to and use of Metron
-        (&ldquo;Metron,&rdquo; &ldquo;the Service&rdquo;), operated by [[ENTITY_NAME]], a [[ENTITY_JURISDICTION]]
+        (&ldquo;Metron,&rdquo; &ldquo;the Service&rdquo;), operated by Nous Ergon LLC, a Washington State
         limited liability company (&ldquo;we,&rdquo; &ldquo;us,&rdquo; &ldquo;our&rdquo;). By creating an account or
         otherwise using the Service, you agree to these Terms. If you do not agree, do not use the Service.
       </p>
@@ -75,7 +74,7 @@ export default function TermsPage() {
       <p>
         THE SERVICE IS PROVIDED &ldquo;AS IS&rdquo; WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
         WARRANTIES OF ACCURACY, MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT. TO THE
-        MAXIMUM EXTENT PERMITTED BY LAW, [[ENTITY_NAME]] AND ITS OPERATORS WILL NOT BE LIABLE FOR ANY INDIRECT,
+        MAXIMUM EXTENT PERMITTED BY LAW, Nous Ergon LLC AND ITS OPERATORS WILL NOT BE LIABLE FOR ANY INDIRECT,
         INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS OR INVESTMENT LOSSES,
         ARISING FROM YOUR USE OF OR RELIANCE ON THE SERVICE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. OUR
         TOTAL LIABILITY FOR ANY CLAIM ARISING OUT OF THESE TERMS OR THE SERVICE WILL NOT EXCEED THE GREATER OF
@@ -96,14 +95,13 @@ export default function TermsPage() {
 
       <h2 className="text-base font-semibold">10. Contact / governing law</h2>
       <p>
-        These Terms are governed by the laws of [[ENTITY_JURISDICTION]], without regard to conflict-of-laws
-        principles. Questions about these Terms can be sent to [[SUPPORT_EMAIL]].
+        These Terms are governed by the laws of Washington State, without regard to conflict-of-laws
+        principles. Questions about these Terms can be sent to privacy@nousergon.ai.
       </p>
 
       <p className="mt-8 rounded border border-line bg-panel p-3 text-xs text-muted">
-        Draft status: this page is a working draft prepared ahead of LLC formation and legal review. It is not yet
-        published live or binding. Placeholders (entity name, jurisdiction, contact email, last-updated date) must
-        be filled in and the whole document reviewed by counsel before this route is linked from signup or made
+        Draft status: this page is a working draft prepared for legal review. Entity facts filled (Nous Ergon LLC,
+        WA; privacy@nousergon.ai) pending counsel sign-off before this route is linked from signup or made
         publicly indexable. Tracked in nousergon/metron-ops#18.
       </p>
     </article>
