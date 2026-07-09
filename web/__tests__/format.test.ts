@@ -7,6 +7,7 @@ import {
   accountingPercent,
   money,
   moneyWhole,
+  multiple,
   percent,
   signClass,
   signedMoney,
@@ -37,6 +38,12 @@ describe("format", () => {
     expect(signedMoneyWhole(200.4)).toBe("+$200");
     expect(signedMoneyWhole(-200.6)).toBe("−$201"); // U+2212, rounded
     expect(signedMoneyWhole(0)).toBe("$0");
+  });
+
+  it("multiple renders positive ratios with the × unit, negative ratios as N/A", () => {
+    expect(multiple(30.2)).toBe("30.2×");
+    expect(multiple(0)).toBe("0.0×");
+    expect(multiple(-15.3)).toBe("N/A"); // negative P/E/EV-EBITDA isn't a meaningful reading
   });
 
   it("signClass maps sign to the P&L color tokens", () => {
