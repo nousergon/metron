@@ -346,10 +346,47 @@ def mark_unlisted(session: Session, symbol: str, *, unlisted: bool = True) -> in
     return len(rows)
 
 
+def flex_sync_all(session: Session) -> int:
+    """Re-sync IBKR Flex broker positions for every non-reference portfolio.
+    A lighter pre-market variant of the daily-refresh: Flex sync only, no price
+    refresh / NAV snapshot / derived analytics. Intended for a pre-market systemd
+    timer so broker-adjusted positions (ADR ratio changes, stock splits, trades)
+    are reflected before the trading day begins — the valuation-layer ADR scale
+    cross-check in ``_apply_valuation`` then has an authoritative broker total to
+    compare against. Best-effort per portfolio (WARN + rollback on failure)."""
+    portfolios = list(
+        session.scalars(
+            select(models.Portfolio).where(models.Portfolio.id != REFERENCE_PORTFOLIO_ID)
+        ).all()
+    )
+    synced = 0
+    for p in portfolios:
+        try:
+            result = broker_sync.sync_flex_for_portfolio(session, p)
+            if result is not None:
+                synced += 1
+        except Exception:  # noqa: BLE001 - best-effort per portfolio; never fatal
+            logger.warning("flex-sync failed for portfolio %s — rolling back", p.id, exc_info=True)
+            session.rollback()
+        try:
+            result = broker_sync.sync_snaptrade_for_portfolio(session, p)
+            if result is not None:
+                synced += 1
+        except Exception:  # noqa: BLE001
+            logger.warning("snaptrade-sync failed for portfolio %s — rolling back", p.id, exc_info=True)
+            session.rollback()
+    logger.info(
+        "flex-sync done: %d portfolios, %d broker-sources synced",
+        len(portfolios), synced,
+    )
+    return synced
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m api.maintenance", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("daily-refresh", help="refresh prices + record NAV snapshots for all portfolios")
+    sub.add_parser("flex-sync", help="re-sync IBKR Flex / SnapTrade broker positions only (pre-market timer)")
     p_unl = sub.add_parser(
         "mark-unlisted",
         help="flag a security as having no public listing (broker-snapshot-priced; "
@@ -405,6 +442,15 @@ def main(argv: list[str] | None = None) -> int:
             r.broker_flex_synced,
             r.broker_snaptrade_synced,
         )
+        return 0
+    if args.cmd == "flex-sync":
+        create_all()
+        session = SessionLocal()
+        try:
+            flex_sync_all(session)
+        finally:
+            session.close()
+        return 0
     return 0
 
 
