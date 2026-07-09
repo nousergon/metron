@@ -564,7 +564,9 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "ps", label: "P/S", group: "Valuation", value: (h) => h.ps, render: (v) => multiple(v) },
   { key: "ev_ebitda", label: "EV/EBITDA", group: "Valuation", value: (h) => h.ev_ebitda, render: (v) => multiple(v) },
   { key: "peg", label: "PEG", group: "Valuation", value: (h) => h.peg, render: (v) => decimal(v, 2) },
-  { key: "div_yield", label: "Div Yld", group: "Valuation", value: (h) => h.div_yield, render: (v) => pct1(v) },
+  // Div Yld groups under Returns, not Valuation — it's a cash-return-to-shareholder metric
+  // (dividend / price), not a "how cheap is this" ratio like the multiples above (Brian, 2026-07-09).
+  { key: "div_yield", label: "Div Yld", group: "Returns", value: (h) => h.div_yield, render: (v) => pct1(v) },
   // ── Fundamentals (full financial-statement picture, metron-ops#140: growth/margins/returns
   // AND balance-sheet leverage/liquidity in one band — institutional platforms don't split
   // balance-sheet health out as an unrelated axis from the rest of the fundamentals) ──
