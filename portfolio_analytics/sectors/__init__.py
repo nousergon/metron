@@ -13,6 +13,13 @@ in a licensed classification feed by passing a different ``source`` — never by
 editing callers — exactly like the price source seam.
 """
 
+from portfolio_analytics.sectors.geo import (
+    GEO_BUCKETS,
+    INTERNATIONAL,
+    US_COUNTRY,
+    geo_bucket,
+    is_us_domicile,
+)
 from portfolio_analytics.sectors.source import (
     FUNDS_SECTOR_KEY,
     SECTOR_ALIASES,
@@ -28,8 +35,11 @@ from portfolio_analytics.sectors.source import (
 
 __all__ = [
     "FUNDS_SECTOR_KEY",
+    "GEO_BUCKETS",
+    "INTERNATIONAL",
     "SECTOR_ALIASES",
     "SECTOR_ETF",
+    "US_COUNTRY",
     "BenchmarkSource",
     "CountrySource",
     "SectorSource",
@@ -37,4 +47,6 @@ __all__ = [
     "fetch_benchmark_sector_weights",
     "fetch_countries",
     "fetch_sectors",
+    "geo_bucket",
+    "is_us_domicile",
 ]

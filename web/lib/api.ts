@@ -873,6 +873,62 @@ export type Attribution = {
 export const getAttribution = (tenantId: string, id: string, accountIds?: string[]) =>
   get<Attribution>(tenantId, `/portfolios/${id}/attribution${acctParams(accountIds)}`);
 
+// Concentration & diversification diagnostics (metron-ops-I167) — deterministic
+// portfolio-structure FACTS on the settled context. Types mirror DiagnosticsOut.
+export type DiagnosticsSectorRow = {
+  sector: string;
+  weight: number; // share of included (priced, non-cash) market value
+  market_value: number;
+  benchmark_weight: number | null; // null: benchmark unavailable or non-benchmark bucket
+  delta: number | null; // weight − benchmark_weight (overweight > 0)
+};
+
+export type DiagnosticsGeoRow = {
+  bucket: string; // "US" | "International" | "Unclassified"
+  weight: number;
+  market_value: number;
+};
+
+export type DiagnosticsConcentration = {
+  n_positions: number;
+  hhi: number;
+  effective_n: number;
+  top5_share: number;
+  top10_share: number;
+  max_position_ticker: string;
+  max_position_weight: number;
+};
+
+export type TargetDriftRow = {
+  kind: "allocation" | "max_position" | "avoid_sector";
+  label: string;
+  target: number | null;
+  actual: number | null; // null = the stated target isn't measurable from holdings metadata
+  breach: boolean | null; // null for pure drift rows (no boolean rule) / unmeasurable rows
+  detail: string | null;
+};
+
+export type Diagnostics = {
+  computable: boolean;
+  reason: string | null;
+  required_tier: string | null;
+  as_of: string | null; // the settled close date the valuation used — the card's badge
+  base_currency: string;
+  total_market_value: number;
+  benchmark: string;
+  benchmark_available: boolean;
+  benchmark_reason: string | null; // "tier"/"feed"/"benchmark" (locked) or "unavailable"
+  benchmark_required_tier: string | null;
+  concentration: DiagnosticsConcentration | null;
+  sectors: DiagnosticsSectorRow[];
+  geography: DiagnosticsGeoRow[];
+  // null = the user has authored no targets (the drift section doesn't render).
+  target_drift: TargetDriftRow[] | null;
+};
+
+export const getDiagnostics = (tenantId: string, id: string, accountIds?: string[]) =>
+  get<Diagnostics>(tenantId, `/portfolios/${id}/diagnostics${acctParams(accountIds)}`);
+
 export type MacroPoint = { obs_date: string; value: number };
 
 export type MacroIndicator = {
