@@ -198,9 +198,12 @@ class HoldingOut(BaseModel):
     eps: float | None = None
     fwd_eps: float | None = None
     pb: float | None = None
+    book_value_per_share: float | None = None
     ps: float | None = None
+    revenue_per_share: float | None = None
     ev_ebitda: float | None = None
     ebitda: float | None = None
+    enterprise_value: float | None = None
     peg: float | None = None
     div_yield: float | None = None
     rev_growth: float | None = None
@@ -711,9 +714,12 @@ class WatchlistEntryOut(BaseModel):
     eps: float | None = None
     fwd_eps: float | None = None
     pb: float | None = None
+    book_value_per_share: float | None = None
     ps: float | None = None
+    revenue_per_share: float | None = None
     ev_ebitda: float | None = None
     ebitda: float | None = None
+    enterprise_value: float | None = None
     peg: float | None = None
     div_yield: float | None = None
     rev_growth: float | None = None

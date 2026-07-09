@@ -182,6 +182,37 @@ type ColumnDef = {
   foot?: (t: Totals, baseCurrency: string) => ReactNode;
 };
 
+// Shared last-price cell renderer (FX fallback, stale ⚠, estimated ~) — used by both the
+// Value band's "Last" column and the Valuation band's "Price" duplicate (metron-ops#178: a
+// ratio's numerator should be visible in the same band as the ratio, without losing the
+// staleness/estimated provenance markers a stripped-down duplicate would drop).
+function renderPriceCell(h: Holding, ctx: RowCtx): ReactNode {
+  const lastBase = h.last_price != null && h.fx_rate != null ? h.last_price * h.fx_rate : null;
+  return (
+    <span
+      className={h.last_price_stale ? "text-amber-500" : "text-muted"}
+      title={
+        h.last_price_stale && h.last_price_date
+          ? `Stale — last close ${h.last_price_date}; the market-data feed hasn’t updated since`
+          : undefined
+      }
+    >
+      {ctx.baseMoney(lastBase, h.last_price)}
+      {h.last_price_stale ? <span className="ml-0.5" aria-hidden>⚠</span> : null}
+      {h.is_estimated ? (
+        <span
+          className="ml-0.5 text-sky-500"
+          title="Estimated — this fund hasn't struck its own NAV yet today; its same-day move is estimated from a tracking-proxy ETF and will reconcile to the true NAV after tomorrow's close."
+          aria-label="estimated"
+        >
+          ~
+        </span>
+      ) : null}
+    </span>
+  );
+}
+const sortPrice = (h: Holding) => (h.last_price != null && h.fx_rate != null ? h.last_price * h.fx_rate : h.last_price);
+
 // ── Position spine columns, now band-grouped (metron-ops#118+). Each keeps the bespoke
 // rendering it had as a hard-coded cell: FX fallback (baseMoney), stale-price ⚠, accounting
 // sign coloring, and the editable ClassifyCell dropdowns. ──
@@ -234,32 +265,21 @@ const POSITION_COLUMNS: ColumnDef[] = [
     priced: true,
     defaultDesc: true,
     live: true,
-    sort: (h) => (h.last_price != null && h.fx_rate != null ? h.last_price * h.fx_rate : h.last_price),
-    cell: (h, ctx) => {
-      const lastBase = h.last_price != null && h.fx_rate != null ? h.last_price * h.fx_rate : null;
-      return (
-        <span
-          className={h.last_price_stale ? "text-amber-500" : "text-muted"}
-          title={
-            h.last_price_stale && h.last_price_date
-              ? `Stale — last close ${h.last_price_date}; the market-data feed hasn’t updated since`
-              : undefined
-          }
-        >
-          {ctx.baseMoney(lastBase, h.last_price)}
-          {h.last_price_stale ? <span className="ml-0.5" aria-hidden>⚠</span> : null}
-          {h.is_estimated ? (
-            <span
-              className="ml-0.5 text-sky-500"
-              title="Estimated — this fund hasn't struck its own NAV yet today; its same-day move is estimated from a tracking-proxy ETF and will reconcile to the true NAV after tomorrow's close."
-              aria-label="estimated"
-            >
-              ~
-            </span>
-          ) : null}
-        </span>
-      );
-    },
+    sort: sortPrice,
+    cell: renderPriceCell,
+  },
+  // Price duplicate in Valuation (metron-ops#178) — the shared numerator behind P/E, Fwd
+  // P/E, P/B, and P/S, so all four ratios' inputs are visible without leaving this band.
+  // Same underlying data + rendering as "last" above (day_pct/day_change_pct precedent).
+  {
+    key: "price",
+    label: "Price",
+    band: "Valuation",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    sort: sortPrice,
+    cell: renderPriceCell,
   },
   // The day-change pair (Brian, 2026-07-08): Day is the primary session metric, so its $
   // and % live in the VALUE band — i.e. on the Overview landing view, beside the Market
@@ -562,20 +582,30 @@ const METRIC_COLUMNS: MetricColumn[] = [
     tone: pillarTone,
     title: "Defensiveness pillar (0–100): low-volatility profile vs sector peers.",
   },
-  // ── Valuation ──
+  // ── Valuation — every ratio is immediately followed by its raw input(s) (metron-ops#178),
+  // so no band-switching is needed to see what a ratio is built from. "Price" (the shared
+  // numerator behind P/E/Fwd P/E/P/B/P/S) is a POSITION_COLUMNS entry above, not here — it
+  // renders first in this band since ALL_COLUMNS places POSITION_COLUMNS before METRIC_COLUMNS. ──
   { key: "market_cap", label: "Mkt Cap", group: "Valuation", value: (h) => h.market_cap, render: (v, base) => marketCapShort(v, base) },
   { key: "pe", label: "P/E", group: "Valuation", value: (h) => h.pe, render: (v) => multiple(v) },
   { key: "eps", label: "EPS", group: "Valuation", value: (h) => h.eps, render: (v, base) => money(v, base), signed: true, title: "Trailing EPS — the raw input behind P/E (metron-ops#163)." },
   { key: "fwd_pe", label: "Fwd P/E", group: "Valuation", value: (h) => h.fwd_pe, render: (v) => multiple(v) },
   { key: "fwd_eps", label: "Fwd EPS", group: "Valuation", value: (h) => h.fwd_eps, render: (v, base) => money(v, base), signed: true, title: "Forward EPS (analyst consensus, yfinance) — the raw input behind Fwd P/E (metron-ops#163)." },
   { key: "pb", label: "P/B", group: "Valuation", value: (h) => h.pb, render: (v) => multiple(v) },
+  { key: "book_value_per_share", label: "Book/Sh", group: "Valuation", value: (h) => h.book_value_per_share, render: (v, base) => money(v, base), title: "Book value per share — the raw input behind P/B (metron-ops#178)." },
   { key: "ps", label: "P/S", group: "Valuation", value: (h) => h.ps, render: (v) => multiple(v) },
+  { key: "revenue_per_share", label: "Rev/Sh", group: "Valuation", value: (h) => h.revenue_per_share, render: (v, base) => money(v, base), title: "Revenue per share (TTM) — the raw input behind P/S (metron-ops#178)." },
   { key: "ev_ebitda", label: "EV/EBITDA", group: "Valuation", value: (h) => h.ev_ebitda, render: (v) => multiple(v) },
-  { key: "ebitda", label: "EBITDA", group: "Valuation", value: (h) => h.ebitda, render: (v, base) => marketCapShort(v, base), title: "Raw EBITDA — the input behind EV/EBITDA (metron-ops#163)." },
+  { key: "enterprise_value", label: "EV", group: "Valuation", value: (h) => h.enterprise_value, render: (v, base) => marketCapShort(v, base), title: "Enterprise value (market cap + net debt) — the numerator behind EV/EBITDA (metron-ops#178)." },
+  { key: "ebitda", label: "EBITDA", group: "Valuation", value: (h) => h.ebitda, render: (v, base) => marketCapShort(v, base), title: "Raw EBITDA — the denominator behind EV/EBITDA (metron-ops#163)." },
   // PEG stays in Valuation, not Fundamentals-growth — confirmed on the metron-ops#162 audit:
   // it's a growth-ADJUSTED cheapness ratio (same "is this cheap" question as P/E), unlike Div
   // Yld above, which answers a cash-return question, not a valuation one.
   { key: "peg", label: "PEG", group: "Valuation", value: (h) => h.peg, render: (v) => decimal(v, 2) },
+  // Growth duplicated from Fundamentals' "EPS Gr" (same h.earnings_growth, same label) so
+  // PEG's second input is visible right beside it without leaving Valuation — same
+  // dual-band-duplicate precedent as day_pct/day_change_pct (metron-ops#178).
+  { key: "growth_pct", label: "EPS Gr", group: "Valuation", value: (h) => h.earnings_growth, render: (v) => percent(v), signed: true, title: "Trailing annual EPS growth — the divisor behind PEG (metron-ops#178)." },
   // Div Yld groups under Returns, not Valuation — it's a cash-return-to-shareholder metric
   // (dividend / price), not a "how cheap is this" ratio like the multiples above (Brian, 2026-07-09).
   { key: "div_yield", label: "Div Yld", group: "Returns", value: (h) => h.div_yield, render: (v) => pct1(v) },
@@ -725,16 +755,21 @@ const DEFAULT_COL_WIDTH: Record<string, number> = {
   attractiveness_stewardship: 60,
   attractiveness_defensiveness: 60,
   // Valuation.
+  price: 85,
   market_cap: 95,
   pe: 70,
   eps: 75,
   fwd_pe: 85,
   fwd_eps: 85,
   pb: 65,
+  book_value_per_share: 90,
   ps: 65,
+  revenue_per_share: 90,
   ev_ebitda: 100,
+  enterprise_value: 95,
   ebitda: 95,
   peg: 65,
+  growth_pct: 80,
   div_yield: 80,
   // Fundamentals.
   rev_growth: 80,

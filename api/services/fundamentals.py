@@ -32,9 +32,12 @@ class TickerFundamentals:
     eps: float | None               # $ (yfinance trailingEps, artifact v4) — raw input behind trailing_pe
     fwd_eps: float | None           # $ (yfinance forwardEps, artifact v4) — raw input behind forward_pe
     price_to_book: float | None    # yfinance priceToBook (artifact v2)
+    book_value_per_share: float | None  # $ (yfinance bookValue, artifact v5) — raw input behind price_to_book
     price_to_sales: float | None   # yfinance priceToSalesTrailing12Months (artifact v2)
+    revenue_per_share: float | None  # $ (yfinance revenuePerShare, artifact v5) — raw input behind price_to_sales
     peg: float | None              # derived: trailing P/E ÷ (earnings growth %)
     ev_ebitda: float | None
+    enterprise_value: float | None  # $ (yfinance enterpriseValue, artifact v5) — raw input behind ev_ebitda
     earnings_growth: float | None  # fraction
     revenue_growth: float | None   # fraction
     # Balance-sheet ratios + absolute balances ($, artifact v3)
@@ -102,9 +105,12 @@ def _parse(yf_symbol: str, d: dict) -> TickerFundamentals:
         eps=_f(d, "trailingEps"),
         fwd_eps=_f(d, "forwardEps"),
         price_to_book=_f(d, "priceToBook"),
+        book_value_per_share=_f(d, "bookValue"),
         price_to_sales=_f(d, "priceToSalesTrailing12Months"),
+        revenue_per_share=_f(d, "revenuePerShare"),
         peg=peg,
         ev_ebitda=_f(d, "enterpriseToEbitda"),
+        enterprise_value=_f(d, "enterpriseValue"),
         earnings_growth=earnings_growth,
         revenue_growth=_f(d, "revenueGrowth"),
         debt_to_equity=_f(d, "debtToEquity"),
