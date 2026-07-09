@@ -29,6 +29,8 @@ class TickerFundamentals:
     # Valuation multiples
     trailing_pe: float | None
     forward_pe: float | None
+    eps: float | None               # $ (yfinance trailingEps, artifact v4) — raw input behind trailing_pe
+    fwd_eps: float | None           # $ (yfinance forwardEps, artifact v4) — raw input behind forward_pe
     price_to_book: float | None    # yfinance priceToBook (artifact v2)
     price_to_sales: float | None   # yfinance priceToSalesTrailing12Months (artifact v2)
     peg: float | None              # derived: trailing P/E ÷ (earnings growth %)
@@ -97,6 +99,8 @@ def _parse(yf_symbol: str, d: dict) -> TickerFundamentals:
         beta=_f(d, "beta"),
         trailing_pe=trailing_pe,
         forward_pe=_f(d, "forwardPE"),
+        eps=_f(d, "trailingEps"),
+        fwd_eps=_f(d, "forwardEps"),
         price_to_book=_f(d, "priceToBook"),
         price_to_sales=_f(d, "priceToSalesTrailing12Months"),
         peg=peg,

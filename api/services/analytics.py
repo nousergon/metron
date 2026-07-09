@@ -133,9 +133,12 @@ class Holding:
     market_cap: float | None = None
     pe: float | None = None          # trailing P/E
     fwd_pe: float | None = None
+    eps: float | None = None         # $ trailing EPS — raw input behind pe (metron-ops#163)
+    fwd_eps: float | None = None     # $ forward EPS — raw input behind fwd_pe (metron-ops#163)
     pb: float | None = None          # price / book
     ps: float | None = None          # price / sales (TTM)
     ev_ebitda: float | None = None
+    ebitda: float | None = None      # $ raw EBITDA — input behind ev_ebitda (metron-ops#163)
     peg: float | None = None
     div_yield: float | None = None   # fraction
     # Fundamentals:

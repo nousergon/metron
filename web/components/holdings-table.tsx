@@ -559,10 +559,16 @@ const METRIC_COLUMNS: MetricColumn[] = [
   // ── Valuation ──
   { key: "market_cap", label: "Mkt Cap", group: "Valuation", value: (h) => h.market_cap, render: (v, base) => marketCapShort(v, base) },
   { key: "pe", label: "P/E", group: "Valuation", value: (h) => h.pe, render: (v) => multiple(v) },
+  { key: "eps", label: "EPS", group: "Valuation", value: (h) => h.eps, render: (v, base) => money(v, base), signed: true, title: "Trailing EPS — the raw input behind P/E (metron-ops#163)." },
   { key: "fwd_pe", label: "Fwd P/E", group: "Valuation", value: (h) => h.fwd_pe, render: (v) => multiple(v) },
+  { key: "fwd_eps", label: "Fwd EPS", group: "Valuation", value: (h) => h.fwd_eps, render: (v, base) => money(v, base), signed: true, title: "Forward EPS (analyst consensus, yfinance) — the raw input behind Fwd P/E (metron-ops#163)." },
   { key: "pb", label: "P/B", group: "Valuation", value: (h) => h.pb, render: (v) => multiple(v) },
   { key: "ps", label: "P/S", group: "Valuation", value: (h) => h.ps, render: (v) => multiple(v) },
   { key: "ev_ebitda", label: "EV/EBITDA", group: "Valuation", value: (h) => h.ev_ebitda, render: (v) => multiple(v) },
+  { key: "ebitda", label: "EBITDA", group: "Valuation", value: (h) => h.ebitda, render: (v, base) => marketCapShort(v, base), title: "Raw EBITDA — the input behind EV/EBITDA (metron-ops#163)." },
+  // PEG stays in Valuation, not Fundamentals-growth — confirmed on the metron-ops#162 audit:
+  // it's a growth-ADJUSTED cheapness ratio (same "is this cheap" question as P/E), unlike Div
+  // Yld above, which answers a cash-return question, not a valuation one.
   { key: "peg", label: "PEG", group: "Valuation", value: (h) => h.peg, render: (v) => decimal(v, 2) },
   // Div Yld groups under Returns, not Valuation — it's a cash-return-to-shareholder metric
   // (dividend / price), not a "how cheap is this" ratio like the multiples above (Brian, 2026-07-09).
@@ -576,7 +582,6 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "op_margin", label: "Op M", group: "Fundamentals", value: (h) => h.op_margin, render: (v) => pct1(v) },
   { key: "roe", label: "ROE", group: "Fundamentals", value: (h) => h.roe, render: (v) => percent(v), signed: true },
   { key: "roa", label: "ROA", group: "Fundamentals", value: (h) => h.roa, render: (v) => percent(v), signed: true },
-  { key: "beta", label: "Beta", group: "Fundamentals", value: (h) => h.beta, render: (v) => decimal(v, 2) },
   { key: "cash", label: "Cash", group: "Fundamentals", value: (h) => h.cash, render: (v, base) => marketCapShort(v, base), title: "Total cash & equivalents" },
   { key: "debt", label: "Debt", group: "Fundamentals", value: (h) => h.debt, render: (v, base) => marketCapShort(v, base), title: "Total debt" },
   { key: "net_debt", label: "Net Debt", group: "Fundamentals", value: (h) => h.net_debt, render: (v, base) => marketCapShort(v, base), title: "Total debt − total cash (negative = net cash)" },
@@ -586,6 +591,10 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "quick_ratio", label: "Quick R", group: "Fundamentals", value: (h) => h.quick_ratio, render: (v) => decimal(v, 2), title: "Quick ratio (acid-test liquidity)" },
   { key: "fcf", label: "FCF", group: "Fundamentals", value: (h) => h.fcf, render: (v, base) => marketCapShort(v, base), signed: true, title: "Free cash flow (TTM)" },
   // ── Technicals ──
+  // Beta groups here, not Fundamentals — it's a price-history-derived risk statistic
+  // (regression vs. the market), same data-source family as RSI/MACD/momentum below, not a
+  // financial-statement metric like the rest of Fundamentals (metron-ops#162 audit, 2026-07-09).
+  { key: "beta", label: "Beta", group: "Technicals", value: (h) => h.beta, render: (v) => decimal(v, 2) },
   { key: "rsi_14", label: "RSI", group: "Technicals", value: (h) => h.rsi_14, render: (v) => decimal(v, 0), title: "Wilder RSI(14)" },
   { key: "macd_hist", label: "MACD", group: "Technicals", value: (h) => h.macd_hist, render: (v) => decimal(v, 2), signed: true, title: "MACD histogram (line − signal)" },
   { key: "pct_to_ma_50", label: "vs 50d", group: "Technicals", value: (h) => h.pct_to_ma_50, render: (v) => percent(v), signed: true, title: "% above/below the 50-day moving average" },
@@ -593,6 +602,10 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "pct_in_52w_range", label: "52w Rng", group: "Technicals", value: (h) => h.pct_in_52w_range, render: (v) => pct1(v), title: "Position within the 52-week low–high range" },
   { key: "mom_20d", label: "Mom 20d", group: "Technicals", value: (h) => h.mom_20d, render: (v) => percent(v), signed: true, title: "20-session price momentum" },
   // ── Consensus (research + sentiment, free sources — metron-ops#105) ──
+  // Confirmed on the metron-ops#162 audit: analyst rating/targets + news_sentiment stay one
+  // band on purpose — both are "what do external observers currently think" signals, distinct
+  // from Fundamentals (the balance sheet) and Technicals (the chart), even though their
+  // underlying methodologies (analyst consensus vs. LM sentiment scoring) differ.
   // Rating sorts by its signed score (strongBuy=+1 … strongSell=-1) but shows the label.
   { key: "consensus_rating", label: "Rating", group: "Consensus", value: (h) => h.consensus_score, render: () => "—", text: (h) => (h.consensus_rating ? RATING_LABEL[h.consensus_rating] ?? h.consensus_rating : null), signed: true, title: "Analyst consensus rating (free sources)" },
   { key: "price_target_mean", label: "Target", group: "Consensus", value: (h) => h.price_target_mean, render: (v, base) => money(v, base), title: "Mean analyst price target" },
