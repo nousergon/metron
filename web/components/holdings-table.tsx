@@ -18,6 +18,12 @@
 import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import {
+  getCoreRowModel,
+  useReactTable,
+  type ColumnDef as TSColumnDef,
+  type ColumnSizingState,
+} from "@tanstack/react-table";
 import type { Holding } from "@/lib/api";
 import {
   accountingMoneyWhole,
@@ -679,6 +685,88 @@ const CLOSE_ANCHORED_BANDS: ReadonlySet<ColumnBand> = new Set([
   "Consensus",
 ]);
 
+// Default column widths (px) for the resizable table (metron-ops#161). These are starting
+// points only — every column is user-resizable from here, in-session (not yet persisted;
+// a v2 follow-up if it turns out to matter). Falls back to DEFAULT_COL_WIDTH_FALLBACK for
+// any column not listed below rather than skipping resize support for it.
+const DEFAULT_COL_WIDTH_FALLBACK = 90;
+const DEFAULT_COL_WIDTH: Record<string, number> = {
+  // Frozen spine + Account.
+  ticker: 150, // comfortably fits the inline label editor (w-32 input + Save button)
+  account: 110,
+  market_value: 110,
+  // Position.
+  quantity: 90,
+  avg_cost: 90,
+  cost_basis: 100,
+  // Value.
+  last: 90,
+  day_change: 90,
+  day_change_pct: 80,
+  unrealized: 100,
+  unrealized_pct: 90,
+  // Returns.
+  day_pct: 70,
+  overnight_pct: 70,
+  intraday_pct: 70,
+  ytd_pct: 70,
+  ltm_pct: 70,
+  // Class.
+  fx: 100,
+  sector: 150,
+  country: 140,
+  type: 90,
+  // Attractiveness.
+  attractiveness: 70,
+  attractiveness_quality: 60,
+  attractiveness_value: 60,
+  attractiveness_momentum: 60,
+  attractiveness_growth: 60,
+  attractiveness_stewardship: 60,
+  attractiveness_defensiveness: 60,
+  // Valuation.
+  market_cap: 95,
+  pe: 70,
+  eps: 75,
+  fwd_pe: 85,
+  fwd_eps: 85,
+  pb: 65,
+  ps: 65,
+  ev_ebitda: 100,
+  ebitda: 95,
+  peg: 65,
+  div_yield: 80,
+  // Fundamentals.
+  rev_growth: 80,
+  earnings_growth: 80,
+  gross_margin: 85,
+  op_margin: 75,
+  roe: 70,
+  roa: 70,
+  cash: 90,
+  debt: 90,
+  net_debt: 95,
+  debt_to_equity: 70,
+  net_debt_to_ebitda: 100,
+  current_ratio: 75,
+  quick_ratio: 85,
+  fcf: 85,
+  // Technicals.
+  beta: 65,
+  rsi_14: 65,
+  macd_hist: 75,
+  pct_to_ma_50: 80,
+  pct_to_ma_200: 85,
+  pct_in_52w_range: 90,
+  mom_20d: 90,
+  // Consensus.
+  consensus_rating: 115,
+  price_target_mean: 90,
+  price_target_upside: 85,
+  num_analysts: 65,
+  news_sentiment: 95,
+};
+
 export function HoldingsTable({
   holdings,
   baseCurrency,
@@ -728,6 +816,63 @@ export function HoldingsTable({
   const visibleColumns = colsByBand.flatMap(([, cols]) => cols);
   const marketValueVisible = priced && showMarketValue;
   const spineCols = 1 + (accountColumn ? 1 : 0) + (marketValueVisible ? 1 : 0);
+
+  // Resizable columns (metron-ops#161): TanStack Table's column-sizing model manages ONLY
+  // width state + resize handles here — every column's actual content still renders through
+  // the existing ColumnDef.cell()/band/sort machinery above, untouched. Ticker + Account +
+  // Market Value (the frozen spine, rendered outside the band loop) are included so the
+  // whole table is resizable, not just the analytic bands.
+  const resizableKeys = useMemo(
+    () => [
+      "ticker",
+      ...(accountColumn ? ["account"] : []),
+      ...(marketValueVisible ? [MARKET_VALUE_COLUMN.key] : []),
+      ...visibleColumns.map((c) => c.key),
+    ],
+    [accountColumn, marketValueVisible, visibleColumns],
+  );
+  const tsColumns = useMemo<TSColumnDef<Holding>[]>(
+    () =>
+      resizableKeys.map((key) => ({
+        id: key,
+        accessorFn: () => null, // TanStack requires an accessor; content renders outside this model.
+        size: DEFAULT_COL_WIDTH[key] ?? DEFAULT_COL_WIDTH_FALLBACK,
+        minSize: 40,
+        maxSize: 420,
+      })),
+    [resizableKeys],
+  );
+  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({});
+  const sizingTable = useReactTable({
+    data: holdings,
+    columns: tsColumns,
+    getCoreRowModel: getCoreRowModel(),
+    columnResizeMode: "onChange",
+    enableColumnResizing: true,
+    state: { columnSizing },
+    onColumnSizingChange: setColumnSizing,
+  });
+  const sizeOf = (key: string) => sizingTable.getColumn(key)?.getSize() ?? DEFAULT_COL_WIDTH[key] ?? DEFAULT_COL_WIDTH_FALLBACK;
+  // Header objects (not Column objects) carry the resize handler/isResizing state.
+  const headerByKey = useMemo(
+    () => new Map(sizingTable.getFlatHeaders().map((hd) => [hd.column.id, hd] as const)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sizingTable, columnSizing, resizableKeys],
+  );
+  const ResizeHandle = ({ columnKey }: { columnKey: string }) => {
+    const header = headerByKey.get(columnKey);
+    if (!header) return null;
+    return (
+      <div
+        data-testid={`resize-${columnKey}`}
+        onMouseDown={header.getResizeHandler()}
+        onTouchStart={header.getResizeHandler()}
+        className={`absolute right-0 top-0 h-full w-1.5 cursor-col-resize touch-none select-none hover:bg-accent/50 ${
+          header.column.getIsResizing() ? "bg-accent" : ""
+        }`}
+      />
+    );
+  };
 
   const [sort, setSort] = useState<{ key: string; desc: boolean } | null>(null);
   // Whether this page's values are being revalued from the delayed intraday overlay
@@ -831,8 +976,19 @@ export function HoldingsTable({
   );
 
   return (
-    <DualScroll deps={`${spineCols}:${holdings.length}:${priced}:${visibleColumns.length}`}>
-      <table className="w-full text-sm">
+    <DualScroll
+      deps={`${spineCols}:${holdings.length}:${priced}:${visibleColumns.length}:${JSON.stringify(columnSizing)}`}
+    >
+      <table className="table-fixed text-sm">
+        <colgroup>
+          <col style={{ width: sizeOf("ticker") }} />
+          {accountColumn ? <col style={{ width: sizeOf("account") }} /> : null}
+          {marketValueVisible ? <col style={{ width: sizeOf(MARKET_VALUE_COLUMN.key) }} /> : null}
+          {visibleColumns.map((col) => (
+            <col key={col.key} style={{ width: sizeOf(col.key) }} />
+          ))}
+          {onRemove ? <col style={{ width: 90 }} /> : null}
+        </colgroup>
         <thead className="sticky top-0 z-20">
           {colsByBand.length > 0 ? (
             // Band-label row: an empty cell over the Ticker spine, then one cell per band.
@@ -859,26 +1015,30 @@ export function HoldingsTable({
             </tr>
           ) : null}
           <tr className="border-b border-line bg-surface text-left text-xs uppercase tracking-wide text-muted">
-            <th className={`${STICKY} bg-surface px-3 py-2 font-medium`}>
+            <th className={`${STICKY} relative bg-surface px-3 py-2 font-medium`}>
               <SortTh colKey="ticker" label="Ticker" />
+              <ResizeHandle columnKey="ticker" />
             </th>
             {accountColumn ? (
-              <th className="px-3 py-2 text-left font-medium">
+              <th className="relative px-3 py-2 text-left font-medium">
                 <SortTh colKey="account" label="Account" />
+                <ResizeHandle columnKey="account" />
               </th>
             ) : null}
             {marketValueVisible ? (
-              <th className="px-3 py-2 text-right font-medium">
+              <th className="relative px-3 py-2 text-right font-medium">
                 <SortTh colKey={MARKET_VALUE_COLUMN.key} label={MARKET_VALUE_COLUMN.label} live={MARKET_VALUE_COLUMN.live} />
+                <ResizeHandle columnKey={MARKET_VALUE_COLUMN.key} />
               </th>
             ) : null}
             {colsByBand.map(([, cols]) =>
               cols.map((col, j) => (
                 <th
                   key={col.key}
-                  className={`px-3 py-2 font-medium ${col.align === "left" ? "text-left" : "text-right"} ${j === 0 ? "border-l border-line" : ""}`}
+                  className={`relative px-3 py-2 font-medium ${col.align === "left" ? "text-left" : "text-right"} ${j === 0 ? "border-l border-line" : ""}`}
                 >
                   <SortTh colKey={col.key} label={col.label} title={col.title} live={col.live} />
+                  <ResizeHandle columnKey={col.key} />
                 </th>
               )),
             )}
@@ -908,20 +1068,20 @@ export function HoldingsTable({
             const ctx: RowCtx = { baseCurrency, portfolioId, foreign, baseMoney };
             return (
               <tr key={h.ticker} className="border-b border-line last:border-0">
-                <td className={`${STICKY} bg-paper px-3 py-2 font-medium`}>
+                <td className={`${STICKY} overflow-hidden whitespace-nowrap bg-paper px-3 py-2 font-medium`}>
                   <TickerCell h={h} portfolioId={portfolioId} />
                 </td>
                 {accountColumn ? (
-                  <td className="px-3 py-2 text-left text-muted">{h.account_label ?? "—"}</td>
+                  <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-left text-muted">{h.account_label ?? "—"}</td>
                 ) : null}
                 {marketValueVisible ? (
-                  <td className="px-3 py-2 text-right tabular-nums">{MARKET_VALUE_COLUMN.cell(h, ctx)}</td>
+                  <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-right tabular-nums">{MARKET_VALUE_COLUMN.cell(h, ctx)}</td>
                 ) : null}
                 {colsByBand.map(([, cols]) =>
                   cols.map((col, j) => (
                     <td
                       key={col.key}
-                      className={`px-3 py-2 tabular-nums ${col.align === "left" ? "text-left" : "text-right"} ${j === 0 ? "border-l border-line" : ""}`}
+                      className={`overflow-hidden whitespace-nowrap px-3 py-2 tabular-nums ${col.align === "left" ? "text-left" : "text-right"} ${j === 0 ? "border-l border-line" : ""}`}
                       title={col.title}
                     >
                       {col.cell(h, ctx)}
