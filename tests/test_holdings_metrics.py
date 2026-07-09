@@ -51,6 +51,23 @@ def test_fundamentals_missing_eps_is_none():
     assert f.eps is None and f.fwd_eps is None
 
 
+def test_fundamentals_parses_valuation_ratio_inputs():  # metron-ops#178
+    art = {"fundamentals": {"AAPL": {"bookValue": 4.25, "revenuePerShare": 24.5,
+                                     "enterpriseValue": 3.1e12}}}
+    f = fundamentals.load_fundamentals(reader=lambda: art).by_symbol["AAPL"]
+    assert f.book_value_per_share == 4.25
+    assert f.revenue_per_share == 24.5
+    assert f.enterprise_value == 3.1e12
+
+
+def test_fundamentals_missing_valuation_ratio_inputs_is_none():
+    snap = fundamentals.load_fundamentals(reader=lambda: {"fundamentals": {"X": {"trailingPE": 12.0}}})
+    f = snap.by_symbol["X"]
+    assert f.book_value_per_share is None
+    assert f.revenue_per_share is None
+    assert f.enterprise_value is None
+
+
 # ── technicals ───────────────────────────────────────────────────────────────
 
 def test_technicals_round_trip():
@@ -108,7 +125,9 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
                                       "grossMargins": 0.45, "revenueGrowth": 0.08,
                                       "totalDebt": 1.2e11, "totalCash": 4.0e10, "ebitda": 1.0e11,
                                       "freeCashflow": 9.0e10, "quickRatio": 0.9,
-                                      "trailingEps": 6.5, "forwardEps": 7.2}}}),
+                                      "trailingEps": 6.5, "forwardEps": 7.2,
+                                      "bookValue": 4.25, "revenuePerShare": 24.5,
+                                      "enterpriseValue": 3.1e12}}}),
     )
     monkeypatch.setattr(
         metrics_enrichment.technicals_service, "load_technicals",
@@ -122,6 +141,8 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
     aapl = held[0]
     assert aapl.pe == 30.0 and aapl.fwd_pe == 25.0 and aapl.pb == 6.0 and aapl.ps == 7.5
     assert aapl.eps == 6.5 and aapl.fwd_eps == 7.2 and aapl.ebitda == 1.0e11
+    assert aapl.book_value_per_share == 4.25 and aapl.revenue_per_share == 24.5
+    assert aapl.enterprise_value == 3.1e12
     assert aapl.market_cap == 3.0e12 and aapl.roe == 0.5 and aapl.beta == 1.2
     assert aapl.rsi_14 == 61.0 and aapl.pct_in_52w_range == 0.8 and aapl.mom_20d == 0.03
     # Balance sheet: absolute balances mapped, net debt + leverage derived.
@@ -132,6 +153,7 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
     zzz = held[1]
     assert zzz.pe is None and zzz.rsi_14 is None and zzz.market_cap is None
     assert zzz.eps is None and zzz.ebitda is None
+    assert zzz.book_value_per_share is None and zzz.revenue_per_share is None and zzz.enterprise_value is None
 
 
 # ── SOTA attractiveness pillar scores ───────────────────────────────────────

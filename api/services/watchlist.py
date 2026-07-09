@@ -48,9 +48,12 @@ class WatchlistEntry:
     eps: float | None = None
     fwd_eps: float | None = None
     pb: float | None = None
+    book_value_per_share: float | None = None
     ps: float | None = None
+    revenue_per_share: float | None = None
     ev_ebitda: float | None = None
     ebitda: float | None = None
+    enterprise_value: float | None = None
     peg: float | None = None
     div_yield: float | None = None
     rev_growth: float | None = None
@@ -158,9 +161,12 @@ def list_watchlist(
                 eps=h.eps,
                 fwd_eps=h.fwd_eps,
                 pb=h.pb,
+                book_value_per_share=h.book_value_per_share,
                 ps=h.ps,
+                revenue_per_share=h.revenue_per_share,
                 ev_ebitda=h.ev_ebitda,
                 ebitda=h.ebitda,
+                enterprise_value=h.enterprise_value,
                 peg=h.peg,
                 div_yield=h.div_yield,
                 rev_growth=h.rev_growth,

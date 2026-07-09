@@ -136,9 +136,12 @@ class Holding:
     eps: float | None = None         # $ trailing EPS — raw input behind pe (metron-ops#163)
     fwd_eps: float | None = None     # $ forward EPS — raw input behind fwd_pe (metron-ops#163)
     pb: float | None = None          # price / book
+    book_value_per_share: float | None = None  # $ — raw input behind pb (metron-ops#178)
     ps: float | None = None          # price / sales (TTM)
+    revenue_per_share: float | None = None  # $ — raw input behind ps (metron-ops#178)
     ev_ebitda: float | None = None
     ebitda: float | None = None      # $ raw EBITDA — input behind ev_ebitda (metron-ops#163)
+    enterprise_value: float | None = None  # $ — the other input behind ev_ebitda (metron-ops#178)
     peg: float | None = None
     div_yield: float | None = None   # fraction
     # Fundamentals:

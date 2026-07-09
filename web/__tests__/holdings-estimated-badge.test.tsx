@@ -43,10 +43,14 @@ const h = (ticker: string, overrides: Partial<Holding> = {}): Holding =>
 describe("estimated badge", () => {
   it("renders the estimated marker + tooltip when is_estimated is true", () => {
     render(<HoldingsTable baseCurrency="USD" priced holdings={[h("FNILX", { is_estimated: true })]} />);
-    const marker = screen.getByLabelText("estimated");
-    expect(marker).toBeInTheDocument();
-    expect(marker.getAttribute("title")).toMatch(/tracking-proxy ETF/i);
-    expect(marker.getAttribute("title")).toMatch(/reconcile/i);
+    // Price renders twice with every band visible (Value "Last" + the Valuation "Price"
+    // duplicate, metron-ops#178 — same shared cell renderer) — both carry the marker.
+    const markers = screen.getAllByLabelText("estimated");
+    expect(markers.length).toBe(2);
+    for (const marker of markers) {
+      expect(marker.getAttribute("title")).toMatch(/tracking-proxy ETF/i);
+      expect(marker.getAttribute("title")).toMatch(/reconcile/i);
+    }
   });
 
   it("omits the estimated marker for a normally-quoted holding", () => {
@@ -62,7 +66,9 @@ describe("estimated badge", () => {
         holdings={[h("FNILX", { is_estimated: true, last_price_stale: false })]}
       />
     );
-    const marker = screen.getByLabelText("estimated");
-    expect(marker.textContent).not.toContain("⚠");
+    const markers = screen.getAllByLabelText("estimated");
+    for (const marker of markers) {
+      expect(marker.textContent).not.toContain("⚠");
+    }
   });
 });
