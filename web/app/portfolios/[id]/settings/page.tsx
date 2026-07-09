@@ -1,7 +1,8 @@
-import { getAccounts, getExcludedAccounts, getMeta, getPortfolio, getPreferences, MetronApiError, type ExcludedAccount, type Preferences } from "@/lib/api";
+import { getExcludedAccounts, getMeta, getPortfolio, getPreferences, MetronApiError, type ExcludedAccount, type Preferences } from "@/lib/api";
 import { Empty, Section, Table } from "@/components/ui";
 import { AccountTagRow, BaseCurrencyForm, ExcludedAccountRow, PreferencesForm } from "@/components/settings-forms";
 import { navFeatureStates } from "@/lib/entitlements";
+import { loadAccountsMeta } from "@/lib/account-meta";
 import { requireTenantId } from "@/lib/session";
 import { ImportPanel } from "@/components/import-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
@@ -14,11 +15,11 @@ export default async function SettingsPage({ params }: { params: { id: string } 
   const tenantId = await requireTenantId();
   const featureStates = await navFeatureStates(tenantId);
 
-  let portfolio, accounts, preferences: Preferences, excluded: ExcludedAccount[];
+  let portfolio, accountsMeta, preferences: Preferences, excluded: ExcludedAccount[];
   try {
-    [portfolio, accounts, preferences, excluded] = await Promise.all([
+    [portfolio, accountsMeta, preferences, excluded] = await Promise.all([
       getPortfolio(tenantId, id),
-      getAccounts(tenantId, id),
+      loadAccountsMeta(tenantId, id),
       getPreferences(tenantId, id),
       getExcludedAccounts(tenantId, id).then((r) => r.excluded),
     ]);
@@ -28,6 +29,10 @@ export default async function SettingsPage({ params }: { params: { id: string } 
     }
     return <Empty>Couldn&apos;t load settings. Is the backend running?</Empty>;
   }
+  // A transient meta-cache failure degrades to "no accounts" here (fail-open, like
+  // entitlements) rather than a hard page error — the tag table just re-populates on
+  // the next successful read.
+  const accounts = accountsMeta ?? [];
 
   // Connector capabilities (stored IBKR Flex creds → one-click "Sync IBKR"). Best-effort:
   // a meta failure just falls back to the BYO-token form (metron-ops#82).

@@ -12,7 +12,7 @@ import {
   updateAccountTagsAction,
   updateBaseCurrencyAction,
 } from "@/app/portfolios/[id]/actions";
-import type { Account, ExcludedAccount, Preferences } from "@/lib/api";
+import type { AccountMeta, ExcludedAccount, Preferences } from "@/lib/api";
 import { ReadOnlyNotice } from "@/components/ui";
 import { isReferencePortfolio } from "@/lib/demo";
 
@@ -72,7 +72,7 @@ const TAX_TREATMENTS: { value: string; label: string }[] = [
   { value: "tax_exempt", label: "Tax-exempt" },
 ];
 
-export function AccountTagRow({ portfolioId, account }: { portfolioId: string; account: Account }) {
+export function AccountTagRow({ portfolioId, account }: { portfolioId: string; account: AccountMeta }) {
   const [nickname, setNickname] = useState(account.nickname ?? "");
   const [institution, setInstitution] = useState(account.institution ?? "");
   const [accountType, setAccountType] = useState(account.account_type ?? "");

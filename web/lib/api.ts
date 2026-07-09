@@ -172,6 +172,23 @@ export type Account = {
   ltm_pct: number | null;
 };
 
+/** Cacheable selector metadata only (metron-ops#91 Part 2) — deliberately excludes
+ *  every valuation/return field on `Account` so this shape is safe to short-TTL cache
+ *  client-side (see lib/account-meta.ts). Use `Account`/`getAccounts` (no-store) for
+ *  anything that needs live market_value/day_pct. */
+export type AccountMeta = {
+  account_id: string;
+  broker: string;
+  external_id: string;
+  name: string;
+  currency: string;
+  nickname: string | null;
+  institution: string | null;
+  account_type: string | null;
+  tax_treatment: string | null;
+  taxable: boolean;
+};
+
 export type AccountDetail = {
   account: Account;
   holdings: Holding[];
@@ -631,6 +648,10 @@ function activityQuery(accountIds?: string[], taxableOnly?: boolean): string {
 export const getIncome = (tenantId: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>
   get<IncomeYear[]>(tenantId, `/portfolios/${id}/income${activityQuery(accountIds, taxableOnly)}`);
 export const getAccounts = (tenantId: string, id: string) => get<Account[]>(tenantId, `/portfolios/${id}/accounts`);
+// Cacheable selector metadata only, no live valuation (metron-ops#91 Part 2) — read this
+// through lib/account-meta.ts's short-TTL cache, not directly, wherever caching matters.
+export const getAccountsMeta = (tenantId: string, id: string) =>
+  get<AccountMeta[]>(tenantId, `/portfolios/${id}/accounts/meta`);
 export const getTransactions = (tenantId: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>
   get<Transaction[]>(tenantId, `/portfolios/${id}/transactions${activityQuery(accountIds, taxableOnly)}`);
 export const getRealized = (tenantId: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>

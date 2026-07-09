@@ -100,6 +100,48 @@ class TestAccountValuation:
         assert sum(a["market_value"] for a in accts) == summary["market_value"] == 3000
 
 
+class TestAccountsMeta:
+    """GET /accounts/meta (metron-ops#91 Part 2) — cacheable selector metadata, no
+    valuation fields, so a short-TTL frontend cache carries no stale-NAV risk."""
+
+    def test_meta_carries_tag_fields_not_valuation(self, client, tenant, monkeypatch):
+        pid = _seed(client, tenant)
+        _refresh(client, tenant, pid, monkeypatch)  # priced, so a leaking valuation field would be non-null
+        meta = {a["external_id"]: a for a in client.get(f"/portfolios/{pid}/accounts/meta", headers=_hdr(tenant)).json()}
+        for field in ("account_id", "broker", "external_id", "name", "currency", "nickname", "institution",
+                      "account_type", "tax_treatment", "taxable"):
+            assert field in meta["Roth"]
+        for field in ("cost_basis_base", "market_value", "unrealized_gain", "n_unconverted",
+                      "overnight_pct", "intraday_pct", "day_pct", "ytd_pct", "ltm_pct"):
+            assert field not in meta["Roth"]
+
+    def test_meta_matches_accounts_metadata_subset(self, client, tenant):
+        pid = _seed(client, tenant)
+        full = {a["external_id"]: a for a in _accounts(client, tenant, pid)}
+        meta = {a["external_id"]: a for a in client.get(f"/portfolios/{pid}/accounts/meta", headers=_hdr(tenant)).json()}
+        assert full.keys() == meta.keys()
+        for key, m in meta.items():
+            f = full[key]
+            for field in ("account_id", "broker", "external_id", "name", "currency", "nickname",
+                          "institution", "account_type", "tax_treatment", "taxable"):
+                assert m[field] == f[field]
+
+    def test_meta_reflects_tag_edits(self, client, tenant):
+        pid = _seed(client, tenant)
+        roth = _acct_id(client, tenant, pid, "Roth")
+        client.patch(f"/portfolios/{pid}/accounts/{roth}", json={"nickname": "My Roth"}, headers=_hdr(tenant))
+        meta = {a["external_id"]: a for a in client.get(f"/portfolios/{pid}/accounts/meta", headers=_hdr(tenant)).json()}
+        assert meta["Roth"]["nickname"] == "My Roth"
+
+    def test_meta_foreign_portfolio_404(self, client, tenant):
+        pid_a = _seed(client, tenant)
+        other_tenant = str(uuid.uuid4())
+        pid_b = _seed(client, other_tenant)
+        r = client.get(f"/portfolios/{pid_b}/accounts/meta", headers=_hdr(tenant))
+        assert r.status_code == 404
+        assert client.get(f"/portfolios/{pid_a}/accounts/meta", headers=_hdr(tenant)).status_code == 200
+
+
 class TestSelectionScoping:
     def test_holdings_scoped_to_one_account(self, client, tenant):
         pid = _seed(client, tenant)
