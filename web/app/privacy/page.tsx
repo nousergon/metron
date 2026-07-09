@@ -5,8 +5,9 @@ export const metadata: Metadata = {
   description: "Metron Privacy Policy",
 };
 
-// DRAFT — pending legal entity formation and counsel review. See metron-ops#18.
-const LAST_UPDATED = "TBD — draft pending LLC formation (see metron-ops#18)";
+// DRAFT — pending counsel review. Entity facts filled 2026-07-09 (Nous Ergon LLC / WA).
+// Do not link from signup or treat as published until reviewed by counsel (metron-ops#18).
+const LAST_UPDATED = "July 9, 2026";
 
 export default function PrivacyPage() {
   return (
@@ -86,7 +87,7 @@ export default function PrivacyPage() {
         You can access, export, or delete your data, and disconnect any brokerage connection, from within the
         Service. Depending on your jurisdiction (e.g. California under CCPA/CPRA, or the EU/UK under GDPR) you may
         have additional rights to access, correct, delete, or port your personal data, and to opt out of certain
-        processing. To exercise these rights, contact us at [[SUPPORT_EMAIL]].
+        processing. To exercise these rights, contact us at privacy@nousergon.ai.
       </p>
 
       <h2 className="text-base font-semibold">8. Children</h2>
@@ -100,14 +101,13 @@ export default function PrivacyPage() {
 
       <h2 className="text-base font-semibold">10. Contact</h2>
       <p>
-        Questions about this policy or your data can be sent to [[SUPPORT_EMAIL]]. This Service is operated by
-        [[ENTITY_NAME]], a [[ENTITY_JURISDICTION]] limited liability company.
+        Questions about this policy or your data can be sent to privacy@nousergon.ai. This Service is operated by
+        Nous Ergon LLC, a Washington State limited liability company.
       </p>
 
       <p className="mt-8 rounded border border-line bg-panel p-3 text-xs text-muted">
-        Draft status: this page is a working draft prepared ahead of LLC formation and legal review. It is not yet
-        published live or binding. Placeholders (entity name, jurisdiction, contact email, last-updated date) must
-        be filled in and the whole document reviewed by counsel before this route is linked from signup or made
+        Draft status: this page is a working draft prepared for legal review. Entity facts filled (Nous Ergon LLC,
+        WA; privacy@nousergon.ai) pending counsel sign-off before this route is linked from signup or made
         publicly indexable. Tracked in nousergon/metron-ops#18.
       </p>
     </article>
