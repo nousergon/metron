@@ -42,9 +42,12 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
             h.market_cap = f.market_cap
             h.pe = f.trailing_pe
             h.fwd_pe = f.forward_pe
+            h.eps = f.eps
+            h.fwd_eps = f.fwd_eps
             h.pb = f.price_to_book
             h.ps = f.price_to_sales
             h.ev_ebitda = f.ev_ebitda
+            h.ebitda = f.ebitda
             h.peg = f.peg
             h.div_yield = f.dividend_yield
             h.rev_growth = f.revenue_growth

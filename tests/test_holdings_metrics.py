@@ -39,6 +39,18 @@ def test_fundamentals_parses_balance_sheet():
     assert f.ebitda == 1.3e11 and f.free_cashflow == 9.0e10
 
 
+def test_fundamentals_parses_eps(): # metron-ops#163
+    art = {"fundamentals": {"AAPL": {"trailingEps": 6.5, "forwardEps": 7.2}}}
+    f = fundamentals.load_fundamentals(reader=lambda: art).by_symbol["AAPL"]
+    assert f.eps == 6.5 and f.fwd_eps == 7.2
+
+
+def test_fundamentals_missing_eps_is_none():
+    snap = fundamentals.load_fundamentals(reader=lambda: {"fundamentals": {"X": {"trailingPE": 12.0}}})
+    f = snap.by_symbol["X"]
+    assert f.eps is None and f.fwd_eps is None
+
+
 # ── technicals ───────────────────────────────────────────────────────────────
 
 def test_technicals_round_trip():
@@ -95,7 +107,8 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
                                       "returnOnEquity": 0.5, "debtToEquity": 150.0, "beta": 1.2,
                                       "grossMargins": 0.45, "revenueGrowth": 0.08,
                                       "totalDebt": 1.2e11, "totalCash": 4.0e10, "ebitda": 1.0e11,
-                                      "freeCashflow": 9.0e10, "quickRatio": 0.9}}}),
+                                      "freeCashflow": 9.0e10, "quickRatio": 0.9,
+                                      "trailingEps": 6.5, "forwardEps": 7.2}}}),
     )
     monkeypatch.setattr(
         metrics_enrichment.technicals_service, "load_technicals",
@@ -108,6 +121,7 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
 
     aapl = held[0]
     assert aapl.pe == 30.0 and aapl.fwd_pe == 25.0 and aapl.pb == 6.0 and aapl.ps == 7.5
+    assert aapl.eps == 6.5 and aapl.fwd_eps == 7.2 and aapl.ebitda == 1.0e11
     assert aapl.market_cap == 3.0e12 and aapl.roe == 0.5 and aapl.beta == 1.2
     assert aapl.rsi_14 == 61.0 and aapl.pct_in_52w_range == 0.8 and aapl.mom_20d == 0.03
     # Balance sheet: absolute balances mapped, net debt + leverage derived.
@@ -117,6 +131,7 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
     # A holding absent from both artifacts keeps all metrics None (coverage gap, not zeros).
     zzz = held[1]
     assert zzz.pe is None and zzz.rsi_14 is None and zzz.market_cap is None
+    assert zzz.eps is None and zzz.ebitda is None
 
 
 # ── SOTA attractiveness pillar scores ───────────────────────────────────────

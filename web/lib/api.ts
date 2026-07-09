@@ -70,9 +70,12 @@ export type Holding = {
   market_cap: number | null;
   pe: number | null;
   fwd_pe: number | null;
+  eps: number | null; // $ trailing EPS — raw input behind pe
+  fwd_eps: number | null; // $ forward EPS — raw input behind fwd_pe
   pb: number | null;
   ps: number | null;
   ev_ebitda: number | null;
+  ebitda: number | null; // $ raw EBITDA — input behind ev_ebitda
   peg: number | null;
   div_yield: number | null; // fraction
   rev_growth: number | null; // fraction
@@ -387,9 +390,12 @@ export type WatchlistEntry = {
   market_cap: number | null;
   pe: number | null;
   fwd_pe: number | null;
+  eps: number | null;
+  fwd_eps: number | null;
   pb: number | null;
   ps: number | null;
   ev_ebitda: number | null;
+  ebitda: number | null;
   peg: number | null;
   div_yield: number | null;
   rev_growth: number | null;
