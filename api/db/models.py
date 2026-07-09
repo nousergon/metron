@@ -366,6 +366,10 @@ class InvestorPreferences(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
+    # risk_tolerance / objective: UI inputs retired pre-registration (metron-ops-I174,
+    # 2026-07-09) — suitability-style fields aren't collected while unregistered.
+    # Columns + stored values kept (no destructive migration); the API contract still
+    # round-trips them so the inputs can return with the registered tier.
     risk_tolerance: Mapped[str | None] = mapped_column(String(20), nullable=True)  # conservative | moderate | aggressive
     objective: Mapped[str | None] = mapped_column(String(20), nullable=True)  # income | growth | balanced
     notes: Mapped[str | None] = mapped_column(String(2000), nullable=True)
