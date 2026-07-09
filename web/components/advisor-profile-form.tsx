@@ -3,6 +3,15 @@
 // Investor-profile editor for the Advisor. Collects the stated targets, builds an
 // AdvisorProfile, and saves via the Server Action. Targets are entered as human units
 // (percent / dollars) and converted to the fractions/USD the backend stores.
+//
+// Pre-registration compliance wall (metron-ops#164, metron-ops#166): the SUITABILITY
+// inputs (strategy, risk_tolerance, time_horizon) are HIDDEN — under the impersonal
+// lane, tailoring generated output on suitability is the personalization trigger, so
+// pre-registration we don't collect them. The fields stay in the AdvisorProfile
+// type/API contract and any stored values are passed through UNCHANGED on save (a
+// targets edit must never wipe them). Restoring the inputs post-registration is a
+// deliberate, findable change here; the backend wall lives in metron-ops
+// (llm.PRE_REGISTRATION_EXCLUDED_PROFILE_FIELDS).
 
 import { useState, useTransition } from "react";
 import { saveProfileAction, type ActionResult } from "@/app/portfolios/[id]/advisor/profile/actions";
@@ -24,9 +33,6 @@ export function AdvisorProfileForm({ portfolioId, initial }: { portfolioId: stri
   const [pending, start] = useTransition();
   const [result, setResult] = useState<ActionResult | null>(null);
 
-  const [strategy, setStrategy] = useState(initial.strategy);
-  const [riskTolerance, setRiskTolerance] = useState(initial.risk_tolerance);
-  const [timeHorizon, setTimeHorizon] = useState(initial.time_horizon);
   const [rebalance, setRebalance] = useState(initial.rebalance_frequency);
   const [usEquity, setUsEquity] = useState(initial.target_allocation.us_equity != null ? String(initial.target_allocation.us_equity * 100) : "");
   const [intl, setIntl] = useState(initial.target_allocation.international != null ? String(initial.target_allocation.international * 100) : "");
@@ -43,9 +49,11 @@ export function AdvisorProfileForm({ portfolioId, initial }: { portfolioId: stri
     if (it != null) targetAllocation.international = it;
 
     const profile: AdvisorProfile = {
-      strategy,
-      risk_tolerance: riskTolerance,
-      time_horizon: timeHorizon,
+      // Suitability fields: no inputs pre-registration (metron-ops#166) — pass the
+      // stored values through unchanged so saving targets never mutates them.
+      strategy: initial.strategy,
+      risk_tolerance: initial.risk_tolerance,
+      time_horizon: initial.time_horizon,
       target_allocation: targetAllocation,
       overweight_sectors: csv(overweight),
       avoid_sectors: csv(avoid),
@@ -59,18 +67,6 @@ export function AdvisorProfileForm({ portfolioId, initial }: { portfolioId: stri
   return (
     <div className="max-w-xl space-y-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <label className={FIELD}>
-          Strategy
-          <input className={INPUT} value={strategy} onChange={(e) => setStrategy(e.target.value)} placeholder="e.g. long-term growth" />
-        </label>
-        <label className={FIELD}>
-          Risk tolerance
-          <input className={INPUT} value={riskTolerance} onChange={(e) => setRiskTolerance(e.target.value)} placeholder="e.g. moderate" />
-        </label>
-        <label className={FIELD}>
-          Time horizon
-          <input className={INPUT} value={timeHorizon} onChange={(e) => setTimeHorizon(e.target.value)} placeholder="e.g. 10+ years" />
-        </label>
         <label className={FIELD}>
           Rebalance frequency
           <input className={INPUT} value={rebalance} onChange={(e) => setRebalance(e.target.value)} placeholder="e.g. annually" />
