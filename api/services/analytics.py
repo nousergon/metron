@@ -1048,6 +1048,54 @@ class AccountInfo:
 
 
 @dataclass
+class AccountMeta:
+    """Cacheable selector metadata for one account — no valuation fields, so the
+    frontend can short-TTL cache this response without any stale-NAV risk
+    (metron-ops#91 Part 2). `AccountInfo`/`accounts()` remains the no-store source
+    for market_value/day_pct and everything else that reflects live market state."""
+
+    account_id: uuid.UUID
+    broker: str
+    external_id: str
+    name: str
+    currency: str
+    nickname: str | None = None
+    institution: str | None = None
+    account_type: str | None = None
+    tax_treatment: str | None = None
+    taxable: bool = True
+
+
+def accounts_meta(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[AccountMeta]:
+    """The portfolio's connected accounts' selector metadata only — a bare read of the
+    `accounts` table (+ derived taxable status), with NO `valued_holdings_by_account`
+    join. That join is what makes `accounts()` a live, no-store read; omitting it here
+    is what makes this response safe to cache (metron-ops#91 Part 2)."""
+    from api.services import account_meta  # local import avoids a cycle (account_meta → models)
+
+    rows = session.scalars(
+        select(models.Account)
+        .where(models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+        .order_by(models.Account.broker, models.Account.external_id)
+    ).all()
+    return [
+        AccountMeta(
+            account_id=a.id,
+            broker=a.broker,
+            external_id=a.external_id,
+            name=a.name or "",
+            currency=a.currency,
+            nickname=a.nickname,
+            institution=a.institution,
+            account_type=a.account_type,
+            tax_treatment=a.tax_treatment,
+            taxable=account_meta.is_taxable(a),
+        )
+        for a in rows
+    ]
+
+
+@dataclass
 class PortfolioSummary:
     base_currency: str
     n_accounts: int

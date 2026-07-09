@@ -4,7 +4,8 @@
 // (and the user's Flex token) never reach the browser; they forward to the backend
 // through the typed client and revalidate the page so the new data shows immediately.
 
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
+import { accountsMetaTag } from "@/lib/account-meta";
 import {
   type AccountTagPatch,
   addCryptoAddress,
@@ -198,6 +199,7 @@ export async function updateAccountTagsAction(
     const tenantId = await requireTenantId();
     await updateAccountTags(tenantId, portfolioId, accountId, patch);
     revalidatePath(`/portfolios/${portfolioId}`, "layout");
+    revalidateTag(accountsMetaTag(tenantId, portfolioId));
     return { ok: true, message: "Account updated." };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Update failed — backend reachable?" };
@@ -209,6 +211,7 @@ export async function deleteAccountAction(portfolioId: string, accountId: string
     const tenantId = await requireTenantId();
     await deleteAccount(tenantId, portfolioId, accountId);
     revalidatePath(`/portfolios/${portfolioId}`, "layout");
+    revalidateTag(accountsMetaTag(tenantId, portfolioId));
     return { ok: true, message: "Account deleted. Future syncs will skip it (restore from Settings)." };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Delete failed — backend reachable?" };
@@ -220,6 +223,7 @@ export async function restoreExcludedAccountAction(portfolioId: string, key: str
     const tenantId = await requireTenantId();
     await restoreExcludedAccount(tenantId, portfolioId, key);
     revalidatePath(`/portfolios/${portfolioId}`, "layout");
+    revalidateTag(accountsMetaTag(tenantId, portfolioId));
     return { ok: true, message: "Account restored — run a sync to re-import it." };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Restore failed — backend reachable?" };

@@ -334,6 +334,24 @@ class AccountOut(BaseModel):
     ltm_pct: float | None = None
 
 
+class AccountMetaOut(BaseModel):
+    """Selector metadata only (metron-ops#91 Part 2) — deliberately excludes every
+    valuation/return field on `AccountOut` so this response is safe to short-TTL cache."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: uuid.UUID
+    broker: str
+    external_id: str
+    name: str
+    currency: str
+    nickname: str | None = None
+    institution: str | None = None
+    account_type: str | None = None
+    tax_treatment: str | None = None
+    taxable: bool = True
+
+
 class SummaryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1917,6 +1935,22 @@ def get_accounts(
         a.overnight_pct, a.intraday_pct, a.day_pct = r.overnight_pct, r.intraday_pct, r.day_pct
         a.ytd_pct, a.ltm_pct = r.ytd_pct, r.ltm_pct
     return accts
+
+
+@router.get("/{portfolio_id}/accounts/meta", response_model=list[AccountMetaOut])
+def get_accounts_meta(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> list[analytics.AccountMeta]:
+    """Cacheable selector metadata only — account_id/broker/name/nickname/tax flags,
+    no live valuation (metron-ops#91 Part 2, operator decision 2026-07-08). Callers that
+    need per-account market_value/day_pct must use `GET /accounts` (still no-store);
+    this endpoint is the slim, short-TTL-cacheable read for consumers (e.g. the Settings
+    account-tag table) that only need the metadata.
+
+    Registered BEFORE the dynamic `/accounts/{account_id}` route below so "meta" is
+    never captured as an account_id path param."""
+    return analytics.accounts_meta(session, portfolio.tenant_id, portfolio.id)
 
 
 @router.get("/{portfolio_id}/performance", response_model=PerformanceOut)
