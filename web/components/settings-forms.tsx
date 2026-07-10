@@ -81,7 +81,7 @@ export function AccountTagRow({ portfolioId, account }: { portfolioId: string; a
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  // The Reference Rate showcase (metron-ops#120) is a live, real-tenant-visible read-only
+  // The Showcase Portfolio (metron-ops#120) is a live, real-tenant-visible read-only
   // mirror (metron#162) — the API 403s account-tag edits for it regardless of caller tenant
   // (api/main.py::_demo_read_only).
   const readOnly = isReferencePortfolio(portfolioId);
@@ -235,7 +235,7 @@ export function ExcludedAccountRow({ portfolioId, excluded }: { portfolioId: str
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const router = useRouter();
 
-  // The Reference Rate showcase (metron-ops#120) is a live, real-tenant-visible read-only
+  // The Showcase Portfolio (metron-ops#120) is a live, real-tenant-visible read-only
   // mirror (metron#162) — the API 403s account restore for it regardless of caller tenant
   // (api/main.py::_demo_read_only).
   const readOnly = isReferencePortfolio(portfolioId);

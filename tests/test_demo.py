@@ -1,4 +1,4 @@
-"""Reference Rate's frozen sample sleeve (metron-ops#42) — the no-auth `/demo` entry
+"""Showcase Portfolio's frozen sample sleeve (metron-ops#42) — the no-auth `/demo` entry
 point's asset-class/tax breadth fixture, folded into REFERENCE_PORTFOLIO_ID. Seeded,
 renders end-to-end, and is READ-ONLY (the demo tenant refuses every mutating request)."""
 

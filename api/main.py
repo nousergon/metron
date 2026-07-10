@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     # Dev/test convenience: create tables on boot. Production uses Alembic migrations.
     if settings.env != "prod":
         create_all()
-    # Seed the canned read-only Reference Rate showcase (idempotent) — the shell, its
+    # Seed the canned read-only Showcase Portfolio (idempotent) — the shell, its
     # frozen sample sleeve, and the legacy-portfolio cleanup all run unconditionally on
     # every boot, independent of S3 artifact availability, so the no-auth /demo entry
     # works even in a dev/no-S3 environment. Best-effort: a seeding failure WARNs but
@@ -89,7 +89,7 @@ app.add_middleware(
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-# The Reference Rate showcase is now readable by every real tenant (not just the demo
+# The Showcase Portfolio is now readable by every real tenant (not just the demo
 # tenant that owns it — see api/routers/portfolios.py::_owned_portfolio), so a real
 # tenant's own X-Tenant-Id header will never match DEMO_TENANT_ID below. This path-based
 # check is the second, independent leg of the same read-only guard: it keys off the fixed
@@ -102,7 +102,7 @@ _REFERENCE_PORTFOLIO_PATH = re.compile(rf"^/portfolios/{re.escape(str(REFERENCE_
 
 @app.middleware("http")
 async def _demo_read_only(request: Request, call_next):
-    """The demo portfolio (metron-ops#42) and the Reference Rate showcase are READ-ONLY —
+    """The demo portfolio (metron-ops#42) and the Showcase Portfolio are READ-ONLY —
     refuse any mutating request (anything but GET/HEAD/OPTIONS) addressed to either, so no
     tenant can ever edit, import into, delete, or refresh a shared fixture. One HTTP-layer
     chokepoint covers every mutation route uniformly. The server-side seed/sync runs

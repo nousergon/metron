@@ -92,7 +92,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     cache, then snapshot today's NAV (skipped, not fabricated, when nothing is priceable).
     Returns aggregate counts for logging.
 
-    EXCEPTION — the Reference Rate showcase (``REFERENCE_PORTFOLIO_ID``): its NAV series
+    EXCEPTION — the Showcase Portfolio (``REFERENCE_PORTFOLIO_ID``): its NAV series
     has exactly one authoritative source, the engine's published ``nav_history`` artifact
     (seeded/upserted by ``demo.sync_reference_holdings`` earlier in this function). The
     generic per-portfolio NAV writers below (``record_snapshot``, ``record_account_snapshots``,
@@ -107,7 +107,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     """
     today = today or date.today()
 
-    # Refresh the Reference Rate showcase from the engine's published artifact BEFORE the
+    # Refresh the Showcase Portfolio from the engine's published artifact BEFORE the
     # per-portfolio loop, so its holdings are current when today's NAV snapshot is recorded.
     # Gated on the S3 data-spine toggle (the artifact lives in that bucket) and best-effort:
     # a missing artifact / read failure WARNs and leaves the last-good showcase intact.
@@ -208,7 +208,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         if txn_ccys and earliest is not None:
             fx_updated += fx.backfill_fx_rates(session, txn_ccys, earliest, today, base=base)
 
-        # The Reference Rate showcase's NavSnapshot series is sole-sourced from the engine's
+        # The Showcase Portfolio's NavSnapshot series is sole-sourced from the engine's
         # artifact (demo.sync_reference_holdings, above) — see the single-source-of-truth
         # note on this function's docstring (metron-ops#141). None of the generic NAV
         # writers below may touch it, or they'd re-derive + clobber it from Metron's own

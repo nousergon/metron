@@ -1,4 +1,4 @@
-"""Reference Rate showcase — connector mapping, the consumer-side artifact contract,
+"""Showcase Portfolio — connector mapping, the consumer-side artifact contract,
 and the seeded read-only live portfolio under the demo tenant."""
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ def test_ensure_reference_seeded_idempotent(db_session):
     assert demo.ensure_reference_seeded(db_session) is True
     assert demo.ensure_reference_seeded(db_session) is False
     p = db_session.get(models.Portfolio, demo.REFERENCE_PORTFOLIO_ID)
-    assert p is not None and p.name == "Reference Rate"
+    assert p is not None and p.name == "Showcase Portfolio"
     assert p.tenant_id == demo.DEMO_TENANT_ID  # under the read-only demo tenant
 
 
@@ -128,6 +128,31 @@ def test_ensure_reference_seeded_self_heals_stale_off_preference(db_session):
 
     demo.ensure_reference_seeded(db_session)
     assert _reference_pref(db_session).intraday_enabled is True
+
+
+def test_ensure_reference_seeded_self_heals_stale_display_name(db_session):
+    # Simulates an already-deployed instance seeded under the pre-rename name:
+    # Portfolio.name and the live sleeve's own Account.name are both write-once at
+    # creation elsewhere, so renaming REFERENCE_PORTFOLIO_NAME alone wouldn't touch
+    # either on a running instance. A later startup call must correct both in place.
+    assert demo.sync_reference_holdings(db_session, reader=_reader) is True
+    portfolio = db_session.get(models.Portfolio, demo.REFERENCE_PORTFOLIO_ID)
+    portfolio.name = "Reference Rate"
+    live_account = db_session.scalar(
+        select(models.Account).where(
+            models.Account.portfolio_id == demo.REFERENCE_PORTFOLIO_ID,
+            models.Account.broker == "reference",
+        )
+    )
+    live_account.name = "Reference Rate"
+    db_session.commit()
+
+    demo.ensure_reference_seeded(db_session)
+
+    db_session.refresh(portfolio)
+    db_session.refresh(live_account)
+    assert portfolio.name == "Showcase Portfolio"
+    assert live_account.name == "Showcase Portfolio"
 
 
 def _live_sleeve_account_ids(db_session):
@@ -275,7 +300,7 @@ def test_retire_legacy_demo_portfolio_cleans_up_orphan(db_session):
 def test_daily_refresh_never_overwrites_reference_rate_nav(db_session, monkeypatch):
     """metron-ops#141 regression: daily_refresh's generic per-portfolio NAV writers
     (record_snapshot / record_account_snapshots / reconstruct_snapshots / reconcile_snapshots)
-    must never touch the Reference Rate portfolio — its NavSnapshot series has exactly one
+    must never touch the Showcase Portfolio — its NavSnapshot series has exactly one
     authoritative source, the engine artifact seeded by sync_reference_holdings. Prices are
     monkeypatched to a value that deliberately DIFFERS wildly from the artifact's own NAV, so
     a regression (some writer re-deriving NAV from Metron's own price cache) would flip the
@@ -332,7 +357,7 @@ def test_reference_portfolio_is_read_only(client, db_session):
     assert r.status_code == 403
 
 
-# ── Cross-tenant visibility (metron-ops: "Reference Rate on every dashboard") ───────────
+# ── Cross-tenant visibility (metron-ops: "Showcase Portfolio on every dashboard") ───────
 
 
 def _real_headers() -> dict[str, str]:
