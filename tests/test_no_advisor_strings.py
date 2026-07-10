@@ -10,8 +10,6 @@ from __future__ import annotations
 import pathlib
 import re
 
-import pytest
-
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # Grep patterns for "Advisor" string literals in user-facing code.
