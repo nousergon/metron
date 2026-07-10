@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 // Read-only research-intel surface (EPIC config#1499 Phase 1 / metron-ops#117). Displays
 // the neutral market intel — regime + narrative, sector ratings, and per-HOLDING
 // attractiveness + generic thesis — sourced from the crucible-research `research_intel`
-// artifact. Paid AI-Advisor tier only: the nav hides the link on the beta, and a direct
+// artifact. Paid Intelligence tier only: the nav hides the link on the beta, and a direct
 // navigation lands on a full-page <Locked>. NO advice, NO position directives, NO LLM —
 // impersonal intelligence the user applies to their own portfolio (EPIC decision 7).
 
@@ -41,7 +41,7 @@ export default async function ResearchIntelPage({ params }: { params: { id: stri
   const { id } = params;
   const tenantId = await requireTenantId();
 
-  // Entitlement gate: research_intel is packaged to the paid AI-Advisor tier. The nav
+  // Entitlement gate: research_intel is packaged to the paid Intelligence tier. The nav
   // locks the link off-tier, but a direct navigation reaches here → full-page Locked
   // (and we skip the data fetch). Owner tier-simulator preview honored via cookies.
   const entitlements = await loadEntitlements(tenantId);

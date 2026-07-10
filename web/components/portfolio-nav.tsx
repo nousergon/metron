@@ -79,7 +79,7 @@ export function PortfolioNav({
     // the "Pages" fallback (metron-ops#49).
     { label: "Macro", href: `${base}/macro`, feature: "macro" },
     { label: "Calendar", href: `${base}/calendar`, feature: "calendar" },
-    // Neutral research intel (paid AI-Advisor tier; nav locks it on the beta). config#1499.
+    // Neutral research intel (paid Intelligence tier; nav locks it on the beta). config#1499.
     { label: "Research intel", href: `${base}/research-intel`, feature: "research_intel" },
     { label: "Watchlist", href: `${base}/watchlist` },
     { label: "Crypto", href: `${base}/crypto` },
