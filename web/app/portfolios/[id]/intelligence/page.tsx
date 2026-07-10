@@ -37,7 +37,7 @@ export default async function AdvisorPage({ params }: { params: { id: string } }
         <Link href={`/portfolios/${id}`} className="text-sm text-muted hover:text-ink">
           ← Portfolio
         </Link>
-        <Link href={`/portfolios/${id}/advisor/profile`} className="text-sm text-muted hover:text-ink">
+        <Link href={`/portfolios/${id}/intelligence/profile`} className="text-sm text-muted hover:text-ink">
           Edit profile →
         </Link>
       </div>
