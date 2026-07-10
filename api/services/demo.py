@@ -199,21 +199,58 @@ def ensure_reference_seeded(session: Session) -> bool:
     Returns True if it created the portfolio this call, False if it already existed.
     Only creates the (possibly empty) portfolio so its link resolves immediately;
     ``sync_reference_holdings`` populates it from the live artifact (at startup +
-    daily). Safe to call on every startup."""
-    if session.get(models.Portfolio, REFERENCE_PORTFOLIO_ID) is not None:
-        return False
-    if session.get(models.Tenant, DEMO_TENANT_ID) is None:
-        session.add(models.Tenant(id=DEMO_TENANT_ID, name="Demo"))
-    session.add(
-        models.Portfolio(
-            id=REFERENCE_PORTFOLIO_ID,
-            tenant_id=DEMO_TENANT_ID,
-            name=REFERENCE_PORTFOLIO_NAME,
-            base_currency="USD",
+    daily). Safe to call on every startup. Also (re-)asserts the intraday-on
+    preference below on every call, independent of the create/exists branch, so it
+    self-heals on deployments seeded before that default existed."""
+    created = False
+    if session.get(models.Portfolio, REFERENCE_PORTFOLIO_ID) is None:
+        if session.get(models.Tenant, DEMO_TENANT_ID) is None:
+            session.add(models.Tenant(id=DEMO_TENANT_ID, name="Demo"))
+        session.add(
+            models.Portfolio(
+                id=REFERENCE_PORTFOLIO_ID,
+                tenant_id=DEMO_TENANT_ID,
+                name=REFERENCE_PORTFOLIO_NAME,
+                base_currency="USD",
+            )
         )
-    )
-    session.commit()
-    return True
+        session.commit()
+        created = True
+    _ensure_reference_intraday_default_on(session)
+    return created
+
+
+def _ensure_reference_intraday_default_on(session: Session) -> None:
+    """Force ``InvestorPreferences.intraday_enabled`` True for the Reference Rate
+    portfolio.
+
+    The live overlay (``api/services/intraday.py::for_portfolio``) is normally gated
+    by a per-portfolio user toggle, default OFF, settable only via
+    ``PUT /portfolios/{id}/preferences``. But ``_demo_read_only`` (api/main.py) 403s
+    every non-GET request against this portfolio's id — including that PUT — so a
+    real user can never reach the toggle. Left alone, the showcase would sit
+    permanently EOD-only during live market hours, which is not the intent (the
+    EOD-sole-sourcing decision in ``_seed_reference_nav`` is about the persisted NAV
+    history, not this overlay). System-seed it on instead, unconditionally, so a
+    deployment seeded before this existed self-heals on next startup."""
+    pref = session.scalars(
+        select(models.InvestorPreferences).where(
+            models.InvestorPreferences.tenant_id == DEMO_TENANT_ID,
+            models.InvestorPreferences.portfolio_id == REFERENCE_PORTFOLIO_ID,
+        )
+    ).first()
+    if pref is None:
+        session.add(
+            models.InvestorPreferences(
+                tenant_id=DEMO_TENANT_ID,
+                portfolio_id=REFERENCE_PORTFOLIO_ID,
+                intraday_enabled=True,
+            )
+        )
+        session.commit()
+    elif pref.intraday_enabled is not True:
+        pref.intraday_enabled = True
+        session.commit()
 
 
 def sync_reference_holdings(session: Session, *, reader=None) -> bool:

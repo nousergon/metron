@@ -100,6 +100,36 @@ def test_ensure_reference_seeded_idempotent(db_session):
     assert p.tenant_id == demo.DEMO_TENANT_ID  # under the read-only demo tenant
 
 
+def _reference_pref(db_session) -> models.InvestorPreferences | None:
+    return db_session.scalars(
+        select(models.InvestorPreferences).where(
+            models.InvestorPreferences.tenant_id == demo.DEMO_TENANT_ID,
+            models.InvestorPreferences.portfolio_id == demo.REFERENCE_PORTFOLIO_ID,
+        )
+    ).first()
+
+
+def test_ensure_reference_seeded_defaults_intraday_on(db_session):
+    # The showcase's own read-only lockout (_demo_read_only) blocks the normal
+    # PUT .../preferences path a real user would use to flip this toggle — so it must
+    # come pre-enabled rather than sit on the global NULL/off default.
+    demo.ensure_reference_seeded(db_session)
+    pref = _reference_pref(db_session)
+    assert pref is not None and pref.intraday_enabled is True
+
+
+def test_ensure_reference_seeded_self_heals_stale_off_preference(db_session):
+    # Simulates a deployment seeded before this default existed: portfolio present,
+    # preference row present but off. A later startup call must correct it in place.
+    demo.ensure_reference_seeded(db_session)
+    pref = _reference_pref(db_session)
+    pref.intraday_enabled = False
+    db_session.commit()
+
+    demo.ensure_reference_seeded(db_session)
+    assert _reference_pref(db_session).intraday_enabled is True
+
+
 def test_sync_persists_holdings_sectors_and_nav(db_session):
     assert demo.sync_reference_holdings(db_session, reader=_reader) is True
 
