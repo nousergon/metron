@@ -18,7 +18,7 @@ function ent(overrides: Partial<Entitlements> = {}): Entitlements {
     features: [],
     tiers: [
       { key: "beta", label: "Beta" },
-      { key: "personal", label: "AI Advisor (demo)" },
+      { key: "personal", label: "Intelligence (demo)" },
     ],
     simulator: true,
     ...overrides,

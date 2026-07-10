@@ -90,8 +90,8 @@ export function ReadOnlyNotice({ children }: { children?: ReactNode }) {
 }
 
 // Upsell labels for a required tier (matches PortfolioNav's lock badge). Two exposed tiers
-// now (metron-ops): a beta-excluded feature upsells to the full "AI Advisor" build.
-const TIER_LABEL: Record<string, string> = { personal: "AI Advisor" };
+// now (metron-ops): a beta-excluded feature upsells to the full "Intelligence" build.
+const TIER_LABEL: Record<string, string> = { personal: "Intelligence" };
 
 /** Full-page placeholder for a feature excluded by the active product tier / data feed.
  * Renders when a gated route is navigated to directly (the nav already hides the link).
