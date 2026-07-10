@@ -90,7 +90,7 @@ describe("PortfolioNav", () => {
     const perf = screen.getByRole("menuitem", { name: /Performance/ });
     expect(perf).toHaveAttribute("aria-disabled", "true");
     expect(perf).not.toHaveAttribute("href"); // not a link
-    expect(perf).toHaveTextContent("AI Advisor"); // upsell badge
+    expect(perf).toHaveTextContent("Intelligence"); // upsell badge
   });
 
   it("leaves all pages clickable when no featureStates given (ungated)", () => {
