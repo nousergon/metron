@@ -54,11 +54,11 @@ describe("PortfolioNav", () => {
       <PortfolioNav
         portfolioId="p"
         navQuery=""
-        plugins={[{ id: "advisor", label: "Advisor", href: "advisor" }]}
+        plugins={[{ id: "advisor", label: "Intelligence", href: "advisor" }]}
       />,
     );
     open();
-    expect(screen.getByRole("menuitem", { name: "Advisor" })).toHaveAttribute("href", "/portfolios/p/advisor");
+    expect(screen.getByRole("menuitem", { name: "Intelligence" })).toHaveAttribute("href", "/portfolios/p/advisor");
   });
 
   it("HIDES a feed-dependent page (Risk) when the feed entitlement is off (beta)", () => {
