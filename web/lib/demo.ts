@@ -4,11 +4,12 @@
 // These ids mirror api/services/demo.py — keep them in lockstep.
 
 export const DEMO_TENANT_ID = "00000000-0000-0000-0000-00000000de60";
-export const DEMO_PORTFOLIO_ID = "00000000-0000-0000-0000-00000000de61";
-// A second, LIVE read-only showcase under the demo tenant: the "Reference Rate" —
-// an illustrative reference portfolio synced daily from the engine's published artifact.
-// Illustrative only, no performance claims, no stated objective. Mirrors
-// api/services/demo.py::REFERENCE_PORTFOLIO_ID — keep in lockstep.
+// The single read-only showcase under the demo tenant, also visible on every real
+// tenant's own dashboard: the "Reference Rate" — a live sleeve synced daily from the
+// engine's published artifact, plus a permanently-frozen sample sleeve for
+// asset-class/tax breadth (formerly a separate "Demo portfolio"; merged in to cut
+// showcase-portfolio clutter). Illustrative only, no performance claims, no stated
+// objective. Mirrors api/services/demo.py::REFERENCE_PORTFOLIO_ID — keep in lockstep.
 export const REFERENCE_PORTFOLIO_ID = "00000000-0000-0000-0000-00000000de62";
 export const DEMO_COOKIE = "metron-demo";
 

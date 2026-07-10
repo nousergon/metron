@@ -43,8 +43,11 @@ async def lifespan(app: FastAPI):
     # Dev/test convenience: create tables on boot. Production uses Alembic migrations.
     if settings.env != "prod":
         create_all()
-    # Seed the canned read-only demo portfolio (idempotent). Best-effort: a seeding
-    # failure WARNs but never blocks startup — the demo is secondary to the real product.
+    # Seed the canned read-only Reference Rate showcase (idempotent) — the shell, its
+    # frozen sample sleeve, and the legacy-portfolio cleanup all run unconditionally on
+    # every boot, independent of S3 artifact availability, so the no-auth /demo entry
+    # works even in a dev/no-S3 environment. Best-effort: a seeding failure WARNs but
+    # never blocks startup — the showcase is secondary to the real product.
     if settings.demo_enabled:
         import logging
 
@@ -53,11 +56,11 @@ async def lifespan(app: FastAPI):
 
         try:
             with SessionLocal() as session:
-                demo.ensure_demo_seeded(session)
-                # Reference Rate showcase: attempt an initial live sync from the
-                # published artifact. Best-effort — no artifact (dev/no-S3) creates
-                # nothing (the portfolio materializes only once a real artifact is in
-                # hand); the daily refresh retries. Never blocks boot.
+                demo.ensure_reference_seeded(session)
+                # Live sleeve: attempt an initial sync from the published artifact.
+                # Best-effort — no artifact (dev/no-S3) creates nothing (the live
+                # sleeve materializes only once a real artifact is in hand); the daily
+                # refresh retries. Never blocks boot.
                 try:
                     demo.sync_reference_holdings(session)
                 except Exception:  # noqa: BLE001 - live sync is best-effort
