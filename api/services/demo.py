@@ -1,6 +1,16 @@
-"""Reference Rate — the single read-only illustrative showcase portfolio, open to
+"""Showcase Portfolio — the single read-only illustrative showcase portfolio, open to
 anyone with no signup and no brokerage connection (metron-ops#42), and also visible on
 every real tenant's own dashboard (api/routers/portfolios.py::list_portfolios).
+
+Renamed from "Reference Rate" — that term collides with the established, unrelated
+finance meaning (a benchmark interest rate — SOFR, Fed Funds, Prime), confusing for the
+financially-literate audience this is aimed at. Internal identifiers (module/function
+names, ``REFERENCE_PORTFOLIO_ID``, the ``"reference"``/``"reference_sample"`` connector-
+source labels) are unchanged — only the user-facing display name and disclaimer copy
+moved. ``_ensure_reference_display_name_current`` self-heals the rename onto an
+already-deployed instance (``Portfolio.name`` and the live sleeve's ``Account.name`` are
+both write-once-at-creation elsewhere, so a bare constant rename alone would silently do
+nothing there).
 
 Two sleeves live under one portfolio id, seeded idempotently at startup:
 
@@ -52,16 +62,18 @@ _LEGACY_DEMO_PORTFOLIO_ID = uuid.UUID("00000000-0000-0000-0000-00000000de61")
 
 # The single showcase portfolio, seeded under the demo tenant but VISIBLE ON EVERY
 # TENANT'S dashboard (api/routers/portfolios.py::list_portfolios + _owned_portfolio carve
-# a narrow, named exception for this one fixed id): the "Reference Rate". It carries no
-# claims and states no objective; it is demo/illustrative only, meant to let a prospect
-# explore real product behavior before linking their own accounts. Read-only for every
-# tenant (not just the demo tenant) is enforced by the HTTP ``_demo_read_only``
-# middleware's path-based check in api/main.py — a fixed constant, so a real tenant's own
-# portfolio can never collide with this id (``create_portfolio`` always assigns a random
-# uuid4, never a client-supplied id). The daily sync runs in-process
-# (``api.maintenance`` / startup), bypassing the HTTP layer.
+# a narrow, named exception for this one fixed id): the "Showcase Portfolio". It carries
+# no claims and states no objective; it is demo/illustrative only, meant to let a
+# prospect explore real product behavior before linking their own accounts. Read-only
+# for every tenant (not just the demo tenant) is enforced by the HTTP
+# ``_demo_read_only`` middleware's path-based check in api/main.py — a fixed constant,
+# so a real tenant's own portfolio can never collide with this id (``create_portfolio``
+# always assigns a random uuid4, never a client-supplied id). The daily sync runs
+# in-process (``api.maintenance`` / startup), bypassing the HTTP layer. The id and every
+# internal identifier keep the pre-rename "reference" name — only the DISPLAY name below
+# changed.
 REFERENCE_PORTFOLIO_ID = uuid.UUID("00000000-0000-0000-0000-00000000de62")
-REFERENCE_PORTFOLIO_NAME = "Reference Rate"
+REFERENCE_PORTFOLIO_NAME = "Showcase Portfolio"
 
 # The frozen sample sleeve's distinct connector-source label — lets every query below
 # scope precisely to "the fixture's own accounts" without ever touching the live sleeve's
@@ -133,10 +145,10 @@ def assert_writable(tenant_id: uuid.UUID) -> None:
 
 
 def _ensure_sample_sleeve_seeded(session: Session) -> None:
-    """Fold the frozen breadth fixture into Reference Rate, once. Idempotent on the
-    sleeve's own source label — independent of the portfolio-exists check in
-    ``ensure_reference_seeded`` — so an already-deployed Reference Rate (seeded before
-    this sleeve existed) self-heals with it on next startup."""
+    """Fold the frozen breadth fixture into the Showcase Portfolio, once. Idempotent on
+    the sleeve's own source label — independent of the portfolio-exists check in
+    ``ensure_reference_seeded`` — so an already-deployed instance (seeded before this
+    sleeve existed) self-heals with it on next startup."""
     already = session.scalars(
         select(models.Account.id).where(
             models.Account.portfolio_id == REFERENCE_PORTFOLIO_ID,
@@ -247,13 +259,14 @@ def _sample_sleeve_totals(session: Session) -> tuple[float, float]:
 
 def _retire_legacy_demo_portfolio(session: Session) -> None:
     """One-time cleanup: delete the old, now-unreachable standalone "Demo portfolio"
-    (``_LEGACY_DEMO_PORTFOLIO_ID``) left behind by the merge into Reference Rate — the
-    web ``/demo`` redirect no longer points at it, so on an already-deployed instance it
-    would otherwise sit forever as orphaned dead data. Idempotent no-op once gone.
-    ``AccountNavSnapshot``/``OpenLot``/``RealizedLot`` have no ORM cascade from
-    ``Account`` (matches the same explicit-delete pattern used by the account-delete
-    endpoint), so they're deleted explicitly; ``Account``'s own transactions/positions
-    cascade via its ORM relationship when the portfolio is deleted."""
+    (``_LEGACY_DEMO_PORTFOLIO_ID``) left behind by the merge into the Showcase
+    Portfolio — the web ``/demo`` redirect no longer points at it, so on an
+    already-deployed instance it would otherwise sit forever as orphaned dead data.
+    Idempotent no-op once gone. ``AccountNavSnapshot``/``OpenLot``/``RealizedLot`` have
+    no ORM cascade from ``Account`` (matches the same explicit-delete pattern used by
+    the account-delete endpoint), so they're deleted explicitly; ``Account``'s own
+    transactions/positions cascade via its ORM relationship when the portfolio is
+    deleted."""
     portfolio = session.get(models.Portfolio, _LEGACY_DEMO_PORTFOLIO_ID)
     if portfolio is None:
         return
@@ -278,19 +291,19 @@ def _retire_legacy_demo_portfolio(session: Session) -> None:
     session.commit()
 
 
-# ── Reference Rate (live illustrative showcase) ──────────────────────────────
+# ── Showcase Portfolio (live illustrative showcase) ──────────────────────────
 
 
 def ensure_reference_seeded(session: Session) -> bool:
-    """Idempotently create the Reference Rate portfolio shell under the demo tenant.
+    """Idempotently create the Showcase Portfolio shell under the demo tenant.
 
     Returns True if it created the portfolio this call, False if it already existed.
     Only creates the (possibly empty) portfolio so its link resolves immediately;
     ``sync_reference_holdings`` populates the live sleeve from the artifact (at startup +
     daily). Safe to call on every startup. The sample sleeve, intraday-on preference,
-    and legacy-portfolio cleanup below all self-heal unconditionally on every call,
-    independent of the create/exists branch, so an already-deployed instance catches up
-    on next startup with no manual migration."""
+    display-name, and legacy-portfolio cleanup below all self-heal unconditionally on
+    every call, independent of the create/exists branch, so an already-deployed
+    instance catches up on next startup with no manual migration."""
     created = False
     if session.get(models.Portfolio, REFERENCE_PORTFOLIO_ID) is None:
         if session.get(models.Tenant, DEMO_TENANT_ID) is None:
@@ -306,14 +319,14 @@ def ensure_reference_seeded(session: Session) -> bool:
         session.commit()
         created = True
     _ensure_reference_intraday_default_on(session)
+    _ensure_reference_display_name_current(session)
     _ensure_sample_sleeve_seeded(session)
     _retire_legacy_demo_portfolio(session)
     return created
 
 
 def _ensure_reference_intraday_default_on(session: Session) -> None:
-    """Force ``InvestorPreferences.intraday_enabled`` True for the Reference Rate
-    portfolio.
+    """Force ``InvestorPreferences.intraday_enabled`` True for the Showcase Portfolio.
 
     The live overlay (``api/services/intraday.py::for_portfolio``) is normally gated
     by a per-portfolio user toggle, default OFF, settable only via
@@ -344,8 +357,33 @@ def _ensure_reference_intraday_default_on(session: Session) -> None:
         session.commit()
 
 
+def _ensure_reference_display_name_current(session: Session) -> None:
+    """Force ``Portfolio.name`` (and the live sleeve's own ``Account.name``) to
+    ``REFERENCE_PORTFOLIO_NAME``, unconditionally, on every call.
+
+    Both are set ONLY at first creation elsewhere — ``Portfolio.name`` in
+    ``ensure_reference_seeded``'s create branch above, ``Account.name`` in
+    ``persistence._upsert_accounts`` (whose re-sync branch explicitly never touches
+    ``name``, by design, so a Settings edit survives re-imports) — so renaming the
+    constant alone would silently do nothing for an already-deployed instance still
+    holding the pre-rename "Reference Rate" name."""
+    portfolio = session.get(models.Portfolio, REFERENCE_PORTFOLIO_ID)
+    if portfolio is not None and portfolio.name != REFERENCE_PORTFOLIO_NAME:
+        portfolio.name = REFERENCE_PORTFOLIO_NAME
+        session.commit()
+    live_account = session.scalars(
+        select(models.Account).where(
+            models.Account.portfolio_id == REFERENCE_PORTFOLIO_ID,
+            models.Account.broker == reference_connector.SOURCE,
+        )
+    ).first()
+    if live_account is not None and live_account.name != REFERENCE_PORTFOLIO_NAME:
+        live_account.name = REFERENCE_PORTFOLIO_NAME
+        session.commit()
+
+
 def sync_reference_holdings(session: Session, *, reader=None) -> bool:
-    """Sync the Reference Rate portfolio from the published artifact. Idempotent.
+    """Sync the Showcase Portfolio's live sleeve from the published artifact. Idempotent.
 
     Reads ``metron/reference_rate.json`` (``reader`` injectable for tests), maps it
     through the same canonical bridge every connector uses (positions →

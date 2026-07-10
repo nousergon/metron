@@ -16,7 +16,7 @@ export function RefreshPrices({ portfolioId, feedOn }: { portfolioId: string; fe
   // refresh is feed-gated server-side (metron-ops#52), so hide the control here too.
   if (feedOn === false) return null;
 
-  // The Reference Rate showcase (metron-ops#120) syncs daily from the engine's published
+  // The Showcase Portfolio (metron-ops#120) syncs daily from the engine's published
   // artifact — a manual refresh would just 403 (api/main.py::_demo_read_only).
   if (isReferencePortfolio(portfolioId)) {
     return <ReadOnlyNotice>Illustrative — read-only. This showcase portfolio refreshes automatically.</ReadOnlyNotice>;
