@@ -78,7 +78,7 @@ export function Empty({ children }: { children: ReactNode }) {
 }
 
 /** Short inline explanation shown in place of a write-affordance (Import, rename, delete,
- * SnapTrade connect, price refresh…) on the Reference Rate showcase portfolio
+ * SnapTrade connect, price refresh…) on the Showcase Portfolio portfolio
  * (`isReferencePortfolio`, metron-ops#120). The portfolio is a live, real-tenant-visible
  * read-only mirror (metron#162) — the API already 403s every mutating route for it
  * (`api/main.py::_demo_read_only`), so this just replaces the dead-end click with a short

@@ -322,7 +322,7 @@ function SnapTradeCard({ portfolioId }: { portfolioId: string }) {
 }
 
 export function ImportPanel({ portfolioId, flexStored = false }: { portfolioId: string; flexStored?: boolean }) {
-  // The Reference Rate showcase (metron-ops#120) is a live, real-tenant-visible read-only
+  // The Showcase Portfolio (metron-ops#120) is a live, real-tenant-visible read-only
   // mirror (metron#162) — the API 403s every import/sync route for it regardless of caller
   // tenant. Hide the (dead-end) import/connect controls here rather than let a real user
   // click one and get a raw API error.

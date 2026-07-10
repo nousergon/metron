@@ -175,7 +175,7 @@ export function AccountPanel({
   /** Render the per-account session Day % (live valuation mode only, metron-ops#153). */
   showDay?: boolean;
 }) {
-  // The Reference Rate showcase (metron-ops#120) is a live, real-tenant-visible read-only
+  // The Showcase Portfolio (metron-ops#120) is a live, real-tenant-visible read-only
   // mirror (metron#162) — the API 403s account delete for it regardless of caller tenant
   // (api/main.py::_demo_read_only). Only relevant in `deletable` mode (the Overview); the
   // Holdings filter view never renders a delete affordance in the first place.
