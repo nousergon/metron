@@ -900,7 +900,7 @@ def list_portfolios(
     session: Session = Depends(get_session),
 ) -> list[models.Portfolio]:
     rows = list(session.scalars(select(models.Portfolio).where(models.Portfolio.tenant_id == tenant_id)).all())
-    # The Reference Rate showcase is visible on every real tenant's dashboard (not just the
+    # The Showcase Portfolio is visible on every real tenant's dashboard (not just the
     # isolated demo tenant, which already owns it and gets it via the query above) — lets a
     # prospect see live product behavior before linking their own accounts. Fail-soft: on a
     # DB where the daily sync hasn't run yet, `session.get` returns None and we just omit it.
@@ -935,7 +935,7 @@ def _owned_portfolio(
     """Resolve a portfolio the caller's tenant owns, or 404 (never leak cross-tenant
     existence — a portfolio of another tenant is indistinguishable from a missing one).
 
-    ONE explicit exception: the fixed Reference Rate showcase (demo.REFERENCE_PORTFOLIO_ID)
+    ONE explicit exception: the fixed Showcase Portfolio (demo.REFERENCE_PORTFOLIO_ID)
     resolves for ANY caller tenant, read-only — it's designed to be visible on every real
     user's dashboard (see list_portfolios). This is a single named-constant carve-out, not
     a general cross-tenant widening; writes to it are still refused regardless of the
@@ -956,7 +956,7 @@ def _owned_portfolio(
     # is actually looking AND has the intraday overlay enabled. Every authenticated
     # portfolio request flows through this dependency, making it the one natural
     # chokepoint for "Metron is open". Keyed by the portfolio's OWN tenant_id (not the
-    # caller's) — for the Reference Rate carve-out above those differ, and every other
+    # caller's) — for the Showcase Portfolio carve-out above those differ, and every other
     # tenant-scoped lookup in this file (preferences, snaptrade exclusions, ...) already
     # keys off portfolio.tenant_id for exactly this reason.
     data_spine.touch_ui_heartbeat(session=session, tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id)

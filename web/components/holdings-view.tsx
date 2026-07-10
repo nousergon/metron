@@ -21,6 +21,7 @@ import { TypeFilterChips } from "@/components/holdings-type-filter";
 import { AccountScopeChip } from "@/components/account-scope-chip";
 import { ColumnPresetControl, DEFAULT_VISIBLE_GROUPS } from "@/components/holdings-column-presets";
 import { type ColumnBand } from "@/components/holdings-table";
+import { HoldingsWhatIfPanel } from "@/components/holdings-whatif-panel";
 import { saveHoldingsViewAction } from "@/app/portfolios/[id]/actions";
 import type { Account, Holding, ValuationMedians } from "@/lib/api";
 
@@ -244,6 +245,7 @@ export function HoldingsView({
         </div>
       </div>
       <TypeFilterChips securityTypes={securityTypes} hidden={hiddenTypes} onToggle={toggleType} />
+      {priced && filtered.length > 0 ? <HoldingsWhatIfPanel holdings={filtered} /> : null}
       {filtered.length === 0 ? (
         <p className="rounded-lg border border-line bg-surface px-4 py-3 text-sm text-muted">
           All instrument types are hidden — re-enable a type chip above to see holdings.

@@ -252,7 +252,7 @@ def test_daily_refresh_skips_broker_sync_for_reference_rate_portfolio(db_session
     tenant = models.Tenant(name="ref")
     db_session.add(tenant)
     db_session.flush()
-    db_session.add(models.Portfolio(id=REFERENCE_PORTFOLIO_ID, tenant_id=tenant.id, name="Reference Rate"))
+    db_session.add(models.Portfolio(id=REFERENCE_PORTFOLIO_ID, tenant_id=tenant.id, name="Showcase Portfolio"))
     db_session.commit()
     result = daily_refresh(db_session, today=date(2024, 6, 3))  # must not raise
     assert result.portfolios == 1

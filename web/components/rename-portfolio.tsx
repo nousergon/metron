@@ -24,7 +24,7 @@ export function RenamePortfolio({ portfolioId, name }: { portfolioId: string; na
     });
   }
 
-  // The Reference Rate showcase (metron-ops#120) is a fixed-name read-only mirror — the
+  // The Showcase Portfolio (metron-ops#120) is a fixed-name read-only mirror — the
   // API 403s the rename route regardless of caller tenant (api/main.py::_demo_read_only).
   if (isReferencePortfolio(portfolioId)) {
     return (

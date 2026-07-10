@@ -1,4 +1,5 @@
-"""Reference-rate connector — the illustrative "Reference Rate" showcase portfolio.
+"""Reference-rate connector — the illustrative "Showcase Portfolio" (metron.name); the
+module/source names below keep the pre-rename "reference" terminology internally.
 
 A ``BrokerConnector`` whose "broker" is an S3 contract artifact
 (``metron/reference_rate.json``) published by the engine's EOD pipeline, rather than a
@@ -41,7 +42,7 @@ SOURCE = "reference"
 REFERENCE_RATE_KEY = "metron/reference_rate.json"
 # The single illustrative account the showcase rolls up into.
 ACCOUNT_NUMBER = "reference"
-ACCOUNT_LABEL = "Reference Rate"
+ACCOUNT_LABEL = "Showcase Portfolio"
 
 
 def _bucket() -> str:
