@@ -14,7 +14,7 @@
 // (llm.PRE_REGISTRATION_EXCLUDED_PROFILE_FIELDS).
 
 import { useState, useTransition } from "react";
-import { saveProfileAction, type ActionResult } from "@/app/portfolios/[id]/advisor/profile/actions";
+import { saveProfileAction, type ActionResult } from "@/app/portfolios/[id]/intelligence/profile/actions";
 import type { AdvisorProfile } from "@/lib/api";
 
 const FIELD = "block text-sm";

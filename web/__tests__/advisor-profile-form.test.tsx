@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   saveProfileAction: vi.fn(async () => ({ ok: true, message: "Saved." })),
 }));
 
-vi.mock("@/app/portfolios/[id]/advisor/profile/actions", () => ({
+vi.mock("@/app/portfolios/[id]/intelligence/profile/actions", () => ({
   saveProfileAction: mocks.saveProfileAction,
 }));
 

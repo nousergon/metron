@@ -14,8 +14,8 @@ export type NavPage = { label: string; href: string; feature?: string };
 export type NavFeatureState = { available: boolean; required_tier: string | null };
 
 // Short upsell labels for the lock badge (required_tier key → display). Two exposed tiers
-// now (metron-ops): a beta-excluded feature upsells to the full "AI Advisor" build.
-const TIER_LABEL: Record<string, string> = { personal: "AI Advisor" };
+// now (metron-ops): a beta-excluded feature upsells to the full "Intelligence" build.
+const TIER_LABEL: Record<string, string> = { personal: "Intelligence" };
 
 // Pages that need the market-data feed to function — HIDDEN (not shown locked/empty) in
 // the no-feed beta (metron-ops#53). They reappear when the feed entitlement is on.

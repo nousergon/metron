@@ -4,7 +4,7 @@
 // the Server Action; revalidation repaints the fresh commentary.
 
 import { useState, useTransition } from "react";
-import { generateAdvisorAction, type ActionResult } from "@/app/portfolios/[id]/advisor/actions";
+import { generateAdvisorAction, type ActionResult } from "@/app/portfolios/[id]/intelligence/actions";
 
 export function GenerateAdvisor({ portfolioId, label }: { portfolioId: string; label: string }) {
   const [pending, start] = useTransition();
