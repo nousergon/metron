@@ -1,5 +1,7 @@
 /node_modules
 /.next
+# /dash variant build output (METRON_WEB_BASE_PATH=/dash — see next.config.mjs).
+/.next-dash
 /out
 /build
 next-env.d.ts
