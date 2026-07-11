@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getPortfolios, MetronApiError, type Portfolio } from "@/lib/api";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 import { Empty } from "@/components/ui";
 import { CreatePortfolio } from "@/components/create-portfolio";
 import { isReferencePortfolio } from "@/lib/demo";
@@ -8,11 +8,11 @@ import { isReferencePortfolio } from "@/lib/demo";
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const tenantId = await requireTenantId(); // redirects to /login when signed out
+  const apiAuth = await requireApiAuth(); // redirects to /login when signed out
 
   let portfolios: Portfolio[] = [];
   try {
-    portfolios = await getPortfolios(tenantId);
+    portfolios = await getPortfolios(apiAuth);
   } catch (e) {
     const detail = e instanceof MetronApiError ? `(${e.status})` : "";
     return <Empty>Couldn&apos;t reach the Metron API {detail}. Is the backend running at METRON_API_URL?</Empty>;

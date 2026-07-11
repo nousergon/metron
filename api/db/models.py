@@ -56,6 +56,14 @@ class User(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     email: Mapped[str] = mapped_column(String(320))
+    # The shared nousergon-auth identity service's stable user.id (metron-ops#179) —
+    # the verified JWT `sub` claim resolves through this column (see
+    # api/services/identity.py). Nullable: rows can predate the shared service until
+    # linked (by email, once) or JIT-provisioned. NOTE: `_sync_additive_columns` adds
+    # the COLUMN to an existing SQLite DB but SQLite's ALTER TABLE cannot add the
+    # unique index — the deploy that ships this runs the one-line CREATE UNIQUE INDEX
+    # (see the cutover PR's deploy checklist); fresh DBs get it from create_all.
+    identity_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")

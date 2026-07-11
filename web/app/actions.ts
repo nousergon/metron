@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createPortfolio } from "@/lib/api";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export type CreateResult = { ok: false; message: string };
 
@@ -12,10 +12,10 @@ export async function createPortfolioAction(formData: FormData): Promise<CreateR
   const name = String(formData.get("name") ?? "").trim();
   if (!name) return { ok: false, message: "Give your portfolio a name." };
 
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
   let id: string;
   try {
-    id = (await createPortfolio(tenantId, name)).id;
+    id = (await createPortfolio(apiAuth, name)).id;
   } catch {
     return { ok: false, message: "Couldn't create the portfolio — is the backend reachable?" };
   }

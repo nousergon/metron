@@ -5,14 +5,14 @@
 
 import { revalidatePath } from "next/cache";
 import { putAdvisorProfile, MetronApiError, type AdvisorProfile } from "@/lib/api";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export type ActionResult = { ok: boolean; message: string };
 
 export async function saveProfileAction(portfolioId: string, profile: AdvisorProfile): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    await putAdvisorProfile(tenantId, portfolioId, profile);
+    const apiAuth = await requireApiAuth();
+    await putAdvisorProfile(apiAuth, portfolioId, profile);
     revalidatePath(`/portfolios/${portfolioId}/intelligence`);
     revalidatePath(`/portfolios/${portfolioId}/intelligence/profile`);
     return { ok: true, message: "Saved." };

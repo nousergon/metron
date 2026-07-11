@@ -3,7 +3,7 @@ import { getAdvisor, MetronApiError } from "@/lib/api";
 import { money } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { GenerateAdvisor } from "@/components/generate-advisor";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -14,11 +14,11 @@ const FLAG_LABEL: Record<string, string> = {
 
 export default async function AdvisorPage({ params }: { params: { id: string } }) {
   const { id } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
   let view;
   try {
-    view = await getAdvisor(tenantId, id);
+    view = await getAdvisor(apiAuth, id);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       // Either the portfolio is missing or the Intelligence plugin isn't installed on this

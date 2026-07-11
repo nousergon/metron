@@ -5,7 +5,7 @@ import { AsOfClose } from "@/components/as-of-close";
 import { TierSimulator } from "@/components/tier-simulator";
 import { DiagnosticsCard } from "@/components/diagnostics-card";
 import { featureEntitlement, loadEntitlements, toFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
 export const dynamic = "force-dynamic";
@@ -22,16 +22,16 @@ export default async function DiagnosticsPage({
   searchParams: { account_id?: string | string[] };
 }) {
   const { id } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
   // URL selection wins; with none, the saved panel selection is applied (redirect).
-  const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}/diagnostics`, searchParams.account_id);
+  const accountIds = await resolveAccountIds(apiAuth, id, `/portfolios/${id}/diagnostics`, searchParams.account_id);
   const navQuery = acctParams(accountIds);
 
   // Entitlement gate — `concentration` is in every tier today, but a direct navigation
   // on a future packaging change still gets an honest Locked page, mirroring
   // Attribution. Owner-simulator preview honored via cookies.
-  const entitlements = await loadEntitlements(tenantId);
+  const entitlements = await loadEntitlements(apiAuth);
   const featureStates = toFeatureStates(entitlements);
   const ent = featureEntitlement(entitlements, "concentration");
   if (ent && !ent.available) {
@@ -46,7 +46,7 @@ export default async function DiagnosticsPage({
 
   let d;
   try {
-    d = await getDiagnostics(tenantId, id, accountIds);
+    d = await getDiagnostics(apiAuth, id, accountIds);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Portfolio not found.</Empty>;

@@ -4,7 +4,7 @@ import { Empty, Section, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { RefreshCalendar } from "@/components/refresh-calendar";
 import { loadEntitlements, toFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -17,11 +17,11 @@ function eventType(kind: string): string {
 
 export default async function CalendarPage({ params }: { params: { id: string } }) {
   const { id } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
   let cal;
   try {
-    cal = await getCalendar(tenantId, id);
+    cal = await getCalendar(apiAuth, id);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Portfolio not found.</Empty>;
@@ -29,7 +29,7 @@ export default async function CalendarPage({ params }: { params: { id: string } 
     return <Empty>Couldn&apos;t load the calendar. Is the backend running?</Empty>;
   }
 
-  const entitlements = await loadEntitlements(tenantId);
+  const entitlements = await loadEntitlements(apiAuth);
 
   return (
     <div>

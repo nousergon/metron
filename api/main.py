@@ -20,7 +20,7 @@ from krepis.logging import setup_logging
 from api.config import settings
 from api.db.session import create_all
 from api.plugins import active_plugins
-from api.routers import events, indices, macro, meta, portfolios, research_intel
+from api.routers import events, indices, macro, me, meta, portfolios, research_intel
 from api.services.demo import DEMO_TENANT_ID, REFERENCE_PORTFOLIO_ID
 
 # Structured logging + flow-doctor. Passing a flow-doctor.yaml attaches a
@@ -90,11 +90,12 @@ app.add_middleware(
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 # The Showcase Portfolio is now readable by every real tenant (not just the demo
-# tenant that owns it — see api/routers/portfolios.py::_owned_portfolio), so a real
-# tenant's own X-Tenant-Id header will never match DEMO_TENANT_ID below. This path-based
-# check is the second, independent leg of the same read-only guard: it keys off the fixed
-# portfolio id instead of the caller's tenant, so it protects the showcase regardless of
-# who's asking. Every mutating route in api/routers/portfolios.py is `/portfolios/{id}/...`
+# tenant that owns it — see api/routers/portfolios.py::_owned_portfolio). Real tenants
+# authenticate with a bearer JWT and send no X-Tenant-Id at all (metron-ops#179) — only
+# the signup-free demo still sends it, so the header leg below still catches every demo
+# mutation. This path-based check is the second, independent leg of the same read-only
+# guard: it keys off the fixed portfolio id instead of the caller's tenant, so it
+# protects the showcase regardless of who's asking. Every mutating route in api/routers/portfolios.py is `/portfolios/{id}/...`
 # with no extra prefix, so a plain anchored match against the fixed id is reliable without
 # needing real path-param parsing (unavailable at this layer, before routing).
 _REFERENCE_PORTFOLIO_PATH = re.compile(rf"^/portfolios/{re.escape(str(REFERENCE_PORTFOLIO_ID))}(?:/|$)")
@@ -116,7 +117,7 @@ async def _demo_read_only(request: Request, call_next):
                 if uuid.UUID(raw) == DEMO_TENANT_ID:
                     return JSONResponse(status_code=403, content={"detail": "The demo portfolio is read-only."})
             except ValueError:
-                pass  # malformed header → let the route's _tenant_id dependency 400 it
+                pass  # malformed header → the route's tenant dependency 401s it
     return await call_next(request)
 
 
@@ -137,6 +138,7 @@ def health() -> dict:
     return {"status": "ok", "env": settings.env}
 
 
+app.include_router(me.router)
 app.include_router(meta.router)
 app.include_router(portfolios.router)
 app.include_router(macro.router)
