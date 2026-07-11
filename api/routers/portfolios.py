@@ -1,7 +1,9 @@
 """Portfolios router — CRUD + file ingestion + ledger-derived analytics (PH1).
 
-Tenant resolution is stubbed (``X-Tenant-Id`` header) until auth lands in PH4; the
-real product derives the tenant from the authenticated session.
+Tenant resolution is authenticated (PH4, metron-ops#179): a bearer JWT from the
+shared nousergon-auth identity service resolves to the caller's tenant via
+``api.services.identity.require_tenant_id`` (the read-only demo tenant is the one
+header-based carve-out — see that module).
 
 PH1 adds the ingestion round-trip the free beta is built on. Three sources land
 through one canonical pipeline + persistence bridge: ``POST …/import/csv`` and
@@ -54,6 +56,7 @@ from api.services import (
 )
 from api.services import diagnostics as diagnostics_service
 from api.services import fx as fx_service
+from api.services import identity as identity_service
 from api.services import prices as price_service
 from api.services import (
     sectors as sectors_service,
@@ -823,14 +826,10 @@ class FlexImportIn(BaseModel):
     query_id: str
 
 
-def _tenant_id(x_tenant_id: str | None = Header(default=None)) -> uuid.UUID:
-    # Placeholder for the authenticated tenant (PH4 replaces this with the session).
-    if not x_tenant_id:
-        raise HTTPException(status_code=401, detail="X-Tenant-Id header required (auth lands in PH4)")
-    try:
-        return uuid.UUID(x_tenant_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail="X-Tenant-Id must be a UUID") from e
+# The authenticated tenant (PH4, metron-ops#179) — bearer-JWT verification against the
+# shared nousergon-auth service + the read-only demo carve-out live in
+# api/services/identity.py; aliased so the router's Depends sites read naturally.
+_tenant_id = identity_service.require_tenant_id
 
 
 def _effective_entitlement(

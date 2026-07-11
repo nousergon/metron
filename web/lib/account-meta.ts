@@ -6,30 +6,32 @@
 // account-tag table) should read through `loadAccountsMeta` instead of `getAccounts`.
 
 import { unstable_cache } from "next/cache";
-import { getAccountsMeta, type AccountMeta } from "@/lib/api";
+import { cacheIdentity, getAccountsMeta, type AccountMeta } from "@/lib/api";
 
 /** Mirrors ENTITLEMENTS_REVALIDATE_SECONDS — a tag edit can take up to this long to
  *  show elsewhere unless the mutating action calls `revalidateTag(accountsMetaTag(...))`
  *  (the account-tag/delete/restore actions in app/portfolios/[id]/actions.ts all do). */
 export const ACCOUNTS_META_REVALIDATE_SECONDS = 60;
 
-/** Cache tag for one portfolio's account metadata, scoped by tenant too (tenant_id is
+/** Cache tag for one portfolio's account metadata, scoped by identity too (the tenant is
  *  not derivable from portfolio_id alone, and cache isolation must not rely on it being
- *  so). Mutating actions call `revalidateTag(accountsMetaTag(tenantId, portfolioId))`. */
-export const accountsMetaTag = (tenantId: string, portfolioId: string) =>
-  `accounts-meta:${tenantId}:${portfolioId}`;
+ *  so). Mutating actions call `revalidateTag(accountsMetaTag(apiAuth, portfolioId))`.
+ *  Keyed on the STABLE identity behind the credential (see `cacheIdentity` in lib/api) —
+ *  never the short-lived JWT itself, which rotates between the read and the mutation. */
+export const accountsMetaTag = (apiAuth: string, portfolioId: string) =>
+  `accounts-meta:${cacheIdentity(apiAuth)}:${portfolioId}`;
 
 /** Resolve account selector metadata for the current request (best-effort — null on
  *  backend error, so a transient failure degrades to "no accounts" rather than a hard
  *  page error). Read through a short-TTL `unstable_cache` keyed on EXPLICIT
- *  [tenantId, portfolioId] keyParts (not Next's header-based fetch keying — the same
- *  cross-tenant-footgun avoidance as loadEntitlements). */
-export async function loadAccountsMeta(tenantId: string, portfolioId: string): Promise<AccountMeta[] | null> {
+ *  [cacheIdentity(apiAuth), portfolioId] keyParts (not Next's header-based fetch keying —
+ *  the same cross-tenant-footgun avoidance as loadEntitlements). */
+export async function loadAccountsMeta(apiAuth: string, portfolioId: string): Promise<AccountMeta[] | null> {
   try {
     const read = unstable_cache(
-      () => getAccountsMeta(tenantId, portfolioId),
-      ["accounts-meta", tenantId, portfolioId],
-      { revalidate: ACCOUNTS_META_REVALIDATE_SECONDS, tags: [accountsMetaTag(tenantId, portfolioId)] },
+      () => getAccountsMeta(apiAuth, portfolioId),
+      ["accounts-meta", cacheIdentity(apiAuth), portfolioId],
+      { revalidate: ACCOUNTS_META_REVALIDATE_SECONDS, tags: [accountsMetaTag(apiAuth, portfolioId)] },
     );
     return await read();
   } catch {

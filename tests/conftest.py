@@ -8,9 +8,12 @@ worker thread — otherwise each thread would get its own empty database.
 
 from __future__ import annotations
 
+import uuid
+
 import boto3
 import botocore.exceptions
 import pytest
+from fastapi import Header, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -19,7 +22,7 @@ from sqlalchemy.pool import StaticPool
 from api.db.session import Base, get_session
 from api.main import app
 from api.services import attractiveness as attractiveness_service
-from api.services import compute_cache
+from api.services import compute_cache, identity
 
 
 @pytest.fixture(autouse=True)
@@ -87,8 +90,46 @@ def db_session(session_factory):
         session.close()
 
 
+def _test_tenant_id(x_tenant_id: str | None = Header(default=None)) -> uuid.UUID:
+    """TEST-ONLY tenant resolver: trust the X-Tenant-Id header, exactly like the
+    pre-auth stub the shared-identity cutover (metron-ops#179) removed from prod.
+
+    Feature tests aren't auth tests — they exercise portfolio/analytics behavior across
+    arbitrary tenants, so they override ``identity.require_tenant_id`` with this stub
+    (the standard FastAPI seam for exactly this) instead of minting a signed JWT + User
+    row per request. The REAL bearer-JWT path — Ed25519 signature, exp/iss/aud, the
+    identity→tenant resolution ladder, and the demo X-Tenant-Id carve-out — has
+    dedicated end-to-end coverage in tests/test_auth_jwt.py via ``raw_client``.
+    """
+    if not x_tenant_id:
+        raise HTTPException(status_code=401, detail="X-Tenant-Id header required (test stub)")
+    try:
+        return uuid.UUID(x_tenant_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="X-Tenant-Id must be a UUID") from e
+
+
 @pytest.fixture()
 def client(session_factory):
+    def _override():
+        session = session_factory()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[get_session] = _override
+    app.dependency_overrides[identity.require_tenant_id] = _test_tenant_id
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def raw_client(session_factory):
+    """A client with NO auth override — requests run the real
+    ``identity.require_tenant_id`` path (bearer-JWT verification + demo carve-out).
+    Used by tests/test_auth_jwt.py; only the DB session is swapped for the test DB."""
     def _override():
         session = session_factory()
         try:

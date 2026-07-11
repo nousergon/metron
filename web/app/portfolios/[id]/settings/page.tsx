@@ -3,7 +3,7 @@ import { Empty, Section, Table } from "@/components/ui";
 import { AccountTagRow, BaseCurrencyForm, ExcludedAccountRow, PreferencesForm } from "@/components/settings-forms";
 import { navFeatureStates } from "@/lib/entitlements";
 import { loadAccountsMeta } from "@/lib/account-meta";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 import { ImportPanel } from "@/components/import-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -12,16 +12,16 @@ export const dynamic = "force-dynamic";
 
 export default async function SettingsPage({ params }: { params: { id: string } }) {
   const { id } = params;
-  const tenantId = await requireTenantId();
-  const featureStates = await navFeatureStates(tenantId);
+  const apiAuth = await requireApiAuth();
+  const featureStates = await navFeatureStates(apiAuth);
 
   let portfolio, accountsMeta, preferences: Preferences, excluded: ExcludedAccount[];
   try {
     [portfolio, accountsMeta, preferences, excluded] = await Promise.all([
-      getPortfolio(tenantId, id),
-      loadAccountsMeta(tenantId, id),
-      getPreferences(tenantId, id),
-      getExcludedAccounts(tenantId, id).then((r) => r.excluded),
+      getPortfolio(apiAuth, id),
+      loadAccountsMeta(apiAuth, id),
+      getPreferences(apiAuth, id),
+      getExcludedAccounts(apiAuth, id).then((r) => r.excluded),
     ]);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
@@ -36,7 +36,7 @@ export default async function SettingsPage({ params }: { params: { id: string } 
 
   // Connector capabilities (stored IBKR Flex creds → one-click "Sync IBKR"). Best-effort:
   // a meta failure just falls back to the BYO-token form (metron-ops#82).
-  const flexStored = await getMeta(tenantId)
+  const flexStored = await getMeta(apiAuth)
     .then((m) => m.connectors.flex_stored)
     .catch(() => false);
 

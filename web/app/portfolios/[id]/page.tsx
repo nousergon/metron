@@ -10,7 +10,7 @@ import { SessionPanel } from "@/components/session-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { WatchlistCompareTable } from "@/components/watchlist-compare-table";
 import { loadEntitlements, navFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
 export const dynamic = "force-dynamic";
@@ -52,7 +52,7 @@ export default async function HoldingsPage({
   searchParams: { account_id?: string | string[]; combine?: string; val?: string };
 }) {
   const { id } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
   // Phase A — everything independent of the resolved account selection, in parallel.
   // Holdings defaults to ALL accounts (metron-ops#113): with no explicit ?account_id= the
@@ -60,11 +60,11 @@ export default async function HoldingsPage({
   // panel still filters within the session via the URL. The saved view (metron-ops#114)
   // hydrates the toolbar so grouping / bands / combine survive reloads.
   const [featureStates, entitlements, accountIds, savedView, live] = await Promise.all([
-    navFeatureStates(tenantId),
-    loadEntitlements(tenantId),
-    resolveAccountIds(tenantId, id, `/portfolios/${id}`, searchParams.account_id, { applySaved: false }),
-    getHoldingsView(tenantId, id).catch((): HoldingsViewPrefs | null => null),
-    getIntradayStatus(tenantId, id).catch((): IntradayStatus | null => null),
+    navFeatureStates(apiAuth),
+    loadEntitlements(apiAuth),
+    resolveAccountIds(apiAuth, id, `/portfolios/${id}`, searchParams.account_id, { applySaved: false }),
+    getHoldingsView(apiAuth, id).catch((): HoldingsViewPrefs | null => null),
+    getIntradayStatus(apiAuth, id).catch((): IntradayStatus | null => null),
   ]);
 
   // Valuation regime (metron-ops#153). Holdings is the ONLY surface with a live mode; the
@@ -107,7 +107,7 @@ export default async function HoldingsPage({
   // (accounts / holdings) stream below. Valued per the resolved regime.
   let summary: Summary;
   try {
-    summary = await getSummary(tenantId, id, accountIds, valuation);
+    summary = await getSummary(apiAuth, id, accountIds, valuation);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Portfolio not found.</Empty>;
@@ -138,16 +138,16 @@ export default async function HoldingsPage({
           session figures anywhere on the page. */}
       {valuation === "live" && priced && live ? (
         <Suspense fallback={<SectionSkeleton rows={2} />}>
-          <SessionSection tenantId={tenantId} id={id} ccy={ccy} accountIds={accountIds} status={live} />
+          <SessionSection apiAuth={apiAuth} id={id} ccy={ccy} accountIds={accountIds} status={live} />
         </Suspense>
       ) : null}
 
       <Suspense fallback={<SectionSkeleton rows={6} />}>
-        <HoldingsSection tenantId={tenantId} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} savedView={savedView} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} />
+        <HoldingsSection apiAuth={apiAuth} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} savedView={savedView} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} />
       </Suspense>
 
       <Suspense fallback={<SectionSkeleton rows={3} />}>
-        <WatchlistSection tenantId={tenantId} id={id} ccy={ccy} />
+        <WatchlistSection apiAuth={apiAuth} id={id} ccy={ccy} />
       </Suspense>
     </div>
   );
@@ -158,26 +158,26 @@ export default async function HoldingsPage({
 /** The live-session panel's data (scoped like the table): the covered-basis Today
  *  decomposition + the drift history, joined with the coverage status fetched upstream. */
 async function SessionSection({
-  tenantId, id, ccy, accountIds, status,
+  apiAuth, id, ccy, accountIds, status,
 }: {
-  tenantId: string; id: string; ccy: string; accountIds: string[]; status: IntradayStatus;
+  apiAuth: string; id: string; ccy: string; accountIds: string[]; status: IntradayStatus;
 }) {
   const [today, legs] = await Promise.all([
-    getToday(tenantId, id, accountIds).catch((): Today | null => null),
-    getIntradayLegs(tenantId, id).catch((): IntradayLegHistory | null => null),
+    getToday(apiAuth, id, accountIds).catch((): Today | null => null),
+    getIntradayLegs(apiAuth, id).catch((): IntradayLegHistory | null => null),
   ]);
   if (!today) return null;
   return <SessionPanel status={status} today={today} legs={legs} ccy={ccy} />;
 }
 
 async function HoldingsSection({
-  tenantId, id, accountIds, ccy, priced, entitlements, byAccount, savedView, valuation, liveAvailable, sessionState,
+  apiAuth, id, accountIds, ccy, priced, entitlements, byAccount, savedView, valuation, liveAvailable, sessionState,
 }: {
-  tenantId: string; id: string; accountIds: string[]; ccy: string; priced: boolean; entitlements: Entitlements | null; byAccount: boolean; savedView: HoldingsViewPrefs | null; valuation: "live" | "settled"; liveAvailable: boolean; sessionState: "live" | "recap" | "closed";
+  apiAuth: string; id: string; accountIds: string[]; ccy: string; priced: boolean; entitlements: Entitlements | null; byAccount: boolean; savedView: HoldingsViewPrefs | null; valuation: "live" | "settled"; liveAvailable: boolean; sessionState: "live" | "recap" | "closed";
 }) {
   let holdings: Holding[];
   try {
-    holdings = await getHoldings(tenantId, id, accountIds, byAccount, valuation);
+    holdings = await getHoldings(apiAuth, id, accountIds, byAccount, valuation);
   } catch {
     return (
       <Section title="Holdings">
@@ -188,8 +188,8 @@ async function HoldingsSection({
   // SP1500-broad sector/country median bands — best-effort + feed-gated. Accounts feed
   // the toolbar scope chip (metron-ops-I156) — the panel moved to the Overview.
   const [medians, accounts] = await Promise.all([
-    getValuationMedians(tenantId, id, accountIds).catch((): ValuationMedians | null => null),
-    getAccounts(tenantId, id).catch(() => null),
+    getValuationMedians(apiAuth, id, accountIds).catch((): ValuationMedians | null => null),
+    getAccounts(apiAuth, id).catch(() => null),
   ]);
   // Provenance-honest header (metron-ops#146/#153): the regime is explicit. Live mode may
   // claim intraday freshness only while the overlay actually applies (post-close the same
@@ -197,7 +197,7 @@ async function HoldingsSection({
   // failed status read, claim the conservative settled state.
   const live: IntradayStatus | null =
     priced && valuation === "live"
-      ? await getIntradayStatus(tenantId, id).catch((): IntradayStatus | null => null)
+      ? await getIntradayStatus(apiAuth, id).catch((): IntradayStatus | null => null)
       : null;
   // The settled as-of date, from the data itself (the freshest priced date on the page —
   // the close date for close-fed rows) — static copy never makes freshness claims
@@ -235,10 +235,10 @@ async function HoldingsSection({
 // Watchlist (metron-ops#42/#121) — a comparison-only table of tracked tickers you don't
 // (necessarily) hold, sortable on the same metrics as the Holdings table above. Always
 // scoped to the whole portfolio (not account-filtered — a watchlist entry has no account).
-async function WatchlistSection({ tenantId, id, ccy }: { tenantId: string; id: string; ccy: string }) {
+async function WatchlistSection({ apiAuth, id, ccy }: { apiAuth: string; id: string; ccy: string }) {
   let entries: WatchlistEntry[];
   try {
-    entries = await getWatchlist(tenantId, id);
+    entries = await getWatchlist(apiAuth, id);
   } catch {
     return null; // best-effort — the Holdings table above already rendered
   }

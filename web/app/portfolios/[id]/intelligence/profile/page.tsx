@@ -2,17 +2,17 @@ import Link from "next/link";
 import { getAdvisorProfile, MetronApiError, type AdvisorProfile } from "@/lib/api";
 import { Empty, Section } from "@/components/ui";
 import { AdvisorProfileForm } from "@/components/advisor-profile-form";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdvisorProfilePage({ params }: { params: { id: string } }) {
   const { id } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
   let profile: AdvisorProfile;
   try {
-    profile = await getAdvisorProfile(tenantId, id);
+    profile = await getAdvisorProfile(apiAuth, id);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Intelligence isn&apos;t available for this portfolio.</Empty>;

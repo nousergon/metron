@@ -8,7 +8,7 @@ import { Empty, Locked, Section, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { TierSimulator } from "@/components/tier-simulator";
 import { featureEntitlement, loadEntitlements, toFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 import { isoDate } from "@/lib/format";
 import Link from "next/link";
 
@@ -39,12 +39,12 @@ function score(a: ResearchIntelAttractiveness): string {
 
 export default async function ResearchIntelPage({ params }: { params: { id: string } }) {
   const { id } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
   // Entitlement gate: research_intel is packaged to the paid Intelligence tier. The nav
   // locks the link off-tier, but a direct navigation reaches here → full-page Locked
   // (and we skip the data fetch). Owner tier-simulator preview honored via cookies.
-  const entitlements = await loadEntitlements(tenantId);
+  const entitlements = await loadEntitlements(apiAuth);
   const featureStates = toFeatureStates(entitlements);
   const ent = featureEntitlement(entitlements, "research_intel");
   if (ent && !ent.available) {
@@ -61,14 +61,14 @@ export default async function ResearchIntelPage({ params }: { params: { id: stri
   // if holdings can't be read — the intel surface degrades, never blanks).
   let tickers: string[] = [];
   try {
-    tickers = (await getHoldings(tenantId, id)).map((h) => h.ticker).filter(Boolean);
+    tickers = (await getHoldings(apiAuth, id)).map((h) => h.ticker).filter(Boolean);
   } catch {
     tickers = [];
   }
 
   let res;
   try {
-    res = await getResearchIntel(tenantId, { tickers });
+    res = await getResearchIntel(apiAuth, { tickers });
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Portfolio not found.</Empty>;

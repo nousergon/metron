@@ -1,11 +1,41 @@
 // Typed server-side client for the Metron FastAPI backend.
 //
 // Types mirror the pydantic response models in api/routers/portfolios.py. Calls run
-// in Server Components / Server Actions (never the browser); the caller resolves the
-// tenant id from the auth session and passes it in, so the X-Tenant-Id header is
-// always server-side and scoped to the signed-in user's workspace.
+// in Server Components / Server Actions (never the browser); the caller resolves an
+// API credential from the auth session (`requireApiAuth` in lib/session.ts) and passes
+// it in as `apiAuth`: a short-lived bearer JWT minted by the shared nousergon-auth
+// identity service (metron-ops#179), or — for the signup-free read-only demo — the
+// fixed demo tenant id, the ONE value the backend still accepts via X-Tenant-Id.
+
+import { DEMO_TENANT_ID } from "@/lib/demo";
 
 const API_URL = process.env.METRON_API_URL ?? "http://localhost:8000";
+
+/** Auth headers for one backend request. The demo credential IS the fixed demo tenant
+ * id (a real session's JWT can never equal it), so this is a deterministic branch on a
+ * named constant — not a fallback: any other non-JWT value would go out as a Bearer
+ * token and be 401'd by the backend, never silently trusted as a tenant id. */
+function authHeaders(apiAuth: string): Record<string, string> {
+  return apiAuth === DEMO_TENANT_ID ? { "X-Tenant-Id": apiAuth } : { Authorization: `Bearer ${apiAuth}` };
+}
+
+/** Stable per-identity cache key for `unstable_cache` keyParts/tags (lib/entitlements,
+ * lib/account-meta). The credential itself is unusable as a key: identity JWTs are
+ * short-lived and re-minted per render, so keying on the raw token would silently
+ * reduce every cached read to a miss and break tag-based revalidation across mints.
+ * The JWT `sub` claim (the shared nousergon-auth user id) is stable for the life of
+ * the account and maps 1:1 to a workspace via users.identity_user_id — so it isolates
+ * tenants exactly. Decode-without-verify is safe here: the token came from the trusted
+ * auth service over TLS and is only used as a cache key; the BACKEND verifies the
+ * signature on every actual data fetch. */
+export function cacheIdentity(apiAuth: string): string {
+  if (apiAuth === DEMO_TENANT_ID) return apiAuth;
+  const payload = apiAuth.split(".")[1];
+  if (!payload) throw new Error("cacheIdentity: credential is neither the demo id nor a JWT");
+  const { sub } = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string };
+  if (!sub) throw new Error("cacheIdentity: identity JWT has no sub claim");
+  return sub;
+}
 
 export type Portfolio = { id: string; name: string; base_currency: string };
 
@@ -357,9 +387,9 @@ export class MetronApiError extends Error {
   }
 }
 
-async function get<T>(tenantId: string, path: string): Promise<T> {
+async function get<T>(apiAuth: string, path: string): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     cache: "no-store",
   });
   if (!res.ok) {
@@ -374,8 +404,12 @@ export function acctParams(accountIds?: string[]): string {
   return "?" + accountIds.map((a) => `account_id=${encodeURIComponent(a)}`).join("&");
 }
 
-export const getPortfolios = (tenantId: string) => get<Portfolio[]>(tenantId, "/portfolios");
-export const getPortfolio = (tenantId: string, id: string) => get<Portfolio>(tenantId, `/portfolios/${id}`);
+/** The authenticated caller's resolved workspace — the deploy-verification chokepoint
+ * for the shared-identity cutover (metron-ops#179). */
+export const getIdentity = (apiAuth: string) => get<{ tenant_id: string }>(apiAuth, "/me");
+
+export const getPortfolios = (apiAuth: string) => get<Portfolio[]>(apiAuth, "/portfolios");
+export const getPortfolio = (apiAuth: string, id: string) => get<Portfolio>(apiAuth, `/portfolios/${id}`);
 
 // Watchlist — tracked tickers (held or not). No live price (un-held tickers have no price
 // source until the Pro feed). On a feed-entitled build carries the SAME Holdings metrics
@@ -443,18 +477,18 @@ export type WatchlistEntry = {
   attractiveness_defensiveness: number | null;
 };
 
-export const getWatchlist = (tenantId: string, id: string) =>
-  get<WatchlistEntry[]>(tenantId, `/portfolios/${id}/watchlist`);
+export const getWatchlist = (apiAuth: string, id: string) =>
+  get<WatchlistEntry[]>(apiAuth, `/portfolios/${id}/watchlist`);
 
 export async function addWatchlist(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   symbol: string,
   note?: string | null,
 ): Promise<WatchlistEntry> {
   const res = await fetch(`${API_URL}/portfolios/${id}/watchlist`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ symbol, note: note ?? null }),
     cache: "no-store",
   });
@@ -470,10 +504,10 @@ export async function addWatchlist(
   return res.json() as Promise<WatchlistEntry>;
 }
 
-export async function removeWatchlist(tenantId: string, id: string, symbol: string): Promise<void> {
+export async function removeWatchlist(apiAuth: string, id: string, symbol: string): Promise<void> {
   const res = await fetch(`${API_URL}/portfolios/${id}/watchlist/${encodeURIComponent(symbol)}`, {
     method: "DELETE",
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     cache: "no-store",
   });
   if (!res.ok) throw new MetronApiError(res.status, `DELETE watchlist → ${res.status}`);
@@ -504,11 +538,11 @@ export type CryptoSummary = {
   reason: string | null;
 };
 
-export const getCrypto = (tenantId: string, id: string) =>
-  get<CryptoSummary>(tenantId, `/portfolios/${id}/crypto`);
+export const getCrypto = (apiAuth: string, id: string) =>
+  get<CryptoSummary>(apiAuth, `/portfolios/${id}/crypto`);
 
 export async function addCryptoAddress(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   chain: string,
   address: string,
@@ -516,7 +550,7 @@ export async function addCryptoAddress(
 ): Promise<CryptoPosition> {
   const res = await fetch(`${API_URL}/portfolios/${id}/crypto/addresses`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ chain, address, label: label ?? null }),
     cache: "no-store",
   });
@@ -532,10 +566,10 @@ export async function addCryptoAddress(
   return res.json() as Promise<CryptoPosition>;
 }
 
-export async function deleteCryptoAddress(tenantId: string, id: string, addressId: string): Promise<void> {
+export async function deleteCryptoAddress(apiAuth: string, id: string, addressId: string): Promise<void> {
   const res = await fetch(`${API_URL}/portfolios/${id}/crypto/addresses/${encodeURIComponent(addressId)}`, {
     method: "DELETE",
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     cache: "no-store",
   });
   if (!res.ok) throw new MetronApiError(res.status, `DELETE crypto address → ${res.status}`);
@@ -543,14 +577,14 @@ export async function deleteCryptoAddress(tenantId: string, id: string, addressI
 
 /** Set (or clear, with an empty label) a user alias for a symbol (metron-ops#47). */
 export async function setSecurityLabel(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   symbol: string,
   label: string | null,
 ): Promise<{ symbol: string; label: string | null }> {
   const res = await fetch(`${API_URL}/portfolios/${id}/securities/${encodeURIComponent(symbol)}/label`, {
     method: "PUT",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ label }),
     cache: "no-store",
   });
@@ -571,14 +605,14 @@ export async function setSecurityLabel(
  * `patch` are changed — omit a key to leave it, pass `null` to clear it (clearing both
  * removes the override). Tenant-scoped; never touches the shared securities reference. */
 export async function setSecurityClassification(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   symbol: string,
   patch: { sector?: string | null; country?: string | null; instrument_type?: string | null },
 ): Promise<{ symbol: string; sector: string | null; country: string | null; instrument_type: string | null }> {
   const res = await fetch(`${API_URL}/portfolios/${id}/securities/${encodeURIComponent(symbol)}/classification`, {
     method: "PUT",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(patch),
     cache: "no-store",
   });
@@ -596,13 +630,13 @@ export async function setSecurityClassification(
 
 /** Update a portfolio's name and/or base currency (PATCH). Empty/no-op rejected (422). */
 export async function updatePortfolio(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   patch: { name?: string; base_currency?: string },
 ): Promise<Portfolio> {
   const res = await fetch(`${API_URL}/portfolios/${id}`, {
     method: "PATCH",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(patch),
     cache: "no-store",
   });
@@ -619,36 +653,36 @@ export async function updatePortfolio(
 }
 
 /** Rename a portfolio (PATCH). Empty names are rejected by the backend (422). */
-export const renamePortfolio = (tenantId: string, id: string, name: string) =>
-  updatePortfolio(tenantId, id, { name });
+export const renamePortfolio = (apiAuth: string, id: string, name: string) =>
+  updatePortfolio(apiAuth, id, { name });
 // The reads below take an optional `accountIds` selection (from the account panel's
 // checkboxes); omitted/empty = whole portfolio. `getAccounts` is always unscoped — it
 // IS the selector, so it lists every account with its own valuation.
 // `valuation` selects the regime (metron-ops#153): omitted/"settled" = official EOD close
 // (the conservative default — Overview and every non-asking consumer); "live" = the
 // Holdings live mode's intraday overlay.
-export const getSummary = (tenantId: string, id: string, accountIds?: string[], valuation?: "live" | "settled") => {
+export const getSummary = (apiAuth: string, id: string, accountIds?: string[], valuation?: "live" | "settled") => {
   const base = acctParams(accountIds);
   const q = valuation === "live" ? (base ? `${base}&valuation=live` : "?valuation=live") : base;
-  return get<Summary>(tenantId, `/portfolios/${id}/summary${q}`);
+  return get<Summary>(apiAuth, `/portfolios/${id}/summary${q}`);
 };
 // `byAccount` requests the UNCOMBINED view — one row per (account, ticker), each tagged
 // with account_id/account_label (metron-ops#114). Default consolidates per ticker.
 // `valuation` (metron-ops#153): omitted/"settled" = official EOD close (session day legs
 // null); "live" = the intraday overlay + session day legs, feed/toggle permitting.
-export const getHoldings = (tenantId: string, id: string, accountIds?: string[], byAccount?: boolean, valuation?: "live" | "settled") => {
+export const getHoldings = (apiAuth: string, id: string, accountIds?: string[], byAccount?: boolean, valuation?: "live" | "settled") => {
   const parts: string[] = [];
   const base = acctParams(accountIds);
   if (base) parts.push(base.slice(1));
   if (byAccount) parts.push("by_account=1");
   if (valuation === "live") parts.push("valuation=live");
   const q = parts.length ? `?${parts.join("&")}` : "";
-  return get<Holding[]>(tenantId, `/portfolios/${id}/holdings${q}`);
+  return get<Holding[]>(apiAuth, `/portfolios/${id}/holdings${q}`);
 };
 // SP1500-broad sector & country median multiples for the Holdings "by sector → country"
 // bands, restricted to the sectors/countries this portfolio holds. Empty off-feed.
-export const getValuationMedians = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<ValuationMedians>(tenantId, `/portfolios/${id}/valuation-medians${acctParams(accountIds)}`);
+export const getValuationMedians = (apiAuth: string, id: string, accountIds?: string[]) =>
+  get<ValuationMedians>(apiAuth, `/portfolios/${id}/valuation-medians${acctParams(accountIds)}`);
 // account selection + the taxable-only flag (the Tax/Activity views default taxable —
 // tax-advantaged accounts have no taxable events; metron-ops#48).
 function activityQuery(accountIds?: string[], taxableOnly?: boolean): string {
@@ -657,25 +691,25 @@ function activityQuery(accountIds?: string[], taxableOnly?: boolean): string {
   return parts.length ? "?" + parts.join("&") : "";
 }
 
-export const getIncome = (tenantId: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>
-  get<IncomeYear[]>(tenantId, `/portfolios/${id}/income${activityQuery(accountIds, taxableOnly)}`);
-export const getAccounts = (tenantId: string, id: string) => get<Account[]>(tenantId, `/portfolios/${id}/accounts`);
+export const getIncome = (apiAuth: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>
+  get<IncomeYear[]>(apiAuth, `/portfolios/${id}/income${activityQuery(accountIds, taxableOnly)}`);
+export const getAccounts = (apiAuth: string, id: string) => get<Account[]>(apiAuth, `/portfolios/${id}/accounts`);
 // Cacheable selector metadata only, no live valuation (metron-ops#91 Part 2) — read this
 // through lib/account-meta.ts's short-TTL cache, not directly, wherever caching matters.
-export const getAccountsMeta = (tenantId: string, id: string) =>
-  get<AccountMeta[]>(tenantId, `/portfolios/${id}/accounts/meta`);
-export const getTransactions = (tenantId: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>
-  get<Transaction[]>(tenantId, `/portfolios/${id}/transactions${activityQuery(accountIds, taxableOnly)}`);
-export const getRealized = (tenantId: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>
-  get<RealizedLot[]>(tenantId, `/portfolios/${id}/realized${activityQuery(accountIds, taxableOnly)}`);
-export const getAccountDetail = (tenantId: string, id: string, accountId: string) =>
-  get<AccountDetail>(tenantId, `/portfolios/${id}/accounts/${accountId}`);
-export const getPerformance = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<Performance>(tenantId, `/portfolios/${id}/performance${acctParams(accountIds)}`);
-export const getPerformanceTiles = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<PeriodTiles>(tenantId, `/portfolios/${id}/performance/tiles${acctParams(accountIds)}`);
-export const getHoldingsPerformanceSeries = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<HoldingsPerfSeries>(tenantId, `/portfolios/${id}/holdings/performance-series${acctParams(accountIds)}`);
+export const getAccountsMeta = (apiAuth: string, id: string) =>
+  get<AccountMeta[]>(apiAuth, `/portfolios/${id}/accounts/meta`);
+export const getTransactions = (apiAuth: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>
+  get<Transaction[]>(apiAuth, `/portfolios/${id}/transactions${activityQuery(accountIds, taxableOnly)}`);
+export const getRealized = (apiAuth: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>
+  get<RealizedLot[]>(apiAuth, `/portfolios/${id}/realized${activityQuery(accountIds, taxableOnly)}`);
+export const getAccountDetail = (apiAuth: string, id: string, accountId: string) =>
+  get<AccountDetail>(apiAuth, `/portfolios/${id}/accounts/${accountId}`);
+export const getPerformance = (apiAuth: string, id: string, accountIds?: string[]) =>
+  get<Performance>(apiAuth, `/portfolios/${id}/performance${acctParams(accountIds)}`);
+export const getPerformanceTiles = (apiAuth: string, id: string, accountIds?: string[]) =>
+  get<PeriodTiles>(apiAuth, `/portfolios/${id}/performance/tiles${acctParams(accountIds)}`);
+export const getHoldingsPerformanceSeries = (apiAuth: string, id: string, accountIds?: string[]) =>
+  get<HoldingsPerfSeries>(apiAuth, `/portfolios/${id}/holdings/performance-series${acctParams(accountIds)}`);
 
 export type Risk = {
   computable: boolean;
@@ -694,8 +728,8 @@ export type Risk = {
   factor_pct_contrib: Record<string, number>;
 };
 
-export const getRisk = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<Risk>(tenantId, `/portfolios/${id}/risk${acctParams(accountIds)}`);
+export const getRisk = (apiAuth: string, id: string, accountIds?: string[]) =>
+  get<Risk>(apiAuth, `/portfolios/${id}/risk${acctParams(accountIds)}`);
 
 export type TaxLot = {
   ticker: string;
@@ -729,8 +763,8 @@ export type Tax = {
   lots: TaxLot[];
 };
 
-export const getTax = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<Tax>(tenantId, `/portfolios/${id}/tax${acctParams(accountIds)}`);
+export const getTax = (apiAuth: string, id: string, accountIds?: string[]) =>
+  get<Tax>(apiAuth, `/portfolios/${id}/tax${acctParams(accountIds)}`);
 
 export type Tearsheet = {
   ticker: string;
@@ -849,8 +883,8 @@ export type Comp = {
   is_self: boolean;
 };
 
-export const getTearsheet = (tenantId: string, id: string, ticker: string) =>
-  get<Tearsheet>(tenantId, `/portfolios/${id}/tearsheet/${encodeURIComponent(ticker)}`);
+export const getTearsheet = (apiAuth: string, id: string, ticker: string) =>
+  get<Tearsheet>(apiAuth, `/portfolios/${id}/tearsheet/${encodeURIComponent(ticker)}`);
 
 export type SectorEffect = {
   sector: string;
@@ -882,8 +916,8 @@ export type Attribution = {
   sectors: SectorEffect[];
 };
 
-export const getAttribution = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<Attribution>(tenantId, `/portfolios/${id}/attribution${acctParams(accountIds)}`);
+export const getAttribution = (apiAuth: string, id: string, accountIds?: string[]) =>
+  get<Attribution>(apiAuth, `/portfolios/${id}/attribution${acctParams(accountIds)}`);
 
 // Concentration & diversification diagnostics (metron-ops-I167) — deterministic
 // portfolio-structure FACTS on the settled context. Types mirror DiagnosticsOut.
@@ -938,8 +972,8 @@ export type Diagnostics = {
   target_drift: TargetDriftRow[] | null;
 };
 
-export const getDiagnostics = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<Diagnostics>(tenantId, `/portfolios/${id}/diagnostics${acctParams(accountIds)}`);
+export const getDiagnostics = (apiAuth: string, id: string, accountIds?: string[]) =>
+  get<Diagnostics>(apiAuth, `/portfolios/${id}/diagnostics${acctParams(accountIds)}`);
 
 export type MacroPoint = { obs_date: string; value: number };
 
@@ -965,8 +999,8 @@ export type Macro = {
 // Macro is global market data; the tenant header is sent for client consistency but
 // the endpoint ignores it. `full` requests the deep per-indicator history for the Macro
 // detail-page charts (~1y); the default lean window powers the Overview strip.
-export const getMacro = (tenantId: string, opts?: { full?: boolean }) =>
-  get<Macro>(tenantId, `/macro${opts?.full ? "?full=true" : ""}`);
+export const getMacro = (apiAuth: string, opts?: { full?: boolean }) =>
+  get<Macro>(apiAuth, `/macro${opts?.full ? "?full=true" : ""}`);
 
 // ── Research intel (neutral market intel from crucible-research; paid AI-Advisor tier) ──
 // EPIC config#1499 Phase 1 / metron-ops#117. Global, read-only intel: regime + narrative,
@@ -1013,9 +1047,9 @@ export type ResearchIntel = {
 };
 
 // `tickers` scopes the attractiveness map to the caller's holdings (empty ⇒ full universe).
-export const getResearchIntel = (tenantId: string, opts?: { tickers?: string[] }) => {
+export const getResearchIntel = (apiAuth: string, opts?: { tickers?: string[] }) => {
   const q = opts?.tickers && opts.tickers.length > 0 ? `?tickers=${encodeURIComponent(opts.tickers.join(","))}` : "";
-  return get<ResearchIntel>(tenantId, `/research-intel${q}`);
+  return get<ResearchIntel>(apiAuth, `/research-intel${q}`);
 };
 
 export type CalendarEvent = { event_date: string; kind: string; ticker: string; label: string };
@@ -1027,14 +1061,14 @@ export type Calendar = {
   events: CalendarEvent[];
 };
 
-export const getCalendar = (tenantId: string, id: string) =>
-  get<Calendar>(tenantId, `/portfolios/${id}/calendar`);
+export const getCalendar = (apiAuth: string, id: string) =>
+  get<Calendar>(apiAuth, `/portfolios/${id}/calendar`);
 
 /** Refresh held-ticker earnings dates (yfinance), then return the calendar (heavier POST). */
-export async function refreshCalendar(tenantId: string, id: string): Promise<Calendar> {
+export async function refreshCalendar(apiAuth: string, id: string): Promise<Calendar> {
   const res = await fetch(`${API_URL}/portfolios/${id}/calendar/refresh`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     cache: "no-store",
   });
   if (!res.ok) {
@@ -1045,10 +1079,10 @@ export async function refreshCalendar(tenantId: string, id: string): Promise<Cal
 
 /** Resolve sectors + backfill history, then run Brinson attribution (heavier POST).
  * `accountIds` scopes the computation to the selected accounts. */
-export async function computeAttribution(tenantId: string, id: string, accountIds?: string[]): Promise<Attribution> {
+export async function computeAttribution(apiAuth: string, id: string, accountIds?: string[]): Promise<Attribution> {
   const res = await fetch(`${API_URL}/portfolios/${id}/attribution/compute${acctParams(accountIds)}`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     cache: "no-store",
   });
   if (!res.ok) {
@@ -1058,10 +1092,10 @@ export async function computeAttribution(tenantId: string, id: string, accountId
 }
 
 /** Backfill history + compute factor risk (the heavier POST path). `accountIds` scopes it. */
-export async function computeRisk(tenantId: string, id: string, accountIds?: string[]): Promise<Risk> {
+export async function computeRisk(apiAuth: string, id: string, accountIds?: string[]): Promise<Risk> {
   const res = await fetch(`${API_URL}/portfolios/${id}/risk/compute${acctParams(accountIds)}`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     cache: "no-store",
   });
   if (!res.ok) {
@@ -1071,10 +1105,10 @@ export async function computeRisk(tenantId: string, id: string, accountIds?: str
 }
 
 /** Seed NAV history from past prices (reconstruction). Returns the populated summary. */
-export async function reconstructPerformance(tenantId: string, id: string): Promise<Performance> {
+export async function reconstructPerformance(apiAuth: string, id: string): Promise<Performance> {
   const res = await fetch(`${API_URL}/portfolios/${id}/performance/reconstruct`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     cache: "no-store",
   });
   if (!res.ok) {
@@ -1084,10 +1118,10 @@ export async function reconstructPerformance(tenantId: string, id: string): Prom
 }
 
 /** Create a portfolio in the user's workspace (auto-provisions the tenant on the backend). */
-export async function createPortfolio(tenantId: string, name: string): Promise<Portfolio> {
+export async function createPortfolio(apiAuth: string, name: string): Promise<Portfolio> {
   const res = await fetch(`${API_URL}/portfolios`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
     cache: "no-store",
   });
@@ -1130,7 +1164,7 @@ async function readResult(res: Response, label: string): Promise<ImportResult> {
 
 /** Upload a CSV or OFX file to an import endpoint. ``kind`` selects the route. */
 export async function importFile(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   kind: "csv" | "ofx",
   file: File,
@@ -1139,17 +1173,17 @@ export async function importFile(
   form.append("file", file, file.name);
   const res = await fetch(`${API_URL}/portfolios/${id}/import/${kind}`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     body: form,
     cache: "no-store",
   });
   return readResult(res, `${kind.toUpperCase()} import`);
 }
 
-export async function syncFlex(tenantId: string, id: string, token: string, queryId: string): Promise<ImportResult> {
+export async function syncFlex(apiAuth: string, id: string, token: string, queryId: string): Promise<ImportResult> {
   const res = await fetch(`${API_URL}/portfolios/${id}/import/flex`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ token, query_id: queryId }),
     cache: "no-store",
   });
@@ -1158,10 +1192,10 @@ export async function syncFlex(tenantId: string, id: string, token: string, quer
 
 /** One-click IBKR sync from the deployment's STORED Flex credentials (metron-ops#82) —
  * no token paste. 404 when none are configured (the UI shows the BYO-token form instead). */
-export async function syncFlexStored(tenantId: string, id: string): Promise<ImportResult> {
+export async function syncFlexStored(apiAuth: string, id: string): Promise<ImportResult> {
   const res = await fetch(`${API_URL}/portfolios/${id}/sync/flex`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     cache: "no-store",
   });
   return readResult(res, "IBKR Flex sync");
@@ -1172,15 +1206,15 @@ export type Meta = {
   engine: string;
   connectors: { flex_stored: boolean; snaptrade_personal: boolean };
 };
-export const getMeta = (tenantId: string) => get<Meta>(tenantId, "/meta");
+export const getMeta = (apiAuth: string) => get<Meta>(apiAuth, "/meta");
 
 /** Sync the operator's linked SnapTrade brokerages into a portfolio (every linked
  * connection, minus any the portfolio has excluded). Personal/single-operator only —
  * 404 when the deployment hasn't enabled it. */
-export async function syncSnapTrade(tenantId: string, id: string): Promise<ImportResult> {
+export async function syncSnapTrade(apiAuth: string, id: string): Promise<ImportResult> {
   const res = await fetch(`${API_URL}/portfolios/${id}/import/snaptrade`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     cache: "no-store",
   });
   return readResult(res, "SnapTrade sync");
@@ -1203,8 +1237,8 @@ export type SnapTradeConnections = {
   n_synced_accounts: number;
 };
 
-export const getSnapTradeConnections = (tenantId: string, id: string) =>
-  get<SnapTradeConnections>(tenantId, `/portfolios/${id}/snaptrade/connections`);
+export const getSnapTradeConnections = (apiAuth: string, id: string) =>
+  get<SnapTradeConnections>(apiAuth, `/portfolios/${id}/snaptrade/connections`);
 
 async function readDetailError(res: Response, label: string): Promise<MetronApiError> {
   let detail = `${res.status}`;
@@ -1222,13 +1256,13 @@ async function readDetailError(res: Response, label: string): Promise<MetronApiE
  * place (no new plan slot). The portal hosts the brokerage login; no credentials
  * touch Metron. */
 export async function createSnapTradeConnectUrl(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   reconnectId?: string,
 ): Promise<string> {
   const res = await fetch(`${API_URL}/portfolios/${id}/snaptrade/connect`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(reconnectId ? { reconnect: reconnectId } : {}),
     cache: "no-store",
   });
@@ -1241,7 +1275,7 @@ export async function createSnapTradeConnectUrl(
  * Irreversible — re-linking later creates a brand-new connection. Metron's stored
  * data is untouched; the connection's accounts just stop refreshing. */
 export async function removeSnapTradeConnection(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   authorizationId: string,
 ): Promise<void> {
@@ -1249,7 +1283,7 @@ export async function removeSnapTradeConnection(
     `${API_URL}/portfolios/${id}/snaptrade/connections/${encodeURIComponent(authorizationId)}`,
     {
       method: "DELETE",
-      headers: { "X-Tenant-Id": tenantId },
+      headers: authHeaders(apiAuth),
       cache: "no-store",
     },
   );
@@ -1259,7 +1293,7 @@ export async function removeSnapTradeConnection(
 /** Toggle a connection's sync opt-out (exclude=true skips it on future syncs;
  * already-imported data stays). Keyed by stable connection id — no name matching. */
 export async function setSnapTradeConnectionExcluded(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   authorizationId: string,
   excluded: boolean,
@@ -1269,7 +1303,7 @@ export async function setSnapTradeConnectionExcluded(
     `${API_URL}/portfolios/${id}/snaptrade/connections/${encodeURIComponent(authorizationId)}/${verb}`,
     {
       method: "POST",
-      headers: { "X-Tenant-Id": tenantId },
+      headers: authHeaders(apiAuth),
       cache: "no-store",
     },
   );
@@ -1277,10 +1311,10 @@ export async function setSnapTradeConnectionExcluded(
 }
 
 /** Refresh the EOD price cache for a portfolio's held tickers (market value follows). */
-export async function refreshPrices(tenantId: string, id: string): Promise<PriceRefreshResult> {
+export async function refreshPrices(apiAuth: string, id: string): Promise<PriceRefreshResult> {
   const res = await fetch(`${API_URL}/portfolios/${id}/prices/refresh`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     cache: "no-store",
   });
   if (!res.ok) {
@@ -1303,14 +1337,14 @@ export type AccountTagPatch = {
 /** Edit an account's tags (institution / type / taxable override). Returns the
  * account with its recomputed `taxable` status. Omitted fields are left as-is. */
 export async function updateAccountTags(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   accountId: string,
   patch: AccountTagPatch,
 ): Promise<Account> {
   const res = await fetch(`${API_URL}/portfolios/${id}/accounts/${accountId}`, {
     method: "PATCH",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(patch),
     cache: "no-store",
   });
@@ -1323,13 +1357,13 @@ export async function updateAccountTags(
 /** Delete a connected account + all its data; its broker:external_id key joins the
  * exclusion list so future syncs skip it (restore from Settings). */
 export async function deleteAccount(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   accountId: string,
 ): Promise<{ account_id: string; excluded_key: string }> {
   const res = await fetch(`${API_URL}/portfolios/${id}/accounts/${accountId}`, {
     method: "DELETE",
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     cache: "no-store",
   });
   if (!res.ok) {
@@ -1341,18 +1375,18 @@ export async function deleteAccount(
 export type ExcludedAccount = { key: string; broker: string; external_id: string };
 
 /** Deleted broker accounts (imports skip these keys) — restorable from Settings. */
-export const getExcludedAccounts = (tenantId: string, id: string) =>
-  get<{ excluded: ExcludedAccount[] }>(tenantId, `/portfolios/${id}/accounts/excluded`);
+export const getExcludedAccounts = (apiAuth: string, id: string) =>
+  get<{ excluded: ExcludedAccount[] }>(apiAuth, `/portfolios/${id}/accounts/excluded`);
 
 /** Drop a key from the exclusion list — the next sync re-imports that account. */
 export async function restoreExcludedAccount(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   key: string,
 ): Promise<{ excluded: ExcludedAccount[] }> {
   const res = await fetch(`${API_URL}/portfolios/${id}/accounts/excluded/restore`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ key }),
     cache: "no-store",
   });
@@ -1363,18 +1397,18 @@ export async function restoreExcludedAccount(
 }
 
 /** The saved accounts-panel selection (empty = whole portfolio). */
-export const getAccountSelection = async (tenantId: string, id: string): Promise<string[]> =>
-  (await get<{ account_ids: string[] }>(tenantId, `/portfolios/${id}/accounts/selection`)).account_ids;
+export const getAccountSelection = async (apiAuth: string, id: string): Promise<string[]> =>
+  (await get<{ account_ids: string[] }>(apiAuth, `/portfolios/${id}/accounts/selection`)).account_ids;
 
 /** Save the accounts-panel selection (empty list clears it = whole portfolio). */
 export async function putAccountSelection(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   accountIds: string[],
 ): Promise<void> {
   const res = await fetch(`${API_URL}/portfolios/${id}/accounts/selection`, {
     method: "PUT",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ account_ids: accountIds }),
     cache: "no-store",
   });
@@ -1395,14 +1429,14 @@ export type HoldingsViewPrefs = {
   valuation: string | null; // "live" | "settled" (metron-ops#153); null = page default
 };
 
-export const getHoldingsView = (tenantId: string, id: string) =>
-  get<HoldingsViewPrefs>(tenantId, `/portfolios/${id}/holdings-view`);
+export const getHoldingsView = (apiAuth: string, id: string) =>
+  get<HoldingsViewPrefs>(apiAuth, `/portfolios/${id}/holdings-view`);
 
 /** Persist the Holdings-table view (fire-and-forget from the toolbar controls). */
-export async function putHoldingsView(tenantId: string, id: string, prefs: HoldingsViewPrefs): Promise<void> {
+export async function putHoldingsView(apiAuth: string, id: string, prefs: HoldingsViewPrefs): Promise<void> {
   const res = await fetch(`${API_URL}/portfolios/${id}/holdings-view`, {
     method: "PUT",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(prefs),
     cache: "no-store",
   });
@@ -1418,18 +1452,18 @@ export type Preferences = {
   intraday_enabled?: boolean | null;
 };
 
-export const getPreferences = (tenantId: string, id: string) =>
-  get<Preferences>(tenantId, `/portfolios/${id}/preferences`);
+export const getPreferences = (apiAuth: string, id: string) =>
+  get<Preferences>(apiAuth, `/portfolios/${id}/preferences`);
 
 /** Create or update the portfolio's investor preferences (PUT, idempotent). */
 export async function putPreferences(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   prefs: Preferences,
 ): Promise<Preferences> {
   const res = await fetch(`${API_URL}/portfolios/${id}/preferences`, {
     method: "PUT",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(prefs),
     cache: "no-store",
   });
@@ -1449,7 +1483,7 @@ export async function putPreferences(
 export type PluginNav = { id: string; label: string; href: string; tier: string };
 
 /** Active premium plugins for this deploy (empty on the public tier). */
-export const getPlugins = (tenantId: string) => get<PluginNav[]>(tenantId, "/meta/plugins");
+export const getPlugins = (apiAuth: string) => get<PluginNav[]>(apiAuth, "/meta/plugins");
 
 // ── Product-tier entitlements (GET /meta/entitlements) ───────────────────────
 // Drives the owner-only tier simulator + (later) real subscription gating. A
@@ -1482,14 +1516,14 @@ export type Entitlements = {
 /** Resolve entitlements; `preview` overrides are honored server-side ONLY when the
  * tier simulator is enabled (owner-only — ignored on the public product). */
 export const getEntitlements = (
-  tenantId: string,
+  apiAuth: string,
   preview?: { tier?: string; feed?: boolean },
 ) => {
   const params = new URLSearchParams();
   if (preview?.tier) params.set("preview_tier", preview.tier);
   if (preview?.feed !== undefined) params.set("preview_feed", String(preview.feed));
   const qs = params.toString();
-  return get<Entitlements>(tenantId, `/meta/entitlements${qs ? `?${qs}` : ""}`);
+  return get<Entitlements>(apiAuth, `/meta/entitlements${qs ? `?${qs}` : ""}`);
 };
 
 // ── Market indices (intraday) — the Overview "markets" strip ────────────────
@@ -1524,10 +1558,10 @@ export type Indices = {
  *  honored server-side ONLY when the tier simulator is on (owner-only) — mirrors the
  *  feed-dependent compute endpoints. */
 export async function getIndices(
-  tenantId: string,
+  apiAuth: string,
   preview?: { tier?: string; feed?: boolean },
 ): Promise<Indices> {
-  const headers: Record<string, string> = { "X-Tenant-Id": tenantId };
+  const headers: Record<string, string> = { ...authHeaders(apiAuth) };
   if (preview?.tier) headers["X-Preview-Tier"] = preview.tier;
   if (preview?.feed !== undefined) headers["X-Preview-Feed"] = String(preview.feed);
   const res = await fetch(`${API_URL}/indices/intraday`, { headers, cache: "no-store" });
@@ -1565,8 +1599,8 @@ export type IntradayStatus = {
   session_state: "live" | "recap" | "closed";
 };
 
-export async function getIntradayStatus(tenantId: string, id: string): Promise<IntradayStatus> {
-  return get<IntradayStatus>(tenantId, `/portfolios/${id}/intraday`);
+export async function getIntradayStatus(apiAuth: string, id: string): Promise<IntradayStatus> {
+  return get<IntradayStatus>(apiAuth, `/portfolios/${id}/intraday`);
 }
 
 // Today view (metron-ops#23): per-holding prior-close/open/latest + overnight·intraday·day
@@ -1616,8 +1650,8 @@ export type Today = {
   excluded_rows: TodayExcludedRow[];
 };
 
-export const getToday = (tenantId: string, id: string, accountIds?: string[]) =>
-  get<Today>(tenantId, `/portfolios/${id}/today${acctParams(accountIds)}`);
+export const getToday = (apiAuth: string, id: string, accountIds?: string[]) =>
+  get<Today>(apiAuth, `/portfolios/${id}/today${acctParams(accountIds)}`);
 
 // Overnight/intraday/day decomposition HISTORY (metron-ops#87) — accrues forward; the
 // cumulative split shows how much of the portfolio's drift arrives overnight vs intraday.
@@ -1629,8 +1663,8 @@ export type IntradayLegHistory = {
   cum_day_pct: number | null;
   n_days: number;
 };
-export const getIntradayLegs = (tenantId: string, id: string) =>
-  get<IntradayLegHistory>(tenantId, `/portfolios/${id}/intraday-legs`);
+export const getIntradayLegs = (apiAuth: string, id: string) =>
+  get<IntradayLegHistory>(apiAuth, `/portfolios/${id}/intraday-legs`);
 
 export type AdvisorSectorWeight = { sector: string; weight_pct: number; flag: string };
 export type AdvisorConcentration = { ticker: string; weight_pct: number; limit_pct: number };
@@ -1689,17 +1723,17 @@ export type AdvisorProfile = {
 };
 
 /** The advisor view (gap analysis + cached commentary) for a portfolio. */
-export const getAdvisor = (tenantId: string, id: string) =>
-  get<AdvisorView>(tenantId, `/ext/advisor/${id}`);
+export const getAdvisor = (apiAuth: string, id: string) =>
+  get<AdvisorView>(apiAuth, `/ext/advisor/${id}`);
 
-export const getAdvisorProfile = (tenantId: string, id: string) =>
-  get<AdvisorProfile>(tenantId, `/ext/advisor/${id}/profile`);
+export const getAdvisorProfile = (apiAuth: string, id: string) =>
+  get<AdvisorProfile>(apiAuth, `/ext/advisor/${id}/profile`);
 
 /** Run the Claude narrative for the current state (the one paid path). */
-export async function generateAdvisor(tenantId: string, id: string): Promise<AdvisorView> {
+export async function generateAdvisor(apiAuth: string, id: string): Promise<AdvisorView> {
   const res = await fetch(`${API_URL}/ext/advisor/${id}/generate`, {
     method: "POST",
-    headers: { "X-Tenant-Id": tenantId },
+    headers: authHeaders(apiAuth),
     cache: "no-store",
   });
   if (!res.ok) {
@@ -1716,13 +1750,13 @@ export async function generateAdvisor(tenantId: string, id: string): Promise<Adv
 
 /** Save the tenant's investor profile (the targets the advisor compares against). */
 export async function putAdvisorProfile(
-  tenantId: string,
+  apiAuth: string,
   id: string,
   profile: AdvisorProfile,
 ): Promise<AdvisorProfile> {
   const res = await fetch(`${API_URL}/ext/advisor/${id}/profile`, {
     method: "PUT",
-    headers: { "X-Tenant-Id": tenantId, "Content-Type": "application/json" },
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(profile),
     cache: "no-store",
   });
@@ -1764,5 +1798,5 @@ export type AlphaEngineView = {
 };
 
 /** The alpha-engine system view joined onto a portfolio's held tickers. */
-export const getAlphaEngine = (tenantId: string, id: string) =>
-  get<AlphaEngineView>(tenantId, `/ext/alpha-engine/${id}`);
+export const getAlphaEngine = (apiAuth: string, id: string) =>
+  get<AlphaEngineView>(apiAuth, `/ext/alpha-engine/${id}`);

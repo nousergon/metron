@@ -6,12 +6,12 @@
 // data-spine UI heartbeat — so an open app keeps the intraday quote producer publishing.
 
 import { getIntradayStatus, type IntradayStatus } from "@/lib/api";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export async function fetchIntradayStatusAction(id: string): Promise<IntradayStatus | null> {
   try {
-    const tenantId = await requireTenantId();
-    return await getIntradayStatus(tenantId, id);
+    const apiAuth = await requireApiAuth();
+    return await getIntradayStatus(apiAuth, id);
   } catch {
     return null; // transient — keep the last label, don't break the page
   }

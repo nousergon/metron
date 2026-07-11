@@ -11,7 +11,7 @@ import { accountingMoney, accountingMoneyWhole, isoDate, money, moneyWhole, quan
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { navFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
 export const dynamic = "force-dynamic";
@@ -24,21 +24,21 @@ export default async function TaxPage({
   searchParams: { account_id?: string | string[] };
 }) {
   const { id } = params;
-  const tenantId = await requireTenantId();
-  const featureStates = await navFeatureStates(tenantId);
+  const apiAuth = await requireApiAuth();
+  const featureStates = await navFeatureStates(apiAuth);
 
   // URL selection wins; with none, the saved panel selection is applied (redirect).
-  const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}/tax`, searchParams.account_id);
+  const accountIds = await resolveAccountIds(apiAuth, id, `/portfolios/${id}/tax`, searchParams.account_id);
   const navQuery = acctParams(accountIds);
 
   let taxData, summary, income, transactions, realized;
   try {
     [taxData, summary, income, transactions, realized] = await Promise.all([
-      getTax(tenantId, id, accountIds),
-      getSummary(tenantId, id, accountIds),
-      getIncome(tenantId, id, accountIds, true), // taxable accounts only
-      getTransactions(tenantId, id, accountIds, true),
-      getRealized(tenantId, id, accountIds, true),
+      getTax(apiAuth, id, accountIds),
+      getSummary(apiAuth, id, accountIds),
+      getIncome(apiAuth, id, accountIds, true), // taxable accounts only
+      getTransactions(apiAuth, id, accountIds, true),
+      getRealized(apiAuth, id, accountIds, true),
     ]);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {

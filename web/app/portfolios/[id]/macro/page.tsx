@@ -4,7 +4,7 @@ import { PortfolioNav } from "@/components/portfolio-nav";
 import { MacroChart } from "@/components/macro-chart";
 import { isoDate, signClass } from "@/lib/format";
 import { navFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
@@ -25,12 +25,12 @@ function delta(ind: MacroIndicator): string {
 // Reached by clicking a tile in the Overview macro strip (anchored to the indicator).
 export default async function MacroPage({ params }: { params: { id: string } }) {
   const { id } = params;
-  const tenantId = await requireTenantId();
-  const featureStates = await navFeatureStates(tenantId);
+  const apiAuth = await requireApiAuth();
+  const featureStates = await navFeatureStates(apiAuth);
 
   let macro;
   try {
-    macro = await getMacro(tenantId, { full: true });
+    macro = await getMacro(apiAuth, { full: true });
   } catch {
     return <Empty>Couldn&apos;t load macro data. Is the backend running?</Empty>;
   }
