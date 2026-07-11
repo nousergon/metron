@@ -22,7 +22,7 @@ export default async function AdvisorProfilePage({ params }: { params: { id: str
 
   return (
     <div>
-      <Link href={`/portfolios/${id}/advisor`} className="text-sm text-muted hover:text-ink">
+      <Link href={`/portfolios/${id}/intelligence`} className="text-sm text-muted hover:text-ink">
         ← Intelligence
       </Link>
       <Section title="Investor profile" note="the targets Intelligence compares your portfolio against — all fields optional">

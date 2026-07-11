@@ -13,8 +13,8 @@ export async function saveProfileAction(portfolioId: string, profile: AdvisorPro
   try {
     const tenantId = await requireTenantId();
     await putAdvisorProfile(tenantId, portfolioId, profile);
-    revalidatePath(`/portfolios/${portfolioId}/advisor`);
-    revalidatePath(`/portfolios/${portfolioId}/advisor/profile`);
+    revalidatePath(`/portfolios/${portfolioId}/intelligence`);
+    revalidatePath(`/portfolios/${portfolioId}/intelligence/profile`);
     return { ok: true, message: "Saved." };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Save failed — backend reachable?" };

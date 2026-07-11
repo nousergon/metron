@@ -1,6 +1,6 @@
 "use client";
 
-// Investor-profile editor for the Advisor. Collects the stated targets, builds an
+// Investor-profile editor for Intelligence. Collects the stated targets, builds an
 // AdvisorProfile, and saves via the Server Action. Targets are entered as human units
 // (percent / dollars) and converted to the fractions/USD the backend stores.
 //
@@ -14,7 +14,7 @@
 // (llm.PRE_REGISTRATION_EXCLUDED_PROFILE_FIELDS).
 
 import { useState, useTransition } from "react";
-import { saveProfileAction, type ActionResult } from "@/app/portfolios/[id]/advisor/profile/actions";
+import { saveProfileAction, type ActionResult } from "@/app/portfolios/[id]/intelligence/profile/actions";
 import type { AdvisorProfile } from "@/lib/api";
 
 const FIELD = "block text-sm";
