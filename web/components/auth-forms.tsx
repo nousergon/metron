@@ -24,12 +24,10 @@ function AuthShell({ title, children }: { title: string; children: React.ReactNo
 // /auth/verify page.
 //
 // Private beta (metron-ops#18, gate now centralized in nousergon-auth): new signups
-// are invite-gated server-side — a brand-new email must submit a valid invite code,
-// sent along as `metadata.inviteCode`; `metadata.product` is REQUIRED (the shared
-// gate rejects a new signup without it). Returning users (an account already exists
-// for the email) are never gated, so the code field only matters the first time;
-// showing it unconditionally keeps the form simple (the server can't tell the client
-// "this email is new" without leaking whether an address is registered).
+// are allowlist-gated server-side — an admin pre-approves the email address itself
+// (per product), so there's nothing extra for the user to type. `metadata.product`
+// is REQUIRED (the shared gate rejects a new signup without it). Returning users
+// (an account already exists for the email) are never gated.
 export function MagicLinkForm() {
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +37,6 @@ export function MagicLinkForm() {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
     const email = String(form.get("email"));
-    const inviteCode = String(form.get("inviteCode") ?? "").trim();
     setError(null);
     start(async () => {
       // callbackURL must be ABSOLUTE: the verify link lives on the shared auth
@@ -47,7 +44,7 @@ export function MagicLinkForm() {
       const { error } = await signIn.magicLink({
         email,
         callbackURL: `${window.location.origin}/`,
-        metadata: { product: "metron", ...(inviteCode ? { inviteCode } : {}) },
+        metadata: { product: "metron" },
       });
       if (error) setError(error.message ?? "Couldn't send the sign-in link.");
       else setSentTo(email);
@@ -73,13 +70,6 @@ export function MagicLinkForm() {
       <p className="text-sm text-muted">Enter your email and we&apos;ll send you a one-time sign-in link.</p>
       <form onSubmit={onSubmit} className="space-y-3">
         <input className={inputClass} type="email" name="email" placeholder="Email" required autoComplete="email" />
-        <input
-          className={inputClass}
-          type="text"
-          name="inviteCode"
-          placeholder="Invite code (new accounts only)"
-          autoComplete="off"
-        />
         {error ? <p className="text-sm text-negative">{error}</p> : null}
         <button className={buttonClass} disabled={pending} type="submit">
           {pending ? "Sending…" : "Send sign-in link"}
