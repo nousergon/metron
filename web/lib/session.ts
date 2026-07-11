@@ -35,17 +35,26 @@ export const getSession = cache(async (): Promise<SharedSession> => {
   return (await res.json()) as SharedSession;
 });
 
+/** The shared service's session-cookie name — presence of this cookie means the
+ * browser BELIEVES it has a session, which changes what a failed mint means (see
+ * requireApiAuth). `__Secure-` prefix matches the service's https baseURL. */
+const SESSION_COOKIE = "__Secure-better-auth.session_token";
+
 /** The signed-in user's API credential: a short-lived identity JWT minted by the
  * shared service (GET /api/auth/token, authenticated by its session cookie), which
  * the FastAPI backend verifies against the service's JWKS and resolves to the user's
  * workspace (tenant). Falls back to the READ-ONLY demo credential — the fixed demo
- * tenant id, the one X-Tenant-Id value the backend still accepts — when the `/demo`
- * cookie is set with no auth session, so a prospect can explore without signing up; a
- * real session always wins. Otherwise redirects to /login. Cached per request render
- * so one page doesn't mint a token per fetch. */
+ * tenant id, the one X-Tenant-Id value the backend still accepts — ONLY for visitors
+ * with no session cookie at all (a prospect exploring via the `/demo` cookie). A
+ * request that CARRIES a session cookie but fails the mint gets /login, never demo:
+ * during the 2026-07-11 cutover verification a signed-in user was silently shown the
+ * demo tenant's data because a deploy-window mint failure fell through to a stale
+ * `metron_demo` cookie (metron-ops#183) — wrong-tenant data is the worst rendering
+ * of an auth hiccup. Cached per request render so one page doesn't mint per fetch. */
 export const requireApiAuth = cache(async (): Promise<string> => {
+  const hasSessionCookie = cookies().get(SESSION_COOKIE) !== undefined;
   const cookie = headers().get("cookie");
-  if (cookie) {
+  if (cookie && hasSessionCookie) {
     const res = await fetch(`${AUTH_URL}/api/auth/token`, {
       headers: { cookie },
       cache: "no-store",
@@ -55,10 +64,13 @@ export const requireApiAuth = cache(async (): Promise<string> => {
       return token;
     }
     if (res.status !== 401 && res.status !== 403) {
-      // 401/403 = "no shared session" (expected — fall through to demo/login).
-      // Anything else means the auth service itself is failing: fail loud.
+      // Anything but 401/403 means the auth service itself is failing: fail loud.
       throw new Error(`auth token mint → ${res.status}`);
     }
+    // 401/403 with a session cookie present = the session is stale/invalid (or the
+    // service is mid-restart). The honest state is "please sign in again" — never
+    // the demo fallback, which would silently show another tenant's data.
+    redirect("/login");
   }
   if (cookies().get(DEMO_COOKIE)?.value === "1") return DEMO_TENANT_ID;
   redirect("/login");
