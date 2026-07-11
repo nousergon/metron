@@ -47,6 +47,12 @@ def _jwk_client() -> PyJWKClient:
         f"{settings.auth_base_url}/api/auth/jwks",
         cache_keys=True,
         lifespan=settings.auth_jwks_cache_seconds,
+        # Identify ourselves: PyJWKClient's default urllib User-Agent
+        # ("Python-urllib/3.x") is rejected with a 403 by Cloudflare's Browser
+        # Integrity Check in front of auth.nousergon.ai (found live 2026-07-11).
+        # A service-identifying UA is correct HTTP hygiene AND passes the edge
+        # without weakening it.
+        headers={"User-Agent": "metron-api/1.0 (+https://portfolio.nousergon.ai)"},
     )
 
 
