@@ -7,8 +7,10 @@ const USER_FACING_FILES = [
   "web/app/portfolios/*/*/page.tsx",
 ];
 
-// Internal package names that are allowed to contain "advisor"
-const ALLOWLIST = /\b(metron_ext\.advisor|ai_advisor|\/metron\/llm\/advisor)\b/i;
+// Internal identifiers that are allowed to contain "advisor" — the rename only touches
+// user-facing copy; type names, component filenames, API routes, and the preserved
+// /advisor redirect route stay as-is (metron-ops#165).
+const ALLOWLIST = /(metron_ext\.advisor|ai_advisor|\/metron\/llm\/advisor|advisor-profile-form|generate-advisor|["'/]advisor["'\/]|\/advisor\b)/i;
 
 describe("Guard: no user-facing 'Advisor' strings (metron-ops#165)", () => {
   it("should have no case-insensitive 'advisor' or 'Advisor' in user-facing strings", () => {

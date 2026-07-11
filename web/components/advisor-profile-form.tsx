@@ -1,6 +1,6 @@
 "use client";
 
-// Investor-profile editor for the Advisor. Collects the stated targets, builds an
+// Investor-profile editor for Intelligence. Collects the stated targets, builds an
 // AdvisorProfile, and saves via the Server Action. Targets are entered as human units
 // (percent / dollars) and converted to the fractions/USD the backend stores.
 //

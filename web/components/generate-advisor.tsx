@@ -1,6 +1,6 @@
 "use client";
 
-// "Generate / Regenerate" button for the Advisor page. Runs the Claude narrative via
+// "Generate / Regenerate" button for the Intelligence page. Runs the Claude narrative via
 // the Server Action; revalidation repaints the fresh commentary.
 
 import { useState, useTransition } from "react";

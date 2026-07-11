@@ -15,17 +15,17 @@ export default async function AdvisorProfilePage({ params }: { params: { id: str
     profile = await getAdvisorProfile(tenantId, id);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
-      return <Empty>The Advisor isn&apos;t available for this portfolio.</Empty>;
+      return <Empty>Intelligence isn&apos;t available for this portfolio.</Empty>;
     }
     return <Empty>Couldn&apos;t load the profile. Is the backend running?</Empty>;
   }
 
   return (
     <div>
-      <Link href={`/portfolios/${id}/advisor`} className="text-sm text-muted hover:text-ink">
-        ← Advisor
+      <Link href={`/portfolios/${id}/intelligence`} className="text-sm text-muted hover:text-ink">
+        ← Intelligence
       </Link>
-      <Section title="Investor profile" note="the targets the Advisor compares your portfolio against — all fields optional">
+      <Section title="Investor profile" note="the targets Intelligence compares your portfolio against — all fields optional">
         <AdvisorProfileForm portfolioId={id} initial={profile} />
       </Section>
     </div>

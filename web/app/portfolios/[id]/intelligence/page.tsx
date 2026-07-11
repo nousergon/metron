@@ -21,11 +21,11 @@ export default async function AdvisorPage({ params }: { params: { id: string } }
     view = await getAdvisor(tenantId, id);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
-      // Either the portfolio is missing or the advisor plugin isn't installed on this
+      // Either the portfolio is missing or the Intelligence plugin isn't installed on this
       // deploy — both read as "not available here", never an error page.
-      return <Empty>The Advisor isn&apos;t available for this portfolio.</Empty>;
+      return <Empty>Intelligence isn&apos;t available for this portfolio.</Empty>;
     }
-    return <Empty>Couldn&apos;t load the Advisor. Is the backend running?</Empty>;
+    return <Empty>Couldn&apos;t load Intelligence. Is the backend running?</Empty>;
   }
 
   const { analysis, commentary, has_profile } = view;
