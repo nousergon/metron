@@ -696,6 +696,7 @@ class CalendarOut(BaseModel):
     horizon_days: int
     n_events: int
     events: list[CalendarEventOut]
+    earnings_sourced_at: date | None = None
 
 
 class WatchlistEntryOut(BaseModel):

@@ -96,6 +96,21 @@ class TestCalendar:
         )
         assert cal.n_events == 1 and cal.events[0].kind == "fomc"
 
+    def test_refresh_stamps_sourced_at(self, client, db_session, tenant):
+        # No refresh yet → no sourced_at stamp (metron-ops#149).
+        pid = _seed(client, tenant)
+        before = calendar.upcoming_events(db_session, uuid.UUID(tenant), uuid.UUID(pid), today=TODAY)
+        assert before.earnings_sourced_at is None
+
+        calendar.refresh_earnings(db_session, ["AAPL", "MSFT"], source=_earnings_src, today=TODAY)
+        after = calendar.upcoming_events(db_session, uuid.UUID(tenant), uuid.UUID(pid), today=TODAY)
+        assert after.earnings_sourced_at == TODAY
+
+        # A later refresh where the source resolves nothing leaves the prior stamp intact.
+        calendar.refresh_earnings(db_session, ["AAPL", "MSFT"], source=lambda symbols: {}, today=TODAY + timedelta(days=1))
+        unchanged = calendar.upcoming_events(db_session, uuid.UUID(tenant), uuid.UUID(pid), today=TODAY)
+        assert unchanged.earnings_sourced_at == TODAY
+
 
 class TestCalendarEndpoints:
     def test_refresh_then_get(self, client, tenant, monkeypatch):
@@ -109,6 +124,18 @@ class TestCalendarEndpoints:
         assert posted["n_events"] == 1 and posted["events"][0]["ticker"] == "AAPL"
         got = client.get(f"/portfolios/{pid}/calendar", headers={"X-Tenant-Id": tenant}).json()
         assert got["n_events"] == 1
+
+    def test_refresh_advances_sourced_at(self, client, tenant, monkeypatch):
+        pid = _seed(client, tenant)
+
+        def _future_src(syms, *, source=None):
+            return {"AAPL": date.today() + timedelta(days=10)} if "AAPL" in syms else {}
+
+        monkeypatch.setattr("api.services.calendar.fetch_earnings_dates", _future_src)
+        before = client.get(f"/portfolios/{pid}/calendar", headers={"X-Tenant-Id": tenant}).json()
+        assert before["earnings_sourced_at"] is None
+        posted = client.post(f"/portfolios/{pid}/calendar/refresh", headers={"X-Tenant-Id": tenant}).json()
+        assert posted["earnings_sourced_at"] == date.today().isoformat()
 
     def test_calendar_requires_ownership(self, client, tenant):
         pid = _seed(client, tenant)

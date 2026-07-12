@@ -138,6 +138,9 @@ class Security(Base):
     # onto an existing SQLite DB; NULL = unclassified coverage gap, never guessed.
     country: Mapped[str | None] = mapped_column(String(60), nullable=True)
     next_earnings_date: Mapped[date | None] = mapped_column(nullable=True)  # cached next earnings; refreshed on demand
+    # When refresh_earnings() last re-sourced next_earnings_date for this security (metron-ops#149).
+    # Nullable so the column auto-ALTERs onto an existing SQLite DB.
+    earnings_sourced_at: Mapped[date | None] = mapped_column(nullable=True)
 
 
 class Transaction(Base):

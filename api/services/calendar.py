@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api.db import models
@@ -37,18 +37,24 @@ class CalendarSummary:
     horizon_days: int
     n_events: int = 0
     events: list[CalendarEvent] = field(default_factory=list)
+    # Latest refresh_earnings() run across the held tickers; None until a refresh has run.
+    earnings_sourced_at: date | None = None
 
 
 def _held_tickers(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[str]:
     return [h.ticker for h in analytics.holdings(session, tenant_id, portfolio_id)]
 
 
-def refresh_earnings(session: Session, symbols: list[str], *, source: EarningsSource | None = None) -> int:
+def refresh_earnings(
+    session: Session, symbols: list[str], *, source: EarningsSource | None = None, today: date | None = None
+) -> int:
     """Fetch + cache the next earnings date for each of ``symbols`` onto its security.
 
     Overwrites (unlike sector resolution) — earnings dates move, so a refresh always
-    re-sources. A symbol the source can't resolve leaves the prior cached date intact.
+    re-sources. A symbol the source can't resolve leaves the prior cached date intact
+    (and its ``earnings_sourced_at`` stamp untouched — it was NOT re-sourced this run).
     Returns the number of securities updated."""
+    today = today or date.today()
     symbols = [s for s in dict.fromkeys(symbols) if s]
     if not symbols:
         return 0
@@ -66,6 +72,7 @@ def refresh_earnings(session: Session, symbols: list[str], *, source: EarningsSo
         d = dates.get(yf_by_row[row])
         if d is not None:
             row.next_earnings_date = d
+            row.earnings_sourced_at = today
             updated += 1
     session.commit()
     return updated
@@ -130,6 +137,9 @@ def upcoming_events(
                 continue
             seen.add(symbol)
             events.append(CalendarEvent(event_date=when, kind="earnings", ticker=symbol, label=f"{symbol} earnings"))
+        summary.earnings_sourced_at = session.execute(
+            select(func.max(models.Security.earnings_sourced_at)).where(models.Security.symbol.in_(tickers))
+        ).scalar_one_or_none()
 
     # Macro events are global (not portfolio-scoped) — surfaced even with no holdings.
     events.extend(_macro_events(today, end, macro_events_source))

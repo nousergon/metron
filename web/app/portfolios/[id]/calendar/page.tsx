@@ -39,6 +39,7 @@ export default async function CalendarPage({ params }: { params: { id: string } 
       <p className="text-sm text-muted">
         Upcoming holding earnings plus macro events (FOMC + key releases), within {cal.horizon_days} days. Refresh
         to re-source the earnings dates.
+        {cal.earnings_sourced_at ? ` Earnings dates sourced ${isoDate(cal.earnings_sourced_at)}.` : ""}
       </p>
 
       <div className="mt-3">

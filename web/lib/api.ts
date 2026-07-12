@@ -1059,6 +1059,7 @@ export type Calendar = {
   horizon_days: number;
   n_events: number;
   events: CalendarEvent[];
+  earnings_sourced_at: string | null;
 };
 
 export const getCalendar = (apiAuth: string, id: string) =>
