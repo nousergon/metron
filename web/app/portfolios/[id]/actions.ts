@@ -9,6 +9,7 @@ import { accountsMetaTag } from "@/lib/account-meta";
 import {
   type AccountTagPatch,
   addCryptoAddress,
+  addManualPosition,
   addWatchlist,
   createSnapTradeConnectUrl,
   deleteAccount,
@@ -91,6 +92,41 @@ export async function importCsvAction(portfolioId: string, formData: FormData): 
 
 export async function importOfxAction(portfolioId: string, formData: FormData): Promise<ActionResult> {
   return runFileImport(portfolioId, "ofx", formData);
+}
+
+/** Add a single manually-entered stock/ETF position (metron-ops#187) — the no-brokerage,
+ * no-file path alongside CSV/OFX import. Validates the required fields client-visibly
+ * before the request; ticker/quantity validity beyond that (e.g. an unrecognizable
+ * symbol) is enforced server-side and surfaced via the backend's 422 detail. */
+export async function addManualPositionAction(portfolioId: string, formData: FormData): Promise<ActionResult> {
+  const ticker = String(formData.get("ticker") ?? "").trim();
+  const quantityRaw = String(formData.get("quantity") ?? "").trim();
+  const costBasisRaw = String(formData.get("cost_basis") ?? "").trim();
+  const tradeDate = String(formData.get("trade_date") ?? "").trim();
+
+  if (!ticker) return { ok: false, message: "Enter a ticker symbol." };
+  const quantity = Number(quantityRaw);
+  if (!quantityRaw || !Number.isFinite(quantity) || quantity <= 0) {
+    return { ok: false, message: "Quantity must be a positive number." };
+  }
+  const costBasis = Number(costBasisRaw);
+  if (!costBasisRaw || !Number.isFinite(costBasis) || costBasis < 0) {
+    return { ok: false, message: "Cost basis must be zero or a positive number." };
+  }
+
+  try {
+    const apiAuth = await requireApiAuth();
+    const result = await addManualPosition(apiAuth, portfolioId, {
+      ticker,
+      quantity,
+      costBasis,
+      tradeDate: tradeDate || null,
+    });
+    revalidatePath(`/portfolios/${portfolioId}`);
+    return { ok: true, message: `Added ${ticker.toUpperCase()} — ${summarize(result)}`, result };
+  } catch (e) {
+    return { ok: false, message: errorMessage(e) };
+  }
 }
 
 export async function refreshPricesAction(portfolioId: string): Promise<ActionResult> {
