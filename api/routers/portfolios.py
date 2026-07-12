@@ -5,13 +5,14 @@ shared nousergon-auth identity service resolves to the caller's tenant via
 ``api.services.identity.require_tenant_id`` (the read-only demo tenant is the one
 header-based carve-out — see that module).
 
-PH1 adds the ingestion round-trip the free beta is built on. Three sources land
-through one canonical pipeline + persistence bridge: ``POST …/import/csv`` and
-``…/import/ofx`` (transaction-sourced — a trade history the ledger reconstructs
-positions from) and ``…/import/flex`` (snapshot-sourced — IBKR reports current
-positions directly). ``GET …/holdings`` unions both models; ``…/transactions`` /
-``…/realized`` read the ledger view back out. Price-dependent analytics (market
-value, performance, risk) arrive in later PH1–PH3 increments.
+PH1 adds the ingestion round-trip the free beta is built on. Every source lands
+through one canonical pipeline + persistence bridge: ``POST …/import/csv``,
+``…/import/ofx``, and ``…/positions/manual`` (transaction-sourced — a trade
+history / single synthesized BUY the ledger reconstructs positions from) and
+``…/import/flex`` (snapshot-sourced — IBKR reports current positions directly).
+``GET …/holdings`` unions both models; ``…/transactions`` / ``…/realized`` read
+the ledger view back out. Price-dependent analytics (market value, performance,
+risk) arrive in later PH1–PH3 increments.
 """
 
 from __future__ import annotations
@@ -67,6 +68,7 @@ from api.services import (
 from api.services import valuation_medians as valuation_medians_service
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult
+from portfolio_analytics.broker_io.manual_entry import ManualEntryError, ManualPosition, build_manual_snapshot
 from portfolio_analytics.broker_io.ofx_import import parse_ofx
 from portfolio_analytics.broker_io.snaptrade_reader import SnapTradeReader
 from portfolio_analytics.ingestion.ibkr_flex_connector import IbkrFlexConnector
@@ -1451,6 +1453,56 @@ async def import_ofx(
     except FileImportError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     return _persist_and_summarize(session, portfolio, result)
+
+
+class ManualPositionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str
+    quantity: float
+    cost_basis: float  # TOTAL cost basis for the position (not per-share)
+    trade_date: date | None = None  # defaults to today when omitted
+    currency: str = "USD"
+
+
+@router.post("/{portfolio_id}/positions/manual", response_model=ImportOut)
+def add_manual_position(
+    body: ManualPositionIn,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> ImportOut:
+    """Add one manually-entered stock/ETF position — the no-brokerage,
+    no-file path (metron-ops#187) alongside CSV/OFX/Flex/SnapTrade.
+
+    Synthesizes a single-row ``ConnectorSnapshot`` (one synthetic BUY activity)
+    the same shape ``import/csv`` produces for a parsed BUY row, and persists it
+    through the identical ``persistence.persist_snapshot`` bridge — no parallel
+    ingestion path. The backing account is created with ``broker="manual"``
+    (shared across a portfolio's manual entries, like CSV's single "CSV"
+    account), so it's visibly distinguishable from synced/imported accounts
+    wherever account source already surfaces. Positions are ledger-derived at
+    read time, same as CSV/OFX — never written to the positions table directly.
+
+    Stocks/ETFs only (held-away assets are out of scope — see the issue). A bad
+    ticker or non-positive quantity returns 422; nothing is partially persisted
+    on a validation failure.
+    """
+    try:
+        snapshot = build_manual_snapshot(
+            ManualPosition(
+                ticker=body.ticker,
+                quantity=body.quantity,
+                cost_basis=body.cost_basis,
+                trade_date=body.trade_date,
+                currency=body.currency,
+            )
+        )
+    except ManualEntryError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    persisted = persistence.persist_snapshot(
+        session, tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id, snapshot=snapshot
+    )
+    return _summarize(snapshot, persisted, parsed=1, skipped=0, errors=[])
 
 
 @router.post("/{portfolio_id}/import/flex", response_model=ImportOut)

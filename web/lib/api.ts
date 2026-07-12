@@ -1180,6 +1180,30 @@ export async function importFile(
   return readResult(res, `${kind.toUpperCase()} import`);
 }
 
+/** Add one manually-entered stock/ETF position — the no-brokerage, no-file path
+ * (metron-ops#187) alongside CSV/OFX/Flex/SnapTrade. `costBasis` is the TOTAL cost
+ * basis for the position (not per-share); `tradeDate` (YYYY-MM-DD) defaults to today
+ * server-side when omitted. Returns the same `ImportResult` shape as every other
+ * import route — one summary contract regardless of source. */
+export async function addManualPosition(
+  apiAuth: string,
+  id: string,
+  position: { ticker: string; quantity: number; costBasis: number; tradeDate?: string | null },
+): Promise<ImportResult> {
+  const res = await fetch(`${API_URL}/portfolios/${id}/positions/manual`, {
+    method: "POST",
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ticker: position.ticker,
+      quantity: position.quantity,
+      cost_basis: position.costBasis,
+      trade_date: position.tradeDate || null,
+    }),
+    cache: "no-store",
+  });
+  return readResult(res, "Manual position");
+}
+
 export async function syncFlex(apiAuth: string, id: string, token: string, queryId: string): Promise<ImportResult> {
   const res = await fetch(`${API_URL}/portfolios/${id}/import/flex`, {
     method: "POST",

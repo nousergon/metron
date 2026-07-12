@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useState, useTransition } from "react";
 import {
+  addManualPositionAction,
   importCsvAction,
   importOfxAction,
   listSnapTradeConnectionsAction,
@@ -321,6 +322,81 @@ function SnapTradeCard({ portfolioId }: { portfolioId: string }) {
   );
 }
 
+function ManualPositionForm({ portfolioId }: { portfolioId: string }) {
+  // Stocks/ETFs only (held-away assets — real estate, cash, alts — are explicitly out
+  // of scope, tracked separately under the broader Aggregation-breadth work). One
+  // ticker + quantity + cost basis synthesizes a single BUY, the same shape a parsed
+  // CSV row produces, so it lands through the identical bridge as every other source.
+  const [pending, start] = useTransition();
+  const [result, setResult] = useState<ActionResult | null>(null);
+  const [formKey, setFormKey] = useState(0);
+
+  function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const formData = new FormData(form);
+    start(async () => {
+      const r = await addManualPositionAction(portfolioId, formData);
+      setResult(r);
+      if (r.ok) {
+        form.reset();
+        setFormKey((k) => k + 1); // remount to clear any uncontrolled state
+      }
+    });
+  }
+
+  return (
+    <div className="rounded-lg border border-line p-4">
+      <div className="text-sm font-medium">Add position manually</div>
+      <p className="mt-1 text-xs text-muted">
+        No brokerage connection needed — one stock or ETF at a time (ticker, quantity, cost basis).
+      </p>
+      <form key={formKey} onSubmit={onSubmit} className="mt-2 grid gap-2 sm:grid-cols-2">
+        <input
+          type="text"
+          name="ticker"
+          placeholder="Ticker (e.g. AAPL)"
+          required
+          autoComplete="off"
+          className="rounded border border-line px-2 py-1.5 text-sm uppercase"
+        />
+        <input
+          type="number"
+          name="quantity"
+          placeholder="Quantity"
+          step="any"
+          min="0"
+          required
+          className="rounded border border-line px-2 py-1.5 text-sm"
+        />
+        <input
+          type="number"
+          name="cost_basis"
+          placeholder="Total cost basis ($)"
+          step="any"
+          min="0"
+          required
+          className="rounded border border-line px-2 py-1.5 text-sm"
+        />
+        <input
+          type="date"
+          name="trade_date"
+          placeholder="Trade date (optional)"
+          className="rounded border border-line px-2 py-1.5 text-sm text-muted"
+        />
+        <button
+          type="submit"
+          disabled={pending}
+          className="sm:col-span-2 rounded bg-ink px-3 py-1.5 text-sm font-medium text-paper hover:bg-white disabled:opacity-50"
+        >
+          {pending ? "Adding…" : "Add position"}
+        </button>
+      </form>
+      <Result result={result} />
+    </div>
+  );
+}
+
 export function ImportPanel({ portfolioId, flexStored = false }: { portfolioId: string; flexStored?: boolean }) {
   // The Showcase Portfolio (metron-ops#120) is a live, real-tenant-visible read-only
   // mirror (metron#162) — the API 403s every import/sync route for it regardless of caller
@@ -344,6 +420,7 @@ export function ImportPanel({ portfolioId, flexStored = false }: { portfolioId: 
       />
       <FlexImport portfolioId={portfolioId} flexStored={flexStored} />
       <SnapTradeCard portfolioId={portfolioId} />
+      <ManualPositionForm portfolioId={portfolioId} />
     </div>
   );
 }
