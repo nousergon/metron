@@ -300,6 +300,8 @@ export type RollingRiskPoint = {
   sharpe: number | null;
   sortino: number | null;
   max_drawdown: number | null;
+  psr: number | null;
+  cvar: number | null;
 };
 
 export type Performance = {
@@ -317,6 +319,8 @@ export type Performance = {
   sharpe: number | null;
   sortino: number | null;
   max_drawdown: number | null;
+  psr: number | null;
+  cvar: number | null;
   spy_return: number | null;
   alpha: number | null;
   rolling: RollingRiskPoint[];

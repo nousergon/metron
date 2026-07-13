@@ -188,6 +188,17 @@ export default async function PerformancePage({
             value={perf.max_drawdown != null ? percent(perf.max_drawdown) : "—"}
             valueClass={signClass(perf.max_drawdown ?? 0)}
           />
+          <StatCard
+            label="PSR"
+            value={perf.psr != null ? `${(perf.psr * 100).toFixed(0)}%` : "—"}
+            hint="P(true Sharpe > 0)"
+          />
+          <StatCard
+            label="CVaR (95%)"
+            value={perf.cvar != null ? percent(perf.cvar) : "—"}
+            valueClass={signClass(perf.cvar ?? 0)}
+            hint="avg. loss, worst 5% of periods"
+          />
         </div>
       ) : null}
 

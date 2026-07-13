@@ -506,6 +506,8 @@ class RollingRiskOut(BaseModel):
     sharpe: float | None
     sortino: float | None
     max_drawdown: float | None
+    psr: float | None
+    cvar: float | None
 
 
 class PerformanceOut(BaseModel):
@@ -525,6 +527,8 @@ class PerformanceOut(BaseModel):
     sharpe: float | None
     sortino: float | None
     max_drawdown: float | None
+    psr: float | None
+    cvar: float | None
     spy_return: float | None
     alpha: float | None
     rolling: list[RollingRiskOut] = []

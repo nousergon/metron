@@ -131,6 +131,11 @@ class TestRiskAndAlpha:
         assert p["max_drawdown"] == pytest.approx(1050 / 1100 - 1)  # peak 1.10 → trough 1.05
         assert p["volatility"] is not None and p["volatility"] > 0
         assert p["sharpe"] is not None and p["sortino"] is not None
+        # CVaR is window-agnostic (like max_drawdown) — computes off 3 returns (≥2 floor).
+        assert p["cvar"] is not None
+        # PSR has its OWN n≥30 floor (distinct from the day-based annualization floor
+        # above it clears) — only 3 returns here, so it stays None (metron-ops#190).
+        assert p["psr"] is None
 
     def test_alpha_without_enough_history_for_risk(self, client, db_session, tenant):
         pid = _seed(client, tenant)
@@ -140,6 +145,9 @@ class TestRiskAndAlpha:
         # 2 snapshots → alpha computable, but vol/Sharpe need ≥2 returns (≥3 snapshots).
         assert p["alpha"] == pytest.approx(p["twr"] - p["spy_return"])
         assert p["volatility"] is None and p["sharpe"] is None
+        # CVaR needs ≥2 returns same as volatility; only 1 return here.
+        assert p["cvar"] is None
+        assert p["psr"] is None
 
     def test_drawdown_is_flow_neutralized(self, client, db_session, tenant):
         pid = _seed(client, tenant)
@@ -176,6 +184,9 @@ class TestShortWindowAnnualizationGuard:
         assert p["volatility"] is None
         assert p["sharpe"] is None
         assert p["sortino"] is None
+        assert p["psr"] is None
+        # CVaR is window-agnostic (like max_drawdown above) — still computed.
+        assert p["cvar"] is not None
 
     def test_29_day_window_suppresses_but_30_day_annualizes(self, client, db_session, tenant):
         # 29 days → just under the floor → no annualized TWR.
@@ -255,6 +266,11 @@ def test_rolling_risk_matches_full_window_when_history_shorter_than_window():
     assert rolling[-1].sortino == pytest.approx(summary.sortino)
     assert rolling[-1].volatility == pytest.approx(summary.volatility)
     assert rolling[-1].max_drawdown == pytest.approx(summary.max_drawdown)
+    # 49 returns clears PSR's own n≥30 floor, so the full-window headline PSR is a real
+    # value (not None) and the last rolling point (same window) must match it exactly.
+    assert summary.psr is not None
+    assert rolling[-1].psr == pytest.approx(summary.psr)
+    assert rolling[-1].cvar == pytest.approx(summary.cvar)
     # Too little history → no series.
     assert perf_svc._rolling_risk(points[:15]) == []
 
