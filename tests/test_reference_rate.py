@@ -13,6 +13,7 @@ from api.maintenance import daily_refresh
 from api.services import demo
 from portfolio_analytics.ingestion import reference_connector
 from portfolio_analytics.ingestion.base import SNAPSHOT_SOURCES
+from portfolio_analytics.ingestion.schema import ASSET_EQUITY, ASSET_ETF
 from portfolio_analytics.prices import ClosePoint
 
 REFERENCE_HEADERS = {"X-Tenant-Id": str(demo.DEMO_TENANT_ID)}
@@ -28,8 +29,8 @@ SAMPLE_ARTIFACT = {
     "base_currency": "USD",
     "account": {"net_liquidation": 1_001_593.11},
     "positions": [
-        {"ticker": "AMD", "shares": 192, "avg_cost": 130.5, "market_value": 103175.04, "sector": "Information Technology"},
-        {"ticker": "SPY", "shares": 658, "avg_cost": 600.0, "market_value": 491354.92, "sector": "Broad Market"},
+        {"ticker": "AMD", "shares": 192, "avg_cost": 130.5, "market_value": 103175.04, "sector": "Information Technology", "asset_type": "STK"},
+        {"ticker": "SPY", "shares": 658, "avg_cost": 600.0, "market_value": 491354.92, "sector": "Broad Market", "asset_type": "ETF"},
     ],
     "nav_history": [
         {"date": "2026-06-16", "nav": 999_000.0, "spy_close": 744.0},
@@ -66,6 +67,24 @@ def test_artifact_to_snapshot_maps_positions_and_account():
     assert round(acct.cash_usd, 2) == round(1_001_593.11 - (103175.04 + 491354.92), 2)
     # Snapshot source — no activity ledger.
     assert snap.activities == []
+
+
+def test_artifact_to_snapshot_classifies_asset_type_from_producer_category():
+    # SPY is the optimizer's no-conviction ETF fill — must never be reported as
+    # equity just because it's a Crucible holding like any other ticker.
+    snap = reference_connector.artifact_to_snapshot(SAMPLE_ARTIFACT)
+    by_ticker = {s.ticker: s.asset_type for s in snap.securities}
+    assert by_ticker["AMD"] == ASSET_EQUITY
+    assert by_ticker["SPY"] == ASSET_ETF
+
+
+def test_artifact_to_snapshot_defaults_missing_asset_type_to_equity():
+    # Backward compat: an artifact published before the producer emitted asset_type
+    # carries no such field. Absence must default to equity (Crucible's historical
+    # universe), not be misread as ASSET_OTHER.
+    art = {**SAMPLE_ARTIFACT, "positions": [{k: v for k, v in p.items() if k != "asset_type"} for p in SAMPLE_ARTIFACT["positions"]]}
+    snap = reference_connector.artifact_to_snapshot(art)
+    assert {s.asset_type for s in snap.securities} == {ASSET_EQUITY}
 
 
 def test_artifact_to_snapshot_drops_zero_share_rows():
@@ -212,14 +231,15 @@ def test_reference_nav_folds_in_sample_sleeve_totals(db_session):
     """The portfolio-level NavSnapshot (what Performance reads) must equal the live
     artifact's own NAV PLUS the frozen sample sleeve's constant total value — otherwise
     the persisted history undercounts what Holdings actually displays across both
-    sleeves. The expected addon (28550.0 value / 25925.0 cost basis) is derived by hand
-    from the frozen fixture (_SAMPLE_SLEEVE_CSV x _SAMPLE_SLEEVE_PRICES) as an
-    independent cross-check on ``_sample_sleeve_totals``, not a copy of its own math."""
+    sleeves. The expected addon (14300.0 value / 13500.0 cost basis) is derived by hand
+    from the frozen fixture (_SAMPLE_SLEEVE_CSV x _SAMPLE_SLEEVE_PRICES: VOO 15@440,
+    912828YK0 50@98, VMFXX 2000@1) as an independent cross-check on
+    ``_sample_sleeve_totals``, not a copy of its own math."""
     assert demo.sync_reference_holdings(db_session, reader=_reader) is True
 
     sample_value, sample_cost_basis = demo._sample_sleeve_totals(db_session)
-    assert sample_value == 28_550.0
-    assert sample_cost_basis == 25_925.0
+    assert sample_value == 14_300.0
+    assert sample_cost_basis == 13_500.0
 
     row = db_session.scalar(
         select(models.NavSnapshot).where(
@@ -333,7 +353,7 @@ def test_daily_refresh_never_overwrites_reference_rate_nav(db_session, monkeypat
     assert float(row.nav) == 1_001_593.11 + sample_value
 
 
-_SAMPLE_SLEEVE_TICKERS = {"AAPL", "MSFT", "VOO", "912828YK0", "VMFXX"}
+_SAMPLE_SLEEVE_TICKERS = {"VOO", "912828YK0", "VMFXX"}
 
 
 def test_holdings_endpoint_serves_reference(client, db_session):
@@ -343,6 +363,23 @@ def test_holdings_endpoint_serves_reference(client, db_session):
     # The live sleeve's tickers, plus the frozen sample sleeve's asset-class breadth
     # folded into the same portfolio.
     assert {h["ticker"] for h in r.json()} == {"AMD", "SPY"} | _SAMPLE_SLEEVE_TICKERS
+
+
+def test_showcase_equity_count_never_exceeds_live_crucible_sleeve(client, db_session):
+    """Regression lock: the Showcase Portfolio may show non-equity instruments (ETF/
+    bond/cash) beyond what Crucible holds, but never MORE equity-classified holdings
+    than Crucible's own live sleeve — the sample sleeve must not smuggle in extra
+    equities, and a producer holding like SPY must classify as ETF, not equity."""
+    demo.sync_reference_holdings(db_session, reader=_reader)
+    r = client.get(f"/portfolios/{demo.REFERENCE_PORTFOLIO_ID}/holdings", headers=REFERENCE_HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+
+    live_tickers = {p["ticker"] for p in SAMPLE_ARTIFACT["positions"]}
+    equity_tickers = {h["ticker"] for h in body if h["security_type"] == "equity"}
+    assert equity_tickers <= live_tickers
+    # SPY specifically must not be counted as equity.
+    assert next(h for h in body if h["ticker"] == "SPY")["security_type"] == "etf"
 
 
 def test_reference_portfolio_is_read_only(client, db_session):

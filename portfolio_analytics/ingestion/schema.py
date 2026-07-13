@@ -38,6 +38,27 @@ ASSET_OPTION = "OPTION"
 ASSET_CASH = "CASH"
 ASSET_OTHER = "OTHER"
 
+# Producer-side asset-category vocabulary (IBKR Flex ``assetCategory`` + the
+# reference-rate contract mirror it) mapped to the canonical ASSET_* constants
+# above. Shared so every connector classifies the same category string the same
+# way instead of each re-deriving its own mapping.
+_ASSET_CATEGORY_MAP = {
+    "STK": ASSET_EQUITY,
+    "ETF": ASSET_ETF,
+    "FUND": ASSET_FUND,
+    "MF": ASSET_FUND,
+}
+
+
+def asset_type_from_category(category: str | None) -> str:
+    """Map a producer-supplied asset-category string to a canonical ASSET_* constant.
+
+    Unknown/missing categories default to ``ASSET_OTHER`` — never silently to
+    ``ASSET_EQUITY`` — so an unrecognized category is visibly distinct rather than
+    masquerading as a stock.
+    """
+    return _ASSET_CATEGORY_MAP.get((category or "").upper(), ASSET_OTHER)
+
 
 def synth_security_id(ticker: str, currency: str = "USD") -> str:
     """Stable synthetic ``security_id`` for an equity a broker gives no native id for.

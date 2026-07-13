@@ -16,11 +16,14 @@ Two sleeves live under one portfolio id, seeded idempotently at startup:
 
 - A LIVE sleeve synced daily from the engine's published artifact
   (``metron/reference_rate.json``) — real, moving, the actual product signal.
-- A permanently-frozen SAMPLE sleeve (two accounts, four asset classes, a partial sell
-  and dividends), replayed once through the same CSV import bridge a real upload uses,
-  so the showcase also demonstrates account/asset-class breadth (tax-status grouping
-  #46, security-type grouping #47, a realized lot on Tax) that the live sleeve alone
-  (equity/ETF only, single account) can't exercise.
+- A permanently-frozen SAMPLE sleeve (two accounts, three NON-EQUITY asset classes,
+  plus dividends), replayed once through the same CSV import bridge a real upload
+  uses, so the showcase also demonstrates account/asset-class breadth (tax-status
+  grouping #46, security-type grouping #47) that the live sleeve alone (equity/ETF
+  only, single account) can't exercise. Deliberately carries NO individual-stock
+  equity positions of its own (AAPL/MSFT retired) — the Showcase Portfolio's equity
+  count must equal Crucible's live holdings exactly; the sample sleeve may only add
+  non-equity instruments (ETF/bond/cash), never additional equities.
 
 The daily live sync only ever touches accounts present in ITS OWN artifact snapshot
 (persistence._upsert_accounts matches by (tenant_id, broker, external_id)), so it can
@@ -80,24 +83,20 @@ REFERENCE_PORTFOLIO_NAME = "Showcase Portfolio"
 # accounts (a different source, "reference") even though both now share one portfolio id.
 _SAMPLE_SLEEVE_SOURCE = "reference_sample"
 
-# Frozen transactions — two accounts, four asset classes, a partial sell (realized lot)
+# Frozen transactions — two accounts, three non-equity asset classes (ETF/bond/cash)
 # and dividends — the breadth the live equity/ETF-only sleeve can't demonstrate alone.
+# Deliberately no individual-stock equity rows: the sample sleeve must never add
+# equities beyond what Crucible's live sleeve actually holds (AAPL/MSFT retired).
 _SAMPLE_SLEEVE_CSV = """date,type,symbol,quantity,price,amount,account
-2024-01-08,BUY,AAPL,40,185,7400,Sample Brokerage
 2024-01-08,BUY,VOO,15,440,6600,Sample Brokerage
-2024-01-16,BUY,MSFT,20,390,7800,Sample IRA
 2024-02-02,BUY,912828YK0,50,98,4900,Sample IRA
-2024-02-20,DIVIDEND,AAPL,0,0,24,Sample Brokerage
 2024-03-15,BUY,VMFXX,2000,1,2000,Sample Brokerage
-2024-05-10,SELL,AAPL,15,205,3075,Sample Brokerage
 2024-06-03,DIVIDEND,VOO,0,0,38,Sample Brokerage
 """
 
 # Per-symbol reference metadata applied after import (the CSV path defaults everything to
 # equity): name + the asset_class that drives security-type grouping (#47).
 _SAMPLE_SLEEVE_SECURITY_META: dict[str, tuple[str, str]] = {
-    "AAPL": ("Apple Inc.", "equity"),
-    "MSFT": ("Microsoft Corp.", "equity"),
     "VOO": ("Vanguard S&P 500 ETF", "etf"),
     "912828YK0": ("US Treasury Note 4.0% 2026", "bond"),
     "VMFXX": ("Vanguard Federal Money Market", "cash"),
@@ -109,8 +108,6 @@ _SAMPLE_SLEEVE_SECURITY_META: dict[str, tuple[str, str]] = {
 # number that could drift from it.
 _SAMPLE_SLEEVE_PRICE_AS_OF = date(2024, 6, 28)
 _SAMPLE_SLEEVE_PRICES: dict[str, float] = {
-    "AAPL": 210.0,
-    "MSFT": 450.0,
     "VOO": 490.0,
     "912828YK0": 99.0,
     "VMFXX": 1.0,
