@@ -101,13 +101,14 @@ export function HoldingsPerfChart({
   benchmarksAvailable: boolean;
 }) {
   const [rangeIdx, setRangeIdx] = useState(RANGES.length - 1); // default All
-  const [hidden, setHidden] = useState<Set<string>>(new Set()); // toggled-off benchmark symbols
+  const [hidden, setHidden] = useState<Set<string>>(new Set()); // toggled-off account ids / benchmark symbols
   const [hoverE, setHoverE] = useState<number | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const cutoff = cutoffISO(RANGES[rangeIdx]![1]);
 
   const lines: Line[] = [];
   accounts.forEach((a, i) => {
+    if (hidden.has(a.account_id)) return;
     const pts = rebase(a.points, cutoff);
     if (pts.length >= 2) {
       lines.push({ key: `acct:${a.account_id}`, label: a.name, color: ACCOUNT_COLORS[i % ACCOUNT_COLORS.length]!, dashed: false, points: pts, forwardOnly: a.coverage === "forward" });
@@ -133,11 +134,11 @@ export function HoldingsPerfChart({
   const sx = (e: number) => PAD + (t1 === t0 ? innerW / 2 : ((e - t0) / (t1 - t0)) * innerW);
   const sy = (v: number) => PAD + (vmax === vmin ? innerH / 2 : (1 - (v - vmin) / (vmax - vmin)) * innerH);
 
-  const toggleBench = (symbol: string) =>
+  const toggleLine = (id: string) =>
     setHidden((prev) => {
       const next = new Set(prev);
-      if (next.has(symbol)) next.delete(symbol);
-      else next.add(symbol);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
 
@@ -165,6 +166,30 @@ export function HoldingsPerfChart({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <span className="text-xs font-medium uppercase tracking-wide text-muted">Performance (indexed to 100)</span>
         <div className="flex items-center gap-2">
+          {/* Account toggles — hide/show a line without rescoping the rest of the page
+              (e.g. hide sample/demo accounts on the Showcase Portfolio's chart). */}
+          {accounts.length > 1 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {accounts.map((a, i) => {
+                const on = !hidden.has(a.account_id);
+                const color = ACCOUNT_COLORS[i % ACCOUNT_COLORS.length]!;
+                return (
+                  <button
+                    key={a.account_id}
+                    type="button"
+                    onClick={() => toggleLine(a.account_id)}
+                    aria-pressed={on}
+                    className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition ${
+                      on ? "border-muted text-muted" : "border-line text-muted/50 hover:border-muted"
+                    }`}
+                  >
+                    <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: on ? color : "currentColor" }} />
+                    {a.name}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
           {/* Benchmark toggles (feed-gated) */}
           {benchmarksAvailable && benchmarks.length > 0 ? (
             <div className="flex gap-1.5">
@@ -174,7 +199,7 @@ export function HoldingsPerfChart({
                   <button
                     key={b.symbol}
                     type="button"
-                    onClick={() => toggleBench(b.symbol)}
+                    onClick={() => toggleLine(b.symbol)}
                     aria-pressed={on}
                     className={`rounded-full border px-2 py-0.5 text-[11px] transition ${
                       on ? "border-muted text-muted" : "border-line text-muted/50 hover:border-muted"
@@ -208,7 +233,9 @@ export function HoldingsPerfChart({
       </div>
 
       {lines.length === 0 ? (
-        <div className="py-10 text-center text-sm text-muted">Not enough history yet for this range.</div>
+        <div className="py-10 text-center text-sm text-muted">
+          {hidden.size > 0 ? "All lines hidden — toggle one on above." : "Not enough history yet for this range."}
+        </div>
       ) : (
         <>
           <div
