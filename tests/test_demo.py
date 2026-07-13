@@ -31,10 +31,13 @@ def test_demo_holdings_span_asset_classes(client, db_session):
     r = client.get(f"/portfolios/{demo.REFERENCE_PORTFOLIO_ID}/holdings", headers=DEMO_HEADERS)
     assert r.status_code == 200
     body = r.json()
-    # The sample sleeve deliberately spans accounts + asset classes (equity / ETF / bond /
-    # cash) so the tax-status (#46) and security-type (#47) groupings both showcase on it.
+    # The sample sleeve deliberately spans accounts + NON-EQUITY asset classes (ETF / bond /
+    # cash) so the tax-status (#46) and security-type (#47) groupings both showcase on it —
+    # it must never carry individual-stock equity of its own (that would inflate the
+    # Showcase Portfolio's equity count beyond what Crucible's live sleeve actually holds).
     tickers = {h["ticker"] for h in body}
-    assert {"AAPL", "MSFT", "VOO", "912828YK0", "VMFXX"} <= tickers
+    assert {"VOO", "912828YK0", "VMFXX"} <= tickers
+    assert "AAPL" not in tickers and "MSFT" not in tickers
     # Holdings value off the seeded frozen prices (no live refresh needed).
     assert all(h["market_value"] is not None for h in body)
 

@@ -193,7 +193,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
             # tickers are never read from PriceBar for this sleeve; only from that
             # module's own hardcoded table). Excluded only if the LIVE sleeve doesn't
             # also happen to hold the same ticker (Crucible's universe can rotate into
-            # AAPL/MSFT/etc) — that sleeve's own tickers always still refresh normally.
+            # VOO/etc) — that sleeve's own tickers always still refresh normally.
             sample_only = SAMPLE_SLEEVE_TICKERS - live_sleeve_tickers(session)
             symbols = [s for s in symbols if s not in sample_only]
         updated = price_service.refresh_latest_prices(session, symbols) if symbols else 0

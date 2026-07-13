@@ -30,15 +30,12 @@ from portfolio_analytics.broker_io.flex_xml import _f, _parse_flex_date, _tag, f
 from portfolio_analytics.domain.ledger import TxnType
 from portfolio_analytics.ingestion.base import ConnectorSnapshot
 from portfolio_analytics.ingestion.schema import (
-    ASSET_EQUITY,
-    ASSET_ETF,
-    ASSET_FUND,
-    ASSET_OTHER,
     CanonicalAccount,
     CanonicalActivity,
     CanonicalHolding,
     CanonicalOpenLot,
     CanonicalSecurity,
+    asset_type_from_category,
     synth_security_id,
 )
 from portfolio_analytics.ingestion.store import save_bronze
@@ -52,11 +49,7 @@ SOURCE = "ibkr_flex"
 # skips them rather than mis-value. (Revisit: carry OPT with broker MV, no yfinance.)
 _SKIP_POSITION_CATEGORIES = {"CASH", "OPT"}
 
-_ASSET_CATEGORY_MAP = {"STK": ASSET_EQUITY, "ETF": ASSET_ETF, "FUND": ASSET_FUND, "MF": ASSET_FUND}
-
-
-def _asset_type(category: str) -> str:
-    return _ASSET_CATEGORY_MAP.get((category or "").upper(), ASSET_OTHER)
+_asset_type = asset_type_from_category
 
 
 def _as_dt(value: str | None) -> datetime | None:
