@@ -24,7 +24,9 @@ from zoneinfo import ZoneInfo
 
 from krepis.trading_calendar import last_closed_trading_day, previous_trading_day
 from nousergon_lib.quant.returns import ValuationPoint, annualize, time_weighted_return
+from nousergon_lib.quant.risk_measures import historical_cvar
 from nousergon_lib.quant.riskstats import max_drawdown, sharpe_ratio, sortino_ratio, volatility
+from nousergon_lib.quant.stats.dsr import compute_psr
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -40,18 +42,20 @@ logger = logging.getLogger(__name__)
 
 # Don't extrapolate a sub-month observation window to a yearly rate. Annualizing a few
 # days of return — annualized_twr = (1+twr)^(365.25/days) − 1 — explodes for small
-# `days` (e.g. +1% over 3 days → +236% annualized), and annualizing volatility/Sharpe
+# `days` (e.g. +1% over 3 days → +236% annualized), and annualizing volatility/Sharpe/PSR
 # from a handful of same-week returns is just as misleading. Below this span the
-# ANNUALIZED figures (annualized_twr, volatility, sharpe, sortino) stay None
-# ("history is building"); the window-agnostic figures (cumulative, TWR, max drawdown)
-# are always shown. (metron-ops#44 — these short-window annualized values read as wrong.)
+# ANNUALIZED figures (annualized_twr, volatility, sharpe, sortino, psr) stay None
+# ("history is building"); the window-agnostic figures (cumulative, TWR, max drawdown,
+# cvar) are always shown. (metron-ops#44 — these short-window annualized values read as
+# wrong.)
 _MIN_ANNUALIZE_DAYS = 30
 
-# Rolling risk series (metron-ops#67) — mirror the Crucible risk basket over time so the
-# user can see how Sharpe/Sortino/vol/drawdown evolve. Each point uses a trailing window of
-# the flow-neutralized returns: expanding until it reaches _ROLLING_WINDOW, then rolling.
-# A point is emitted once the window has _ROLLING_MIN_OBS returns AND spans
-# _MIN_ANNUALIZE_DAYS (the same annualization floor the headline metrics use).
+# Rolling risk series (metron-ops#67) — mirror the SAME risk basket the headline summary
+# computes (Sharpe/Sortino/vol/drawdown/PSR/CVaR, metron-ops#190) so the user can see how
+# it evolves. Each point uses a trailing window of the flow-neutralized returns: expanding
+# until it reaches _ROLLING_WINDOW, then rolling. A point is emitted once the window has
+# _ROLLING_MIN_OBS returns AND spans _MIN_ANNUALIZE_DAYS (the same annualization floor the
+# headline metrics use).
 _ROLLING_WINDOW = 63       # ~3 months of trading days
 _ROLLING_MIN_OBS = 20
 
@@ -662,13 +666,15 @@ class PerfPoint:
 
 @dataclass
 class RollingRiskPoint:
-    """One trailing-window risk reading (metron-ops#67) — the Crucible basket over time."""
+    """One trailing-window risk reading (metron-ops#67) — the full risk basket over time."""
 
     snap_date: date
     volatility: float | None
     sharpe: float | None
     sortino: float | None
     max_drawdown: float | None
+    psr: float | None
+    cvar: float | None
 
 
 @dataclass
@@ -684,11 +690,15 @@ class PerformanceSummary:
     twr: float | None = None
     annualized_twr: float | None = None
     # Risk metrics over the flow-neutralized return series (None until ≥3 snapshots) +
-    # the benchmark comparison (None until ≥2 snapshots carry an SPY close).
+    # the benchmark comparison (None until ≥2 snapshots carry an SPY close). psr = P(true
+    # Sharpe > 0) (None until the annualization floor + PSR's own n>=30 are both met); cvar
+    # = mean loss in the worst 5% tail, window-agnostic like max_drawdown (metron-ops#190).
     volatility: float | None = None
     sharpe: float | None = None
     sortino: float | None = None
     max_drawdown: float | None = None
+    psr: float | None = None
+    cvar: float | None = None
     spy_return: float | None = None
     alpha: float | None = None
     # Trailing-window risk basket over time (metron-ops#67); empty until enough history.
@@ -750,16 +760,38 @@ def _flow_neutralized_returns(points: list[PerfPoint]) -> list[float]:
     return out
 
 
+def _psr(rets: list[float], *, periods_per_year: float) -> float | None:
+    """P(true Sharpe > 0) via ``nousergon_lib``'s Probabilistic Sharpe Ratio — the same
+    primitive the Crucible evaluator gates promotion on (metron-ops#190). ``periods_per_year``
+    must reflect the series' actual sampling cadence: PSR's annualization step scales off it
+    the same way ``sharpe_ratio``/``sortino_ratio`` do, and Metron's NAV-snapshot cadence is
+    irregular (per-user-refresh), not daily — nousergon-lib>=0.110.0 is required for the
+    ``periods_per_year`` param (nousergon-lib#193; pre-0.110.0 hardcoded 252). Returns None
+    below PSR's own n>=30 floor (its ``status`` field, distinct from ``_MIN_ANNUALIZE_DAYS``)."""
+    result = compute_psr(rets, sharpe_benchmark=0.0, periods_per_year=periods_per_year)
+    return result.get("psr") if result.get("status") == "ok" else None
+
+
+def _cvar(rets: list[float]) -> float | None:
+    """CVaR(95) — mean loss in the worst 5% tail, expressed as a negative return (mirrors
+    the evaluator's ``_neg_cvar`` sign convention so it reads on the same scale as the other
+    return-like figures here). Window-agnostic like max_drawdown — no annualization, so no
+    ``_MIN_ANNUALIZE_DAYS`` gate (metron-ops#190)."""
+    v = historical_cvar(rets, confidence=0.95)
+    return None if v is None else -v
+
+
 def _apply_risk_and_alpha(summary: PerformanceSummary, points: list[PerfPoint]) -> None:
     """Fill risk metrics (flow-neutralized) + the SPY comparison on ``summary``.
 
     Metron's transaction feed lets us neutralize flows properly (unlike a NAV-only
-    feed): risk metrics run on the flow-neutralized return series, and max drawdown on
-    its growth index — so a deposit reads as capital in, never as a return. Annualization
-    uses an **empirical** periods-per-year (return count over elapsed years), robust to
-    the irregular snapshot cadence rather than assuming 252 trading days. Sharpe/Sortino
-    assume a 0% risk-free rate. Annualized risk stats are suppressed for a sub-month
-    window (see ``_MIN_ANNUALIZE_DAYS``); max drawdown is window-agnostic and always set."""
+    feed): risk metrics run on the flow-neutralized return series, and max drawdown/CVaR
+    on its growth index/return series — so a deposit reads as capital in, never as a
+    return. Annualization uses an **empirical** periods-per-year (return count over
+    elapsed years), robust to the irregular snapshot cadence rather than assuming 252
+    trading days. Sharpe/Sortino/PSR assume a 0% risk-free rate / zero benchmark.
+    Annualized risk stats are suppressed for a sub-month window (see
+    ``_MIN_ANNUALIZE_DAYS``); max drawdown and CVaR are window-agnostic and always set."""
     rets = _flow_neutralized_returns(points)
     if rets:
         # Growth index of the flow-neutralized returns → honest peak-to-trough drawdown.
@@ -768,14 +800,16 @@ def _apply_risk_and_alpha(summary: PerformanceSummary, points: list[PerfPoint]) 
         for r in rets:
             index.append(index[-1] * (1.0 + r))
         summary.max_drawdown = max_drawdown(index)
-        # Annualized vol/Sharpe/Sortino only once the window is long enough to annualize;
-        # below that the empirical periods-per-year blows them up (metron-ops#44).
+        summary.cvar = _cvar(rets)
+        # Annualized vol/Sharpe/Sortino/PSR only once the window is long enough to
+        # annualize; below that the empirical periods-per-year blows them up (metron-ops#44).
         if summary.days >= _MIN_ANNUALIZE_DAYS:
             years = summary.days / 365.25
             ppy = len(rets) / years
             summary.volatility = volatility(rets, periods_per_year=ppy)
             summary.sharpe = sharpe_ratio(rets, periods_per_year=ppy)
             summary.sortino = sortino_ratio(rets, periods_per_year=ppy)
+            summary.psr = _psr(rets, periods_per_year=ppy)
 
     spy = [p.spy_close for p in points if p.spy_close is not None]
     if len(spy) >= 2 and spy[0] > 0:
@@ -811,6 +845,8 @@ def _rolling_risk(points: list[PerfPoint]) -> list[RollingRiskPoint]:
                 sharpe=sharpe_ratio(window, periods_per_year=ppy),
                 sortino=sortino_ratio(window, periods_per_year=ppy),
                 max_drawdown=max_drawdown(index),
+                psr=_psr(window, periods_per_year=ppy),
+                cvar=_cvar(window),
             )
         )
     return out
