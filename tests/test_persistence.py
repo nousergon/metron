@@ -281,6 +281,40 @@ def test_cash_transaction_has_null_security(db_session):
     assert txn.security_id is None
 
 
+def test_resync_reparents_account_to_new_portfolio(db_session):
+    """metron-ops#192: _upsert_accounts matches existing rows by (tenant_id, broker,
+    external_id) only. If that account was first created under portfolio A, a later
+    sync targeting portfolio B for the same tenant must reparent the row to B, not
+    silently leave it orphaned under A."""
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+    from portfolio_analytics.ingestion.schema import CanonicalAccount
+
+    tenant_id, portfolio_a = _make_portfolio(db_session)
+    portfolio_b = models.Portfolio(id=uuid.uuid4(), tenant_id=tenant_id, name="Roth IRA")
+    db_session.add(portfolio_b)
+    db_session.commit()
+
+    snapshot = ConnectorSnapshot(
+        source="ibkr_flex",
+        accounts=[CanonicalAccount(number="U23568545", institution="Interactive Brokers", account_type="Roth IRA")],
+    )
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_a, snapshot=snapshot)
+    acct = db_session.scalars(select(models.Account).where(models.Account.external_id == "U23568545")).one()
+    assert acct.portfolio_id == portfolio_a
+
+    # Re-sync the same (broker, external_id) targeting portfolio B.
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_b.id, snapshot=snapshot)
+
+    accounts = db_session.scalars(select(models.Account).where(models.Account.external_id == "U23568545")).all()
+    assert len(accounts) == 1  # reparented in place, not duplicated
+    assert accounts[0].portfolio_id == portfolio_b.id
+
+    a_accounts = db_session.scalars(select(models.Account).where(models.Account.portfolio_id == portfolio_a)).all()
+    b_accounts = db_session.scalars(select(models.Account).where(models.Account.portfolio_id == portfolio_b.id)).all()
+    assert a_accounts == []
+    assert [a.external_id for a in b_accounts] == ["U23568545"]
+
+
 def test_persists_foreign_symbology_and_account_metadata(db_session):
     """A snapshot-sourced (Flex) holding persists the listing exchange + resolved
     yfinance symbol, the account's institution/type/tax_treatment, and the broker's

@@ -174,6 +174,13 @@ def _upsert_accounts(
                 row.account_type = account_type
             if row.tax_treatment is None and tax_treatment:
                 row.tax_treatment = tax_treatment
+            # Reparent: a given broker account can only meaningfully live in one
+            # portfolio's connector snapshot at a time under the app's per-portfolio
+            # connector model, so a re-sync under a different portfolio must move the
+            # row rather than silently leave it parented to the stale portfolio
+            # (metron-ops#192).
+            if row.portfolio_id != portfolio_id:
+                row.portfolio_id = portfolio_id
         out[acct.number] = row
     return out
 
