@@ -1,7 +1,7 @@
 "use server";
 
-// Server Action: save the investor profile the Advisor compares the portfolio against.
-// Runs server-side; revalidates the advisor pages so the new targets take effect.
+// Server Action: save the investor profile the Intelligence feature compares the portfolio against.
+// Runs server-side; revalidates the Intelligence pages so the new targets take effect.
 
 import { revalidatePath } from "next/cache";
 import { putAdvisorProfile, MetronApiError, type AdvisorProfile } from "@/lib/api";
