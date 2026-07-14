@@ -2,7 +2,7 @@ import Link from "next/link";
 import { getAlphaEngine, MetronApiError } from "@/lib/api";
 import { money } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -14,11 +14,11 @@ const DIR_CLASS: Record<string, string> = {
 export default async function AlphaEnginePage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const { id } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
   let view;
   try {
-    view = await getAlphaEngine(tenantId, id);
+    view = await getAlphaEngine(apiAuth, id);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>The Alpha Engine overlay isn&apos;t available for this portfolio.</Empty>;

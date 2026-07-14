@@ -6,7 +6,7 @@ import { AsOfClose } from "@/components/as-of-close";
 import { TierSimulator } from "@/components/tier-simulator";
 import { ComputeRisk } from "@/components/compute-risk";
 import { featureEntitlement, loadEntitlements, toFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
 export const dynamic = "force-dynamic";
@@ -24,16 +24,16 @@ export default async function RiskPage(
   const searchParams = await props.searchParams;
   const params = await props.params;
   const { id } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
   // URL selection wins; with none, the saved panel selection is applied (redirect).
-  const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}/risk`, searchParams.account_id);
+  const accountIds = await resolveAccountIds(apiAuth, id, `/portfolios/${id}/risk`, searchParams.account_id);
   const navQuery = acctParams(accountIds);
 
   // Entitlement gate: Risk is feed-dependent. The nav hides the link when excluded,
   // but a direct navigation reaches here — render a full-page Locked instead of the
   // page (and skip the data fetch). The owner-simulator preview is honored via cookies.
-  const entitlements = await loadEntitlements(tenantId);
+  const entitlements = await loadEntitlements(apiAuth);
   const featureStates = toFeatureStates(entitlements);
   const riskEnt = featureEntitlement(entitlements, "risk");
   if (riskEnt && !riskEnt.available) {
@@ -48,7 +48,7 @@ export default async function RiskPage(
 
   let risk;
   try {
-    risk = await getRisk(tenantId, id, accountIds);
+    risk = await getRisk(apiAuth, id, accountIds);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Portfolio not found.</Empty>;

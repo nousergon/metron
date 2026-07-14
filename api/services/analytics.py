@@ -51,6 +51,14 @@ class Holding:
     # Broker-reported native price/value (snapshot sources) — the valuation fallback
     # when the price cache can't resolve a foreign listing. None for ledger-only holdings.
     broker_market_price: float | None = None
+    # Broker-reported NATIVE TOTAL market value (the raw sum from the position snapshot,
+    # before dividing by quantity). Used as an independent reference to detect ADR ratio
+    # changes / stock splits that update the price in BOTH the EOD close AND the quote
+    # feed without adjusting the position quantity — the ``_apply_valuation`` cross-check
+    # compares ``market_value_local`` (= last_price × quantity) against this raw total
+    # and prefers the broker's figure if the ratio is outside [0.5, 2.0].
+    # None for ledger-only holdings (no broker snapshot to begin with).
+    broker_market_value: float | None = None
     # The broker's own "as of" date for this position (IBKR Flex statement report_date /
     # SnapTrade account last_holdings_sync) — i.e. how current the SHARE COUNT is, as
     # distinct from ``last_price_date`` (how current the PRICE is). None for ledger-only
@@ -92,6 +100,9 @@ class Holding:
     overnight_pct: float | None = None
     intraday_pct: float | None = None
     day_pct: float | None = None
+    # Position-level day value change in BASE currency ($): market_value × day_pct/(1+day_pct)
+    # — the price-move component only, at today's qty/FX. Live-quote-derived like day_pct.
+    day_change: float | None = None
     ytd_pct: float | None = None
     ltm_pct: float | None = None
     # True when the close-fed last_price is ≥1 full trading session behind the latest
@@ -122,9 +133,15 @@ class Holding:
     market_cap: float | None = None
     pe: float | None = None          # trailing P/E
     fwd_pe: float | None = None
+    eps: float | None = None         # $ trailing EPS — raw input behind pe (metron-ops#163)
+    fwd_eps: float | None = None     # $ forward EPS — raw input behind fwd_pe (metron-ops#163)
     pb: float | None = None          # price / book
+    book_value_per_share: float | None = None  # $ — raw input behind pb (metron-ops#178)
     ps: float | None = None          # price / sales (TTM)
+    revenue_per_share: float | None = None  # $ — raw input behind ps (metron-ops#178)
     ev_ebitda: float | None = None
+    ebitda: float | None = None      # $ raw EBITDA — input behind ev_ebitda (metron-ops#163)
+    enterprise_value: float | None = None  # $ — the other input behind ev_ebitda (metron-ops#178)
     peg: float | None = None
     div_yield: float | None = None   # fraction
     # Fundamentals:
@@ -203,6 +220,11 @@ class TransactionRow:
     amount: float
     fees: float
     currency: str
+    # Base-currency conversion at the trade-date rate; None when that rate isn't cached
+    # (no fabrication — the native amount is still shown). Mirrors RealizedLot's
+    # proceeds_base/cost_basis_base pattern.
+    fx_rate: float | None = None
+    amount_base: float | None = None
 
 
 def _portfolio_rows(
@@ -640,10 +662,18 @@ def holdings(
                 cost_basis=basis,
                 currency=ccy.get(t, "USD"),
                 broker_market_price=(bm / shares) if (bm is not None and shares) else None,
+                broker_market_value=bm,
                 broker_as_of=broker_as_of.get(t),
             )
         )
     return out
+
+
+# Cross-source scale-coherence bounds shared with the intraday overlay (``intraday.py``):
+# a ratio outside [0.5, 2.0] is treated as an ADR-ratio/stock-split scale class, not a real
+# single-session move. Used here to compare the computed market_value_local against the
+# broker's raw total market value (see _apply_valuation docstring).
+_VALUATION_CROSS_CHECK_BOUNDS = (0.5, 2.0)
 
 
 def _apply_valuation(h: Holding, prices: dict, fx_rates: dict[str, float | None]) -> None:
@@ -652,7 +682,21 @@ def _apply_valuation(h: Holding, prices: dict, fx_rates: dict[str, float | None]
     The single valuation rule shared by ``valued_holdings`` and
     ``valued_holdings_by_account`` so per-portfolio and per-account views value
     identically. Native price = cached close, else broker-native fallback; base fields
-    stay None when no FX rate is cached (never fabricates 1 unit foreign = 1 USD)."""
+    stay None when no FX rate is cached (never fabricates 1 unit foreign = 1 USD).
+
+    Cross-source scale coherence (2026-07-09, complement to the intraday-layer guard in
+    ``intraday._overlay``): the intraday guard catches a wrong-scale quote vs a good EOD
+    close, but an ADR-ratio change updates BOTH the EOD close AND the live quote to the
+    new scale proportionally, so the intraday guard sees ratio ~1.0 and lets it through.
+    Here, the computed ``market_value_local`` (= last_price × quantity) is additionally
+    checked against the broker's raw ``market_value_local`` from the position snapshot
+    (``Holding.broker_market_value``). If the ratio is outside ``_VALUATION_CROSS_CHECK_BOUNDS``
+    [0.5, 2.0], the broker's figure is treated as authoritative — the holding is re-priced
+    from the broker's total value, and the price feed is logged as suspect for that symbol.
+    This guard works when the broker has already adjusted the position quantity for the
+    ratio change but the EOD/quote feeds haven't (or vice versa); it does NOT help when
+    neither the broker nor the feeds has adjusted yet — that case requires a fresh broker
+    sync (timer-based Flex sync)."""
     h.fx_rate = fx_rates.get(h.currency)
     # Cost basis → base (needs only the FX rate, not a price).
     if h.fx_rate is not None:
@@ -669,6 +713,28 @@ def _apply_valuation(h: Holding, prices: dict, fx_rates: dict[str, float | None]
     if h.last_price is None:
         return
     h.market_value_local = h.last_price * h.quantity
+    # Cross-source scale coherence cross-check: if the broker reports a raw total
+    # market_value_local that differs from the computed value by more than the coherence
+    # threshold, the broker's figure is authoritative — the price feed likely reflects an
+    # ADR ratio change / stock split that the position quantity hasn't caught up with yet.
+    if (
+        h.broker_market_value is not None
+        and h.market_value_local > 0
+        and h.quantity > 0
+    ):
+        ratio = h.market_value_local / h.broker_market_value
+        if not (_VALUATION_CROSS_CHECK_BOUNDS[0] <= ratio <= _VALUATION_CROSS_CHECK_BOUNDS[1]):
+            logger.warning(
+                "ADR scale coherence for %s: computed market_value_local=%.2f vs "
+                "broker_market_value=%.2f (ratio=%.3f) — preferring broker total, "
+                "price feed suspect for this symbol",
+                h.ticker, h.market_value_local, h.broker_market_value, ratio,
+            )
+            # Re-price from the broker's total market value.
+            h.last_price = h.broker_market_value / h.quantity
+            h.last_price_date = h.broker_as_of
+            h.last_price_from_close = False
+            h.market_value_local = h.broker_market_value
     # Currency-invariant return ratio (native over native).
     h.unrealized_pct = ((h.market_value_local - h.cost_basis) / h.cost_basis) if h.cost_basis else None
     if h.fx_rate is not None:
@@ -982,20 +1048,32 @@ def transactions(
     account_id: uuid.UUID | None = None,
     account_ids: Collection[uuid.UUID] | None = None,
 ) -> list[TransactionRow]:
-    """The portfolio's stored transactions, oldest first (optionally one account or a set)."""
-    return [
-        TransactionRow(
-            trade_date=row.trade_date,
-            txn_type=row.txn_type,
-            ticker=ticker or "",
-            quantity=float(row.quantity),
-            price=float(row.price),
-            amount=float(row.amount),
-            fees=float(row.fees),
-            currency=row.currency,
+    """The portfolio's stored transactions, oldest first (optionally one account or a set).
+
+    ``amount`` is converted to the portfolio base currency at the FX rate **as of the
+    trade date** — the same as-of-date convention ``realized()`` uses for proceeds/basis.
+    A currency with no cached as-of rate keeps ``amount_base`` None (native still shown)."""
+    base = _base_currency(session, portfolio_id)
+    rows = list(_portfolio_rows(session, tenant_id, portfolio_id, account_id, account_ids))
+    out: list[TransactionRow] = []
+    for row, ticker in rows:
+        rate = fx_service.rate_as_of(session, row.currency, row.trade_date, base=base)
+        amount = float(row.amount)
+        out.append(
+            TransactionRow(
+                trade_date=row.trade_date,
+                txn_type=row.txn_type,
+                ticker=ticker or "",
+                quantity=float(row.quantity),
+                price=float(row.price),
+                amount=amount,
+                fees=float(row.fees),
+                currency=row.currency,
+                fx_rate=rate,
+                amount_base=(amount * rate) if rate is not None else None,
+            )
         )
-        for row, ticker in _portfolio_rows(session, tenant_id, portfolio_id, account_id, account_ids)
-    ]
+    return out
 
 
 @dataclass
@@ -1025,6 +1103,54 @@ class AccountInfo:
     day_pct: float | None = None
     ytd_pct: float | None = None
     ltm_pct: float | None = None
+
+
+@dataclass
+class AccountMeta:
+    """Cacheable selector metadata for one account — no valuation fields, so the
+    frontend can short-TTL cache this response without any stale-NAV risk
+    (metron-ops#91 Part 2). `AccountInfo`/`accounts()` remains the no-store source
+    for market_value/day_pct and everything else that reflects live market state."""
+
+    account_id: uuid.UUID
+    broker: str
+    external_id: str
+    name: str
+    currency: str
+    nickname: str | None = None
+    institution: str | None = None
+    account_type: str | None = None
+    tax_treatment: str | None = None
+    taxable: bool = True
+
+
+def accounts_meta(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[AccountMeta]:
+    """The portfolio's connected accounts' selector metadata only — a bare read of the
+    `accounts` table (+ derived taxable status), with NO `valued_holdings_by_account`
+    join. That join is what makes `accounts()` a live, no-store read; omitting it here
+    is what makes this response safe to cache (metron-ops#91 Part 2)."""
+    from api.services import account_meta  # local import avoids a cycle (account_meta → models)
+
+    rows = session.scalars(
+        select(models.Account)
+        .where(models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+        .order_by(models.Account.broker, models.Account.external_id)
+    ).all()
+    return [
+        AccountMeta(
+            account_id=a.id,
+            broker=a.broker,
+            external_id=a.external_id,
+            name=a.name or "",
+            currency=a.currency,
+            nickname=a.nickname,
+            institution=a.institution,
+            account_type=a.account_type,
+            tax_treatment=a.tax_treatment,
+            taxable=account_meta.is_taxable(a),
+        )
+        for a in rows
+    ]
 
 
 @dataclass

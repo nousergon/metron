@@ -5,14 +5,14 @@
 
 import { revalidatePath } from "next/cache";
 import { computeRisk, MetronApiError } from "@/lib/api";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export type ActionResult = { ok: boolean; message: string };
 
 export async function computeRiskAction(portfolioId: string, accountIds?: string[]): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    const r = await computeRisk(tenantId, portfolioId, accountIds);
+    const apiAuth = await requireApiAuth();
+    const r = await computeRisk(apiAuth, portfolioId, accountIds);
     revalidatePath(`/portfolios/${portfolioId}/risk`);
     return {
       ok: true,

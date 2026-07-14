@@ -60,6 +60,27 @@ cat "$BLOCK" >> "$ENVF"
 rm -f "$BLOCK"
 echo "  hydrated ${HYDRATED} var(s) from SSM (values not logged)"
 
+# Install tracked systemd units when the repo copy differs from the live one, so a unit
+# edit deploys via the merge button alone (metron-ops DEPLOY.md declares
+# infrastructure/systemd/ the source of truth — before this step the box copy drifted
+# until someone hand-copied it; the 2026-07-08 flex-sync env-overlay fix is the case in
+# point). First-time unit INSTALLS still need a manual `systemctl enable` (see DEPLOY.md);
+# this handles updates to already-enabled units.
+UNITS_DIR="$REPO/../metron-ops/infrastructure/systemd"
+UNITS_CHANGED=0
+for f in "$UNITS_DIR"/*.service "$UNITS_DIR"/*.timer; do
+  [ -e "$f" ] || continue
+  dest="/etc/systemd/system/$(basename "$f")"
+  if ! cmp -s "$f" "$dest"; then
+    sudo cp "$f" "$dest" || { echo "unit install FAILED: $(basename "$f")"; exit 1; }
+    UNITS_CHANGED=1
+    echo "  installed unit $(basename "$f")"
+  fi
+done
+if [ "$UNITS_CHANGED" = 1 ]; then
+  sudo systemctl daemon-reload
+fi
+
 sudo systemctl restart metron-api metron-web
 
 # Health checks — poll with a bounded retry instead of a fixed sleep. A fixed sleep races
@@ -84,3 +105,29 @@ wait_for_200() {
 wait_for_200 "http://127.0.0.1:8000/health" "metron-api" || exit 1
 wait_for_200 "http://127.0.0.1:3000/" "metron-web" || exit 1
 echo "deploy OK — metron-api + metron-web both healthy"
+
+# ── /dash second process (metron-ops#180) ────────────────────────────────────
+# metron.nousergon.ai/dash is served by a SECOND Next.js process
+# (metron-dash-web.service, :3003) built from this SAME checkout with
+# METRON_WEB_BASE_PATH=/dash. Next.js bakes basePath in at build time, so the
+# variant builds into its own distDir (web/.next-dash — see web/next.config.mjs)
+# and the two builds coexist without clobbering each other; the unit starts
+# `next start` with the same env var so it serves the matching output.
+#
+# Gated on the unit being ENABLED: until the one-time box bootstrap runs
+# (bootstrap build + `sudo systemctl enable --now metron-dash-web` — see the
+# unit file in metron-ops/infrastructure/systemd/ and metron-ops#180), this
+# whole stage is a graceful no-op, so merging it early can never fail the
+# primary deploy. It runs AFTER the primary health checks so a /dash-only
+# failure is unambiguous in the deploy log (primary already declared OK).
+if systemctl is-enabled --quiet metron-dash-web.service 2>/dev/null; then
+  echo "=== building /dash variant (METRON_WEB_BASE_PATH=/dash → web/.next-dash) ==="
+  cd "$REPO/web"
+  NODE_OPTIONS=--max-old-space-size=700 METRON_WEB_BASE_PATH=/dash npm run build \
+    || { echo "dash web build FAILED"; exit 1; }
+  sudo systemctl restart metron-dash-web
+  wait_for_200 "http://127.0.0.1:3003/dash" "metron-dash-web" || exit 1
+  echo "dash deploy OK — metron-dash-web healthy"
+else
+  echo "metron-dash-web.service not enabled — skipping /dash stage (box bootstrap pending, metron-ops#180)"
+fi

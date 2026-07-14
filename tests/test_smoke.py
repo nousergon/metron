@@ -7,6 +7,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from conftest import _test_tenant_id
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -15,6 +16,7 @@ from sqlalchemy.pool import StaticPool
 from api.db import models
 from api.db.session import Base, get_session
 from api.main import app
+from api.services import identity
 
 
 @pytest.fixture()
@@ -36,6 +38,10 @@ def client():
             session.close()
 
     app.dependency_overrides[get_session] = _override
+    # Same auth seam swap as the shared conftest `client` fixture: this file exercises
+    # tenant ISOLATION, not authentication — the real bearer-JWT path is covered end to
+    # end in tests/test_auth_jwt.py.
+    app.dependency_overrides[identity.require_tenant_id] = _test_tenant_id
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

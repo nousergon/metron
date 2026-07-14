@@ -1,15 +1,18 @@
 """Portfolios router — CRUD + file ingestion + ledger-derived analytics (PH1).
 
-Tenant resolution is stubbed (``X-Tenant-Id`` header) until auth lands in PH4; the
-real product derives the tenant from the authenticated session.
+Tenant resolution is authenticated (PH4, metron-ops#179): a bearer JWT from the
+shared nousergon-auth identity service resolves to the caller's tenant via
+``api.services.identity.require_tenant_id`` (the read-only demo tenant is the one
+header-based carve-out — see that module).
 
-PH1 adds the ingestion round-trip the free beta is built on. Three sources land
-through one canonical pipeline + persistence bridge: ``POST …/import/csv`` and
-``…/import/ofx`` (transaction-sourced — a trade history the ledger reconstructs
-positions from) and ``…/import/flex`` (snapshot-sourced — IBKR reports current
-positions directly). ``GET …/holdings`` unions both models; ``…/transactions`` /
-``…/realized`` read the ledger view back out. Price-dependent analytics (market
-value, performance, risk) arrive in later PH1–PH3 increments.
+PH1 adds the ingestion round-trip the free beta is built on. Every source lands
+through one canonical pipeline + persistence bridge: ``POST …/import/csv``,
+``…/import/ofx``, and ``…/positions/manual`` (transaction-sourced — a trade
+history / single synthesized BUY the ledger reconstructs positions from) and
+``…/import/flex`` (snapshot-sourced — IBKR reports current positions directly).
+``GET …/holdings`` unions both models; ``…/transactions`` / ``…/realized`` read
+the ledger view back out. Price-dependent analytics (market value, performance,
+risk) arrive in later PH1–PH3 increments.
 """
 
 from __future__ import annotations
@@ -52,7 +55,9 @@ from api.services import (
 from api.services import (
     countries as countries_service,
 )
+from api.services import diagnostics as diagnostics_service
 from api.services import fx as fx_service
+from api.services import identity as identity_service
 from api.services import prices as price_service
 from api.services import (
     sectors as sectors_service,
@@ -63,6 +68,7 @@ from api.services import (
 from api.services import valuation_medians as valuation_medians_service
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult
+from portfolio_analytics.broker_io.manual_entry import ManualEntryError, ManualPosition, build_manual_snapshot
 from portfolio_analytics.broker_io.ofx_import import parse_ofx
 from portfolio_analytics.broker_io.snaptrade_reader import SnapTradeReader
 from portfolio_analytics.ingestion.ibkr_flex_connector import IbkrFlexConnector
@@ -180,6 +186,8 @@ class HoldingOut(BaseModel):
     overnight_pct: float | None = None
     intraday_pct: float | None = None
     day_pct: float | None = None
+    # Position-level day value change in base currency ($) — see analytics.Holding.
+    day_change: float | None = None
     ytd_pct: float | None = None
     ltm_pct: float | None = None
     # Reference classification (cached from the data spine). GICS sector + country of
@@ -192,9 +200,15 @@ class HoldingOut(BaseModel):
     market_cap: float | None = None
     pe: float | None = None
     fwd_pe: float | None = None
+    eps: float | None = None
+    fwd_eps: float | None = None
     pb: float | None = None
+    book_value_per_share: float | None = None
     ps: float | None = None
+    revenue_per_share: float | None = None
     ev_ebitda: float | None = None
+    ebitda: float | None = None
+    enterprise_value: float | None = None
     peg: float | None = None
     div_yield: float | None = None
     rev_growth: float | None = None
@@ -288,6 +302,8 @@ class TransactionOut(BaseModel):
     amount: float
     fees: float
     currency: str
+    fx_rate: float | None = None       # trade-date base-per-unit (1.0 for USD)
+    amount_base: float | None = None
 
 
 class IncomeOut(BaseModel):
@@ -328,6 +344,24 @@ class AccountOut(BaseModel):
     day_pct: float | None = None
     ytd_pct: float | None = None
     ltm_pct: float | None = None
+
+
+class AccountMetaOut(BaseModel):
+    """Selector metadata only (metron-ops#91 Part 2) — deliberately excludes every
+    valuation/return field on `AccountOut` so this response is safe to short-TTL cache."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: uuid.UUID
+    broker: str
+    external_id: str
+    name: str
+    currency: str
+    nickname: str | None = None
+    institution: str | None = None
+    account_type: str | None = None
+    tax_treatment: str | None = None
+    taxable: bool = True
 
 
 class SummaryOut(BaseModel):
@@ -472,6 +506,8 @@ class RollingRiskOut(BaseModel):
     sharpe: float | None
     sortino: float | None
     max_drawdown: float | None
+    psr: float | None
+    cvar: float | None
 
 
 class PerformanceOut(BaseModel):
@@ -491,6 +527,8 @@ class PerformanceOut(BaseModel):
     sharpe: float | None
     sortino: float | None
     max_drawdown: float | None
+    psr: float | None
+    cvar: float | None
     spy_return: float | None
     alpha: float | None
     rolling: list[RollingRiskOut] = []
@@ -587,6 +625,67 @@ class AttributionOut(BaseModel):
     sectors: list[SectorEffectOut]
 
 
+class DiagnosticsSectorRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    sector: str
+    weight: float
+    market_value: float
+    benchmark_weight: float | None
+    delta: float | None
+
+
+class DiagnosticsGeoRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    bucket: str
+    weight: float
+    market_value: float
+
+
+class DiagnosticsConcentrationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    n_positions: int
+    hhi: float
+    effective_n: float
+    top5_share: float
+    top10_share: float
+    max_position_ticker: str
+    max_position_weight: float
+
+
+class TargetDriftRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    kind: str  # "allocation" | "max_position" | "avoid_sector"
+    label: str
+    target: float | None
+    actual: float | None
+    breach: bool | None
+    detail: str | None
+
+
+class DiagnosticsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    computable: bool
+    reason: str | None
+    required_tier: str | None = None
+    as_of: date | None
+    base_currency: str
+    total_market_value: float
+    benchmark: str
+    benchmark_available: bool
+    benchmark_reason: str | None
+    benchmark_required_tier: str | None = None
+    concentration: DiagnosticsConcentrationOut | None
+    sectors: list[DiagnosticsSectorRowOut]
+    geography: list[DiagnosticsGeoRowOut]
+    # null = the user has authored no targets (the drift section doesn't render).
+    target_drift: list[TargetDriftRowOut] | None
+
+
 class CalendarEventOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -621,9 +720,15 @@ class WatchlistEntryOut(BaseModel):
     market_cap: float | None = None
     pe: float | None = None
     fwd_pe: float | None = None
+    eps: float | None = None
+    fwd_eps: float | None = None
     pb: float | None = None
+    book_value_per_share: float | None = None
     ps: float | None = None
+    revenue_per_share: float | None = None
     ev_ebitda: float | None = None
+    ebitda: float | None = None
+    enterprise_value: float | None = None
     peg: float | None = None
     div_yield: float | None = None
     rev_growth: float | None = None
@@ -727,14 +832,10 @@ class FlexImportIn(BaseModel):
     query_id: str
 
 
-def _tenant_id(x_tenant_id: str | None = Header(default=None)) -> uuid.UUID:
-    # Placeholder for the authenticated tenant (PH4 replaces this with the session).
-    if not x_tenant_id:
-        raise HTTPException(status_code=401, detail="X-Tenant-Id header required (auth lands in PH4)")
-    try:
-        return uuid.UUID(x_tenant_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail="X-Tenant-Id must be a UUID") from e
+# The authenticated tenant (PH4, metron-ops#179) — bearer-JWT verification against the
+# shared nousergon-auth service + the read-only demo carve-out live in
+# api/services/identity.py; aliased so the router's Depends sites read naturally.
+_tenant_id = identity_service.require_tenant_id
 
 
 def _effective_entitlement(
@@ -804,7 +905,7 @@ def list_portfolios(
     session: Session = Depends(get_session),
 ) -> list[models.Portfolio]:
     rows = list(session.scalars(select(models.Portfolio).where(models.Portfolio.tenant_id == tenant_id)).all())
-    # The Reference Rate showcase is visible on every real tenant's dashboard (not just the
+    # The Showcase Portfolio is visible on every real tenant's dashboard (not just the
     # isolated demo tenant, which already owns it and gets it via the query above) — lets a
     # prospect see live product behavior before linking their own accounts. Fail-soft: on a
     # DB where the daily sync hasn't run yet, `session.get` returns None and we just omit it.
@@ -839,7 +940,7 @@ def _owned_portfolio(
     """Resolve a portfolio the caller's tenant owns, or 404 (never leak cross-tenant
     existence — a portfolio of another tenant is indistinguishable from a missing one).
 
-    ONE explicit exception: the fixed Reference Rate showcase (demo.REFERENCE_PORTFOLIO_ID)
+    ONE explicit exception: the fixed Showcase Portfolio (demo.REFERENCE_PORTFOLIO_ID)
     resolves for ANY caller tenant, read-only — it's designed to be visible on every real
     user's dashboard (see list_portfolios). This is a single named-constant carve-out, not
     a general cross-tenant widening; writes to it are still refused regardless of the
@@ -860,7 +961,7 @@ def _owned_portfolio(
     # is actually looking AND has the intraday overlay enabled. Every authenticated
     # portfolio request flows through this dependency, making it the one natural
     # chokepoint for "Metron is open". Keyed by the portfolio's OWN tenant_id (not the
-    # caller's) — for the Reference Rate carve-out above those differ, and every other
+    # caller's) — for the Showcase Portfolio carve-out above those differ, and every other
     # tenant-scoped lookup in this file (preferences, snaptrade exclusions, ...) already
     # keys off portfolio.tenant_id for exactly this reason.
     data_spine.touch_ui_heartbeat(session=session, tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id)
@@ -1203,6 +1304,9 @@ _VALUATION_MODES = {"live", "settled"}
 
 class HoldingsViewOut(BaseModel):
     grouping: str | None = None
+    # DEPRECATED 2026-07-08: the web no longer hydrates or persists the column preset —
+    # Holdings always lands on Overview. Field kept (accepted + returned) for contract
+    # stability; the client always PUTs null, which clears any pre-2026-07-08 stored set.
     visible_bands: list[str] | None = None
     combine_by_account: bool | None = None
     hidden_types: list[str] | None = None
@@ -1353,6 +1457,56 @@ async def import_ofx(
     except FileImportError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     return _persist_and_summarize(session, portfolio, result)
+
+
+class ManualPositionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str
+    quantity: float
+    cost_basis: float  # TOTAL cost basis for the position (not per-share)
+    trade_date: date | None = None  # defaults to today when omitted
+    currency: str = "USD"
+
+
+@router.post("/{portfolio_id}/positions/manual", response_model=ImportOut)
+def add_manual_position(
+    body: ManualPositionIn,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> ImportOut:
+    """Add one manually-entered stock/ETF position — the no-brokerage,
+    no-file path (metron-ops#187) alongside CSV/OFX/Flex/SnapTrade.
+
+    Synthesizes a single-row ``ConnectorSnapshot`` (one synthetic BUY activity)
+    the same shape ``import/csv`` produces for a parsed BUY row, and persists it
+    through the identical ``persistence.persist_snapshot`` bridge — no parallel
+    ingestion path. The backing account is created with ``broker="manual"``
+    (shared across a portfolio's manual entries, like CSV's single "CSV"
+    account), so it's visibly distinguishable from synced/imported accounts
+    wherever account source already surfaces. Positions are ledger-derived at
+    read time, same as CSV/OFX — never written to the positions table directly.
+
+    Stocks/ETFs only (held-away assets are out of scope — see the issue). A bad
+    ticker or non-positive quantity returns 422; nothing is partially persisted
+    on a validation failure.
+    """
+    try:
+        snapshot = build_manual_snapshot(
+            ManualPosition(
+                ticker=body.ticker,
+                quantity=body.quantity,
+                cost_basis=body.cost_basis,
+                trade_date=body.trade_date,
+                currency=body.currency,
+            )
+        )
+    except ManualEntryError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    persisted = persistence.persist_snapshot(
+        session, tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id, snapshot=snapshot
+    )
+    return _summarize(snapshot, persisted, parsed=1, skipped=0, errors=[])
 
 
 @router.post("/{portfolio_id}/import/flex", response_model=ImportOut)
@@ -1912,6 +2066,22 @@ def get_accounts(
     return accts
 
 
+@router.get("/{portfolio_id}/accounts/meta", response_model=list[AccountMetaOut])
+def get_accounts_meta(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> list[analytics.AccountMeta]:
+    """Cacheable selector metadata only — account_id/broker/name/nickname/tax flags,
+    no live valuation (metron-ops#91 Part 2, operator decision 2026-07-08). Callers that
+    need per-account market_value/day_pct must use `GET /accounts` (still no-store);
+    this endpoint is the slim, short-TTL-cacheable read for consumers (e.g. the Settings
+    account-tag table) that only need the metadata.
+
+    Registered BEFORE the dynamic `/accounts/{account_id}` route below so "meta" is
+    never captured as an account_id path param."""
+    return analytics.accounts_meta(session, portfolio.tenant_id, portfolio.id)
+
+
 @router.get("/{portfolio_id}/performance", response_model=PerformanceOut)
 def get_performance(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
@@ -2368,6 +2538,42 @@ def compute_attribution(
     return attribution.compute_attribution(
         session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=True, account_ids=account_ids
     )
+
+
+@router.get("/{portfolio_id}/diagnostics", response_model=DiagnosticsOut)
+def get_diagnostics(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
+    session: Session = Depends(get_session),
+    x_preview_tier: str | None = Header(default=None),
+    x_preview_feed: str | None = Header(default=None),
+) -> diagnostics_service.DiagnosticsSummary:
+    """Concentration & diversification diagnostics (metron-ops-I167) — deterministic
+    portfolio-structure FACTS on the SETTLED context: sector weights vs the benchmark,
+    the US/International geography split, HHI / top-N concentration, and a mechanical
+    evaluation of the user's own stated targets (rendered only when authored).
+    ``?account_id=`` scopes the holdings. Core analytics (the ``concentration``
+    feature — free/beta tier); ONLY the benchmark-weight columns ride the licensed
+    ``benchmark`` source, so they degrade honestly (with the upsell tier) on a
+    deployment that excludes it rather than locking the whole card."""
+    feat = _effective_entitlement("concentration", x_preview_tier, x_preview_feed)
+    if not feat["available"]:
+        return diagnostics_service.DiagnosticsSummary(
+            computable=False, reason=feat["reason"], required_tier=feat["required_tier"]
+        )
+    bench_feat = _effective_entitlement("benchmark", x_preview_tier, x_preview_feed)
+    summary = diagnostics_service.compute_portfolio_diagnostics(
+        session,
+        portfolio.tenant_id,
+        portfolio.id,
+        base_currency=portfolio.base_currency or "USD",
+        account_ids=account_ids,
+        include_benchmark=bench_feat["available"],
+    )
+    if not bench_feat["available"]:
+        summary.benchmark_reason = bench_feat["reason"]
+        summary.benchmark_required_tier = bench_feat["required_tier"]
+    return summary
 
 
 @router.get("/{portfolio_id}/calendar", response_model=CalendarOut)

@@ -7,12 +7,12 @@
 
 import { getIndices, type Indices } from "@/lib/api";
 import { previewFromCookies } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export async function fetchIndicesAction(): Promise<Indices | null> {
   try {
-    const tenantId = await requireTenantId();
-    return await getIndices(tenantId, await previewFromCookies());
+    const apiAuth = await requireApiAuth();
+    return await getIndices(apiAuth, previewFromCookies());
   } catch {
     return null; // transient — the client keeps showing the last good snapshot
   }

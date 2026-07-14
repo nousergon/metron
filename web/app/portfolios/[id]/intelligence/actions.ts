@@ -6,14 +6,14 @@
 
 import { revalidatePath } from "next/cache";
 import { generateAdvisor, MetronApiError } from "@/lib/api";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export type ActionResult = { ok: boolean; message: string };
 
 export async function generateAdvisorAction(portfolioId: string): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    await generateAdvisor(tenantId, portfolioId);
+    const apiAuth = await requireApiAuth();
+    await generateAdvisor(apiAuth, portfolioId);
     revalidatePath(`/portfolios/${portfolioId}/advisor`);
     return { ok: true, message: "Generated." };
   } catch (e) {

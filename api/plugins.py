@@ -64,6 +64,41 @@ class MetronPlugin(Protocol):
     def enabled(self) -> bool: ...
 
 
+@runtime_checkable
+class ProvidesInvestorTargets(Protocol):
+    """Optional plugin capability: the user's own stated investment targets.
+
+    The FREE-tier diagnostics card (metron-ops-I167) evaluates the user's authored
+    targets MECHANICALLY ("you set a 10% max position; AAPL is 14%"). The targets live
+    in the private advisor plugin's ``AdvisorProfile`` store, so the public repo reads
+    them through this capability protocol — never by importing the private package or
+    its tables. A plugin exposes it by adding one method; a deploy without such a
+    plugin (or with the user having authored nothing) simply has no targets, and the
+    drift section doesn't render.
+
+    ``investor_targets`` returns the tenant's ``investor_profile`` config block (the
+    schema already mirrored publicly in ``web/lib/api.ts``) or ``None`` when the user
+    has stored no profile. Consumers extract ONLY the mechanical target fields
+    (``portfolio_analytics.domain.diagnostics.StatedTargets.from_profile_block``);
+    suitability fields never reach any generated output (metron-ops-I166).
+    """
+
+    def investor_targets(self, session, tenant_id) -> dict | None: ...
+
+
+def investor_targets(session, tenant_id) -> dict | None:
+    """The tenant's stated-targets profile block from the first active plugin that
+    provides one, or ``None`` (no capable plugin installed/enabled, or nothing stored).
+    Session/tenant types are the API layer's (SQLAlchemy Session, UUID) — untyped here
+    so this plumbing module keeps zero DB imports."""
+    for plugin in active_plugins():
+        if isinstance(plugin, ProvidesInvestorTargets):
+            block = plugin.investor_targets(session, tenant_id)
+            if block:
+                return block
+    return None
+
+
 def _discover() -> list[MetronPlugin]:
     """Load every plugin registered under the ``metron.plugins`` entry-point group.
 

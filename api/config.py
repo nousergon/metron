@@ -12,6 +12,15 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./dev.sqlite"
     cors_origins: str = "http://localhost:3000"
     env: str = "dev"
+    # Shared identity service (metron-ops#179) — nousergon-auth. Metron no longer runs
+    # its own Better Auth instance; the shared service at `auth_base_url` authenticates
+    # users and mints short-lived EdDSA JWTs, which the API verifies locally against the
+    # service's JWKS (see api.services.auth_jwt — no per-request round-trip). `iss` and
+    # `aud` both default to the service's base URL; `auth_jwt_audience` is an override in
+    # case the deployed service ever pins a custom audience.
+    auth_base_url: str = "https://auth.nousergon.ai"
+    auth_jwt_audience: str | None = None
+    auth_jwks_cache_seconds: int = 300
     # Personal/single-operator mode: enables the server-side SnapTrade sync, which uses
     # ONE operator SnapTrade connection (SNAPTRADE_* env) shared by the process. Safe only
     # on a single-tenant deploy — OFF by default so a multi-tenant deploy can never let one

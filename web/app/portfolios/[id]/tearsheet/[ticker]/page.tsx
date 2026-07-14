@@ -2,7 +2,7 @@ import Link from "next/link";
 import { getTearsheet, MetronApiError } from "@/lib/api";
 import { isoDate, money, moneyWhole, percent, quantity, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -27,11 +27,11 @@ function num(v: number | null, fmt: (n: number) => string): string {
 export default async function TearsheetPage(props: { params: Promise<{ id: string; ticker: string }> }) {
   const params = await props.params;
   const { id, ticker } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
   let sheet;
   try {
-    sheet = await getTearsheet(tenantId, id, ticker);
+    sheet = await getTearsheet(apiAuth, id, ticker);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return (

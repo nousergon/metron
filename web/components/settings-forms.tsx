@@ -12,7 +12,7 @@ import {
   updateAccountTagsAction,
   updateBaseCurrencyAction,
 } from "@/app/portfolios/[id]/actions";
-import type { Account, ExcludedAccount, Preferences } from "@/lib/api";
+import type { AccountMeta, ExcludedAccount, Preferences } from "@/lib/api";
 import { ReadOnlyNotice } from "@/components/ui";
 import { isReferencePortfolio } from "@/lib/demo";
 
@@ -72,7 +72,7 @@ const TAX_TREATMENTS: { value: string; label: string }[] = [
   { value: "tax_exempt", label: "Tax-exempt" },
 ];
 
-export function AccountTagRow({ portfolioId, account }: { portfolioId: string; account: Account }) {
+export function AccountTagRow({ portfolioId, account }: { portfolioId: string; account: AccountMeta }) {
   const [nickname, setNickname] = useState(account.nickname ?? "");
   const [institution, setInstitution] = useState(account.institution ?? "");
   const [accountType, setAccountType] = useState(account.account_type ?? "");
@@ -81,7 +81,7 @@ export function AccountTagRow({ portfolioId, account }: { portfolioId: string; a
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  // The Reference Rate showcase (metron-ops#120) is a live, real-tenant-visible read-only
+  // The Showcase Portfolio (metron-ops#120) is a live, real-tenant-visible read-only
   // mirror (metron#162) — the API 403s account-tag edits for it regardless of caller tenant
   // (api/main.py::_demo_read_only).
   const readOnly = isReferencePortfolio(portfolioId);
@@ -165,8 +165,11 @@ export function AccountTagRow({ portfolioId, account }: { portfolioId: string; a
 }
 
 export function PreferencesForm({ portfolioId, current }: { portfolioId: string; current: Preferences }) {
-  const [risk, setRisk] = useState(current.risk_tolerance ?? "");
-  const [objective, setObjective] = useState(current.objective ?? "");
+  // risk_tolerance / objective inputs RETIRED pre-registration (metron-ops-I174,
+  // ruled 2026-07-09): suitability-style fields aren't collected while unregistered.
+  // The fields stay in the Preferences type/API contract and any stored values pass
+  // through saves unchanged below, so nothing is destroyed — the inputs can return
+  // with the registered tier.
   const [notes, setNotes] = useState(current.notes ?? "");
   const [intradayEnabled, setIntradayEnabled] = useState(current.intraday_enabled ?? false);
   const [pending, start] = useTransition();
@@ -176,8 +179,8 @@ export function PreferencesForm({ portfolioId, current }: { portfolioId: string;
     setMsg(null);
     start(async () => {
       const r = await savePreferencesAction(portfolioId, {
-        risk_tolerance: risk || null,
-        objective: objective || null,
+        risk_tolerance: current.risk_tolerance ?? null,
+        objective: current.objective ?? null,
         notes: notes.trim() || null,
         intraday_enabled: intradayEnabled,
       });
@@ -187,32 +190,6 @@ export function PreferencesForm({ portfolioId, current }: { portfolioId: string;
 
   return (
     <div className="max-w-xl space-y-3">
-      <label className="block text-sm">
-        <span className="text-muted">Risk tolerance</span>
-        <select
-          className="mt-1 block w-full rounded border border-line px-2 py-1"
-          value={risk}
-          onChange={(e) => setRisk(e.target.value)}
-        >
-          <option value="">—</option>
-          <option value="conservative">Conservative</option>
-          <option value="moderate">Moderate</option>
-          <option value="aggressive">Aggressive</option>
-        </select>
-      </label>
-      <label className="block text-sm">
-        <span className="text-muted">Objective</span>
-        <select
-          className="mt-1 block w-full rounded border border-line px-2 py-1"
-          value={objective}
-          onChange={(e) => setObjective(e.target.value)}
-        >
-          <option value="">—</option>
-          <option value="income">Income</option>
-          <option value="growth">Growth</option>
-          <option value="balanced">Balanced</option>
-        </select>
-      </label>
       <label className="block text-sm">
         <span className="text-muted">Notes</span>
         <textarea
@@ -258,7 +235,7 @@ export function ExcludedAccountRow({ portfolioId, excluded }: { portfolioId: str
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const router = useRouter();
 
-  // The Reference Rate showcase (metron-ops#120) is a live, real-tenant-visible read-only
+  // The Showcase Portfolio (metron-ops#120) is a live, real-tenant-visible read-only
   // mirror (metron#162) — the API 403s account restore for it regardless of caller tenant
   // (api/main.py::_demo_read_only).
   const readOnly = isReferencePortfolio(portfolioId);

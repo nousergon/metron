@@ -1,4 +1,5 @@
-"""Reference-rate connector — the illustrative "Reference Rate" showcase portfolio.
+"""Reference-rate connector — the illustrative "Showcase Portfolio" (metron.name); the
+module/source names below keep the pre-rename "reference" terminology internally.
 
 A ``BrokerConnector`` whose "broker" is an S3 contract artifact
 (``metron/reference_rate.json``) published by the engine's EOD pipeline, rather than a
@@ -32,6 +33,7 @@ from portfolio_analytics.ingestion.schema import (
     CanonicalAccount,
     CanonicalHolding,
     CanonicalSecurity,
+    asset_type_from_category,
     synth_security_id,
 )
 
@@ -41,7 +43,7 @@ SOURCE = "reference"
 REFERENCE_RATE_KEY = "metron/reference_rate.json"
 # The single illustrative account the showcase rolls up into.
 ACCOUNT_NUMBER = "reference"
-ACCOUNT_LABEL = "Reference Rate"
+ACCOUNT_LABEL = "Showcase Portfolio"
 
 
 def _bucket() -> str:
@@ -100,12 +102,19 @@ def artifact_to_snapshot(artifact: dict[str, Any]) -> ConnectorSnapshot:
                 source=SOURCE,
             )
         )
+        # ``asset_type`` (STK/ETF/FUND/MF) is additive on the producer contract — an
+        # artifact published before executor/reference_rate.py started emitting it
+        # carries no such field, so absence means "not yet backfilled", not "unknown";
+        # default to equity (Crucible's historical universe) for that transition
+        # window only, same as every other additive-field consumer in this codebase.
+        category = pos.get("asset_type")
+        asset_type = asset_type_from_category(category) if category else ASSET_EQUITY
         securities.append(
             CanonicalSecurity(
                 security_id=sid,
                 ticker=ticker,
                 currency=base_ccy,
-                asset_type=ASSET_EQUITY,
+                asset_type=asset_type,
             )
         )
 

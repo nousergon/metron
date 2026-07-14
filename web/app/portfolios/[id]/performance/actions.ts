@@ -6,14 +6,14 @@
 
 import { revalidatePath } from "next/cache";
 import { MetronApiError, reconstructPerformance } from "@/lib/api";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export type ActionResult = { ok: boolean; message: string };
 
 export async function reconstructAction(portfolioId: string): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    const perf = await reconstructPerformance(tenantId, portfolioId);
+    const apiAuth = await requireApiAuth();
+    const perf = await reconstructPerformance(apiAuth, portfolioId);
     revalidatePath(`/portfolios/${portfolioId}/performance`);
     return { ok: true, message: `Reconstructed ${perf.n_snapshots} day${perf.n_snapshots === 1 ? "" : "s"} of history.` };
   } catch (e) {

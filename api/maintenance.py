@@ -33,7 +33,7 @@ from api.db.session import SessionLocal, create_all
 from api.services import analytics, attribution, broker_sync, data_spine, fx, performance, risk
 from api.services import calendar as calendar_svc
 from api.services import prices as price_service
-from api.services.demo import REFERENCE_PORTFOLIO_ID
+from api.services.demo import REFERENCE_PORTFOLIO_ID, SAMPLE_SLEEVE_TICKERS, live_sleeve_tickers
 from portfolio_analytics.prices import fetch_latest_closes
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     cache, then snapshot today's NAV (skipped, not fabricated, when nothing is priceable).
     Returns aggregate counts for logging.
 
-    EXCEPTION — the Reference Rate showcase (``REFERENCE_PORTFOLIO_ID``): its NAV series
+    EXCEPTION — the Showcase Portfolio (``REFERENCE_PORTFOLIO_ID``): its NAV series
     has exactly one authoritative source, the engine's published ``nav_history`` artifact
     (seeded/upserted by ``demo.sync_reference_holdings`` earlier in this function). The
     generic per-portfolio NAV writers below (``record_snapshot``, ``record_account_snapshots``,
@@ -107,7 +107,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     """
     today = today or date.today()
 
-    # Refresh the Reference Rate showcase from the engine's published artifact BEFORE the
+    # Refresh the Showcase Portfolio from the engine's published artifact BEFORE the
     # per-portfolio loop, so its holdings are current when today's NAV snapshot is recorded.
     # Gated on the S3 data-spine toggle (the artifact lives in that bucket) and best-effort:
     # a missing artifact / read failure WARNs and leaves the last-good showcase intact.
@@ -184,6 +184,18 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         )
         held = analytics.holdings(session, p.tenant_id, p.id)
         symbols = [h.ticker for h in held if h.ticker]
+        if is_reference_rate:
+            # The frozen sample sleeve folded into this portfolio (demo.py module
+            # docstring) must actually stay frozen — a live refresh here would drift its
+            # displayed Holdings price away from the constant value that
+            # demo._sample_sleeve_totals bakes into the persisted NavSnapshot series,
+            # producing a growing Holdings-vs-Performance mismatch for no benefit (these
+            # tickers are never read from PriceBar for this sleeve; only from that
+            # module's own hardcoded table). Excluded only if the LIVE sleeve doesn't
+            # also happen to hold the same ticker (Crucible's universe can rotate into
+            # VOO/etc) — that sleeve's own tickers always still refresh normally.
+            sample_only = SAMPLE_SLEEVE_TICKERS - live_sleeve_tickers(session)
+            symbols = [s for s in symbols if s not in sample_only]
         updated = price_service.refresh_latest_prices(session, symbols) if symbols else 0
         # Refresh FX for every non-base currency held, so foreign positions convert into
         # the base-currency NAV instead of being dropped from the total.
@@ -196,7 +208,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         if txn_ccys and earliest is not None:
             fx_updated += fx.backfill_fx_rates(session, txn_ccys, earliest, today, base=base)
 
-        # The Reference Rate showcase's NavSnapshot series is sole-sourced from the engine's
+        # The Showcase Portfolio's NavSnapshot series is sole-sourced from the engine's
         # artifact (demo.sync_reference_holdings, above) — see the single-source-of-truth
         # note on this function's docstring (metron-ops#141). None of the generic NAV
         # writers below may touch it, or they'd re-derive + clobber it from Metron's own
@@ -346,10 +358,47 @@ def mark_unlisted(session: Session, symbol: str, *, unlisted: bool = True) -> in
     return len(rows)
 
 
+def flex_sync_all(session: Session) -> int:
+    """Re-sync IBKR Flex broker positions for every non-reference portfolio.
+    A lighter pre-market variant of the daily-refresh: Flex sync only, no price
+    refresh / NAV snapshot / derived analytics. Intended for a pre-market systemd
+    timer so broker-adjusted positions (ADR ratio changes, stock splits, trades)
+    are reflected before the trading day begins — the valuation-layer ADR scale
+    cross-check in ``_apply_valuation`` then has an authoritative broker total to
+    compare against. Best-effort per portfolio (WARN + rollback on failure)."""
+    portfolios = list(
+        session.scalars(
+            select(models.Portfolio).where(models.Portfolio.id != REFERENCE_PORTFOLIO_ID)
+        ).all()
+    )
+    synced = 0
+    for p in portfolios:
+        try:
+            result = broker_sync.sync_flex_for_portfolio(session, p)
+            if result is not None:
+                synced += 1
+        except Exception:  # noqa: BLE001 - best-effort per portfolio; never fatal
+            logger.warning("flex-sync failed for portfolio %s — rolling back", p.id, exc_info=True)
+            session.rollback()
+        try:
+            result = broker_sync.sync_snaptrade_for_portfolio(session, p)
+            if result is not None:
+                synced += 1
+        except Exception:  # noqa: BLE001
+            logger.warning("snaptrade-sync failed for portfolio %s — rolling back", p.id, exc_info=True)
+            session.rollback()
+    logger.info(
+        "flex-sync done: %d portfolios, %d broker-sources synced",
+        len(portfolios), synced,
+    )
+    return synced
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m api.maintenance", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("daily-refresh", help="refresh prices + record NAV snapshots for all portfolios")
+    sub.add_parser("flex-sync", help="re-sync IBKR Flex / SnapTrade broker positions only (pre-market timer)")
     p_unl = sub.add_parser(
         "mark-unlisted",
         help="flag a security as having no public listing (broker-snapshot-priced; "
@@ -405,6 +454,15 @@ def main(argv: list[str] | None = None) -> int:
             r.broker_flex_synced,
             r.broker_snaptrade_synced,
         )
+        return 0
+    if args.cmd == "flex-sync":
+        create_all()
+        session = SessionLocal()
+        try:
+            flex_sync_all(session)
+        finally:
+            session.close()
+        return 0
     return 0
 
 

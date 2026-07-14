@@ -54,11 +54,11 @@ describe("PortfolioNav", () => {
       <PortfolioNav
         portfolioId="p"
         navQuery=""
-        plugins={[{ id: "advisor", label: "Advisor", href: "advisor" }]}
+        plugins={[{ id: "advisor", label: "Intelligence", href: "advisor" }]}
       />,
     );
     open();
-    expect(screen.getByRole("menuitem", { name: "Advisor" })).toHaveAttribute("href", "/portfolios/p/advisor");
+    expect(screen.getByRole("menuitem", { name: "Intelligence" })).toHaveAttribute("href", "/portfolios/p/advisor");
   });
 
   it("HIDES a feed-dependent page (Risk) when the feed entitlement is off (beta)", () => {
@@ -90,7 +90,7 @@ describe("PortfolioNav", () => {
     const perf = screen.getByRole("menuitem", { name: /Performance/ });
     expect(perf).toHaveAttribute("aria-disabled", "true");
     expect(perf).not.toHaveAttribute("href"); // not a link
-    expect(perf).toHaveTextContent("AI Advisor"); // upsell badge
+    expect(perf).toHaveTextContent("Intelligence"); // upsell badge
   });
 
   it("leaves all pages clickable when no featureStates given (ungated)", () => {

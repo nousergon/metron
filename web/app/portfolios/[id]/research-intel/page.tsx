@@ -8,7 +8,7 @@ import { Empty, Locked, Section, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { TierSimulator } from "@/components/tier-simulator";
 import { featureEntitlement, loadEntitlements, toFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 import { isoDate } from "@/lib/format";
 import Link from "next/link";
 
@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 // Read-only research-intel surface (EPIC config#1499 Phase 1 / metron-ops#117). Displays
 // the neutral market intel — regime + narrative, sector ratings, and per-HOLDING
 // attractiveness + generic thesis — sourced from the crucible-research `research_intel`
-// artifact. Paid AI-Advisor tier only: the nav hides the link on the beta, and a direct
+// artifact. Paid Intelligence tier only: the nav hides the link on the beta, and a direct
 // navigation lands on a full-page <Locked>. NO advice, NO position directives, NO LLM —
 // impersonal intelligence the user applies to their own portfolio (EPIC decision 7).
 
@@ -40,12 +40,12 @@ function score(a: ResearchIntelAttractiveness): string {
 export default async function ResearchIntelPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const { id } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
-  // Entitlement gate: research_intel is packaged to the paid AI-Advisor tier. The nav
+  // Entitlement gate: research_intel is packaged to the paid Intelligence tier. The nav
   // locks the link off-tier, but a direct navigation reaches here → full-page Locked
   // (and we skip the data fetch). Owner tier-simulator preview honored via cookies.
-  const entitlements = await loadEntitlements(tenantId);
+  const entitlements = await loadEntitlements(apiAuth);
   const featureStates = toFeatureStates(entitlements);
   const ent = featureEntitlement(entitlements, "research_intel");
   if (ent && !ent.available) {
@@ -62,14 +62,14 @@ export default async function ResearchIntelPage(props: { params: Promise<{ id: s
   // if holdings can't be read — the intel surface degrades, never blanks).
   let tickers: string[] = [];
   try {
-    tickers = (await getHoldings(tenantId, id)).map((h) => h.ticker).filter(Boolean);
+    tickers = (await getHoldings(apiAuth, id)).map((h) => h.ticker).filter(Boolean);
   } catch {
     tickers = [];
   }
 
   let res;
   try {
-    res = await getResearchIntel(tenantId, { tickers });
+    res = await getResearchIntel(apiAuth, { tickers });
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Portfolio not found.</Empty>;

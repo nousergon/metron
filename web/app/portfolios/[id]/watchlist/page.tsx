@@ -3,19 +3,19 @@ import { Empty } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { WatchlistPanel } from "@/components/watchlist-panel";
 import { navFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
 export default async function WatchlistPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const { id } = params;
-  const tenantId = await requireTenantId();
-  const featureStates = await navFeatureStates(tenantId);
+  const apiAuth = await requireApiAuth();
+  const featureStates = await navFeatureStates(apiAuth);
 
   let entries;
   try {
-    entries = await getWatchlist(tenantId, id);
+    entries = await getWatchlist(apiAuth, id);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Portfolio not found.</Empty>;

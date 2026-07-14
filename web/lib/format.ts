@@ -91,9 +91,11 @@ export function signClass(value: number): string {
   return "text-muted";
 }
 
-/** A valuation multiple (P/E, P/B, EV/EBITDA): "30.2×". */
+/** A valuation multiple (P/E, P/B, EV/EBITDA): "30.2×". Negative multiples (negative
+ * earnings/book/EBITDA) aren't a meaningful "cheapness" reading, so they render "N/A"
+ * rather than a signed number a reader could mistake for a real ratio. */
 export function multiple(value: number): string {
-  return `${value.toFixed(1)}×`;
+  return value < 0 ? "N/A" : `${value.toFixed(1)}×`;
 }
 
 /** A large money amount in human units: "$3.0T" / "$450.2B" / "$12.3B" / "$840.0M".

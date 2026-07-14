@@ -3,18 +3,18 @@ import { getAccountDetail, MetronApiError } from "@/lib/api";
 import { accountingMoneyWhole, isoDate, money, moneyWhole, quantity, signClass } from "@/lib/format";
 import { Empty, Section, Table } from "@/components/ui";
 import { GroupedHoldings } from "@/components/grouped-holdings";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
 export default async function AccountPage(props: { params: Promise<{ id: string; accountId: string }> }) {
   const params = await props.params;
   const { id, accountId } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
   let detail;
   try {
-    detail = await getAccountDetail(tenantId, id, accountId);
+    detail = await getAccountDetail(apiAuth, id, accountId);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Account not found.</Empty>;

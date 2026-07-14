@@ -38,8 +38,9 @@ const benchmarks: BenchmarkSeries[] = [
 describe("HoldingsPerfChart", () => {
   it("renders a legend entry per account plus the toggled-on benchmark", () => {
     render(<HoldingsPerfChart accounts={accounts} benchmarks={benchmarks} benchmarksAvailable />);
-    expect(screen.getByText("Brokerage")).toBeTruthy();
-    expect(screen.getByText("IRA")).toBeTruthy();
+    // Each account appears as both a toggle chip and a legend label (2+ accounts → chips render).
+    expect(screen.getAllByText("Brokerage").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("IRA").length).toBeGreaterThanOrEqual(2);
     // SPY appears as both a toggle chip and a legend label.
     expect(screen.getAllByText("SPY").length).toBeGreaterThanOrEqual(2);
   });
@@ -49,6 +50,29 @@ describe("HoldingsPerfChart", () => {
     fireEvent.click(screen.getByRole("button", { name: "SPY" }));
     // Toggle chip remains; the legend label is gone (overlay hidden).
     expect(screen.getAllByText("SPY").length).toBe(1);
+  });
+
+  it("drops an account line when its chip is toggled off, without touching others", () => {
+    render(<HoldingsPerfChart accounts={accounts} benchmarks={benchmarks} benchmarksAvailable />);
+    fireEvent.click(screen.getByRole("button", { name: "IRA" }));
+    // Toggle chip remains (still one match); the legend label is gone.
+    expect(screen.getAllByText("IRA").length).toBe(1);
+    // Brokerage is untouched — still chip + legend.
+    expect(screen.getAllByText("Brokerage").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("shows no account toggle chips for a single-account portfolio", () => {
+    const one: AccountSeries[] = [accounts[0]!];
+    render(<HoldingsPerfChart accounts={one} benchmarks={[]} benchmarksAvailable={false} />);
+    expect(screen.queryByRole("button", { name: "Brokerage" })).toBeNull();
+    expect(screen.getByText("Brokerage")).toBeTruthy(); // legend still shows it
+  });
+
+  it("shows the 'all hidden' message when every line is toggled off", () => {
+    render(<HoldingsPerfChart accounts={accounts} benchmarks={[]} benchmarksAvailable={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Brokerage" }));
+    fireEvent.click(screen.getByRole("button", { name: "IRA" }));
+    expect(screen.getByText("All lines hidden — toggle one on above.")).toBeTruthy();
   });
 
   it("shows a Pro hint and no benchmark chips when benchmarks are unavailable", () => {

@@ -1,7 +1,7 @@
 "use client";
 
 // Owner-only product-tier simulator: preview how each Metron product level
-// (Beta / AI Advisor (demo)) looks, and toggle the market-data feed to SEE
+// (Beta / Intelligence (demo)) looks, and toggle the market-data feed to SEE
 // what the no-feed beta excludes. Renders NOTHING unless the server reports
 // `simulator: true` (settings.tier_simulator) — it never appears on the public
 // product. Selections persist in cookies the server reads on the next render;

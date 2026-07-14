@@ -1,4 +1,4 @@
-"""Reference Rate showcase — connector mapping, the consumer-side artifact contract,
+"""Showcase Portfolio — connector mapping, the consumer-side artifact contract,
 and the seeded read-only live portfolio under the demo tenant."""
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from api.maintenance import daily_refresh
 from api.services import demo
 from portfolio_analytics.ingestion import reference_connector
 from portfolio_analytics.ingestion.base import SNAPSHOT_SOURCES
+from portfolio_analytics.ingestion.schema import ASSET_EQUITY, ASSET_ETF
 from portfolio_analytics.prices import ClosePoint
 
 REFERENCE_HEADERS = {"X-Tenant-Id": str(demo.DEMO_TENANT_ID)}
@@ -28,8 +29,8 @@ SAMPLE_ARTIFACT = {
     "base_currency": "USD",
     "account": {"net_liquidation": 1_001_593.11},
     "positions": [
-        {"ticker": "AMD", "shares": 192, "avg_cost": 130.5, "market_value": 103175.04, "sector": "Information Technology"},
-        {"ticker": "SPY", "shares": 658, "avg_cost": 600.0, "market_value": 491354.92, "sector": "Broad Market"},
+        {"ticker": "AMD", "shares": 192, "avg_cost": 130.5, "market_value": 103175.04, "sector": "Information Technology", "asset_type": "STK"},
+        {"ticker": "SPY", "shares": 658, "avg_cost": 600.0, "market_value": 491354.92, "sector": "Broad Market", "asset_type": "ETF"},
     ],
     "nav_history": [
         {"date": "2026-06-16", "nav": 999_000.0, "spy_close": 744.0},
@@ -68,6 +69,24 @@ def test_artifact_to_snapshot_maps_positions_and_account():
     assert snap.activities == []
 
 
+def test_artifact_to_snapshot_classifies_asset_type_from_producer_category():
+    # SPY is the optimizer's no-conviction ETF fill — must never be reported as
+    # equity just because it's a Crucible holding like any other ticker.
+    snap = reference_connector.artifact_to_snapshot(SAMPLE_ARTIFACT)
+    by_ticker = {s.ticker: s.asset_type for s in snap.securities}
+    assert by_ticker["AMD"] == ASSET_EQUITY
+    assert by_ticker["SPY"] == ASSET_ETF
+
+
+def test_artifact_to_snapshot_defaults_missing_asset_type_to_equity():
+    # Backward compat: an artifact published before the producer emitted asset_type
+    # carries no such field. Absence must default to equity (Crucible's historical
+    # universe), not be misread as ASSET_OTHER.
+    art = {**SAMPLE_ARTIFACT, "positions": [{k: v for k, v in p.items() if k != "asset_type"} for p in SAMPLE_ARTIFACT["positions"]]}
+    snap = reference_connector.artifact_to_snapshot(art)
+    assert {s.asset_type for s in snap.securities} == {ASSET_EQUITY}
+
+
 def test_artifact_to_snapshot_drops_zero_share_rows():
     art = dict(SAMPLE_ARTIFACT)
     art["positions"] = [*SAMPLE_ARTIFACT["positions"], {"ticker": "OLD", "shares": 0, "avg_cost": 1, "market_value": 0, "sector": "x"}]
@@ -96,16 +115,82 @@ def test_ensure_reference_seeded_idempotent(db_session):
     assert demo.ensure_reference_seeded(db_session) is True
     assert demo.ensure_reference_seeded(db_session) is False
     p = db_session.get(models.Portfolio, demo.REFERENCE_PORTFOLIO_ID)
-    assert p is not None and p.name == "Reference Rate"
+    assert p is not None and p.name == "Showcase Portfolio"
     assert p.tenant_id == demo.DEMO_TENANT_ID  # under the read-only demo tenant
+
+
+def _reference_pref(db_session) -> models.InvestorPreferences | None:
+    return db_session.scalars(
+        select(models.InvestorPreferences).where(
+            models.InvestorPreferences.tenant_id == demo.DEMO_TENANT_ID,
+            models.InvestorPreferences.portfolio_id == demo.REFERENCE_PORTFOLIO_ID,
+        )
+    ).first()
+
+
+def test_ensure_reference_seeded_defaults_intraday_on(db_session):
+    # The showcase's own read-only lockout (_demo_read_only) blocks the normal
+    # PUT .../preferences path a real user would use to flip this toggle — so it must
+    # come pre-enabled rather than sit on the global NULL/off default.
+    demo.ensure_reference_seeded(db_session)
+    pref = _reference_pref(db_session)
+    assert pref is not None and pref.intraday_enabled is True
+
+
+def test_ensure_reference_seeded_self_heals_stale_off_preference(db_session):
+    # Simulates a deployment seeded before this default existed: portfolio present,
+    # preference row present but off. A later startup call must correct it in place.
+    demo.ensure_reference_seeded(db_session)
+    pref = _reference_pref(db_session)
+    pref.intraday_enabled = False
+    db_session.commit()
+
+    demo.ensure_reference_seeded(db_session)
+    assert _reference_pref(db_session).intraday_enabled is True
+
+
+def test_ensure_reference_seeded_self_heals_stale_display_name(db_session):
+    # Simulates an already-deployed instance seeded under the pre-rename name:
+    # Portfolio.name and the live sleeve's own Account.name are both write-once at
+    # creation elsewhere, so renaming REFERENCE_PORTFOLIO_NAME alone wouldn't touch
+    # either on a running instance. A later startup call must correct both in place.
+    assert demo.sync_reference_holdings(db_session, reader=_reader) is True
+    portfolio = db_session.get(models.Portfolio, demo.REFERENCE_PORTFOLIO_ID)
+    portfolio.name = "Reference Rate"
+    live_account = db_session.scalar(
+        select(models.Account).where(
+            models.Account.portfolio_id == demo.REFERENCE_PORTFOLIO_ID,
+            models.Account.broker == "reference",
+        )
+    )
+    live_account.name = "Reference Rate"
+    db_session.commit()
+
+    demo.ensure_reference_seeded(db_session)
+
+    db_session.refresh(portfolio)
+    db_session.refresh(live_account)
+    assert portfolio.name == "Showcase Portfolio"
+    assert live_account.name == "Showcase Portfolio"
+
+
+def _live_sleeve_account_ids(db_session):
+    """The live Crucible-synced sleeve's own accounts — excludes the permanently-frozen
+    sample sleeve folded into the same portfolio (a distinct broker/source label,
+    demo._SAMPLE_SLEEVE_SOURCE), so tests about the live sync's own persistence aren't
+    thrown off by the sample sleeve's accounts sharing REFERENCE_PORTFOLIO_ID."""
+    return db_session.scalars(
+        select(models.Account.id).where(
+            models.Account.portfolio_id == demo.REFERENCE_PORTFOLIO_ID,
+            models.Account.broker == "reference",
+        )
+    ).all()
 
 
 def test_sync_persists_holdings_sectors_and_nav(db_session):
     assert demo.sync_reference_holdings(db_session, reader=_reader) is True
 
-    acct_ids = db_session.scalars(
-        select(models.Account.id).where(models.Account.portfolio_id == demo.REFERENCE_PORTFOLIO_ID)
-    ).all()
+    acct_ids = _live_sleeve_account_ids(db_session)
     positions = db_session.scalars(
         select(models.Position).where(models.Position.account_id.in_(acct_ids))
     ).all()
@@ -126,9 +211,7 @@ def test_sync_is_idempotent(db_session):
     assert demo.sync_reference_holdings(db_session, reader=_reader) is True
     assert demo.sync_reference_holdings(db_session, reader=_reader) is True
     # Positions replaced (not doubled), NAV history upserted by snap_date (not duplicated).
-    accts = db_session.scalars(
-        select(models.Account).where(models.Account.portfolio_id == demo.REFERENCE_PORTFOLIO_ID)
-    ).all()
+    accts = _live_sleeve_account_ids(db_session)
     assert len(accts) == 1
     navs = db_session.scalars(
         select(models.NavSnapshot).where(models.NavSnapshot.portfolio_id == demo.REFERENCE_PORTFOLIO_ID)
@@ -140,16 +223,104 @@ def test_sync_failsoft_keeps_last_good(db_session):
     assert demo.sync_reference_holdings(db_session, reader=_reader) is True
     # A subsequent failed sync (no artifact) must not blank the showcase.
     assert demo.sync_reference_holdings(db_session, reader=lambda: None) is False
-    accts = db_session.scalars(
-        select(models.Account).where(models.Account.portfolio_id == demo.REFERENCE_PORTFOLIO_ID)
-    ).all()
+    accts = _live_sleeve_account_ids(db_session)
     assert len(accts) == 1
+
+
+def test_reference_nav_folds_in_sample_sleeve_totals(db_session):
+    """The portfolio-level NavSnapshot (what Performance reads) must equal the live
+    artifact's own NAV PLUS the frozen sample sleeve's constant total value — otherwise
+    the persisted history undercounts what Holdings actually displays across both
+    sleeves. The expected addon (14300.0 value / 13500.0 cost basis) is derived by hand
+    from the frozen fixture (_SAMPLE_SLEEVE_CSV x _SAMPLE_SLEEVE_PRICES: VOO 15@440,
+    912828YK0 50@98, VMFXX 2000@1) as an independent cross-check on
+    ``_sample_sleeve_totals``, not a copy of its own math."""
+    assert demo.sync_reference_holdings(db_session, reader=_reader) is True
+
+    sample_value, sample_cost_basis = demo._sample_sleeve_totals(db_session)
+    assert sample_value == 14_300.0
+    assert sample_cost_basis == 13_500.0
+
+    row = db_session.scalar(
+        select(models.NavSnapshot).where(
+            models.NavSnapshot.portfolio_id == demo.REFERENCE_PORTFOLIO_ID,
+            models.NavSnapshot.snap_date == date(2026, 6, 18),
+        )
+    )
+    assert float(row.nav) == 1_001_593.11 + sample_value
+
+
+# ── Legacy "Demo portfolio" retirement ────────────────────────────────────────
+
+
+def test_retire_legacy_demo_portfolio_noop_when_absent(db_session):
+    demo.ensure_reference_seeded(db_session)  # must not raise when there's nothing to retire
+    assert db_session.get(models.Portfolio, demo._LEGACY_DEMO_PORTFOLIO_ID) is None
+
+
+def test_retire_legacy_demo_portfolio_cleans_up_orphan(db_session):
+    # Simulate an already-deployed instance: the old standalone Demo portfolio, with an
+    # account and both a portfolio-level and account-level NAV snapshot, still present.
+    if db_session.get(models.Tenant, demo.DEMO_TENANT_ID) is None:
+        db_session.add(models.Tenant(id=demo.DEMO_TENANT_ID, name="Demo"))
+    db_session.add(
+        models.Portfolio(
+            id=demo._LEGACY_DEMO_PORTFOLIO_ID,
+            tenant_id=demo.DEMO_TENANT_ID,
+            name="Demo portfolio",
+            base_currency="USD",
+        )
+    )
+    db_session.commit()
+    account = models.Account(
+        tenant_id=demo.DEMO_TENANT_ID,
+        portfolio_id=demo._LEGACY_DEMO_PORTFOLIO_ID,
+        broker="csv",
+        external_id="Demo Brokerage",
+    )
+    db_session.add(account)
+    db_session.commit()
+    db_session.add(
+        models.AccountNavSnapshot(
+            tenant_id=demo.DEMO_TENANT_ID,
+            portfolio_id=demo._LEGACY_DEMO_PORTFOLIO_ID,
+            account_id=account.id,
+            snap_date=date(2024, 6, 28),
+            nav=100.0,
+        )
+    )
+    db_session.add(
+        models.NavSnapshot(
+            tenant_id=demo.DEMO_TENANT_ID,
+            portfolio_id=demo._LEGACY_DEMO_PORTFOLIO_ID,
+            snap_date=date(2024, 6, 28),
+            nav=100.0,
+        )
+    )
+    db_session.commit()
+
+    demo.ensure_reference_seeded(db_session)
+
+    assert db_session.get(models.Portfolio, demo._LEGACY_DEMO_PORTFOLIO_ID) is None
+    assert db_session.get(models.Account, account.id) is None
+    assert (
+        db_session.scalars(
+            select(models.NavSnapshot).where(models.NavSnapshot.portfolio_id == demo._LEGACY_DEMO_PORTFOLIO_ID)
+        ).first()
+        is None
+    )
+    assert (
+        db_session.scalars(
+            select(models.AccountNavSnapshot).where(models.AccountNavSnapshot.account_id == account.id)
+        ).first()
+        is None
+    )
 
 
 def test_daily_refresh_never_overwrites_reference_rate_nav(db_session, monkeypatch):
     """metron-ops#141 regression: daily_refresh's generic per-portfolio NAV writers
     (record_snapshot / record_account_snapshots / reconstruct_snapshots / reconcile_snapshots)
-    must never touch the Reference Rate portfolio — its NavSnapshot series has exactly one
+    must never touch the Showcase Portfolio — its NavSnapshot series has exactly one
     authoritative source, the engine artifact seeded by sync_reference_holdings. Prices are
     monkeypatched to a value that deliberately DIFFERS wildly from the artifact's own NAV, so
     a regression (some writer re-deriving NAV from Metron's own price cache) would flip the
@@ -175,16 +346,40 @@ def test_daily_refresh_never_overwrites_reference_rate_nav(db_session, monkeypat
             models.NavSnapshot.snap_date == today,
         )
     )
-    # Untouched — still exactly the engine artifact's NAV, never Metron's re-derived figure
-    # off the (deliberately wrong) $1 closes above.
-    assert float(row.nav) == 1_001_593.11
+    # Untouched — still exactly the engine artifact's NAV plus the frozen sample sleeve's
+    # constant addon, never Metron's re-derived figure off the (deliberately wrong) $1
+    # closes above.
+    sample_value, _sample_cost_basis = demo._sample_sleeve_totals(db_session)
+    assert float(row.nav) == 1_001_593.11 + sample_value
+
+
+_SAMPLE_SLEEVE_TICKERS = {"VOO", "912828YK0", "VMFXX"}
 
 
 def test_holdings_endpoint_serves_reference(client, db_session):
     demo.sync_reference_holdings(db_session, reader=_reader)
     r = client.get(f"/portfolios/{demo.REFERENCE_PORTFOLIO_ID}/holdings", headers=REFERENCE_HEADERS)
     assert r.status_code == 200
-    assert {h["ticker"] for h in r.json()} == {"AMD", "SPY"}
+    # The live sleeve's tickers, plus the frozen sample sleeve's asset-class breadth
+    # folded into the same portfolio.
+    assert {h["ticker"] for h in r.json()} == {"AMD", "SPY"} | _SAMPLE_SLEEVE_TICKERS
+
+
+def test_showcase_equity_count_never_exceeds_live_crucible_sleeve(client, db_session):
+    """Regression lock: the Showcase Portfolio may show non-equity instruments (ETF/
+    bond/cash) beyond what Crucible holds, but never MORE equity-classified holdings
+    than Crucible's own live sleeve — the sample sleeve must not smuggle in extra
+    equities, and a producer holding like SPY must classify as ETF, not equity."""
+    demo.sync_reference_holdings(db_session, reader=_reader)
+    r = client.get(f"/portfolios/{demo.REFERENCE_PORTFOLIO_ID}/holdings", headers=REFERENCE_HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+
+    live_tickers = {p["ticker"] for p in SAMPLE_ARTIFACT["positions"]}
+    equity_tickers = {h["ticker"] for h in body if h["security_type"] == "equity"}
+    assert equity_tickers <= live_tickers
+    # SPY specifically must not be counted as equity.
+    assert next(h for h in body if h["ticker"] == "SPY")["security_type"] == "etf"
 
 
 def test_reference_portfolio_is_read_only(client, db_session):
@@ -199,7 +394,7 @@ def test_reference_portfolio_is_read_only(client, db_session):
     assert r.status_code == 403
 
 
-# ── Cross-tenant visibility (metron-ops: "Reference Rate on every dashboard") ───────────
+# ── Cross-tenant visibility (metron-ops: "Showcase Portfolio on every dashboard") ───────
 
 
 def _real_headers() -> dict[str, str]:
@@ -225,7 +420,7 @@ def test_reference_portfolio_readable_by_real_tenant(client, db_session):
     demo.sync_reference_holdings(db_session, reader=_reader)
     r = client.get(f"/portfolios/{demo.REFERENCE_PORTFOLIO_ID}/holdings", headers=_real_headers())
     assert r.status_code == 200
-    assert {h["ticker"] for h in r.json()} == {"AMD", "SPY"}
+    assert {h["ticker"] for h in r.json()} == {"AMD", "SPY"} | _SAMPLE_SLEEVE_TICKERS
 
 
 def test_reference_portfolio_still_read_only_for_real_tenant(client, db_session):

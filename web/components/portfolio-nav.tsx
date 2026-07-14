@@ -14,8 +14,8 @@ export type NavPage = { label: string; href: string; feature?: string };
 export type NavFeatureState = { available: boolean; required_tier: string | null };
 
 // Short upsell labels for the lock badge (required_tier key → display). Two exposed tiers
-// now (metron-ops): a beta-excluded feature upsells to the full "AI Advisor" build.
-const TIER_LABEL: Record<string, string> = { personal: "AI Advisor" };
+// now (metron-ops): a beta-excluded feature upsells to the full "Intelligence" build.
+const TIER_LABEL: Record<string, string> = { personal: "Intelligence" };
 
 // Pages that need the market-data feed to function — HIDDEN (not shown locked/empty) in
 // the no-feed beta (metron-ops#53). They reappear when the feed entitlement is on.
@@ -66,6 +66,9 @@ export function PortfolioNav({
     { label: "Holdings", href: `${base}${navQuery}`, feature: "overview" },
     // The analytical dashboard (settled tiles / chart / allocation / account management).
     { label: "Overview", href: `${base}/overview`, feature: "overview" },
+    // Concentration & diversification diagnostics (metron-ops-I167) — deterministic
+    // structure FACTS on the settled context; free/beta core analytics.
+    { label: "Diagnostics", href: `${base}/diagnostics${navQuery}`, feature: "concentration" },
     { label: "Performance", href: `${base}/performance${navQuery}`, feature: "performance" },
     { label: "Risk", href: `${base}/risk${navQuery}`, feature: "risk" },
     { label: "Attribution", href: `${base}/attribution${navQuery}`, feature: "attribution" },
@@ -76,7 +79,7 @@ export function PortfolioNav({
     // the "Pages" fallback (metron-ops#49).
     { label: "Macro", href: `${base}/macro`, feature: "macro" },
     { label: "Calendar", href: `${base}/calendar`, feature: "calendar" },
-    // Neutral research intel (paid AI-Advisor tier; nav locks it on the beta). config#1499.
+    // Neutral research intel (paid Intelligence tier; nav locks it on the beta). config#1499.
     { label: "Research intel", href: `${base}/research-intel`, feature: "research_intel" },
     { label: "Watchlist", href: `${base}/watchlist` },
     { label: "Crypto", href: `${base}/crypto` },

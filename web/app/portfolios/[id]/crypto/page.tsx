@@ -3,19 +3,19 @@ import { Empty } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { CryptoPanel } from "@/components/crypto-panel";
 import { navFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
 export default async function CryptoPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const { id } = params;
-  const tenantId = await requireTenantId();
-  const featureStates = await navFeatureStates(tenantId);
+  const apiAuth = await requireApiAuth();
+  const featureStates = await navFeatureStates(apiAuth);
 
   let summary;
   try {
-    summary = await getCrypto(tenantId, id);
+    summary = await getCrypto(apiAuth, id);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Portfolio not found.</Empty>;

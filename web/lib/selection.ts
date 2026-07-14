@@ -17,7 +17,7 @@ import { acctParams, getAccountSelection } from "@/lib/api";
  * Best-effort on the saved-selection fetch (a prefs failure must never break the
  * page). NOTE: calls `redirect()` — invoke OUTSIDE any try/catch in the page. */
 export async function resolveAccountIds(
-  tenantId: string,
+  apiAuth: string,
   portfolioId: string,
   basePath: string,
   raw: string | string[] | undefined,
@@ -27,7 +27,7 @@ export async function resolveAccountIds(
   if (!applySaved) return [];
   let saved: string[] = [];
   try {
-    saved = await getAccountSelection(tenantId, portfolioId);
+    saved = await getAccountSelection(apiAuth, portfolioId);
   } catch {
     saved = [];
   }

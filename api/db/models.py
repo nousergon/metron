@@ -56,6 +56,13 @@ class User(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     email: Mapped[str] = mapped_column(String(320))
+    # The shared nousergon-auth identity service's stable user.id (metron-ops#179) —
+    # the verified JWT `sub` claim resolves through this column (see
+    # api/services/identity.py). Nullable: rows can predate the shared service until
+    # linked (by email, once) or JIT-provisioned. `_sync_additive_columns` adds both
+    # the column and its unique index to an existing SQLite DB (metron-ops#182); fresh
+    # DBs get it from create_all.
+    identity_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")
@@ -366,6 +373,10 @@ class InvestorPreferences(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
+    # risk_tolerance / objective: UI inputs retired pre-registration (metron-ops-I174,
+    # 2026-07-09) — suitability-style fields aren't collected while unregistered.
+    # Columns + stored values kept (no destructive migration); the API contract still
+    # round-trips them so the inputs can return with the registered tier.
     risk_tolerance: Mapped[str | None] = mapped_column(String(20), nullable=True)  # conservative | moderate | aggressive
     objective: Mapped[str | None] = mapped_column(String(20), nullable=True)  # income | growth | balanced
     notes: Mapped[str | None] = mapped_column(String(2000), nullable=True)
@@ -516,3 +527,45 @@ class CryptoValueSnapshot(Base):
     snap_date: Mapped[date] = mapped_column(index=True)
     value_usd: Mapped[float] = mapped_column(Numeric(28, 10))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class Event(Base):
+    """A single self-hosted analytics event — the generic funnel event sink (metron-ops#34).
+
+    Brian's "self-hosted analytics" = event-level instrumentation with NO third-party
+    tracker (Cloudflare Web Analytics already covers page-views). This is the FOUNDATION
+    the later product surfaces call: a new event type is just a new ``event_name`` value +
+    a ``props`` payload, so #30/#32 extend the funnel with ZERO schema migration.
+
+    Deliberately NOT tenant-scoped, and ``user_id`` is nullable: the events this table is
+    built for fire in the PRE-AUTH funnel (waitlist → signup → activation), before a tenant
+    or user exists. ``session_id`` is the anonymous funnel key that stitches a visitor's
+    events together across that boundary; once a user is known, ``user_id`` is attached so
+    a completed signup can be tied back to its earlier anonymous ``session_id``. This is
+    operator-level product analytics (one funnel across all visitors), the same "global,
+    not per-tenant" property ``securities`` / ``price_bars`` have — so it never sits behind
+    Postgres RLS and no tenant can read another's (there is no tenant on the row).
+
+    New table → auto-created on the personal SQLite via ``create_all`` (no migration); on
+    Postgres it is added by Alembic like every other table."""
+
+    __tablename__ = "events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    # When the event occurred (server receipt time). Indexed — the funnel read filters and
+    # groups by a [start, end) window over this column.
+    ts: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
+    # Anonymous funnel key: the visitor's session, stitching pre-auth events together. Set
+    # by the caller (a cookie/opaque id from the web tier); never a secret, never PII.
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    # The authenticated user once known (post-signup); NULL for the pre-auth funnel. Kept as
+    # a plain nullable id (NOT a FK) so an event survives independently of the users table —
+    # funnel history must not be cascade-deleted when a user row is removed, and the pre-auth
+    # events reference no user row at all.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    # The event type, e.g. "signup_submitted" / "demo_viewed". New event types are just new
+    # values here — that is the whole point of the generic sink (no per-event migration).
+    event_name: Mapped[str] = mapped_column(String(80), index=True)
+    # Arbitrary structured payload (referrer, wedge, step, …). JSON so any surface can attach
+    # its own context without a schema change; never holds secrets/PII by contract.
+    props: Mapped[dict] = mapped_column(JSON, default=dict)

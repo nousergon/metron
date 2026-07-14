@@ -6,7 +6,7 @@ import { AsOfClose } from "@/components/as-of-close";
 import { TierSimulator } from "@/components/tier-simulator";
 import { ComputeAttribution } from "@/components/compute-attribution";
 import { featureEntitlement, loadEntitlements, toFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
 export const dynamic = "force-dynamic";
@@ -28,16 +28,16 @@ export default async function AttributionPage(
   const searchParams = await props.searchParams;
   const params = await props.params;
   const { id } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
   // URL selection wins; with none, the saved panel selection is applied (redirect).
-  const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}/attribution`, searchParams.account_id);
+  const accountIds = await resolveAccountIds(apiAuth, id, `/portfolios/${id}/attribution`, searchParams.account_id);
   const navQuery = acctParams(accountIds);
 
   // Entitlement gate: Attribution is feed-dependent. The nav hides the link when
   // excluded, but a direct navigation reaches here — render a full-page Locked instead
   // of the page (and skip the data fetch). Owner-simulator preview honored via cookies.
-  const entitlements = await loadEntitlements(tenantId);
+  const entitlements = await loadEntitlements(apiAuth);
   const featureStates = toFeatureStates(entitlements);
   const attrEnt = featureEntitlement(entitlements, "attribution");
   if (attrEnt && !attrEnt.available) {
@@ -52,7 +52,7 @@ export default async function AttributionPage(
 
   let attr;
   try {
-    attr = await getAttribution(tenantId, id, accountIds);
+    attr = await getAttribution(apiAuth, id, accountIds);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Portfolio not found.</Empty>;

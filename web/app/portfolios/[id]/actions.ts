@@ -4,10 +4,12 @@
 // (and the user's Flex token) never reach the browser; they forward to the backend
 // through the typed client and revalidate the page so the new data shows immediately.
 
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
+import { accountsMetaTag } from "@/lib/account-meta";
 import {
   type AccountTagPatch,
   addCryptoAddress,
+  addManualPosition,
   addWatchlist,
   createSnapTradeConnectUrl,
   deleteAccount,
@@ -36,7 +38,7 @@ import {
   updatePortfolio,
   type ImportResult,
 } from "@/lib/api";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 
 export type ActionResult = { ok: boolean; message: string; result?: ImportResult };
 
@@ -44,8 +46,8 @@ export async function renamePortfolioAction(portfolioId: string, name: string): 
   const trimmed = name.trim();
   if (!trimmed) return { ok: false, message: "Name can't be empty." };
   try {
-    const tenantId = await requireTenantId();
-    await renamePortfolio(tenantId, portfolioId, trimmed);
+    const apiAuth = await requireApiAuth();
+    await renamePortfolio(apiAuth, portfolioId, trimmed);
     revalidatePath(`/portfolios/${portfolioId}`);
     revalidatePath("/");
     return { ok: true, message: "Renamed." };
@@ -75,8 +77,8 @@ async function runFileImport(portfolioId: string, kind: "csv" | "ofx", formData:
     return { ok: false, message: `Choose a ${kind.toUpperCase()} file first.` };
   }
   try {
-    const tenantId = await requireTenantId();
-    const result = await importFile(tenantId, portfolioId, kind, file);
+    const apiAuth = await requireApiAuth();
+    const result = await importFile(apiAuth, portfolioId, kind, file);
     revalidatePath(`/portfolios/${portfolioId}`);
     return { ok: true, message: summarize(result), result };
   } catch (e) {
@@ -92,10 +94,45 @@ export async function importOfxAction(portfolioId: string, formData: FormData): 
   return runFileImport(portfolioId, "ofx", formData);
 }
 
+/** Add a single manually-entered stock/ETF position (metron-ops#187) — the no-brokerage,
+ * no-file path alongside CSV/OFX import. Validates the required fields client-visibly
+ * before the request; ticker/quantity validity beyond that (e.g. an unrecognizable
+ * symbol) is enforced server-side and surfaced via the backend's 422 detail. */
+export async function addManualPositionAction(portfolioId: string, formData: FormData): Promise<ActionResult> {
+  const ticker = String(formData.get("ticker") ?? "").trim();
+  const quantityRaw = String(formData.get("quantity") ?? "").trim();
+  const costBasisRaw = String(formData.get("cost_basis") ?? "").trim();
+  const tradeDate = String(formData.get("trade_date") ?? "").trim();
+
+  if (!ticker) return { ok: false, message: "Enter a ticker symbol." };
+  const quantity = Number(quantityRaw);
+  if (!quantityRaw || !Number.isFinite(quantity) || quantity <= 0) {
+    return { ok: false, message: "Quantity must be a positive number." };
+  }
+  const costBasis = Number(costBasisRaw);
+  if (!costBasisRaw || !Number.isFinite(costBasis) || costBasis < 0) {
+    return { ok: false, message: "Cost basis must be zero or a positive number." };
+  }
+
+  try {
+    const apiAuth = await requireApiAuth();
+    const result = await addManualPosition(apiAuth, portfolioId, {
+      ticker,
+      quantity,
+      costBasis,
+      tradeDate: tradeDate || null,
+    });
+    revalidatePath(`/portfolios/${portfolioId}`);
+    return { ok: true, message: `Added ${ticker.toUpperCase()} — ${summarize(result)}`, result };
+  } catch (e) {
+    return { ok: false, message: errorMessage(e) };
+  }
+}
+
 export async function refreshPricesAction(portfolioId: string): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    const r = await refreshPrices(tenantId, portfolioId);
+    const apiAuth = await requireApiAuth();
+    const r = await refreshPrices(apiAuth, portfolioId);
     revalidatePath(`/portfolios/${portfolioId}`);
     const msg =
       r.prices_updated > 0
@@ -109,8 +146,8 @@ export async function refreshPricesAction(portfolioId: string): Promise<ActionRe
 
 export async function syncSnapTradeAction(portfolioId: string): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    const result = await syncSnapTrade(tenantId, portfolioId);
+    const apiAuth = await requireApiAuth();
+    const result = await syncSnapTrade(apiAuth, portfolioId);
     revalidatePath(`/portfolios/${portfolioId}`);
     return { ok: true, message: summarize(result), result };
   } catch (e) {
@@ -122,8 +159,8 @@ export async function listSnapTradeConnectionsAction(
   portfolioId: string,
 ): Promise<{ ok: boolean; message: string; data?: SnapTradeConnections }> {
   try {
-    const tenantId = await requireTenantId();
-    const data = await getSnapTradeConnections(tenantId, portfolioId);
+    const apiAuth = await requireApiAuth();
+    const data = await getSnapTradeConnections(apiAuth, portfolioId);
     return { ok: true, message: "", data };
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
@@ -138,8 +175,8 @@ export async function snapTradeConnectUrlAction(
   reconnectId?: string,
 ): Promise<{ ok: boolean; message: string; url?: string }> {
   try {
-    const tenantId = await requireTenantId();
-    const url = await createSnapTradeConnectUrl(tenantId, portfolioId, reconnectId);
+    const apiAuth = await requireApiAuth();
+    const url = await createSnapTradeConnectUrl(apiAuth, portfolioId, reconnectId);
     return { ok: true, message: "", url };
   } catch (e) {
     return { ok: false, message: errorMessage(e) };
@@ -151,8 +188,8 @@ export async function removeSnapTradeConnectionAction(
   authorizationId: string,
 ): Promise<{ ok: boolean; message: string }> {
   try {
-    const tenantId = await requireTenantId();
-    await removeSnapTradeConnection(tenantId, portfolioId, authorizationId);
+    const apiAuth = await requireApiAuth();
+    await removeSnapTradeConnection(apiAuth, portfolioId, authorizationId);
     return { ok: true, message: "Connection removed — the SnapTrade slot is free." };
   } catch (e) {
     return { ok: false, message: errorMessage(e) };
@@ -165,8 +202,8 @@ export async function setSnapTradeExclusionAction(
   excluded: boolean,
 ): Promise<{ ok: boolean; message: string }> {
   try {
-    const tenantId = await requireTenantId();
-    await setSnapTradeConnectionExcluded(tenantId, portfolioId, authorizationId, excluded);
+    const apiAuth = await requireApiAuth();
+    await setSnapTradeConnectionExcluded(apiAuth, portfolioId, authorizationId, excluded);
     const message = excluded
       ? "Excluded — future syncs skip this connection (imported data stays)."
       : "Included — the next Sync imports this connection.";
@@ -180,8 +217,8 @@ export async function updateBaseCurrencyAction(portfolioId: string, currency: st
   const ccy = currency.trim().toUpperCase();
   if (ccy.length !== 3) return { ok: false, message: "Base currency must be a 3-letter ISO code." };
   try {
-    const tenantId = await requireTenantId();
-    await updatePortfolio(tenantId, portfolioId, { base_currency: ccy });
+    const apiAuth = await requireApiAuth();
+    await updatePortfolio(apiAuth, portfolioId, { base_currency: ccy });
     revalidatePath(`/portfolios/${portfolioId}`, "layout");
     return { ok: true, message: `Base currency set to ${ccy}.` };
   } catch (e) {
@@ -195,9 +232,10 @@ export async function updateAccountTagsAction(
   patch: AccountTagPatch,
 ): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    await updateAccountTags(tenantId, portfolioId, accountId, patch);
+    const apiAuth = await requireApiAuth();
+    await updateAccountTags(apiAuth, portfolioId, accountId, patch);
     revalidatePath(`/portfolios/${portfolioId}`, "layout");
+    revalidateTag(accountsMetaTag(apiAuth, portfolioId));
     return { ok: true, message: "Account updated." };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Update failed — backend reachable?" };
@@ -206,9 +244,10 @@ export async function updateAccountTagsAction(
 
 export async function deleteAccountAction(portfolioId: string, accountId: string): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    await deleteAccount(tenantId, portfolioId, accountId);
+    const apiAuth = await requireApiAuth();
+    await deleteAccount(apiAuth, portfolioId, accountId);
     revalidatePath(`/portfolios/${portfolioId}`, "layout");
+    revalidateTag(accountsMetaTag(apiAuth, portfolioId));
     return { ok: true, message: "Account deleted. Future syncs will skip it (restore from Settings)." };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Delete failed — backend reachable?" };
@@ -217,9 +256,10 @@ export async function deleteAccountAction(portfolioId: string, accountId: string
 
 export async function restoreExcludedAccountAction(portfolioId: string, key: string): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    await restoreExcludedAccount(tenantId, portfolioId, key);
+    const apiAuth = await requireApiAuth();
+    await restoreExcludedAccount(apiAuth, portfolioId, key);
     revalidatePath(`/portfolios/${portfolioId}`, "layout");
+    revalidateTag(accountsMetaTag(apiAuth, portfolioId));
     return { ok: true, message: "Account restored — run a sync to re-import it." };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Restore failed — backend reachable?" };
@@ -237,8 +277,8 @@ export async function addCryptoAddressAction(
   const addr = address.trim();
   if (!addr) return { ok: false, message: "Enter a wallet address." };
   try {
-    const tenantId = await requireTenantId();
-    await addCryptoAddress(tenantId, portfolioId, chain, addr, label?.trim() || null);
+    const apiAuth = await requireApiAuth();
+    await addCryptoAddress(apiAuth, portfolioId, chain, addr, label?.trim() || null);
     revalidatePath(`/portfolios/${portfolioId}/crypto`);
     return { ok: true, message: `Tracking ${chain} wallet.` };
   } catch (e) {
@@ -248,8 +288,8 @@ export async function addCryptoAddressAction(
 
 export async function deleteCryptoAddressAction(portfolioId: string, addressId: string): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    await deleteCryptoAddress(tenantId, portfolioId, addressId);
+    const apiAuth = await requireApiAuth();
+    await deleteCryptoAddress(apiAuth, portfolioId, addressId);
     revalidatePath(`/portfolios/${portfolioId}/crypto`);
     return { ok: true, message: "Wallet removed." };
   } catch (e) {
@@ -262,8 +302,8 @@ export async function deleteCryptoAddressAction(portfolioId: string, addressId: 
  * result (the panel ignores them) rather than throwing. */
 export async function saveAccountSelectionAction(portfolioId: string, accountIds: string[]): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    await putAccountSelection(tenantId, portfolioId, accountIds);
+    const apiAuth = await requireApiAuth();
+    await putAccountSelection(apiAuth, portfolioId, accountIds);
     return { ok: true, message: "Selection saved." };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Selection save failed." };
@@ -275,8 +315,8 @@ export async function saveAccountSelectionAction(portfolioId: string, accountIds
  *  reflects the change client-side. */
 export async function saveHoldingsViewAction(portfolioId: string, prefs: HoldingsViewPrefs): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    await putHoldingsView(tenantId, portfolioId, prefs);
+    const apiAuth = await requireApiAuth();
+    await putHoldingsView(apiAuth, portfolioId, prefs);
     return { ok: true, message: "View saved." };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "View save failed." };
@@ -285,8 +325,8 @@ export async function saveHoldingsViewAction(portfolioId: string, prefs: Holding
 
 export async function savePreferencesAction(portfolioId: string, prefs: Preferences): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    await putPreferences(tenantId, portfolioId, prefs);
+    const apiAuth = await requireApiAuth();
+    await putPreferences(apiAuth, portfolioId, prefs);
     revalidatePath(`/portfolios/${portfolioId}/settings`);
     return { ok: true, message: "Preferences saved." };
   } catch (e) {
@@ -301,8 +341,8 @@ export async function syncFlexAction(portfolioId: string, formData: FormData): P
     return { ok: false, message: "Both a Flex token and a query id are required." };
   }
   try {
-    const tenantId = await requireTenantId();
-    const result = await syncFlex(tenantId, portfolioId, token, queryId);
+    const apiAuth = await requireApiAuth();
+    const result = await syncFlex(apiAuth, portfolioId, token, queryId);
     revalidatePath(`/portfolios/${portfolioId}`);
     return { ok: true, message: summarize(result), result };
   } catch (e) {
@@ -312,8 +352,8 @@ export async function syncFlexAction(portfolioId: string, formData: FormData): P
 
 export async function syncFlexStoredAction(portfolioId: string): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    const result = await syncFlexStored(tenantId, portfolioId);
+    const apiAuth = await requireApiAuth();
+    const result = await syncFlexStored(apiAuth, portfolioId);
     revalidatePath(`/portfolios/${portfolioId}`);
     return { ok: true, message: summarize(result), result };
   } catch (e) {
@@ -325,8 +365,8 @@ export async function addWatchlistAction(portfolioId: string, symbol: string, no
   const sym = symbol.trim().toUpperCase();
   if (!sym) return { ok: false, message: "Enter a ticker symbol." };
   try {
-    const tenantId = await requireTenantId();
-    await addWatchlist(tenantId, portfolioId, sym, note?.trim() || null);
+    const apiAuth = await requireApiAuth();
+    await addWatchlist(apiAuth, portfolioId, sym, note?.trim() || null);
     revalidatePath(`/portfolios/${portfolioId}/watchlist`);
     revalidatePath(`/portfolios/${portfolioId}`);
     return { ok: true, message: `Added ${sym} to the watchlist.` };
@@ -337,8 +377,8 @@ export async function addWatchlistAction(portfolioId: string, symbol: string, no
 
 export async function removeWatchlistAction(portfolioId: string, symbol: string): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
-    await removeWatchlist(tenantId, portfolioId, symbol);
+    const apiAuth = await requireApiAuth();
+    await removeWatchlist(apiAuth, portfolioId, symbol);
     revalidatePath(`/portfolios/${portfolioId}/watchlist`);
     revalidatePath(`/portfolios/${portfolioId}`);
     return { ok: true, message: `Removed ${symbol}.` };
@@ -353,9 +393,9 @@ export async function setSecurityLabelAction(
   label: string,
 ): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
+    const apiAuth = await requireApiAuth();
     // Empty string clears the alias (reverts to the raw symbol).
-    await setSecurityLabel(tenantId, portfolioId, symbol, label.trim() || null);
+    await setSecurityLabel(apiAuth, portfolioId, symbol, label.trim() || null);
     revalidatePath(`/portfolios/${portfolioId}`);
     return { ok: true, message: "Label saved." };
   } catch (e) {
@@ -373,11 +413,11 @@ export async function setSecurityClassificationAction(
   value: string,
 ): Promise<ActionResult> {
   try {
-    const tenantId = await requireTenantId();
+    const apiAuth = await requireApiAuth();
     // The UI "type" field maps to the API's instrument_type column.
     const key = field === "type" ? "instrument_type" : field;
     // Empty string clears just this field (reverts to the spine/classified value, if any).
-    await setSecurityClassification(tenantId, portfolioId, symbol, { [key]: value.trim() || null });
+    await setSecurityClassification(apiAuth, portfolioId, symbol, { [key]: value.trim() || null });
     revalidatePath(`/portfolios/${portfolioId}`);
     revalidatePath(`/portfolios/${portfolioId}`);
     const label = field === "sector" ? "Sector" : field === "country" ? "Country" : "Type";

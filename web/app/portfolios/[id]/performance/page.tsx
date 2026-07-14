@@ -9,7 +9,7 @@ import { NavBridge } from "@/components/nav-bridge";
 import { RiskOverTime } from "@/components/risk-over-time";
 import { TierSimulator } from "@/components/tier-simulator";
 import { loadEntitlements, toFeatureStates } from "@/lib/entitlements";
-import { requireTenantId } from "@/lib/session";
+import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
 export const dynamic = "force-dynamic";
@@ -23,10 +23,10 @@ export default async function PerformancePage(
   const searchParams = await props.searchParams;
   const params = await props.params;
   const { id } = params;
-  const tenantId = await requireTenantId();
+  const apiAuth = await requireApiAuth();
 
   // URL selection wins; with none, the saved panel selection is applied (redirect).
-  const accountIds = await resolveAccountIds(tenantId, id, `/portfolios/${id}/performance`, searchParams.account_id);
+  const accountIds = await resolveAccountIds(apiAuth, id, `/portfolios/${id}/performance`, searchParams.account_id);
   const navQuery = acctParams(accountIds);
 
   // Performance is now account-scoped (metron-ops#9): with a selection, the series comes
@@ -36,8 +36,8 @@ export default async function PerformancePage(
   let perf, summary;
   try {
     [perf, summary] = await Promise.all([
-      getPerformance(tenantId, id, accountIds),
-      getSummary(tenantId, id, accountIds),
+      getPerformance(apiAuth, id, accountIds),
+      getSummary(apiAuth, id, accountIds),
     ]);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
@@ -51,7 +51,7 @@ export default async function PerformancePage(
   const recent = [...perf.points].reverse().slice(0, 30); // newest first
   // perf.points are ascending (oldest → newest) — the chart wants chronological order.
   const navSeries = perf.points.map((p) => ({ snap_date: p.snap_date, nav: p.nav }));
-  const entitlements = await loadEntitlements(tenantId);
+  const entitlements = await loadEntitlements(apiAuth);
 
   // NAV bridge: latest NAV = value when history began + net contributions + the residual
   // investment gain (metron-ops#60).
@@ -188,6 +188,17 @@ export default async function PerformancePage(
             label="Max drawdown"
             value={perf.max_drawdown != null ? percent(perf.max_drawdown) : "—"}
             valueClass={signClass(perf.max_drawdown ?? 0)}
+          />
+          <StatCard
+            label="PSR"
+            value={perf.psr != null ? `${(perf.psr * 100).toFixed(0)}%` : "—"}
+            hint="P(true Sharpe > 0)"
+          />
+          <StatCard
+            label="CVaR (95%)"
+            value={perf.cvar != null ? percent(perf.cvar) : "—"}
+            valueClass={signClass(perf.cvar ?? 0)}
+            hint="avg. loss, worst 5% of periods"
           />
         </div>
       ) : null}

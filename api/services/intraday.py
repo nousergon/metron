@@ -49,6 +49,13 @@ SOURCE_LAST_CLOSE = "last_close"  # no usable quote — valued at the latest EOD
 SOURCE_UNPRICED = "unpriced"      # no usable quote and no EOD close (or no FX to base)
 COVERED_SOURCES = frozenset({SOURCE_DELAYED, SOURCE_ESTIMATED})
 
+# Cross-source scale-coherence bounds (see ``_overlay``): a real quote whose ratio to the
+# settled EOD close falls outside [−50%, +100%] is treated as wrong-scaled (ADR ratio /
+# pence-vs-pounds / symbol collision — 10x and 100x classes) rather than a real move, and
+# the position keeps its settled close for the session. Wide enough for any plausible
+# large-cap single-session move; the 2026-07-08 MARUY incident was ratio 0.098.
+_COHERENCE_RATIO_BOUNDS = (0.5, 2.0)
+
 
 @dataclass
 class IntradayMeta:
@@ -150,6 +157,19 @@ def _overlay(
     A suspect-flagged quote (producer's >40% move guard) or a missing/None ``last`` is
     skipped, so that symbol keeps its EOD close — never an intraday outlier.
 
+    Cross-source scale coherence (2026-07-08): the producer's move guard compares a quote
+    only to the producer's OWN prior tick, so a quote that is consistently on the WRONG
+    PRICE SCALE (an ADR ratio change the quote feed applied but the broker/EOD source
+    didn't, a pence-vs-pounds listing, a symbol collision) sails through it — MARUY quoted
+    30.17 against a settled close of 308.40 and silently revalued an $11.8k position to
+    $1.1k. So a real quote is additionally checked against THIS system's own settled EOD
+    close: an implied move outside ``_COHERENCE_RATIO_BOUNDS`` marks the quote unusable
+    (WARN log names ticker + both prices) and the position stays at its settled close,
+    disclosed via the ``last_close`` per-ticker source like any other unusable quote. A
+    genuine >100%/−50% single-session move is rare enough that valuing it at the settled
+    close for the session (loudly) is the right trade against silently corrupting NAV by
+    10x. Fund estimates are exempt — they are derived FROM the settled close.
+
     Late-striking-fund estimate (metron-ops#112, mechanism B): a mutual fund prints its
     NAV once a day, hours after Metron's EOD close run, so on any given session it has NO
     usable intraday quote of its own and would otherwise read flat all day. For a held
@@ -175,6 +195,17 @@ def _overlay(
                 close = float(q["last"])
             except (TypeError, ValueError):
                 usable = False
+        if usable:
+            eod = eod_closes.get(ticker)
+            if eod is not None and eod.close:
+                ratio = close / eod.close
+                if not (_COHERENCE_RATIO_BOUNDS[0] <= ratio <= _COHERENCE_RATIO_BOUNDS[1]):
+                    logger.warning(
+                        "intraday quote for %s fails scale coherence vs settled close "
+                        "(quote %.4f vs close %.4f, ratio %.3f) — keeping settled close",
+                        ticker, close, eod.close, ratio,
+                    )
+                    usable = False
         if usable:
             when = today
             sd = q.get("session_date")

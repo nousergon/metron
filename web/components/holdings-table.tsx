@@ -18,6 +18,12 @@
 import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import {
+  getCoreRowModel,
+  useReactTable,
+  type ColumnDef as TSColumnDef,
+  type ColumnSizingState,
+} from "@tanstack/react-table";
 import type { Holding } from "@/lib/api";
 import {
   accountingMoneyWhole,
@@ -107,7 +113,15 @@ const COUNTRY_OPTIONS = [
 type SortValue = string | number | null;
 
 // Portfolio totals over the base-currency aggregates (computed once per render).
-type Totals = { cost: number; mv: number; unreal: number; unrealPct: number | null; excluded: number };
+type Totals = {
+  cost: number;
+  mv: number;
+  unreal: number;
+  unrealPct: number | null;
+  // Σ position day_change ($, base) — null when no holding carries one (settled regime).
+  day: number | null;
+  excluded: number;
+};
 
 // Per-row context handed to each column's cell renderer — base currency, the editable
 // portfolio id, and the no-fabrication FX fallback bound to this holding.
@@ -168,6 +182,37 @@ type ColumnDef = {
   foot?: (t: Totals, baseCurrency: string) => ReactNode;
 };
 
+// Shared last-price cell renderer (FX fallback, stale ⚠, estimated ~) — used by both the
+// Value band's "Last" column and the Valuation band's "Price" duplicate (metron-ops#178: a
+// ratio's numerator should be visible in the same band as the ratio, without losing the
+// staleness/estimated provenance markers a stripped-down duplicate would drop).
+function renderPriceCell(h: Holding, ctx: RowCtx): ReactNode {
+  const lastBase = h.last_price != null && h.fx_rate != null ? h.last_price * h.fx_rate : null;
+  return (
+    <span
+      className={h.last_price_stale ? "text-amber-500" : "text-muted"}
+      title={
+        h.last_price_stale && h.last_price_date
+          ? `Stale — last close ${h.last_price_date}; the market-data feed hasn’t updated since`
+          : undefined
+      }
+    >
+      {ctx.baseMoney(lastBase, h.last_price)}
+      {h.last_price_stale ? <span className="ml-0.5" aria-hidden>⚠</span> : null}
+      {h.is_estimated ? (
+        <span
+          className="ml-0.5 text-sky-500"
+          title="Estimated — this fund hasn't struck its own NAV yet today; its same-day move is estimated from a tracking-proxy ETF and will reconcile to the true NAV after tomorrow's close."
+          aria-label="estimated"
+        >
+          ~
+        </span>
+      ) : null}
+    </span>
+  );
+}
+const sortPrice = (h: Holding) => (h.last_price != null && h.fx_rate != null ? h.last_price * h.fx_rate : h.last_price);
+
 // ── Position spine columns, now band-grouped (metron-ops#118+). Each keeps the bespoke
 // rendering it had as a hard-coded cell: FX fallback (baseMoney), stale-price ⚠, accounting
 // sign coloring, and the editable ClassifyCell dropdowns. ──
@@ -220,32 +265,61 @@ const POSITION_COLUMNS: ColumnDef[] = [
     priced: true,
     defaultDesc: true,
     live: true,
-    sort: (h) => (h.last_price != null && h.fx_rate != null ? h.last_price * h.fx_rate : h.last_price),
-    cell: (h, ctx) => {
-      const lastBase = h.last_price != null && h.fx_rate != null ? h.last_price * h.fx_rate : null;
-      return (
-        <span
-          className={h.last_price_stale ? "text-amber-500" : "text-muted"}
-          title={
-            h.last_price_stale && h.last_price_date
-              ? `Stale — last close ${h.last_price_date}; the market-data feed hasn’t updated since`
-              : undefined
-          }
-        >
-          {ctx.baseMoney(lastBase, h.last_price)}
-          {h.last_price_stale ? <span className="ml-0.5" aria-hidden>⚠</span> : null}
-          {h.is_estimated ? (
-            <span
-              className="ml-0.5 text-sky-500"
-              title="Estimated — this fund hasn't struck its own NAV yet today; its same-day move is estimated from a tracking-proxy ETF and will reconcile to the true NAV after tomorrow's close."
-              aria-label="estimated"
-            >
-              ~
-            </span>
-          ) : null}
-        </span>
-      );
-    },
+    sort: sortPrice,
+    cell: renderPriceCell,
+  },
+  // Price duplicate in Valuation (metron-ops#178) — the shared numerator behind P/E, Fwd
+  // P/E, P/B, and P/S, so all four ratios' inputs are visible without leaving this band.
+  // Same underlying data + rendering as "last" above (day_pct/day_change_pct precedent).
+  {
+    key: "price",
+    label: "Price",
+    band: "Valuation",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    sort: sortPrice,
+    cell: renderPriceCell,
+  },
+  // The day-change pair (Brian, 2026-07-08): Day is the primary session metric, so its $
+  // and % live in the VALUE band — i.e. on the Overview landing view, beside the Market
+  // Value they move — not buried in the Returns preset. day_pct is deliberately rendered
+  // in BOTH bands (here as the pair's %; in Returns as the period-return headline whose
+  // overnight/intraday components sit beside it): presets show one band at a time, so the
+  // duplication is only visible on All/Custom, and each rendering anchors its own band.
+  {
+    key: "day_change",
+    label: "Day $",
+    band: "Value",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title:
+      "Today's change in this position's market value (base currency) — price move only, at today's quantity and FX. Needs the live feed.",
+    sort: (h) => h.day_change,
+    cell: (h, ctx) => (
+      <span className={h.day_change != null ? signClass(h.day_change) : "text-muted"}>
+        {h.day_change != null ? accountingMoneyWhole(h.day_change, ctx.baseCurrency) : "—"}
+      </span>
+    ),
+    foot: (t, ccy) =>
+      t.day != null ? <span className={signClass(t.day)}>{accountingMoneyWhole(t.day, ccy)}</span> : "—",
+  },
+  {
+    key: "day_change_pct",
+    label: "Day %",
+    band: "Value",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title:
+      "Today's price return — overnight (open vs prior close) + intraday (latest vs open). Needs the live feed.",
+    sort: (h) => h.day_pct,
+    cell: (h) => (
+      <span className={h.day_pct != null ? signClass(h.day_pct) : "text-muted"}>
+        {h.day_pct != null ? accountingPercent(h.day_pct) : "—"}
+      </span>
+    ),
   },
   {
     key: "unrealized",
@@ -283,7 +357,10 @@ const POSITION_COLUMNS: ColumnDef[] = [
       <span className={signClass(t.unrealPct ?? 0)}>{t.unrealPct != null ? accountingPercent(t.unrealPct) : "—"}</span>
     ),
   },
-  // Returns — per-security period returns (metron-ops#87): Day (overnight/intraday), YTD, LTM.
+  // Returns — per-security period returns (metron-ops#87): Day + its overnight/intraday
+  // decomposition, then YTD, LTM. Day is the primary metric; Overnight and Intraday are
+  // its two legs shown as explicit (visually subordinate) columns rather than a hover
+  // tooltip (Brian, 2026-07-08).
   {
     key: "day_pct",
     label: "Day",
@@ -291,18 +368,46 @@ const POSITION_COLUMNS: ColumnDef[] = [
     priced: true,
     defaultDesc: true,
     live: true,
-    title: "Today's price return — overnight (open vs prior close) + intraday (latest vs open). Needs the live feed.",
+    title:
+      "Today's price return — the sum of its two legs, shown beside it: overnight (open vs prior close) + intraday (latest vs open). Needs the live feed.",
     sort: (h) => h.day_pct,
     cell: (h) => (
-      <span
-        className={h.day_pct != null ? signClass(h.day_pct) : "text-muted"}
-        title={
-          h.overnight_pct != null && h.intraday_pct != null
-            ? `overnight ${accountingPercent(h.overnight_pct)} · intraday ${accountingPercent(h.intraday_pct)}`
-            : undefined
-        }
-      >
+      <span className={h.day_pct != null ? signClass(h.day_pct) : "text-muted"}>
         {h.day_pct != null ? accountingPercent(h.day_pct) : "—"}
+      </span>
+    ),
+  },
+  {
+    key: "overnight_pct",
+    label: "· O/N",
+    band: "Returns",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title: "Component of Day: the overnight leg — today's open vs the prior close.",
+    sort: (h) => h.overnight_pct,
+    cell: (h) => (
+      <span className="text-xs opacity-70">
+        <span className={h.overnight_pct != null ? signClass(h.overnight_pct) : "text-muted"}>
+          {h.overnight_pct != null ? accountingPercent(h.overnight_pct) : "—"}
+        </span>
+      </span>
+    ),
+  },
+  {
+    key: "intraday_pct",
+    label: "· Intra",
+    band: "Returns",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title: "Component of Day: the intraday leg — the latest price vs today's open.",
+    sort: (h) => h.intraday_pct,
+    cell: (h) => (
+      <span className="text-xs opacity-70">
+        <span className={h.intraday_pct != null ? signClass(h.intraday_pct) : "text-muted"}>
+          {h.intraday_pct != null ? accountingPercent(h.intraday_pct) : "—"}
+        </span>
       </span>
     ),
   },
@@ -477,15 +582,33 @@ const METRIC_COLUMNS: MetricColumn[] = [
     tone: pillarTone,
     title: "Defensiveness pillar (0–100): low-volatility profile vs sector peers.",
   },
-  // ── Valuation ──
+  // ── Valuation — every ratio is immediately followed by its raw input(s) (metron-ops#178),
+  // so no band-switching is needed to see what a ratio is built from. "Price" (the shared
+  // numerator behind P/E/Fwd P/E/P/B/P/S) is a POSITION_COLUMNS entry above, not here — it
+  // renders first in this band since ALL_COLUMNS places POSITION_COLUMNS before METRIC_COLUMNS. ──
   { key: "market_cap", label: "Mkt Cap", group: "Valuation", value: (h) => h.market_cap, render: (v, base) => marketCapShort(v, base) },
   { key: "pe", label: "P/E", group: "Valuation", value: (h) => h.pe, render: (v) => multiple(v) },
+  { key: "eps", label: "EPS", group: "Valuation", value: (h) => h.eps, render: (v, base) => money(v, base), signed: true, title: "Trailing EPS — the raw input behind P/E (metron-ops#163)." },
   { key: "fwd_pe", label: "Fwd P/E", group: "Valuation", value: (h) => h.fwd_pe, render: (v) => multiple(v) },
+  { key: "fwd_eps", label: "Fwd EPS", group: "Valuation", value: (h) => h.fwd_eps, render: (v, base) => money(v, base), signed: true, title: "Forward EPS (analyst consensus, yfinance) — the raw input behind Fwd P/E (metron-ops#163)." },
   { key: "pb", label: "P/B", group: "Valuation", value: (h) => h.pb, render: (v) => multiple(v) },
+  { key: "book_value_per_share", label: "Book/Sh", group: "Valuation", value: (h) => h.book_value_per_share, render: (v, base) => money(v, base), title: "Book value per share — the raw input behind P/B (metron-ops#178)." },
   { key: "ps", label: "P/S", group: "Valuation", value: (h) => h.ps, render: (v) => multiple(v) },
+  { key: "revenue_per_share", label: "Rev/Sh", group: "Valuation", value: (h) => h.revenue_per_share, render: (v, base) => money(v, base), title: "Revenue per share (TTM) — the raw input behind P/S (metron-ops#178)." },
   { key: "ev_ebitda", label: "EV/EBITDA", group: "Valuation", value: (h) => h.ev_ebitda, render: (v) => multiple(v) },
+  { key: "enterprise_value", label: "EV", group: "Valuation", value: (h) => h.enterprise_value, render: (v, base) => marketCapShort(v, base), title: "Enterprise value (market cap + net debt) — the numerator behind EV/EBITDA (metron-ops#178)." },
+  { key: "ebitda", label: "EBITDA", group: "Valuation", value: (h) => h.ebitda, render: (v, base) => marketCapShort(v, base), title: "Raw EBITDA — the denominator behind EV/EBITDA (metron-ops#163)." },
+  // PEG stays in Valuation, not Fundamentals-growth — confirmed on the metron-ops#162 audit:
+  // it's a growth-ADJUSTED cheapness ratio (same "is this cheap" question as P/E), unlike Div
+  // Yld above, which answers a cash-return question, not a valuation one.
   { key: "peg", label: "PEG", group: "Valuation", value: (h) => h.peg, render: (v) => decimal(v, 2) },
-  { key: "div_yield", label: "Div Yld", group: "Valuation", value: (h) => h.div_yield, render: (v) => pct1(v) },
+  // Growth duplicated from Fundamentals' "EPS Gr" (same h.earnings_growth, same label) so
+  // PEG's second input is visible right beside it without leaving Valuation — same
+  // dual-band-duplicate precedent as day_pct/day_change_pct (metron-ops#178).
+  { key: "growth_pct", label: "EPS Gr", group: "Valuation", value: (h) => h.earnings_growth, render: (v) => percent(v), signed: true, title: "Trailing annual EPS growth — the divisor behind PEG (metron-ops#178)." },
+  // Div Yld groups under Returns, not Valuation — it's a cash-return-to-shareholder metric
+  // (dividend / price), not a "how cheap is this" ratio like the multiples above (Brian, 2026-07-09).
+  { key: "div_yield", label: "Div Yld", group: "Returns", value: (h) => h.div_yield, render: (v) => pct1(v) },
   // ── Fundamentals (full financial-statement picture, metron-ops#140: growth/margins/returns
   // AND balance-sheet leverage/liquidity in one band — institutional platforms don't split
   // balance-sheet health out as an unrelated axis from the rest of the fundamentals) ──
@@ -495,7 +618,6 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "op_margin", label: "Op M", group: "Fundamentals", value: (h) => h.op_margin, render: (v) => pct1(v) },
   { key: "roe", label: "ROE", group: "Fundamentals", value: (h) => h.roe, render: (v) => percent(v), signed: true },
   { key: "roa", label: "ROA", group: "Fundamentals", value: (h) => h.roa, render: (v) => percent(v), signed: true },
-  { key: "beta", label: "Beta", group: "Fundamentals", value: (h) => h.beta, render: (v) => decimal(v, 2) },
   { key: "cash", label: "Cash", group: "Fundamentals", value: (h) => h.cash, render: (v, base) => marketCapShort(v, base), title: "Total cash & equivalents" },
   { key: "debt", label: "Debt", group: "Fundamentals", value: (h) => h.debt, render: (v, base) => marketCapShort(v, base), title: "Total debt" },
   { key: "net_debt", label: "Net Debt", group: "Fundamentals", value: (h) => h.net_debt, render: (v, base) => marketCapShort(v, base), title: "Total debt − total cash (negative = net cash)" },
@@ -505,6 +627,10 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "quick_ratio", label: "Quick R", group: "Fundamentals", value: (h) => h.quick_ratio, render: (v) => decimal(v, 2), title: "Quick ratio (acid-test liquidity)" },
   { key: "fcf", label: "FCF", group: "Fundamentals", value: (h) => h.fcf, render: (v, base) => marketCapShort(v, base), signed: true, title: "Free cash flow (TTM)" },
   // ── Technicals ──
+  // Beta groups here, not Fundamentals — it's a price-history-derived risk statistic
+  // (regression vs. the market), same data-source family as RSI/MACD/momentum below, not a
+  // financial-statement metric like the rest of Fundamentals (metron-ops#162 audit, 2026-07-09).
+  { key: "beta", label: "Beta", group: "Technicals", value: (h) => h.beta, render: (v) => decimal(v, 2) },
   { key: "rsi_14", label: "RSI", group: "Technicals", value: (h) => h.rsi_14, render: (v) => decimal(v, 0), title: "Wilder RSI(14)" },
   { key: "macd_hist", label: "MACD", group: "Technicals", value: (h) => h.macd_hist, render: (v) => decimal(v, 2), signed: true, title: "MACD histogram (line − signal)" },
   { key: "pct_to_ma_50", label: "vs 50d", group: "Technicals", value: (h) => h.pct_to_ma_50, render: (v) => percent(v), signed: true, title: "% above/below the 50-day moving average" },
@@ -512,6 +638,10 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "pct_in_52w_range", label: "52w Rng", group: "Technicals", value: (h) => h.pct_in_52w_range, render: (v) => pct1(v), title: "Position within the 52-week low–high range" },
   { key: "mom_20d", label: "Mom 20d", group: "Technicals", value: (h) => h.mom_20d, render: (v) => percent(v), signed: true, title: "20-session price momentum" },
   // ── Consensus (research + sentiment, free sources — metron-ops#105) ──
+  // Confirmed on the metron-ops#162 audit: analyst rating/targets + news_sentiment stay one
+  // band on purpose — both are "what do external observers currently think" signals, distinct
+  // from Fundamentals (the balance sheet) and Technicals (the chart), even though their
+  // underlying methodologies (analyst consensus vs. LM sentiment scoring) differ.
   // Rating sorts by its signed score (strongBuy=+1 … strongSell=-1) but shows the label.
   { key: "consensus_rating", label: "Rating", group: "Consensus", value: (h) => h.consensus_score, render: () => "—", text: (h) => (h.consensus_rating ? RATING_LABEL[h.consensus_rating] ?? h.consensus_rating : null), signed: true, title: "Analyst consensus rating (free sources)" },
   { key: "price_target_mean", label: "Target", group: "Consensus", value: (h) => h.price_target_mean, render: (v, base) => money(v, base), title: "Mean analyst price target" },
@@ -585,6 +715,93 @@ const CLOSE_ANCHORED_BANDS: ReadonlySet<ColumnBand> = new Set([
   "Consensus",
 ]);
 
+// Default column widths (px) for the resizable table (metron-ops#161). These are starting
+// points only — every column is user-resizable from here, in-session (not yet persisted;
+// a v2 follow-up if it turns out to matter). Falls back to DEFAULT_COL_WIDTH_FALLBACK for
+// any column not listed below rather than skipping resize support for it.
+const DEFAULT_COL_WIDTH_FALLBACK = 90;
+const DEFAULT_COL_WIDTH: Record<string, number> = {
+  // Frozen spine + Account.
+  ticker: 150, // comfortably fits the inline label editor (w-32 input + Save button)
+  account: 110,
+  market_value: 110,
+  // Position.
+  quantity: 90,
+  avg_cost: 90,
+  cost_basis: 100,
+  // Value.
+  last: 90,
+  day_change: 90,
+  day_change_pct: 80,
+  unrealized: 100,
+  unrealized_pct: 90,
+  // Returns.
+  day_pct: 70,
+  overnight_pct: 70,
+  intraday_pct: 70,
+  ytd_pct: 70,
+  ltm_pct: 70,
+  // Class.
+  fx: 100,
+  sector: 150,
+  country: 140,
+  type: 90,
+  // Attractiveness.
+  attractiveness: 70,
+  attractiveness_quality: 60,
+  attractiveness_value: 60,
+  attractiveness_momentum: 60,
+  attractiveness_growth: 60,
+  attractiveness_stewardship: 60,
+  attractiveness_defensiveness: 60,
+  // Valuation.
+  price: 85,
+  market_cap: 95,
+  pe: 70,
+  eps: 75,
+  fwd_pe: 85,
+  fwd_eps: 85,
+  pb: 65,
+  book_value_per_share: 90,
+  ps: 65,
+  revenue_per_share: 90,
+  ev_ebitda: 100,
+  enterprise_value: 95,
+  ebitda: 95,
+  peg: 65,
+  growth_pct: 80,
+  div_yield: 80,
+  // Fundamentals.
+  rev_growth: 80,
+  earnings_growth: 80,
+  gross_margin: 85,
+  op_margin: 75,
+  roe: 70,
+  roa: 70,
+  cash: 90,
+  debt: 90,
+  net_debt: 95,
+  debt_to_equity: 70,
+  net_debt_to_ebitda: 100,
+  current_ratio: 75,
+  quick_ratio: 85,
+  fcf: 85,
+  // Technicals.
+  beta: 65,
+  rsi_14: 65,
+  macd_hist: 75,
+  pct_to_ma_50: 80,
+  pct_to_ma_200: 85,
+  pct_in_52w_range: 90,
+  mom_20d: 90,
+  // Consensus.
+  consensus_rating: 115,
+  price_target_mean: 90,
+  price_target_upside: 85,
+  num_analysts: 65,
+  news_sentiment: 95,
+};
+
 export function HoldingsTable({
   holdings,
   baseCurrency,
@@ -635,6 +852,63 @@ export function HoldingsTable({
   const marketValueVisible = priced && showMarketValue;
   const spineCols = 1 + (accountColumn ? 1 : 0) + (marketValueVisible ? 1 : 0);
 
+  // Resizable columns (metron-ops#161): TanStack Table's column-sizing model manages ONLY
+  // width state + resize handles here — every column's actual content still renders through
+  // the existing ColumnDef.cell()/band/sort machinery above, untouched. Ticker + Account +
+  // Market Value (the frozen spine, rendered outside the band loop) are included so the
+  // whole table is resizable, not just the analytic bands.
+  const resizableKeys = useMemo(
+    () => [
+      "ticker",
+      ...(accountColumn ? ["account"] : []),
+      ...(marketValueVisible ? [MARKET_VALUE_COLUMN.key] : []),
+      ...visibleColumns.map((c) => c.key),
+    ],
+    [accountColumn, marketValueVisible, visibleColumns],
+  );
+  const tsColumns = useMemo<TSColumnDef<Holding>[]>(
+    () =>
+      resizableKeys.map((key) => ({
+        id: key,
+        accessorFn: () => null, // TanStack requires an accessor; content renders outside this model.
+        size: DEFAULT_COL_WIDTH[key] ?? DEFAULT_COL_WIDTH_FALLBACK,
+        minSize: 40,
+        maxSize: 420,
+      })),
+    [resizableKeys],
+  );
+  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({});
+  const sizingTable = useReactTable({
+    data: holdings,
+    columns: tsColumns,
+    getCoreRowModel: getCoreRowModel(),
+    columnResizeMode: "onChange",
+    enableColumnResizing: true,
+    state: { columnSizing },
+    onColumnSizingChange: setColumnSizing,
+  });
+  const sizeOf = (key: string) => sizingTable.getColumn(key)?.getSize() ?? DEFAULT_COL_WIDTH[key] ?? DEFAULT_COL_WIDTH_FALLBACK;
+  // Header objects (not Column objects) carry the resize handler/isResizing state.
+  const headerByKey = useMemo(
+    () => new Map(sizingTable.getFlatHeaders().map((hd) => [hd.column.id, hd] as const)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sizingTable, columnSizing, resizableKeys],
+  );
+  const ResizeHandle = ({ columnKey }: { columnKey: string }) => {
+    const header = headerByKey.get(columnKey);
+    if (!header) return null;
+    return (
+      <div
+        data-testid={`resize-${columnKey}`}
+        onMouseDown={header.getResizeHandler()}
+        onTouchStart={header.getResizeHandler()}
+        className={`absolute right-0 top-0 h-full w-1.5 cursor-col-resize touch-none select-none hover:bg-accent/50 ${
+          header.column.getIsResizing() ? "bg-accent" : ""
+        }`}
+      />
+    );
+  };
+
   const [sort, setSort] = useState<{ key: string; desc: boolean } | null>(null);
   // Whether this page's values are being revalued from the delayed intraday overlay
   // (metron-ops#147) — drives the per-column live dots + the "· close" band markers.
@@ -671,6 +945,7 @@ export function HoldingsTable({
     let cost = 0;
     let mv = 0;
     let unreal = 0;
+    let day: number | null = null;
     let excluded = 0;
     for (const h of holdings) {
       const foreign = h.currency !== baseCurrency;
@@ -681,10 +956,11 @@ export function HoldingsTable({
       if (priced) {
         if (mvBase != null) mv += mvBase;
         if (h.unrealized_gain != null) unreal += h.unrealized_gain;
+        if (h.day_change != null) day = (day ?? 0) + h.day_change;
       }
     }
     const unrealPct = priced && cost !== 0 ? unreal / cost : null;
-    return { cost, mv, unreal, unrealPct, excluded };
+    return { cost, mv, unreal, unrealPct, day, excluded };
   }, [holdings, baseCurrency, priced]);
 
   // Header sort-control (shared by the spine + band column headers).
@@ -735,8 +1011,19 @@ export function HoldingsTable({
   );
 
   return (
-    <DualScroll deps={`${spineCols}:${holdings.length}:${priced}:${visibleColumns.length}`}>
-      <table className="w-full text-sm">
+    <DualScroll
+      deps={`${spineCols}:${holdings.length}:${priced}:${visibleColumns.length}:${JSON.stringify(columnSizing)}`}
+    >
+      <table className="table-fixed text-sm">
+        <colgroup>
+          <col style={{ width: sizeOf("ticker") }} />
+          {accountColumn ? <col style={{ width: sizeOf("account") }} /> : null}
+          {marketValueVisible ? <col style={{ width: sizeOf(MARKET_VALUE_COLUMN.key) }} /> : null}
+          {visibleColumns.map((col) => (
+            <col key={col.key} style={{ width: sizeOf(col.key) }} />
+          ))}
+          {onRemove ? <col style={{ width: 90 }} /> : null}
+        </colgroup>
         <thead className="sticky top-0 z-20">
           {colsByBand.length > 0 ? (
             // Band-label row: an empty cell over the Ticker spine, then one cell per band.
@@ -763,26 +1050,30 @@ export function HoldingsTable({
             </tr>
           ) : null}
           <tr className="border-b border-line bg-surface text-left text-xs uppercase tracking-wide text-muted">
-            <th className={`${STICKY} bg-surface px-3 py-2 font-medium`}>
+            <th className={`${STICKY} relative bg-surface px-3 py-2 font-medium`}>
               <SortTh colKey="ticker" label="Ticker" />
+              <ResizeHandle columnKey="ticker" />
             </th>
             {accountColumn ? (
-              <th className="px-3 py-2 text-left font-medium">
+              <th className="relative px-3 py-2 text-left font-medium">
                 <SortTh colKey="account" label="Account" />
+                <ResizeHandle columnKey="account" />
               </th>
             ) : null}
             {marketValueVisible ? (
-              <th className="px-3 py-2 text-right font-medium">
+              <th className="relative px-3 py-2 text-right font-medium">
                 <SortTh colKey={MARKET_VALUE_COLUMN.key} label={MARKET_VALUE_COLUMN.label} live={MARKET_VALUE_COLUMN.live} />
+                <ResizeHandle columnKey={MARKET_VALUE_COLUMN.key} />
               </th>
             ) : null}
             {colsByBand.map(([, cols]) =>
               cols.map((col, j) => (
                 <th
                   key={col.key}
-                  className={`px-3 py-2 font-medium ${col.align === "left" ? "text-left" : "text-right"} ${j === 0 ? "border-l border-line" : ""}`}
+                  className={`relative px-3 py-2 font-medium ${col.align === "left" ? "text-left" : "text-right"} ${j === 0 ? "border-l border-line" : ""}`}
                 >
                   <SortTh colKey={col.key} label={col.label} title={col.title} live={col.live} />
+                  <ResizeHandle columnKey={col.key} />
                 </th>
               )),
             )}
@@ -812,20 +1103,20 @@ export function HoldingsTable({
             const ctx: RowCtx = { baseCurrency, portfolioId, foreign, baseMoney };
             return (
               <tr key={h.ticker} className="border-b border-line last:border-0">
-                <td className={`${STICKY} bg-paper px-3 py-2 font-medium`}>
+                <td className={`${STICKY} overflow-hidden whitespace-nowrap bg-paper px-3 py-2 font-medium`}>
                   <TickerCell h={h} portfolioId={portfolioId} />
                 </td>
                 {accountColumn ? (
-                  <td className="px-3 py-2 text-left text-muted">{h.account_label ?? "—"}</td>
+                  <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-left text-muted">{h.account_label ?? "—"}</td>
                 ) : null}
                 {marketValueVisible ? (
-                  <td className="px-3 py-2 text-right tabular-nums">{MARKET_VALUE_COLUMN.cell(h, ctx)}</td>
+                  <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-right tabular-nums">{MARKET_VALUE_COLUMN.cell(h, ctx)}</td>
                 ) : null}
                 {colsByBand.map(([, cols]) =>
                   cols.map((col, j) => (
                     <td
                       key={col.key}
-                      className={`px-3 py-2 tabular-nums ${col.align === "left" ? "text-left" : "text-right"} ${j === 0 ? "border-l border-line" : ""}`}
+                      className={`overflow-hidden whitespace-nowrap px-3 py-2 tabular-nums ${col.align === "left" ? "text-left" : "text-right"} ${j === 0 ? "border-l border-line" : ""}`}
                       title={col.title}
                     >
                       {col.cell(h, ctx)}

@@ -15,6 +15,9 @@ from api.services import (
     metrics_enrichment,
     tearsheet,
 )
+from api.services import (
+    factor_profiles as factor_profiles_service,
+)
 
 _PROFILES = {
     "AAPL": {
@@ -145,3 +148,49 @@ def test_tearsheet_gauge_gated_off_when_feed_disabled(db_session):
     sheet = tearsheet.tearsheet(db_session, tenant_id, pid, "AAPL", feed_enabled=False)
     assert sheet.attractiveness.available is False
     assert sheet.attractiveness.score is None
+
+
+def test_request_scoped_cache_deduplicates_within_request(monkeypatch):
+    """Multiple compute_universe() calls within the same request should read S3 once.
+
+    Supplying `profiles_reader` to compute_universe() intentionally bypasses ALL
+    caching (see its docstring) — that's what lets test_compute_universe_* above get
+    deterministic fresh results. So this test can't inject its counter via
+    profiles_reader like the others; it has to mock the lower-level S3 read
+    (factor_profiles_service.load_factor_profiles) and call compute_universe() with
+    no reader at all, so the real request-scoped cache path actually executes.
+    """
+    call_count = 0
+
+    def _counting_load_factor_profiles(*, reader=None):
+        nonlocal call_count
+        call_count += 1
+        return factor_profiles_service.FactorProfilesSnapshot(as_of=None, by_ticker=_PROFILES)
+
+    monkeypatch.setattr(attractiveness.factor_profiles_service, "load_factor_profiles", _counting_load_factor_profiles)
+
+    # Clear all caches to start fresh
+    attractiveness.clear_cache()
+
+    # First call: computes fresh, increments call_count
+    universe1 = attractiveness.compute_universe()
+    assert call_count == 1
+
+    # Second call in same request-context: should use request-scoped cache, NO S3 read
+    universe2 = attractiveness.compute_universe()
+    assert call_count == 1  # No increment — cache hit
+    assert universe1 is universe2  # Request cache returns the exact stored object
+
+    # Clearing only the request-scoped cache (simulating the next request) still
+    # serves from the module-level 1-hour cache — no new S3 read, by design (this is
+    # the whole point of having two tiers: request-scoped for within-request dedup,
+    # module-level for across-request dedup within the TTL).
+    attractiveness.clear_request_cache()
+    universe3 = attractiveness.compute_universe()
+    assert call_count == 1  # Still served by the module-level cache
+    assert universe3 == universe1
+
+    # Clearing BOTH caches forces a genuinely fresh read.
+    attractiveness.clear_cache()
+    attractiveness.compute_universe()
+    assert call_count == 2  # Incremented after a full cache clear

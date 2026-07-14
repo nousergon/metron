@@ -78,7 +78,7 @@ export function Empty({ children }: { children: ReactNode }) {
 }
 
 /** Short inline explanation shown in place of a write-affordance (Import, rename, delete,
- * SnapTrade connect, price refresh…) on the Reference Rate showcase portfolio
+ * SnapTrade connect, price refresh…) on the Showcase Portfolio portfolio
  * (`isReferencePortfolio`, metron-ops#120). The portfolio is a live, real-tenant-visible
  * read-only mirror (metron#162) — the API already 403s every mutating route for it
  * (`api/main.py::_demo_read_only`), so this just replaces the dead-end click with a short
@@ -90,8 +90,8 @@ export function ReadOnlyNotice({ children }: { children?: ReactNode }) {
 }
 
 // Upsell labels for a required tier (matches PortfolioNav's lock badge). Two exposed tiers
-// now (metron-ops): a beta-excluded feature upsells to the full "AI Advisor" build.
-const TIER_LABEL: Record<string, string> = { personal: "AI Advisor" };
+// now (metron-ops): a beta-excluded feature upsells to the full "Intelligence" build.
+const TIER_LABEL: Record<string, string> = { personal: "Intelligence" };
 
 /** Full-page placeholder for a feature excluded by the active product tier / data feed.
  * Renders when a gated route is navigated to directly (the nav already hides the link).

@@ -16,35 +16,27 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.db import models
-from portfolio_analytics.sectors import CountrySource, fetch_countries
 
-# yfinance returns the US under this exact Title-Case label in ``Ticker.info['country']``.
-US_COUNTRY = "United States"
+# The pure bucket rule (US_COUNTRY / INTERNATIONAL / is_us_domicile / geo_bucket) lives in
+# ``portfolio_analytics.sectors.geo`` (lifted for the diagnostics engine, metron-ops-I167);
+# re-exported here so this service stays the API layer's one import site for geo semantics.
+from portfolio_analytics.sectors import (
+    INTERNATIONAL,
+    US_COUNTRY,
+    CountrySource,
+    fetch_countries,
+    geo_bucket,
+    is_us_domicile,
+)
 
-# Canonical sentinel for a multi-country / ex-US holding whose single domicile doesn't
-# describe its geographic exposure — a broad-international fund/ETF (e.g. FTIHX, which
-# yfinance reports as domiciled "United States" but is ~100% ex-US). Not a yfinance value:
-# it only ever reaches ``country`` via a tenant-scoped classification override, so the
-# canonical domicile on the global ``securities`` row is never overwritten. It buckets as
-# International (it isn't the US), but naming it keeps the override + UI option intentional
-# rather than relying on the stringly-typed "anything-not-US" fallthrough.
-INTERNATIONAL = "International"
-
-
-def is_us_domicile(country: str | None) -> bool:
-    """Whether ``country`` is the United States (the US side of the US-vs-international
-    split). Unclassified (``None``) is NOT US — it lands in its own coverage bucket."""
-    return country == US_COUNTRY
-
-
-def geo_bucket(country: str | None) -> str:
-    """The US-vs-international bucket for a holding: ``"US"``, ``"International"``, or
-    ``"Unclassified"`` (no country resolved). A specific foreign domicile and the explicit
-    ``INTERNATIONAL`` sentinel both bucket as International; the sentinel lets a multi-country
-    fund be reclassified out of its (misleading) listing domicile via an override."""
-    if country is None:
-        return "Unclassified"
-    return "US" if is_us_domicile(country) else "International"
+__all__ = [
+    "INTERNATIONAL",
+    "US_COUNTRY",
+    "countries_by_symbol",
+    "ensure_countries",
+    "geo_bucket",
+    "is_us_domicile",
+]
 
 
 def countries_by_symbol(session: Session, symbols: list[str]) -> dict[str, str | None]:

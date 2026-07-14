@@ -20,7 +20,7 @@ from krepis.logging import setup_logging
 from api.config import settings
 from api.db.session import create_all
 from api.plugins import active_plugins
-from api.routers import indices, macro, meta, portfolios, research_intel
+from api.routers import events, indices, macro, me, meta, portfolios, research_intel
 from api.services.demo import DEMO_TENANT_ID, REFERENCE_PORTFOLIO_ID
 
 # Structured logging + flow-doctor. Passing a flow-doctor.yaml attaches a
@@ -43,8 +43,11 @@ async def lifespan(app: FastAPI):
     # Dev/test convenience: create tables on boot. Production uses Alembic migrations.
     if settings.env != "prod":
         create_all()
-    # Seed the canned read-only demo portfolio (idempotent). Best-effort: a seeding
-    # failure WARNs but never blocks startup — the demo is secondary to the real product.
+    # Seed the canned read-only Showcase Portfolio (idempotent) — the shell, its
+    # frozen sample sleeve, and the legacy-portfolio cleanup all run unconditionally on
+    # every boot, independent of S3 artifact availability, so the no-auth /demo entry
+    # works even in a dev/no-S3 environment. Best-effort: a seeding failure WARNs but
+    # never blocks startup — the showcase is secondary to the real product.
     if settings.demo_enabled:
         import logging
 
@@ -53,11 +56,11 @@ async def lifespan(app: FastAPI):
 
         try:
             with SessionLocal() as session:
-                demo.ensure_demo_seeded(session)
-                # Reference Rate showcase: attempt an initial live sync from the
-                # published artifact. Best-effort — no artifact (dev/no-S3) creates
-                # nothing (the portfolio materializes only once a real artifact is in
-                # hand); the daily refresh retries. Never blocks boot.
+                demo.ensure_reference_seeded(session)
+                # Live sleeve: attempt an initial sync from the published artifact.
+                # Best-effort — no artifact (dev/no-S3) creates nothing (the live
+                # sleeve materializes only once a real artifact is in hand); the daily
+                # refresh retries. Never blocks boot.
                 try:
                     demo.sync_reference_holdings(session)
                 except Exception:  # noqa: BLE001 - live sync is best-effort
@@ -86,12 +89,13 @@ app.add_middleware(
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-# The Reference Rate showcase is now readable by every real tenant (not just the demo
-# tenant that owns it — see api/routers/portfolios.py::_owned_portfolio), so a real
-# tenant's own X-Tenant-Id header will never match DEMO_TENANT_ID below. This path-based
-# check is the second, independent leg of the same read-only guard: it keys off the fixed
-# portfolio id instead of the caller's tenant, so it protects the showcase regardless of
-# who's asking. Every mutating route in api/routers/portfolios.py is `/portfolios/{id}/...`
+# The Showcase Portfolio is now readable by every real tenant (not just the demo
+# tenant that owns it — see api/routers/portfolios.py::_owned_portfolio). Real tenants
+# authenticate with a bearer JWT and send no X-Tenant-Id at all (metron-ops#179) — only
+# the signup-free demo still sends it, so the header leg below still catches every demo
+# mutation. This path-based check is the second, independent leg of the same read-only
+# guard: it keys off the fixed portfolio id instead of the caller's tenant, so it
+# protects the showcase regardless of who's asking. Every mutating route in api/routers/portfolios.py is `/portfolios/{id}/...`
 # with no extra prefix, so a plain anchored match against the fixed id is reliable without
 # needing real path-param parsing (unavailable at this layer, before routing).
 _REFERENCE_PORTFOLIO_PATH = re.compile(rf"^/portfolios/{re.escape(str(REFERENCE_PORTFOLIO_ID))}(?:/|$)")
@@ -99,7 +103,7 @@ _REFERENCE_PORTFOLIO_PATH = re.compile(rf"^/portfolios/{re.escape(str(REFERENCE_
 
 @app.middleware("http")
 async def _demo_read_only(request: Request, call_next):
-    """The demo portfolio (metron-ops#42) and the Reference Rate showcase are READ-ONLY —
+    """The demo portfolio (metron-ops#42) and the Showcase Portfolio are READ-ONLY —
     refuse any mutating request (anything but GET/HEAD/OPTIONS) addressed to either, so no
     tenant can ever edit, import into, delete, or refresh a shared fixture. One HTTP-layer
     chokepoint covers every mutation route uniformly. The server-side seed/sync runs
@@ -113,8 +117,20 @@ async def _demo_read_only(request: Request, call_next):
                 if uuid.UUID(raw) == DEMO_TENANT_ID:
                     return JSONResponse(status_code=403, content={"detail": "The demo portfolio is read-only."})
             except ValueError:
-                pass  # malformed header → let the route's _tenant_id dependency 400 it
+                pass  # malformed header → the route's tenant dependency 401s it
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _clear_request_cache(request: Request, call_next):
+    """Clear request-scoped caches (e.g., attractiveness universe) at end of each request.
+    Prevents stale data leakage across requests while avoiding redundant S3 reads within
+    a single request that spans multiple endpoints (metron-ops#142)."""
+    try:
+        return await call_next(request)
+    finally:
+        from api.services import attractiveness
+        attractiveness.clear_request_cache()
 
 
 @app.get("/health", tags=["system"])
@@ -122,11 +138,13 @@ def health() -> dict:
     return {"status": "ok", "env": settings.env}
 
 
+app.include_router(me.router)
 app.include_router(meta.router)
 app.include_router(portfolios.router)
 app.include_router(macro.router)
 app.include_router(indices.router)
 app.include_router(research_intel.router)
+app.include_router(events.router)
 
 # Mount any out-of-tree premium plugins (metron-ops). Importing them here registers
 # their ORM models on the shared Base *before* lifespan's create_all runs, so a
