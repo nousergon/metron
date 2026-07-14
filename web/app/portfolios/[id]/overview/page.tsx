@@ -39,11 +39,12 @@ function sumOrNull(accts: Account[], pick: (a: Account) => number | null): numbe
   return any ? total : null;
 }
 
-export default async function PortfolioPage({
-  params,
-}: {
-  params: { id: string };
-}) {
+export default async function PortfolioPage(
+  props: {
+    params: Promise<{ id: string }>;
+  }
+) {
+  const params = await props.params;
   const { id } = params;
   const apiAuth = await requireApiAuth();
 
