@@ -14,13 +14,14 @@ export const dynamic = "force-dynamic";
 // lane's fully deterministic page (metron-ops-I164): portfolio-structure FACTS on the
 // SETTLED context. Core analytics (free/beta `concentration` feature); only the
 // benchmark-weight columns ride the licensed benchmark source and degrade honestly.
-export default async function DiagnosticsPage({
-  params,
-  searchParams,
-}: {
-  params: { id: string };
-  searchParams: { account_id?: string | string[] };
-}) {
+export default async function DiagnosticsPage(
+  props: {
+    params: Promise<{ id: string }>;
+    searchParams: Promise<{ account_id?: string | string[] }>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const { id } = params;
   const apiAuth = await requireApiAuth();
 

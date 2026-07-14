@@ -6,7 +6,8 @@ import { requireApiAuth } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
-export default async function AdvisorProfilePage({ params }: { params: { id: string } }) {
+export default async function AdvisorProfilePage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const { id } = params;
   const apiAuth = await requireApiAuth();
 
