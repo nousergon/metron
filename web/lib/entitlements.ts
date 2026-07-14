@@ -6,7 +6,7 @@
 // it ONLY when the simulator is enabled server-side — on the public product the cookies
 // are ignored, so a normal user can't re-scope their own entitlements.
 
-import { cookies } from "next/headers";
+import { cookies, type UnsafeUnwrappedCookies } from "next/headers";
 import { unstable_cache } from "next/cache";
 import { cacheIdentity, getEntitlements, type Entitlement, type Entitlements } from "@/lib/api";
 import type { NavFeatureState } from "@/components/portfolio-nav";
@@ -27,7 +27,7 @@ export const entitlementsTag = (apiAuth: string) => `entitlements:${cacheIdentit
 
 /** The owner-simulator preview selection (tier dropdown + feed toggle) from cookies. */
 export function previewFromCookies(): { tier?: string; feed?: boolean } {
-  const jar = cookies();
+  const jar = (cookies() as unknown as UnsafeUnwrappedCookies);
   const tier = jar.get("metron_preview_tier")?.value;
   const feedRaw = jar.get("metron_preview_feed")?.value;
   return { tier, feed: feedRaw === undefined ? undefined : feedRaw === "true" };

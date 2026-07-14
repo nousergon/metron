@@ -44,13 +44,14 @@ function SectionSkeleton({ rows = 3 }: { rows?: number }) {
 // the two expensive sections (Accounts, Holdings table) each stream in behind their own
 // <Suspense> as their data lands. Each streamed section is an async Server Component that
 // fetches only its own slice and fails soft.
-export default async function HoldingsPage({
-  params,
-  searchParams,
-}: {
-  params: { id: string };
-  searchParams: { account_id?: string | string[]; combine?: string; val?: string };
-}) {
+export default async function HoldingsPage(
+  props: {
+    params: Promise<{ id: string }>;
+    searchParams: Promise<{ account_id?: string | string[]; combine?: string; val?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const { id } = params;
   const apiAuth = await requireApiAuth();
 
@@ -224,9 +225,9 @@ async function HoldingsSection({
         // The provider carries the overlay state to the table's live/close provenance
         // markers (metron-ops#147) — settled mode mounts it with live=false so the table
         // makes zero live claims; the Watchlist section below stays outside it entirely.
-        <LiveValuationProvider live={valuation === "live" && (live?.applied ?? false)}>
+        (<LiveValuationProvider live={valuation === "live" && (live?.applied ?? false)}>
           <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} accounts={accounts ?? undefined} selectedAccountIds={accountIds} />
-        </LiveValuationProvider>
+        </LiveValuationProvider>)
       )}
     </Section>
   );

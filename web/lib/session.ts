@@ -21,7 +21,7 @@ export type SharedSession = {
  * Forwards the request's own cookie header — the better-auth session cookie lives on
  * the parent domain. Cached per request render. */
 export const getSession = cache(async (): Promise<SharedSession> => {
-  const cookie = headers().get("cookie");
+  const cookie = (await headers()).get("cookie");
   if (!cookie) return null;
   const res = await fetch(`${AUTH_URL}/api/auth/get-session`, {
     headers: { cookie },
@@ -52,8 +52,8 @@ const SESSION_COOKIE = "__Secure-better-auth.session_token";
  * `metron_demo` cookie (metron-ops#183) — wrong-tenant data is the worst rendering
  * of an auth hiccup. Cached per request render so one page doesn't mint per fetch. */
 export const requireApiAuth = cache(async (): Promise<string> => {
-  const hasSessionCookie = cookies().get(SESSION_COOKIE) !== undefined;
-  const cookie = headers().get("cookie");
+  const hasSessionCookie = (await cookies()).get(SESSION_COOKIE) !== undefined;
+  const cookie = (await headers()).get("cookie");
   if (cookie && hasSessionCookie) {
     const res = await fetch(`${AUTH_URL}/api/auth/token`, {
       headers: { cookie },
@@ -72,6 +72,6 @@ export const requireApiAuth = cache(async (): Promise<string> => {
     // the demo fallback, which would silently show another tenant's data.
     redirect("/login");
   }
-  if (cookies().get(DEMO_COOKIE)?.value === "1") return DEMO_TENANT_ID;
+  if ((await cookies()).get(DEMO_COOKIE)?.value === "1") return DEMO_TENANT_ID;
   redirect("/login");
 });

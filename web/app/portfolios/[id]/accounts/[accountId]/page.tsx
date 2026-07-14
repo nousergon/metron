@@ -7,7 +7,8 @@ import { requireApiAuth } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
-export default async function AccountPage({ params }: { params: { id: string; accountId: string } }) {
+export default async function AccountPage(props: { params: Promise<{ id: string; accountId: string }> }) {
+  const params = await props.params;
   const { id, accountId } = params;
   const apiAuth = await requireApiAuth();
 
