@@ -1,7 +1,7 @@
 """Extension point — optional, out-of-tree plugins that add premium surfaces.
 
-The public Metron repo ships ONLY this plumbing. Proprietary overlays (the AI
-Advisor, the Alpha Engine signal integration) live in the private ``metron-ops``
+The public Metron repo ships ONLY this plumbing. Proprietary overlays (the Intelligence
+feature, the Alpha Engine signal integration) live in the private ``metron-ops``
 companion package and register through the ``metron.plugins`` entry-point group.
 When that package is not installed — the default for any public / self-host
 deploy — discovery returns nothing and Metron stays a pure, descriptive,

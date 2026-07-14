@@ -12,7 +12,7 @@ const FLAG_LABEL: Record<string, string> = {
   overweight_pref: "preferred",
 };
 
-export default async function AdvisorPage({ params }: { params: { id: string } }) {
+export default async function IntelligencePage({ params }: { params: { id: string } }) {
   const { id } = params;
   const apiAuth = await requireApiAuth();
 

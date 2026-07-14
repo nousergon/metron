@@ -1,6 +1,6 @@
 """Product-tier entitlements — the source of truth for what each Metron tier offers.
 
-Drives the **tier simulator** (owner-only preview of Beta / AI Advisor (demo)
+Drives the **tier simulator** (owner-only preview of Beta / Intelligence (demo)
 in the personal build) and, later, real per-tenant subscription gating in the
 multi-tenant product. Two orthogonal axes decide whether a feature is shown:
 
@@ -71,7 +71,7 @@ FEATURES: tuple[Feature, ...] = (
     Feature("indices", "Market indices (intraday)", ("feed",)),
     Feature("etf_lookthrough", "ETF look-through", ("etf_vendor",)),
     Feature("agentic_research", "Agentic quant research", ("feed",)),
-    Feature("ai_advisor", "AI Advisor", ()),
+    Feature("ai_advisor", "Intelligence", ()),
     Feature("alpha_engine", "Alpha Engine signals", ()),
     # Neutral research intel (regime + narrative, sector ratings/modifiers, market
     # breadth, per-holding attractiveness + generic thesis) read from the crucible-research
@@ -104,12 +104,12 @@ _AGENTIC = _PRO | {"agentic_research"}
 _PERSONAL = _AGENTIC | {"ai_advisor", "alpha_engine", "research_intel"}
 
 # Two exposed options for now (metron-ops): "Beta" — everything legally releasable to the
-# public pre-SEC-approval (no advice) — and "AI Advisor (demo)" — the full product, advice
+# public pre-SEC-approval (no advice) — and "Intelligence (demo)" — the full product, advice
 # /signals included. required_tier reads this order (cheapest → richest), so any feature the
-# beta tier excludes upsells to "AI Advisor" — never to the internal Pro/Research layers.
+# beta tier excludes upsells to "Intelligence" — never to the internal Pro/Research layers.
 TIERS: tuple[Tier, ...] = (
     Tier("beta", "Beta", _BETA),
-    Tier("personal", "AI Advisor (demo)", _PERSONAL),
+    Tier("personal", "Intelligence (demo)", _PERSONAL),
 )
 TIER_BY_KEY: dict[str, Tier] = {t.key: t for t in TIERS}
 TIER_ORDER: list[str] = [t.key for t in TIERS]
