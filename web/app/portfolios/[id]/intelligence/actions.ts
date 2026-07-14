@@ -1,6 +1,6 @@
 "use server";
 
-// Server Action for the Advisor page: run the Claude narrative for the current state.
+// Server Action for the Intelligence page: run the Claude narrative for the current state.
 // Runs server-side (tenant header stays off the browser); revalidates so the fresh
 // commentary paints. The generate call is the one paid path — gated behind a click.
 
@@ -14,7 +14,7 @@ export async function generateAdvisorAction(portfolioId: string): Promise<Action
   try {
     const apiAuth = await requireApiAuth();
     await generateAdvisor(apiAuth, portfolioId);
-    revalidatePath(`/portfolios/${portfolioId}/advisor`);
+    revalidatePath(`/portfolios/${portfolioId}/intelligence`);
     return { ok: true, message: "Generated." };
   } catch (e) {
     // The backend returns 503 with a reason (e.g. missing ANTHROPIC_API_KEY) — surface it.

@@ -1006,7 +1006,7 @@ export type Macro = {
 export const getMacro = (apiAuth: string, opts?: { full?: boolean }) =>
   get<Macro>(apiAuth, `/macro${opts?.full ? "?full=true" : ""}`);
 
-// ── Research intel (neutral market intel from crucible-research; paid AI-Advisor tier) ──
+// ── Research intel (neutral market intel from crucible-research; paid Intelligence tier) ──
 // EPIC config#1499 Phase 1 / metron-ops#117. Global, read-only intel: regime + narrative,
 // sector ratings/modifiers, market breadth, per-ticker attractiveness + generic thesis.
 export type ResearchIntelSectorRating = { rating: string | null; rationale: string | null };
@@ -1503,8 +1503,8 @@ export async function putPreferences(
 
 // ---------------------------------------------------------------------------
 // Extension point — premium plugins (metron-ops). On a stock public deploy no
-// plugins are installed, so `getPlugins` returns [] and none of the advisor
-// surface below is ever reached. Types mirror the metron-ops advisor router.
+// plugins are installed, so `getPlugins` returns [] and none of the Intelligence
+// surface below is ever reached. Types mirror the metron-ops Intelligence router.
 // ---------------------------------------------------------------------------
 
 /** Nav metadata for one active out-of-tree plugin (GET /meta/plugins). */
@@ -1750,7 +1750,7 @@ export type AdvisorProfile = {
   rebalance_frequency: string;
 };
 
-/** The advisor view (gap analysis + cached commentary) for a portfolio. */
+/** The Intelligence view (gap analysis + cached commentary) for a portfolio. */
 export const getAdvisor = (apiAuth: string, id: string) =>
   get<AdvisorView>(apiAuth, `/ext/advisor/${id}`);
 
@@ -1776,7 +1776,7 @@ export async function generateAdvisor(apiAuth: string, id: string): Promise<Advi
   return res.json() as Promise<AdvisorView>;
 }
 
-/** Save the tenant's investor profile (the targets the advisor compares against). */
+/** Save the tenant's investor profile (the targets the Intelligence feature compares against). */
 export async function putAdvisorProfile(
   apiAuth: string,
   id: string,
