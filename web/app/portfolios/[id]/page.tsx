@@ -9,6 +9,7 @@ import { SettledRefresher } from "@/components/settled-refresher";
 import { SessionPanel } from "@/components/session-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { WatchlistCompareTable } from "@/components/watchlist-compare-table";
+import { ColumnBandsProvider } from "@/components/column-bands-context";
 import { loadEntitlements, navFeatureStates } from "@/lib/entitlements";
 import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
@@ -143,13 +144,21 @@ export default async function HoldingsPage(
         </Suspense>
       ) : null}
 
-      <Suspense fallback={<SectionSkeleton rows={6} />}>
-        <HoldingsSection apiAuth={apiAuth} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} savedView={savedView} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} />
-      </Suspense>
+      {/* ColumnBandsProvider (metron-ops#121 sync fix) wraps BOTH streamed sections below so
+          the Holdings COLUMNS control's selection also drives the Watchlist table further
+          down the page — they're two separate async Server Components under independent
+          <Suspense> boundaries (kept independent here for their own streaming; collapsing
+          them would make Watchlist wait on the Holdings fetch), so a shared client context
+          mounted above both is the bridge. The provider itself renders no DOM. */}
+      <ColumnBandsProvider>
+        <Suspense fallback={<SectionSkeleton rows={6} />}>
+          <HoldingsSection apiAuth={apiAuth} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} savedView={savedView} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} />
+        </Suspense>
 
-      <Suspense fallback={<SectionSkeleton rows={3} />}>
-        <WatchlistSection apiAuth={apiAuth} id={id} ccy={ccy} />
-      </Suspense>
+        <Suspense fallback={<SectionSkeleton rows={3} />}>
+          <WatchlistSection apiAuth={apiAuth} id={id} ccy={ccy} />
+        </Suspense>
+      </ColumnBandsProvider>
     </div>
   );
 }
