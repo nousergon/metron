@@ -153,6 +153,28 @@ def test_connector_preserves_broker_native_account_fields():
     assert growth.institution == "Interactive Brokers"
 
 
+# ── tax_treatment derivation (metron-ops#194) ──────────────────────────────────
+def test_connector_derives_tax_treatment_from_broker_type():
+    """Both fixture accounts carry a recognized SnapTrade ``type`` — the connector
+    must positively resolve tax_treatment from it, not leave it "" for account_meta's
+    keyword fallback to guess at."""
+    snap = SnapTradeConnector(_FakeReader()).sync()
+    by_number = {a.number: a for a in snap.accounts}
+    assert by_number["U001"].account_type == "Individual"
+    assert by_number["U001"].tax_treatment == "taxable"
+    assert by_number["U002"].account_type == "Roth IRA"
+    assert by_number["U002"].tax_treatment == "tax_exempt"
+
+
+def test_connector_leaves_tax_treatment_blank_for_unrecognized_broker_type():
+    class _Reader(_FakeReader):
+        def get_accounts(self):
+            return [{**_ACCOUNTS[0], "type": "Some Exotic Wrapper"}]
+
+    snap = SnapTradeConnector(_Reader()).sync()
+    assert snap.accounts[0].tax_treatment == ""
+
+
 def test_connector_fail_soft_on_reader_error():
     class _Boom:
         def get_accounts(self):
