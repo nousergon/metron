@@ -358,6 +358,37 @@ def mark_unlisted(session: Session, symbol: str, *, unlisted: bool = True) -> in
     return len(rows)
 
 
+def backfill_tax_treatment(session: Session) -> int:
+    """One-time (idempotent) re-derivation of ``tax_treatment`` for existing accounts
+    from their already-stored broker ``account_type`` — metron-ops#194. Historical
+    accounts synced before the connectors positively derived ``tax_treatment`` are
+    stuck NULL, permanently on the ``account_meta`` keyword-inference fallback even
+    though the broker-reported type needed to classify them correctly is already on
+    the row. Only fills rows where ``tax_treatment IS NULL`` (never clobbers a
+    connector- or Settings-set value, mirroring ``_upsert_accounts``'s never-clobber
+    rule) and only where the stored ``account_type`` maps to a recognized treatment —
+    an unmappable type is left NULL for the keyword-inference fallback, not guessed.
+    Safe to re-run: a second pass touches zero rows.
+    """
+    from portfolio_analytics.ingestion.schema import tax_treatment_from_account_type
+
+    rows = session.scalars(
+        select(models.Account).where(models.Account.tax_treatment.is_(None))
+    ).all()
+    updated = 0
+    for row in rows:
+        derived = tax_treatment_from_account_type(row.account_type)
+        if derived:
+            row.tax_treatment = derived
+            updated += 1
+    session.commit()
+    logger.info(
+        "backfill_tax_treatment: %d/%d NULL account(s) re-derived from account_type",
+        updated, len(rows),
+    )
+    return updated
+
+
 def flex_sync_all(session: Session) -> int:
     """Re-sync IBKR Flex broker positions for every non-reference portfolio.
     A lighter pre-market variant of the daily-refresh: Flex sync only, no price
@@ -399,6 +430,11 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("daily-refresh", help="refresh prices + record NAV snapshots for all portfolios")
     sub.add_parser("flex-sync", help="re-sync IBKR Flex / SnapTrade broker positions only (pre-market timer)")
+    sub.add_parser(
+        "backfill-tax-treatment",
+        help="one-time: re-derive tax_treatment for existing NULL accounts from their stored "
+        "account_type (metron-ops#194); safe to re-run, never clobbers a set value",
+    )
     p_unl = sub.add_parser(
         "mark-unlisted",
         help="flag a security as having no public listing (broker-snapshot-priced; "
@@ -462,6 +498,15 @@ def main(argv: list[str] | None = None) -> int:
             flex_sync_all(session)
         finally:
             session.close()
+        return 0
+    if args.cmd == "backfill-tax-treatment":
+        create_all()
+        session = SessionLocal()
+        try:
+            n = backfill_tax_treatment(session)
+        finally:
+            session.close()
+        logger.info("backfill-tax-treatment done: %d account(s) updated", n)
         return 0
     return 0
 

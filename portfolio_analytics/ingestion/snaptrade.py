@@ -30,6 +30,7 @@ from portfolio_analytics.ingestion.schema import (
     CanonicalHolding,
     CanonicalSecurity,
     synth_security_id,
+    tax_treatment_from_account_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,10 @@ class SnapTradeConnector:
                     account_id=str(acct.get("id", "") or ""),
                     name=acct.get("name", "") or "",
                     account_type=acct.get("type", "") or "",
+                    # Positively derived from SnapTrade's own structured ``type`` —
+                    # metron-ops#194. "" when unrecognized; account_meta.py's keyword
+                    # inference is the documented fallback for that case.
+                    tax_treatment=tax_treatment_from_account_type(acct.get("type", "") or ""),
                 )
             )
 
