@@ -12,7 +12,8 @@ const FLAG_LABEL: Record<string, string> = {
   overweight_pref: "preferred",
 };
 
-export default async function IntelligencePage({ params }: { params: { id: string } }) {
+export default async function IntelligencePage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const { id } = params;
   const apiAuth = await requireApiAuth();
 

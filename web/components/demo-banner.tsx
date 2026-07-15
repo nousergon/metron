@@ -6,7 +6,7 @@ import { DEMO_COOKIE } from "@/lib/demo";
 // there's no real session). Makes the sample's read-only nature explicit and offers the
 // sign-up path. (metron-ops#42)
 export async function DemoBanner() {
-  const inDemo = cookies().get(DEMO_COOKIE)?.value === "1";
+  const inDemo = (await cookies()).get(DEMO_COOKIE)?.value === "1";
   if (!inDemo) return null;
   const session = await getSession();
   if (session?.user) return null; // a real session supersedes the demo cookie

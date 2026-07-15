@@ -1,5 +1,5 @@
 import "server-only";
-import { cookies } from "next/headers";
+import { cookies, type UnsafeUnwrappedCookies } from "next/headers";
 
 // Self-hosted analytics — the web tier's thin wrapper over the FastAPI `/track` sink
 // (metron-ops#34). No third-party tracker: Cloudflare Web Analytics already covers
@@ -28,7 +28,7 @@ function newSessionId(): string {
  *  call from any Server Action / route handler; the cookie is httpOnly so it never leaks to
  *  client script. */
 export function sessionId(): string {
-  const jar = cookies();
+  const jar = (cookies() as unknown as UnsafeUnwrappedCookies);
   const existing = jar.get(SESSION_COOKIE)?.value;
   if (existing) return existing;
   const sid = newSessionId();
