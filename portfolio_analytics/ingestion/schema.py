@@ -60,6 +60,67 @@ def asset_type_from_category(category: str | None) -> str:
     return _ASSET_CATEGORY_MAP.get((category or "").upper(), ASSET_OTHER)
 
 
+# 3-way tax-treatment vocabulary (mirrors ``api.db.models.Account.tax_treatment``).
+TAX_TAXABLE = "taxable"
+TAX_DEFERRED = "tax_deferred"
+TAX_EXEMPT = "tax_exempt"
+
+# Producer-side structured account-type vocabulary → the canonical 3-way tax
+# treatment, keyed by the broker's OWN account-type field (IBKR Flex's
+# ``accountType``, SnapTrade's ``type``) rather than free-text name/nickname —
+# metron-ops#194. Both connectors are believed to draw from the same small,
+# broker-controlled enum (IRA-family individual retirement account subtypes), so one
+# shared table avoids the two connectors drifting on the same broker-reported string.
+# Split into three keyword sets (rather than one flat dict) so resolution can check
+# EXEMPT first, then DEFERRED, then TAXABLE — mirroring account_meta.py's own
+# precedence (its docstring: "exempt keywords checked first, so 'roth ira' never
+# matches the bare 'ira'"). A flat longest-substring-wins scan is NOT safe here: a
+# broker-appended qualifier like "Roth IRA - Individual" contains both "roth ira"
+# (8 chars, exempt) and "individual" (10 chars, taxable) — length alone would pick
+# the wrong one. Checking exempt/deferred signals before the generic taxable ones
+# fixes that regardless of phrase length. Unrecognized strings deliberately map to ""
+# (not a guess) — ``account_meta.is_taxable``/``is_tax_deferred`` keyword-infer from
+# account_type/name as the documented fallback for exactly this case.
+_TAX_EXEMPT_TYPES = (
+    "roth ira", "roth 401k", "roth 401(k)", "roth", "hsa", "529", "tfsa",
+)
+_TAX_DEFERRED_TYPES = (
+    "traditional ira", "rollover ira", "sep ira", "simple ira", "ira",
+    "401k", "401(k)", "403b", "403(b)", "457b", "457", "pension", "annuity", "rrsp",
+)
+_TAX_TAXABLE_TYPES = (
+    "individual brokerage", "individual", "joint", "brokerage", "taxable",
+    "trust", "custodial", "ugma", "utma", "corporate", "llc", "partnership",
+)
+
+
+def tax_treatment_from_account_type(account_type: str | None) -> str:
+    """Positively derive the 3-way ``tax_treatment`` from a broker's OWN structured
+    account-type field (IBKR Flex ``accountType`` / SnapTrade ``type``) — the
+    root-cause fix for metron-ops#194: neither connector previously populated
+    ``tax_treatment`` at all, leaving every account on the keyword-inference fallback.
+
+    Case-insensitive substring match, checked EXEMPT → DEFERRED → TAXABLE (each set's
+    own phrases checked longest-first) so a qualifier the broker appends ("Roth IRA -
+    Individual") resolves to the more specific/diagnostic "roth ira" signal rather
+    than a coincidentally-longer generic word. Returns "" (never a guess) when the
+    type is unrecognized — callers then fall through to ``account_meta``'s
+    keyword-inference fallback, as documented there.
+    """
+    t = (account_type or "").strip().lower()
+    if not t:
+        return ""
+    for keywords, treatment in (
+        (_TAX_EXEMPT_TYPES, TAX_EXEMPT),
+        (_TAX_DEFERRED_TYPES, TAX_DEFERRED),
+        (_TAX_TAXABLE_TYPES, TAX_TAXABLE),
+    ):
+        for key in keywords:
+            if key in t:
+                return treatment
+    return ""
+
+
 def synth_security_id(ticker: str, currency: str = "USD") -> str:
     """Stable synthetic ``security_id`` for an equity a broker gives no native id for.
 
