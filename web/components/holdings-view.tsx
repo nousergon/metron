@@ -11,6 +11,12 @@
 // the lean Overview set — an analytic lens (Attractiveness, Valuation, …) left selected
 // yesterday must not become today's landing view (Brian, 2026-07-08). Switching presets
 // mid-session works as before; a fresh load resets to Overview.
+//
+// The COLUMN PRESET selection now lives in ColumnBandsProvider (column-bands-context.tsx),
+// lifted out of local state so the Watchlist comparison table further down the page reads
+// the SAME band selection instead of its own hardcoded set (metron-ops#121 sync fix). The
+// session-only behavior above is unchanged — the provider is mounted fresh per page load
+// and still initializes to DEFAULT_VISIBLE_GROUPS.
 
 import { useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -19,8 +25,9 @@ import { GroupedByClassification } from "@/components/grouped-by-classification"
 import { GroupedHoldings } from "@/components/grouped-holdings";
 import { TypeFilterChips } from "@/components/holdings-type-filter";
 import { AccountScopeChip } from "@/components/account-scope-chip";
-import { ColumnPresetControl, DEFAULT_VISIBLE_GROUPS } from "@/components/holdings-column-presets";
+import { ColumnPresetControl } from "@/components/holdings-column-presets";
 import { type ColumnBand } from "@/components/holdings-table";
+import { useColumnBands } from "@/components/column-bands-context";
 import { HoldingsWhatIfPanel } from "@/components/holdings-whatif-panel";
 import { saveHoldingsViewAction } from "@/app/portfolios/[id]/actions";
 import type { Account, Holding, ValuationMedians } from "@/lib/api";
@@ -152,8 +159,10 @@ export function HoldingsView({
   const pathname = usePathname();
   const params = useSearchParams();
   const [mode, setMode] = useState<Mode>(() => initialMode(savedGrouping));
-  // Always lands on the lean Overview set — deliberately not hydrated from the saved view.
-  const [visibleGroups, setVisibleGroups] = useState<ColumnBand[]>(DEFAULT_VISIBLE_GROUPS);
+  // Shared with Watchlist via ColumnBandsProvider (see header comment) — always lands on the
+  // lean Overview set (the provider's own initial state), deliberately not hydrated from the
+  // saved view.
+  const { bands: visibleGroups, setBands: setVisibleGroups } = useColumnBands();
   // Faceted type filter (metron-ops#115) — the set of HIDDEN security_types (empty = all
   // shown), hydrated from + persisted to the saved view like the other controls.
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(() => new Set(savedHiddenTypes ?? []));
