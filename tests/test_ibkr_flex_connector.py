@@ -118,6 +118,40 @@ def test_connector_full_snapshot(tmp_path, monkeypatch):
     assert snap.accounts[0].account_id == "U33333333"  # Flex: number is the id
     assert {h.security_id for h in snap.holdings} == {synth_security_id("RKLB"), synth_security_id("SPY")}
     assert len(snap.activities) == 4
+
+
+# ── tax_treatment derivation (metron-ops#194) ──────────────────────────────────
+def test_connector_derives_tax_treatment_from_account_type(tmp_path, monkeypatch):
+    """The fixture's ``accountType="Individual"`` must positively resolve to
+    "taxable" on the CanonicalAccount — not be left "" for account_meta.py's
+    keyword-inference fallback to guess at."""
+    monkeypatch.chdir(tmp_path)
+    snap = _connector().sync()
+    assert snap.accounts[0].account_type == "Individual"
+    assert snap.accounts[0].tax_treatment == "taxable"
+
+
+def test_connector_derives_tax_exempt_from_roth_account_type(tmp_path, monkeypatch):
+    xml = STATEMENT.replace('accountType="Individual"', 'accountType="Roth IRA"')
+    monkeypatch.chdir(tmp_path)
+    snap = IbkrFlexConnector("tok", "qid", fetcher=lambda: xml).sync()
+    assert snap.accounts[0].tax_treatment == "tax_exempt"
+
+
+def test_connector_derives_tax_deferred_from_traditional_ira_account_type(tmp_path, monkeypatch):
+    xml = STATEMENT.replace('accountType="Individual"', 'accountType="Traditional IRA"')
+    monkeypatch.chdir(tmp_path)
+    snap = IbkrFlexConnector("tok", "qid", fetcher=lambda: xml).sync()
+    assert snap.accounts[0].tax_treatment == "tax_deferred"
+
+
+def test_connector_leaves_tax_treatment_blank_for_unrecognized_account_type(tmp_path, monkeypatch):
+    """An unrecognized broker account-type string must resolve to "" (never a
+    guess) so account_meta.py's keyword-inference fallback is the one deciding."""
+    xml = STATEMENT.replace('accountType="Individual"', 'accountType="Some Exotic Wrapper"')
+    monkeypatch.chdir(tmp_path)
+    snap = IbkrFlexConnector("tok", "qid", fetcher=lambda: xml).sync()
+    assert snap.accounts[0].tax_treatment == ""
     assert len(snap.realized_lots) == 1 and snap.realized_lots[0][1].ticker == "MSFT"
     assert {s.ticker for s in snap.securities} == {"RKLB", "SPY", "MSFT"}
 
