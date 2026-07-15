@@ -258,7 +258,7 @@ class SnapTradeReader:
                     h["account_type"] = acct["type"]
                 all_holdings.extend(holdings)
             except Exception as e:
-                logger.warning("Failed to fetch holdings for account %s: %s", acct["name"], e)
+                logger.warning("Failed to fetch holdings for account %s: %s", acct["name"], str(e))
         df = pd.DataFrame(all_holdings)
         if not df.empty:
             self._save_cache(df)
@@ -315,7 +315,7 @@ class SnapTradeReader:
             try:
                 activities = self.get_account_activities(acct["id"])
             except Exception as e:
-                logger.warning("Failed to fetch activities for account %s: %s", acct["name"], e)
+                logger.warning("Failed to fetch activities for account %s: %s", acct["name"], str(e))
                 continue
             for a in activities:
                 a["account_number"] = acct.get("number", "")
