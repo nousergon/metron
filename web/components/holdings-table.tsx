@@ -130,6 +130,10 @@ type RowCtx = {
   portfolioId?: string;
   foreign: boolean;
   baseMoney: (base: number | null, native: number | null, fmt?: (v: number, c: string) => string) => ReactNode;
+  /** False for a row set with no real position (e.g. the watchlist compare table) — the
+   *  Position band's quantity/avg-cost/cost-basis cells render "—" instead of the shell
+   *  Holding's fabricated zero values (metron-ops#121 sync fix). */
+  positionApplicable: boolean;
 };
 
 // Every column belongs to a BAND. Ticker + Market Value are the frozen spine (not a band); the
@@ -224,19 +228,22 @@ const POSITION_COLUMNS: ColumnDef[] = [
     band: "Position",
     defaultDesc: true,
     sort: (h) => h.quantity,
-    cell: (h) => (
-      <span
-        className={h.positions_stale ? "text-amber-500" : undefined}
-        title={
-          h.positions_stale && h.broker_as_of
-            ? `Stale — broker positions last synced ${h.broker_as_of}; a more recent trade may not be reflected yet`
-            : undefined
-        }
-      >
-        {quantity(h.quantity)}
-        {h.positions_stale ? <span className="ml-0.5" aria-hidden>⚠</span> : null}
-      </span>
-    ),
+    cell: (h, ctx) =>
+      ctx.positionApplicable ? (
+        <span
+          className={h.positions_stale ? "text-amber-500" : undefined}
+          title={
+            h.positions_stale && h.broker_as_of
+              ? `Stale — broker positions last synced ${h.broker_as_of}; a more recent trade may not be reflected yet`
+              : undefined
+          }
+        >
+          {quantity(h.quantity)}
+          {h.positions_stale ? <span className="ml-0.5" aria-hidden>⚠</span> : null}
+        </span>
+      ) : (
+        "—"
+      ),
   },
   {
     key: "avg_cost",
@@ -244,7 +251,8 @@ const POSITION_COLUMNS: ColumnDef[] = [
     band: "Position",
     defaultDesc: true,
     sort: (h) => (h.fx_rate != null ? h.avg_cost * h.fx_rate : h.avg_cost),
-    cell: (h, ctx) => ctx.baseMoney(h.fx_rate != null ? h.avg_cost * h.fx_rate : null, h.avg_cost),
+    cell: (h, ctx) =>
+      ctx.positionApplicable ? ctx.baseMoney(h.fx_rate != null ? h.avg_cost * h.fx_rate : null, h.avg_cost) : "—",
   },
   {
     key: "cost_basis",
@@ -253,7 +261,7 @@ const POSITION_COLUMNS: ColumnDef[] = [
     defaultDesc: true,
     title: "Total amount paid for the position (quantity × average cost), in the base currency.",
     sort: (h) => h.cost_basis_base ?? h.cost_basis,
-    cell: (h, ctx) => ctx.baseMoney(h.cost_basis_base, h.cost_basis, moneyWhole),
+    cell: (h, ctx) => (ctx.positionApplicable ? ctx.baseMoney(h.cost_basis_base, h.cost_basis, moneyWhole) : "—"),
     foot: (t, ccy) => moneyWhole(t.cost, ccy),
   },
   // Value — live price + unrealized (priced). Market value itself is rendered as part of the
@@ -811,6 +819,7 @@ export function HoldingsTable({
   accountColumn = false,
   showTotals = true,
   showMarketValue = true,
+  showPositionEconomics = true,
   onRemove,
 }: {
   holdings: Holding[];
@@ -831,6 +840,13 @@ export function HoldingsTable({
    *  real position (e.g. the watchlist compare table) passes false so it doesn't render a
    *  column of nothing but "—". */
   showMarketValue?: boolean;
+  /** The Position band's quantity/avg-cost/cost-basis columns only mean something for a real
+   *  position (metron-ops#121 sync fix) — a comparison-only row set (the watchlist compare
+   *  table, whose shell Holding hard-codes these fields to 0) passes false so those cells
+   *  render "—" instead of a misleading zero, if the Position band is in `visibleBands` at
+   *  all. Band header still renders — only false when the caller's rows have no real
+   *  position, never used to hide the whole band. */
+  showPositionEconomics?: boolean;
   /** When set, renders a trailing "Remove" column (e.g. the watchlist compare table,
    *  metron-ops#121) — absent for the read-only Holdings view. */
   onRemove?: (ticker: string) => void;
@@ -1100,7 +1116,7 @@ export function HoldingsTable({
                 </span>
               );
             };
-            const ctx: RowCtx = { baseCurrency, portfolioId, foreign, baseMoney };
+            const ctx: RowCtx = { baseCurrency, portfolioId, foreign, baseMoney, positionApplicable: showPositionEconomics };
             return (
               <tr key={h.ticker} className="border-b border-line last:border-0">
                 <td className={`${STICKY} overflow-hidden whitespace-nowrap bg-paper px-3 py-2 font-medium`}>

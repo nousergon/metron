@@ -1,7 +1,9 @@
 // WatchlistCompareTable (metron-ops#121) — the Holdings page's embedded watchlist section:
 // add/remove a tracked ticker, and render its Holdings metrics through the same
-// HoldingsTable column/band/sort machinery, restricted to comparison-relevant bands (no
-// Position/Value/Returns — a watchlist entry has no position).
+// HoldingsTable column/band/sort machinery. The visible band set is now SHARED with the
+// Holdings COLUMNS control via ColumnBandsProvider (metron-ops#121 sync fix) rather than a
+// hardcoded constant — a component rendered without a provider ancestor still gets a working
+// default (DEFAULT_VISIBLE_GROUPS = Position + Value, column-bands-context.tsx fallback).
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -21,6 +23,7 @@ vi.mock("@/app/portfolios/[id]/actions", () => ({
 }));
 
 import { WatchlistCompareTable } from "@/components/watchlist-compare-table";
+import { ColumnBandsProvider } from "@/components/column-bands-context";
 import type { WatchlistEntry } from "@/lib/api";
 
 const EMPTY_METRICS = {
@@ -101,22 +104,61 @@ describe("WatchlistCompareTable", () => {
     expect(screen.getByText(/never affects NAV, performance/)).toBeInTheDocument();
   });
 
-  it("renders entries with their metrics through the Attractiveness/Valuation bands", () => {
+  it("renders entries with their metrics through the Attractiveness/Valuation bands when those are the shared selection", () => {
     const { container } = render(
+      <ColumnBandsProvider initialBands={["Attractiveness", "Valuation"]}>
+        <WatchlistCompareTable
+          portfolioId="p"
+          baseCurrency="USD"
+          entries={[entry("NVDA", { fwd_pe: 30.2, attractiveness: 72.5 })]}
+        />
+      </ColumnBandsProvider>,
+    );
+    expect(screen.getByText("NVDA")).toBeInTheDocument();
+    expect(screen.getByText("30.2×")).toBeInTheDocument();
+    expect(screen.getByText("72.5")).toBeInTheDocument();
+    // Position band isn't in the shared selection, so it's absent entirely.
+    expect(screen.queryByText("Quantity")).not.toBeInTheDocument();
+    // Market Value is always suppressed (showMarketValue=false) — no real position.
+    expect(screen.queryByText("Market value")).not.toBeInTheDocument();
+    // No portfolio-total footer for a comparison-only table.
+    expect(container.querySelector("tfoot")).toBeNull();
+  });
+
+  it("defaults to the shared Overview selection (Position + Value) when nothing else picked it, same as Holdings' default", () => {
+    render(
       <WatchlistCompareTable
         portfolioId="p"
         baseCurrency="USD"
         entries={[entry("NVDA", { fwd_pe: 30.2, attractiveness: 72.5 })]}
       />,
     );
+    // Position band now renders (synced to Holdings' DEFAULT_VISIBLE_GROUPS)...
+    expect(screen.getByText("Quantity")).toBeInTheDocument();
+    // ...but a watchlist entry has no real position, so the Position cells are dashed
+    // rather than showing the shell Holding's fabricated zero quantity/cost.
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+    // Analytic bands not in the default selection don't render.
+    expect(screen.queryByText("30.2×")).not.toBeInTheDocument();
+  });
+
+  it("syncs to an explicit shared selection that includes a Position/Returns-flavored band without crashing", () => {
+    render(
+      <ColumnBandsProvider initialBands={["Position", "Returns", "Attractiveness"]}>
+        <WatchlistCompareTable
+          portfolioId="p"
+          baseCurrency="USD"
+          entries={[entry("NVDA", { attractiveness: 72.5 })]}
+        />
+      </ColumnBandsProvider>,
+    );
     expect(screen.getByText("NVDA")).toBeInTheDocument();
-    expect(screen.getByText("30.2×")).toBeInTheDocument();
+    expect(screen.getByText("Quantity")).toBeInTheDocument();
     expect(screen.getByText("72.5")).toBeInTheDocument();
-    // Position/Value bands never render — a watchlist entry has no position.
-    expect(screen.queryByText("Quantity")).not.toBeInTheDocument();
-    expect(screen.queryByText("Market value")).not.toBeInTheDocument();
-    // No portfolio-total footer for a comparison-only table.
-    expect(container.querySelector("tfoot")).toBeNull();
+    // Returns band is fully null-safe already (the shell hard-codes day/ytd/ltm to null) —
+    // renders dashed, not a crash and not silently dropped.
+    expect(screen.getByText("YTD")).toBeInTheDocument();
   });
 
   it("flags an entry that's also a real holding, without double-counting", () => {
