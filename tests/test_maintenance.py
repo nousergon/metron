@@ -10,7 +10,7 @@ from datetime import date
 from sqlalchemy import select
 
 from api.db import models
-from api.maintenance import daily_refresh, main
+from api.maintenance import backfill_tax_treatment, daily_refresh, main
 from portfolio_analytics.prices import ClosePoint
 
 
@@ -263,3 +263,93 @@ def test_cli_unknown_command_errors():
 
     with pytest.raises(SystemExit):
         main(["bogus"])
+
+
+# ── backfill_tax_treatment (metron-ops#194) ────────────────────────────────────
+def _mk_account(session, tenant, portfolio, *, external_id, account_type=None, tax_treatment=None):
+    acct = models.Account(
+        tenant_id=tenant.id,
+        portfolio_id=portfolio.id,
+        broker="ibkr_flex",
+        external_id=external_id,
+        account_type=account_type,
+        tax_treatment=tax_treatment,
+    )
+    session.add(acct)
+    session.flush()
+    return acct
+
+
+def _seed_tenant_portfolio(session):
+    tenant = models.Tenant(name="t")
+    session.add(tenant)
+    session.flush()
+    portfolio = models.Portfolio(tenant_id=tenant.id, name="P")
+    session.add(portfolio)
+    session.flush()
+    return tenant, portfolio
+
+
+def test_backfill_tax_treatment_fills_null_rows_from_account_type(db_session):
+    tenant, portfolio = _seed_tenant_portfolio(db_session)
+    roth = _mk_account(db_session, tenant, portfolio, external_id="U1", account_type="Roth IRA")
+    trad = _mk_account(db_session, tenant, portfolio, external_id="U2", account_type="Traditional IRA")
+    db_session.commit()
+
+    n = backfill_tax_treatment(db_session)
+
+    assert n == 2
+    db_session.refresh(roth)
+    db_session.refresh(trad)
+    assert roth.tax_treatment == "tax_exempt"
+    assert trad.tax_treatment == "tax_deferred"
+
+
+def test_backfill_tax_treatment_never_clobbers_existing_value(db_session):
+    tenant, portfolio = _seed_tenant_portfolio(db_session)
+    # Connector-set or Settings-set value must survive even if account_type would
+    # derive something different.
+    acct = _mk_account(
+        db_session, tenant, portfolio, external_id="U1", account_type="Roth IRA", tax_treatment="taxable"
+    )
+    db_session.commit()
+
+    n = backfill_tax_treatment(db_session)
+
+    assert n == 0
+    db_session.refresh(acct)
+    assert acct.tax_treatment == "taxable"
+
+
+def test_backfill_tax_treatment_leaves_unmappable_types_null(db_session):
+    tenant, portfolio = _seed_tenant_portfolio(db_session)
+    acct = _mk_account(db_session, tenant, portfolio, external_id="U1", account_type="Some Exotic Wrapper")
+    db_session.commit()
+
+    n = backfill_tax_treatment(db_session)
+
+    assert n == 0
+    db_session.refresh(acct)
+    assert acct.tax_treatment is None  # left for account_meta's keyword fallback
+
+
+def test_backfill_tax_treatment_is_idempotent(db_session):
+    tenant, portfolio = _seed_tenant_portfolio(db_session)
+    _mk_account(db_session, tenant, portfolio, external_id="U1", account_type="Individual")
+    db_session.commit()
+
+    first = backfill_tax_treatment(db_session)
+    second = backfill_tax_treatment(db_session)
+
+    assert first == 1
+    assert second == 0  # already filled — nothing left to touch
+
+
+def test_cli_backfill_tax_treatment_runs(db_session, monkeypatch):
+    tenant, portfolio = _seed_tenant_portfolio(db_session)
+    _mk_account(db_session, tenant, portfolio, external_id="U1", account_type="Roth IRA")
+    db_session.commit()
+
+    monkeypatch.setattr("api.maintenance.SessionLocal", lambda: db_session)
+    monkeypatch.setattr(db_session, "close", lambda: None)  # keep session open past the CLI's `finally`
+    assert main(["backfill-tax-treatment"]) == 0
