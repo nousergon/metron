@@ -4,10 +4,19 @@
 // alongside the Holdings metrics (valuation/fundamentals/technicals/consensus/attractiveness
 // — fundamentals now includes balance-sheet/debt metrics, metron-ops#140) for side-by-side
 // comparison. Renders through the SAME HoldingsTable column/band/sort machinery as real
-// positions, restricted to the comparison-relevant bands (no Position/Value/Returns — a
-// watchlist entry has no position; `showMarketValue={false}` also drops the frozen Market
-// Value spine column, which would otherwise be all "—"). Mutations never touch NAV/performance
-// entries.
+// positions. `showMarketValue={false}` drops the frozen Market Value spine column, which
+// would otherwise be all "—". Mutations never touch NAV/performance entries.
+//
+// The visible band set is now SHARED with the Holdings COLUMNS control (metron-ops#121 sync
+// fix, column-bands-context.tsx) rather than a hardcoded constant — picking a preset on
+// Holdings drives this table too. Because a watchlist entry has no position, `showTotals` and
+// `showPositionEconomics` are false: the Position band's Quantity/Avg cost/Cost basis cells
+// render "—" instead of the shell's fabricated zero values (see toShellHolding below) when
+// the shared selection includes Position — the band header still renders (partial/dashed,
+// consistent with how every other feed-gated column already renders "—" for a null value)
+// rather than silently dropping the band, which would reintroduce the "selector doesn't do
+// what it says" bug in a new form. Every other band (Value/Returns/Class/analytic bands) is
+// already null-safe end to end since the shell hard-codes its unavailable fields to null.
 //
 // entries carry no quantity/cost/market-value fields at all (see WatchlistEntry in
 // lib/api.ts) — the shell Holding built below hard-codes those to zero/null so a glance at
@@ -17,17 +26,9 @@ import { useMemo, useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { Holding, WatchlistEntry } from "@/lib/api";
 import { Empty } from "@/components/ui";
-import { HoldingsTable, type ColumnBand } from "@/components/holdings-table";
+import { HoldingsTable } from "@/components/holdings-table";
+import { useColumnBands } from "@/components/column-bands-context";
 import { addWatchlistAction, removeWatchlistAction } from "@/app/portfolios/[id]/actions";
-
-const WATCHLIST_BANDS: ColumnBand[] = [
-  "Class",
-  "Attractiveness",
-  "Valuation",
-  "Fundamentals",
-  "Technicals",
-  "Consensus",
-];
 
 function toShellHolding(e: WatchlistEntry): Holding {
   return {
@@ -127,6 +128,7 @@ export function WatchlistCompareTable({
   const [symbol, setSymbol] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
+  const { bands } = useColumnBands();
 
   const shells = useMemo(() => entries.map(toShellHolding), [entries]);
   const alsoHeld = useMemo(() => entries.filter((e) => e.held).map((e) => e.symbol), [entries]);
@@ -191,9 +193,10 @@ export function WatchlistCompareTable({
             baseCurrency={baseCurrency}
             priced
             portfolioId={portfolioId}
-            visibleBands={WATCHLIST_BANDS}
+            visibleBands={bands}
             showTotals={false}
             showMarketValue={false}
+            showPositionEconomics={false}
             onRemove={remove}
           />
           {alsoHeld.length > 0 ? (
