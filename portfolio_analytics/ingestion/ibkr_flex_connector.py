@@ -37,6 +37,7 @@ from portfolio_analytics.ingestion.schema import (
     CanonicalSecurity,
     asset_type_from_category,
     synth_security_id,
+    tax_treatment_from_account_type,
 )
 from portfolio_analytics.ingestion.store import save_bronze
 
@@ -273,6 +274,10 @@ class IbkrFlexConnector:
                     account_id=number,  # Flex has no separate id — the number is the id
                     name=m.get("name", ""),
                     account_type=m.get("account_type", ""),
+                    # Positively derived from IBKR's own structured ``accountType`` —
+                    # metron-ops#194. "" when unrecognized; account_meta.py's keyword
+                    # inference is the documented fallback for that case.
+                    tax_treatment=tax_treatment_from_account_type(m.get("account_type", "")),
                 )
             )
 
