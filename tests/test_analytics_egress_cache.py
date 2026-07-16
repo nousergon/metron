@@ -1,7 +1,7 @@
 """Regression tests for the metron-ops#198 Neon-egress fix: ``holdings()``/``realized()``/
-``transactions()`` are now wrapped in the same ``compute_cache`` fingerprint cache
-``account_performance_series`` already used, so a full ledger-replay/query no longer runs
-on every call — only when the portfolio's underlying data actually changed.
+``transactions()``/``income()`` are now wrapped in the same ``compute_cache`` fingerprint
+cache ``account_performance_series`` already used, so a full ledger-replay/query no longer
+runs on every call — only when the portfolio's underlying data actually changed.
 """
 
 from __future__ import annotations
@@ -124,3 +124,38 @@ def test_realized_cache_invalidates_on_new_stored_lot(db_session):
     after = analytics.realized(db_session, tenant_id, pid)
     assert len(after) == 1
     assert after[0].ticker == "AAPL"
+
+
+def test_income_is_memoized_until_data_changes(db_session):
+    """income() is the biggest remaining gap found post-#198: it's on totals()'s hot
+    path (the Overview/home-page summary) but re-read _portfolio_rows directly instead
+    of going through a cached wrapper."""
+    tenant_id, pid, acct_id, sec_id = _seed_portfolio(db_session)
+    db_session.add(
+        models.Transaction(
+            tenant_id=tenant_id, account_id=acct_id, security_id=sec_id,
+            txn_type="DIVIDEND", quantity=0, price=0, amount=50.0, currency="USD",
+            trade_date=date(2024, 6, 1), source_key="div1",
+        )
+    )
+    db_session.commit()
+
+    with mock.patch("api.services.analytics._income", wraps=analytics._income) as spy:
+        first = analytics.income(db_session, tenant_id, pid)
+        second = analytics.income(db_session, tenant_id, pid)
+        assert spy.call_count == 1  # second call served from cache, no re-query
+    assert first == second
+    assert first[0].dividends == 50.0
+
+    db_session.add(
+        models.Transaction(
+            tenant_id=tenant_id, account_id=acct_id, security_id=sec_id,
+            txn_type="DIVIDEND", quantity=0, price=0, amount=25.0, currency="USD",
+            trade_date=date(2024, 7, 1), source_key="div2",
+        )
+    )
+    db_session.commit()
+    with mock.patch("api.services.analytics._income", wraps=analytics._income) as spy:
+        third = analytics.income(db_session, tenant_id, pid)
+        assert spy.call_count == 1
+    assert third[0].dividends == 75.0  # reflects the new dividend, not a stale cache hit

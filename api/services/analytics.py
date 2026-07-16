@@ -1287,7 +1287,36 @@ def income(
     ``distribution_account_ids`` (the tax-deferred accounts, computed by the caller from
     the *candidate* scope, NOT the taxable subset) adds their WITHDRAWAL transactions as
     a separate **distributions** column — taxable ordinary income for a retiree even
-    though the account is otherwise excluded from the taxable view (metron-ops#62)."""
+    though the account is otherwise excluded from the taxable view (metron-ops#62).
+
+    Cached on the portfolio's content fingerprint (``compute_cache``, metron-ops#198) —
+    the rows are read-only downstream, no defensive copy needed (contrast :func:`holdings`).
+    This is also the biggest remaining gap from #198: ``income()`` re-read ``_portfolio_rows``
+    directly rather than going through the cached ``transactions()``/``realized()`` wrappers,
+    and it's on the hot path via ``totals()`` (the Overview/home-page summary, hit on every
+    page load and every ``router.refresh()`` poll)."""
+    scope = _scope_key(None, account_ids)
+    dist_scope = _scope_key(None, distribution_account_ids)
+    fp = compute_cache.portfolio_fingerprint(session, tenant_id, portfolio_id)
+    key = f"income|{tenant_id}|{portfolio_id}|{scope}|{dist_scope}|{fp}"
+    return compute_cache.cached(
+        key,
+        lambda: _income(
+            session, tenant_id, portfolio_id,
+            account_ids=account_ids, distribution_account_ids=distribution_account_ids,
+        ),
+    )
+
+
+def _income(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    account_ids: Collection[uuid.UUID] | None = None,
+    distribution_account_ids: Collection[uuid.UUID] | None = None,
+) -> list[YearlyIncome]:
+    """Uncached core of :func:`income` — see that wrapper for caching."""
     base = _base_currency(session, portfolio_id)
     rows = _portfolio_rows(session, tenant_id, portfolio_id, account_ids=account_ids)
     # Broker-authoritative closed lots (IBKR) for accounts in scope — their realized comes
