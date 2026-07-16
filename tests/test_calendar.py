@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import io
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -60,6 +60,32 @@ class TestCalendar:
             db_session, uuid.UUID(tenant), uuid.UUID(pid), today=TODAY, macro_events_source=lambda: []
         )
         assert cal.n_events == 0 and cal.events == []
+        assert cal.earnings_sourced_at is None  # never refreshed — no fabricated stamp
+
+    def test_refresh_stamps_sourced_at(self, client, db_session, tenant):
+        # metron-ops#149 item 2: a refresh stamps next_earnings_sourced_at, and the
+        # calendar summary surfaces the newest stamp across this portfolio's held tickers.
+        pid = _seed(client, tenant)
+        now = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
+        n = calendar.refresh_earnings(db_session, ["AAPL", "MSFT"], source=_earnings_src, now=now)
+        assert n == 2
+        cal = calendar.upcoming_events(
+            db_session, uuid.UUID(tenant), uuid.UUID(pid), today=TODAY, macro_events_source=lambda: []
+        )
+        # SQLite stores/returns naive datetimes (strips tzinfo) — compare naively, same as
+        # every other `datetime` column round-tripped through the personal-tier DB.
+        assert cal.earnings_sourced_at == now.replace(tzinfo=None)
+
+    def test_refresh_stamp_advances_on_a_later_refresh(self, client, db_session, tenant):
+        pid = _seed(client, tenant)
+        first = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
+        second = datetime(2024, 6, 2, 9, 0, tzinfo=UTC)
+        calendar.refresh_earnings(db_session, ["AAPL"], source=_earnings_src, now=first)
+        calendar.refresh_earnings(db_session, ["AAPL"], source=_earnings_src, now=second)
+        cal = calendar.upcoming_events(
+            db_session, uuid.UUID(tenant), uuid.UUID(pid), today=TODAY, macro_events_source=lambda: []
+        )
+        assert cal.earnings_sourced_at == second.replace(tzinfo=None)
 
     def test_macro_events_merged_and_sorted(self, client, db_session, tenant):
         # Macro events (FOMC + releases) merge with held-ticker earnings, filtered to the
@@ -105,10 +131,13 @@ class TestCalendarEndpoints:
             return {"AAPL": date.today() + timedelta(days=10)} if "AAPL" in syms else {}
 
         monkeypatch.setattr("api.services.calendar.fetch_earnings_dates", _future_src)
+        assert client.get(f"/portfolios/{pid}/calendar", headers={"X-Tenant-Id": tenant}).json()["earnings_sourced_at"] is None
         posted = client.post(f"/portfolios/{pid}/calendar/refresh", headers={"X-Tenant-Id": tenant}).json()
         assert posted["n_events"] == 1 and posted["events"][0]["ticker"] == "AAPL"
+        assert posted["earnings_sourced_at"] is not None
         got = client.get(f"/portfolios/{pid}/calendar", headers={"X-Tenant-Id": tenant}).json()
         assert got["n_events"] == 1
+        assert got["earnings_sourced_at"] == posted["earnings_sourced_at"]
 
     def test_calendar_requires_ownership(self, client, tenant):
         pid = _seed(client, tenant)

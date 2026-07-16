@@ -1,8 +1,9 @@
 import Link from "next/link";
-import { getAccountDetail, MetronApiError } from "@/lib/api";
+import { getAccountDetail, getIntradayStatus, MetronApiError, type IntradayStatus } from "@/lib/api";
 import { accountingMoneyWhole, isoDate, money, moneyWhole, quantity, signClass } from "@/lib/format";
 import { Empty, Section, Table } from "@/components/ui";
 import { GroupedHoldings } from "@/components/grouped-holdings";
+import { LiveValuationProvider } from "@/components/live-valuation-context";
 import { requireApiAuth } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -12,9 +13,19 @@ export default async function AccountPage(props: { params: Promise<{ id: string;
   const { id, accountId } = params;
   const apiAuth = await requireApiAuth();
 
+  // Live-valuation status scoped to just this account (metron-ops#149 item 1) — mirrors
+  // the Holdings page's resolution (metron-ops#153/metron#194): default LIVE whenever the
+  // feed + the user's intraday toggle offer it during/just-after market hours; otherwise
+  // settled. There's no `?val=` toggle on this page (unlike Holdings), so the resolution
+  // is a straight availability check, no saved-view/URL override to thread through.
+  const live: IntradayStatus | null = await getIntradayStatus(apiAuth, id, [accountId]).catch((): IntradayStatus | null => null);
+  const liveAvailable = !!live && live.reason !== "off" && live.reason !== "feed";
+  const liveOffered = liveAvailable && live.session_state !== "closed";
+  const valuation: "live" | "settled" = liveOffered ? "live" : "settled";
+
   let detail;
   try {
-    detail = await getAccountDetail(apiAuth, id, accountId);
+    detail = await getAccountDetail(apiAuth, id, accountId, valuation);
   } catch (e) {
     if (e instanceof MetronApiError && e.status === 404) {
       return <Empty>Account not found.</Empty>;
@@ -25,6 +36,22 @@ export default async function AccountPage(props: { params: Promise<{ id: string;
   const { account, holdings, realized, transactions } = detail;
   const ccy = account.currency;
   const priced = holdings.some((h) => h.market_value != null);
+  const liveApplied = valuation === "live" && (live?.applied ?? false);
+  // Provenance-honest header (metron-ops#145/#153/#149 item 1), matching the Holdings page:
+  // live mode claims intraday freshness only while the overlay actually applies; settled
+  // mode names the close date it's valued at, from the data itself.
+  const settledAsOf = holdings
+    .map((h) => h.last_price_date)
+    .filter((d): d is string => d != null)
+    .sort()
+    .pop();
+  const holdingsNote = priced
+    ? liveApplied
+      ? `all values in ${ccy} · market value ~15-min delayed intraday`
+      : valuation === "live"
+        ? `all values in ${ccy} · session closed — market value as of last close`
+        : `all values in ${ccy} · settled at ${settledAsOf ?? "last"} close`
+    : "cost basis (refresh prices on the portfolio)";
   // Backend returns both oldest-first; a history reads best newest-first.
   const txns = [...transactions].reverse();
   const lots = [...realized].reverse();
@@ -40,11 +67,16 @@ export default async function AccountPage(props: { params: Promise<{ id: string;
         {account.broker} · {account.external_id} · {account.currency}
       </p>
 
-      <Section title="Holdings" note={priced ? `all values in ${ccy} · market value from last EOD close` : "cost basis (refresh prices on the portfolio)"}>
+      <Section title="Holdings" note={holdingsNote}>
         {holdings.length === 0 ? (
           <Empty>No open positions in this account.</Empty>
         ) : (
-          <GroupedHoldings holdings={holdings} baseCurrency={ccy} priced={priced} portfolioId={id} />
+          // The provider carries the overlay state to the table's live/close provenance
+          // markers (metron-ops#147/#149 item 1) — settled mode mounts it with live=false
+          // so the table makes zero live claims, mirroring the Holdings page.
+          <LiveValuationProvider live={liveApplied}>
+            <GroupedHoldings holdings={holdings} baseCurrency={ccy} priced={priced} portfolioId={id} />
+          </LiveValuationProvider>
         )}
       </Section>
 
