@@ -27,7 +27,7 @@ dependencies = [
     # Multipart parsing for CSV/OFX file uploads (FastAPI UploadFile requires it).
     "python-multipart>=0.0.9",
     "sqlalchemy>=2.0",
-    "pydantic>=2.7",
+    "pydantic>=2.13.4",
     "pydantic-settings>=2.3",
     # Verifies the shared nousergon-auth identity service's EdDSA/Ed25519 JWTs against
     # its JWKS (metron-ops#179) — [crypto] pulls in `cryptography` for the Ed25519 path.
@@ -68,7 +68,7 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=7.1.0",
     "httpx>=0.27",            # FastAPI TestClient
-    "psycopg[binary]>=3.2",   # Postgres driver (prod); SQLite needs nothing extra
+    "psycopg[binary]>=3.3.4",   # Postgres driver (prod); SQLite needs nothing extra
     # Validates the realized-lots export against the pinned telos contract schema in CI
     # (tests/test_realized_lots_export_contract.py) so the export can't silently drift from
     # nousergon/telos realized_lots v1.0.0 — metron-ops#127.
