@@ -315,6 +315,32 @@ def test_resync_reparents_account_to_new_portfolio(db_session):
     assert [a.external_id for a in b_accounts] == ["U23568545"]
 
 
+def test_resync_does_not_reparent_csv_account_with_colliding_label(db_session):
+    """Companion to test_resync_reparents_account_to_new_portfolio: reparenting is
+    only sound for sources with a brokerage-assigned, tenant-wide-stable external id
+    (IBKR Flex, SnapTrade, OFX). CSV's external id is a free-text "account" column
+    label the user types per import — two unrelated portfolios can legitimately both
+    use the label "Roth" for two different real accounts, so a same-label match must
+    NOT move the account out from under the portfolio it was created in."""
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+    from portfolio_analytics.ingestion.schema import CanonicalAccount
+
+    tenant_id, portfolio_a = _make_portfolio(db_session)
+    portfolio_b = models.Portfolio(id=uuid.uuid4(), tenant_id=tenant_id, name="Other")
+    db_session.add(portfolio_b)
+    db_session.commit()
+
+    snapshot = ConnectorSnapshot(source="csv", accounts=[CanonicalAccount(number="Roth")])
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_a, snapshot=snapshot)
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_b.id, snapshot=snapshot)
+
+    accounts = db_session.scalars(
+        select(models.Account).where(models.Account.tenant_id == tenant_id, models.Account.external_id == "Roth")
+    ).all()
+    assert len(accounts) == 1  # DB uniqueness (tenant_id, broker, external_id) forbids a second row
+    assert accounts[0].portfolio_id == portfolio_a  # left where it was, not moved to B
+
+
 def test_persists_foreign_symbology_and_account_metadata(db_session):
     """A snapshot-sourced (Flex) holding persists the listing exchange + resolved
     yfinance symbol, the account's institution/type/tax_treatment, and the broker's
