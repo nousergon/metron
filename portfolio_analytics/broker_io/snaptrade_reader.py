@@ -24,6 +24,13 @@ from snaptrade_client import SnapTrade
 
 logger = logging.getLogger(__name__)
 
+
+def _log_safe(value: object) -> str:
+    """Escape CR/LF before logging externally-sourced strings (SnapTrade
+    account names, error messages) so they can't forge separate log lines."""
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
 POSITIONS_CACHE_PATH = Path("cache/positions_latest.json")
 ACTIVITIES_CACHE_PATH = Path("cache/activities_latest.json")
 _ACTIVITIES_PAGE = 1000  # SnapTrade activities page size for offset/limit paging
@@ -258,7 +265,7 @@ class SnapTradeReader:
                     h["account_type"] = acct["type"]
                 all_holdings.extend(holdings)
             except Exception as e:
-                logger.warning("Failed to fetch holdings for account %s: %s", acct["name"], str(e))
+                logger.warning("Failed to fetch holdings for account %s: %s", _log_safe(acct["name"]), _log_safe(e))
         df = pd.DataFrame(all_holdings)
         if not df.empty:
             self._save_cache(df)
@@ -315,7 +322,7 @@ class SnapTradeReader:
             try:
                 activities = self.get_account_activities(acct["id"])
             except Exception as e:
-                logger.warning("Failed to fetch activities for account %s: %s", acct["name"], str(e))
+                logger.warning("Failed to fetch activities for account %s: %s", _log_safe(acct["name"]), _log_safe(e))
                 continue
             for a in activities:
                 a["account_number"] = acct.get("number", "")

@@ -60,17 +60,20 @@ def _term(session: Session, model, tenant_id, portfolio_id) -> str:
 
 
 def portfolio_fingerprint(session: Session, tenant_id, portfolio_id) -> str:
-    """A cheap content hash of every input that can change a portfolio's valuation / NAV:
-    the ledger (transactions), broker positions, accounts, and the recorded NAV series,
-    plus the global price + FX cache high-water dates. Any mutation moves at least one
-    term, so a cache key built on this invalidates precisely when the data changes. ~7
-    indexed aggregates; well under a millisecond."""
+    """A cheap content hash of every input that can change a portfolio's valuation / NAV
+    / ledger-derived history: the ledger (transactions), broker positions, accounts, the
+    recorded NAV series, and broker-authoritative realized lots (``RealizedLot`` has no
+    ``portfolio_id`` column, so this term over-invalidates tenant-wide on any of the
+    tenant's portfolios — safe, never stale), plus the global price + FX cache high-water
+    dates. Any mutation moves at least one term, so a cache key built on this invalidates
+    precisely when the data changes. ~8 indexed aggregates; well under a millisecond."""
     parts = [
         _term(session, models.Transaction, tenant_id, portfolio_id),
         _term(session, models.Position, tenant_id, portfolio_id),
         _term(session, models.Account, tenant_id, portfolio_id),
         _term(session, models.AccountNavSnapshot, tenant_id, portfolio_id),
         _term(session, models.NavSnapshot, tenant_id, portfolio_id),
+        _term(session, models.RealizedLot, tenant_id, portfolio_id),
     ]
     # Global reference data (not tenant-scoped): newest cached price + FX dates.
     latest_bar = session.execute(select(func.max(models.PriceBar.bar_date))).scalar()
