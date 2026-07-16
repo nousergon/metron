@@ -23,7 +23,7 @@ license = { text = "AGPL-3.0-or-later" }
 dependencies = [
     # --- web/API tier ---
     "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
+    "uvicorn[standard]>=0.51.0",
     # Multipart parsing for CSV/OFX file uploads (FastAPI UploadFile requires it).
     "python-multipart>=0.0.9",
     "sqlalchemy>=2.0",
