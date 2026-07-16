@@ -17,7 +17,7 @@
     "better-auth": "^1.6.23",
     "next": "15.5.20",
     "react": "18.3.1",
-    "react-dom": "18.3.1",
+    "react-dom": "19.2.7",
     "server-only": "^0.0.1"
   },
   "devDependencies": {
@@ -26,7 +26,7 @@
     "@testing-library/user-event": "^14.6.1",
     "@types/node": "^20.19.43",
     "@types/react": "18.3.11",
-    "@types/react-dom": "18.3.0",
+    "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "autoprefixer": "10.5.3",
     "eslint": "8.57.1",
