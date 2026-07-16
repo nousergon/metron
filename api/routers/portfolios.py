@@ -702,6 +702,9 @@ class CalendarOut(BaseModel):
     horizon_days: int
     n_events: int
     events: list[CalendarEventOut]
+    # When the earnings dates behind ``events`` were last (re)sourced (metron-ops#149 item
+    # 2) — None until a held ticker has ever been through a refresh.
+    earnings_sourced_at: datetime | None = None
 
 
 class WatchlistEntryOut(BaseModel):
@@ -2806,12 +2809,25 @@ def delete_crypto_address(
 @router.get("/{portfolio_id}/accounts/{account_id}", response_model=AccountDetailOut)
 def get_account_detail(
     account: models.Account = Depends(_owned_account),
+    valuation: str = "settled",
     session: Session = Depends(get_session),
 ) -> AccountDetailOut:
     """One account's holdings + realized lots + transactions, all scoped to that account.
 
     The per-account drill-down for a multi-account portfolio. Holdings are valued from
-    the cached close when available (cost-basis-only otherwise — never fabricated)."""
+    the cached close when available (cost-basis-only otherwise — never fabricated).
+    ``?valuation=`` selects the regime (metron-ops#153/#149 item 1), same contract as
+    ``get_holdings``: DEFAULT "settled" — official EOD close. "live" revalues this
+    account's holdings from the intraday overlay, scoped to just this account, so the
+    account-detail page's live markers agree with the Holdings page's."""
+    if valuation not in _VALUATION_MODES:
+        raise HTTPException(status_code=422, detail="valuation must be 'live' or 'settled'")
+    prices = None
+    if valuation == "live":
+        prices, _ = intraday.for_portfolio(
+            session, account.tenant_id, account.portfolio_id,
+            feed_entitled=settings.feed_entitled, account_ids={account.id},
+        )
     return AccountDetailOut(
         account=AccountOut(
             account_id=account.id,
@@ -2827,7 +2843,7 @@ def get_account_detail(
         ),
         holdings=security_perf.enrich_holdings(
             session, account.tenant_id, account.portfolio_id,
-            analytics.valued_holdings(session, account.tenant_id, account.portfolio_id, account.id),
+            analytics.valued_holdings(session, account.tenant_id, account.portfolio_id, account.id, prices=prices),
             as_of=date.today(), feed_entitled=settings.feed_entitled, account_ids={account.id},
         ),
         realized=analytics.realized(session, account.tenant_id, account.portfolio_id, account.id),
