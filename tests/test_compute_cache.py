@@ -72,3 +72,18 @@ def test_fingerprint_changes_on_mutation(db_session):
     db_session.commit()
     fp2 = compute_cache.portfolio_fingerprint(db_session, uuid.UUID(tenant), pid)
     assert fp2 != fp1  # a fresh price bar must invalidate too
+
+    db_session.add(
+        models.RealizedLot(
+            tenant_id=uuid.UUID(tenant), account_id=aid, ticker="AAPL",
+            open_date=date(2024, 1, 1), close_date=date(2024, 2, 1),
+            quantity=5, proceeds=600.0, cost_basis=500.0, currency="USD",
+            source="ibkr_flex", lot_key="lot-1",
+        )
+    )
+    db_session.commit()
+    fp3 = compute_cache.portfolio_fingerprint(db_session, uuid.UUID(tenant), pid)
+    # RealizedLot has no portfolio_id column, so this term is tenant-wide — a stored
+    # broker-authoritative lot (e.g. an IBKR Flex resync) must still invalidate the
+    # fingerprint even though no Transaction/Position/Account row changed (metron-ops#198).
+    assert fp3 != fp2
