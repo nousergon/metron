@@ -281,6 +281,66 @@ def test_cash_transaction_has_null_security(db_session):
     assert txn.security_id is None
 
 
+def test_resync_reparents_account_to_new_portfolio(db_session):
+    """metron-ops#192: _upsert_accounts matches existing rows by (tenant_id, broker,
+    external_id) only. If that account was first created under portfolio A, a later
+    sync targeting portfolio B for the same tenant must reparent the row to B, not
+    silently leave it orphaned under A."""
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+    from portfolio_analytics.ingestion.schema import CanonicalAccount
+
+    tenant_id, portfolio_a = _make_portfolio(db_session)
+    portfolio_b = models.Portfolio(id=uuid.uuid4(), tenant_id=tenant_id, name="Roth IRA")
+    db_session.add(portfolio_b)
+    db_session.commit()
+
+    snapshot = ConnectorSnapshot(
+        source="ibkr_flex",
+        accounts=[CanonicalAccount(number="U23568545", institution="Interactive Brokers", account_type="Roth IRA")],
+    )
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_a, snapshot=snapshot)
+    acct = db_session.scalars(select(models.Account).where(models.Account.external_id == "U23568545")).one()
+    assert acct.portfolio_id == portfolio_a
+
+    # Re-sync the same (broker, external_id) targeting portfolio B.
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_b.id, snapshot=snapshot)
+
+    accounts = db_session.scalars(select(models.Account).where(models.Account.external_id == "U23568545")).all()
+    assert len(accounts) == 1  # reparented in place, not duplicated
+    assert accounts[0].portfolio_id == portfolio_b.id
+
+    a_accounts = db_session.scalars(select(models.Account).where(models.Account.portfolio_id == portfolio_a)).all()
+    b_accounts = db_session.scalars(select(models.Account).where(models.Account.portfolio_id == portfolio_b.id)).all()
+    assert a_accounts == []
+    assert [a.external_id for a in b_accounts] == ["U23568545"]
+
+
+def test_resync_does_not_reparent_csv_account_with_colliding_label(db_session):
+    """Companion to test_resync_reparents_account_to_new_portfolio: reparenting is
+    only sound for sources with a brokerage-assigned, tenant-wide-stable external id
+    (IBKR Flex, SnapTrade, OFX). CSV's external id is a free-text "account" column
+    label the user types per import — two unrelated portfolios can legitimately both
+    use the label "Roth" for two different real accounts, so a same-label match must
+    NOT move the account out from under the portfolio it was created in."""
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+    from portfolio_analytics.ingestion.schema import CanonicalAccount
+
+    tenant_id, portfolio_a = _make_portfolio(db_session)
+    portfolio_b = models.Portfolio(id=uuid.uuid4(), tenant_id=tenant_id, name="Other")
+    db_session.add(portfolio_b)
+    db_session.commit()
+
+    snapshot = ConnectorSnapshot(source="csv", accounts=[CanonicalAccount(number="Roth")])
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_a, snapshot=snapshot)
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_b.id, snapshot=snapshot)
+
+    accounts = db_session.scalars(
+        select(models.Account).where(models.Account.tenant_id == tenant_id, models.Account.external_id == "Roth")
+    ).all()
+    assert len(accounts) == 1  # DB uniqueness (tenant_id, broker, external_id) forbids a second row
+    assert accounts[0].portfolio_id == portfolio_a  # left where it was, not moved to B
+
+
 def test_persists_foreign_symbology_and_account_metadata(db_session):
     """A snapshot-sourced (Flex) holding persists the listing exchange + resolved
     yfinance symbol, the account's institution/type/tax_treatment, and the broker's
