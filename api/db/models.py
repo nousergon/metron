@@ -138,6 +138,11 @@ class Security(Base):
     # onto an existing SQLite DB; NULL = unclassified coverage gap, never guessed.
     country: Mapped[str | None] = mapped_column(String(60), nullable=True)
     next_earnings_date: Mapped[date | None] = mapped_column(nullable=True)  # cached next earnings; refreshed on demand
+    # UTC stamp of the last successful refresh_earnings write for this row (metron-ops#149
+    # item 2 — the Calendar tab's "sourced <date>" provenance line). Nullable so it
+    # auto-ALTERs onto an existing SQLite DB; NULL until the first post-deploy refresh, same
+    # as every other lazily-backfilled reference column on this model.
+    next_earnings_sourced_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class Transaction(Base):

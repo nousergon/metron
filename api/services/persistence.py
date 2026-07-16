@@ -11,7 +11,13 @@ per-tenant in SQL:
   * **securities** — global, identity-based **upsert** by ``(symbol, currency)``. One
     instrument master shared across all tenants (the cost-is-per-universe property).
   * **accounts** — **upsert** by ``(tenant_id, broker, external_id)`` under the target
-    portfolio; a re-import updates the label, never duplicates the account.
+    portfolio; a re-import updates the label, never duplicates the account. For
+    sources with a brokerage-assigned stable external id (IBKR Flex, SnapTrade,
+    OFX), a match under a different portfolio reparents the row to the one being
+    synced, so re-syncing the same real account elsewhere moves it rather than
+    orphaning it (metron-ops#192). CSV/manual entry's external id is a free-text
+    label with no such guarantee, so a same-label match there is left parented
+    where it already is (pre-existing behavior, unchanged).
   * **transactions** — immutable **events**, unioned by ``source_key`` so a re-upload
     of an overlapping CSV is idempotent (already-seen rows are skipped, not doubled).
 
@@ -128,6 +134,27 @@ def _upsert_securities(
     return out
 
 
+# Sources whose ``external_id`` (``acct.number``) is a stable identifier the
+# brokerage itself assigns — a real account number, valid tenant-wide regardless
+# of which portfolio it's synced into. Only these should REPARENT on a
+# cross-portfolio match (metron-ops#192's actual reported incident: an IBKR
+# Flex account going missing on re-sync). CSV and manual entry's ``number`` is
+# instead a free-text label the user types per import (the CSV "account"
+# column, or a manual-entry account name) with no cross-portfolio identity
+# guarantee — two unrelated portfolios both importing a CSV with an "account"
+# column value of "Roth" are not the same real account. The ``uq_account_source``
+# DB constraint (tenant_id, broker, external_id — see api/db/models.py) is
+# tenant-wide regardless of source though, so a label collision there still
+# resolves to one shared row; reparenting it would silently move a CSV/manual
+# account out from under the portfolio the user put it in (regressed
+# test_account_from_another_portfolio_404 when first tried tenant-wide).
+# Giving free-text labels their own portfolio-scoped identity would need a
+# schema change to that constraint — a product decision on CSV/manual account
+# identity semantics, not made here; this scoping only fixes the reported
+# broker-connector case.
+_STABLE_EXTERNAL_ID_SOURCES = {"ibkr_flex", "snaptrade", "ofx"}
+
+
 def _upsert_accounts(
     session: Session,
     snapshot: ConnectorSnapshot,
@@ -138,6 +165,7 @@ def _upsert_accounts(
     """Upsert the snapshot's accounts under the target portfolio, keyed by the
     canonical account ``number`` so activities can resolve their FK."""
     broker = snapshot.source
+    reparentable = broker in _STABLE_EXTERNAL_ID_SOURCES
     out: dict[str, models.Account] = {}
     for acct in snapshot.accounts:
         row = session.scalars(
@@ -174,6 +202,14 @@ def _upsert_accounts(
                 row.account_type = account_type
             if row.tax_treatment is None and tax_treatment:
                 row.tax_treatment = tax_treatment
+            # Reparent: a given broker account can only meaningfully live in one
+            # portfolio's connector snapshot at a time under the app's per-portfolio
+            # connector model, so a re-sync under a different portfolio must move the
+            # row rather than silently leave it parented to the stale portfolio
+            # (metron-ops#192). Only sound for sources with a tenant-wide-stable
+            # external_id — see _STABLE_EXTERNAL_ID_SOURCES.
+            if reparentable and row.portfolio_id != portfolio_id:
+                row.portfolio_id = portfolio_id
         out[acct.number] = row
     return out
 

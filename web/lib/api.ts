@@ -706,8 +706,14 @@ export const getTransactions = (apiAuth: string, id: string, accountIds?: string
   get<Transaction[]>(apiAuth, `/portfolios/${id}/transactions${activityQuery(accountIds, taxableOnly)}`);
 export const getRealized = (apiAuth: string, id: string, accountIds?: string[], taxableOnly?: boolean) =>
   get<RealizedLot[]>(apiAuth, `/portfolios/${id}/realized${activityQuery(accountIds, taxableOnly)}`);
-export const getAccountDetail = (apiAuth: string, id: string, accountId: string) =>
-  get<AccountDetail>(apiAuth, `/portfolios/${id}/accounts/${accountId}`);
+// `valuation` (metron-ops#149 item 1): omitted/"settled" = official EOD close; "live" =
+// the intraday overlay scoped to just this account, mirroring `getHoldings`'s contract so
+// the account-detail page's live markers agree with the Holdings page's.
+export const getAccountDetail = (apiAuth: string, id: string, accountId: string, valuation?: "live" | "settled") =>
+  get<AccountDetail>(
+    apiAuth,
+    `/portfolios/${id}/accounts/${accountId}${valuation === "live" ? "?valuation=live" : ""}`,
+  );
 export const getPerformance = (apiAuth: string, id: string, accountIds?: string[]) =>
   get<Performance>(apiAuth, `/portfolios/${id}/performance${acctParams(accountIds)}`);
 export const getPerformanceTiles = (apiAuth: string, id: string, accountIds?: string[]) =>
@@ -1063,6 +1069,9 @@ export type Calendar = {
   horizon_days: number;
   n_events: number;
   events: CalendarEvent[];
+  // When the earnings dates behind `events` were last (re)sourced (metron-ops#149 item 2)
+  // — null until a held ticker has ever been through a refresh.
+  earnings_sourced_at: string | null;
 };
 
 export const getCalendar = (apiAuth: string, id: string) =>
@@ -1627,8 +1636,8 @@ export type IntradayStatus = {
   session_state: "live" | "recap" | "closed";
 };
 
-export async function getIntradayStatus(apiAuth: string, id: string): Promise<IntradayStatus> {
-  return get<IntradayStatus>(apiAuth, `/portfolios/${id}/intraday`);
+export async function getIntradayStatus(apiAuth: string, id: string, accountIds?: string[]): Promise<IntradayStatus> {
+  return get<IntradayStatus>(apiAuth, `/portfolios/${id}/intraday${acctParams(accountIds)}`);
 }
 
 // Today view (metron-ops#23): per-holding prior-close/open/latest + overnight·intraday·day

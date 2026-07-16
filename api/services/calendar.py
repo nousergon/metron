@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -37,18 +37,25 @@ class CalendarSummary:
     horizon_days: int
     n_events: int = 0
     events: list[CalendarEvent] = field(default_factory=list)
+    # Newest ``next_earnings_sourced_at`` across this portfolio's held tickers — when the
+    # earnings dates behind the events above were last (re)sourced. None until the first
+    # refresh a held ticker has ever gone through (metron-ops#149 item 2).
+    earnings_sourced_at: datetime | None = None
 
 
 def _held_tickers(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[str]:
     return [h.ticker for h in analytics.holdings(session, tenant_id, portfolio_id)]
 
 
-def refresh_earnings(session: Session, symbols: list[str], *, source: EarningsSource | None = None) -> int:
+def refresh_earnings(
+    session: Session, symbols: list[str], *, source: EarningsSource | None = None, now: datetime | None = None
+) -> int:
     """Fetch + cache the next earnings date for each of ``symbols`` onto its security.
 
     Overwrites (unlike sector resolution) — earnings dates move, so a refresh always
-    re-sources. A symbol the source can't resolve leaves the prior cached date intact.
-    Returns the number of securities updated."""
+    re-sources. A symbol the source can't resolve leaves the prior cached date (and stamp)
+    intact. Stamps ``next_earnings_sourced_at`` alongside every updated date — the Calendar
+    tab's provenance line (metron-ops#149 item 2). Returns the number of securities updated."""
     symbols = [s for s in dict.fromkeys(symbols) if s]
     if not symbols:
         return 0
@@ -61,11 +68,13 @@ def refresh_earnings(session: Session, symbols: list[str], *, source: EarningsSo
     dates = fetch_earnings_dates(sorted(set(yf_by_row.values())), source=source)
     if not dates:
         return 0
+    sourced_at = now or datetime.now(UTC)
     updated = 0
     for row in rows:
         d = dates.get(yf_by_row[row])
         if d is not None:
             row.next_earnings_date = d
+            row.next_earnings_sourced_at = sourced_at
             updated += 1
     session.commit()
     return updated
@@ -119,17 +128,23 @@ def upcoming_events(
     tickers = _held_tickers(session, tenant_id, portfolio_id)
     if tickers:
         rows = session.execute(
-            select(models.Security.symbol, models.Security.next_earnings_date).where(
+            select(
+                models.Security.symbol, models.Security.next_earnings_date, models.Security.next_earnings_sourced_at
+            ).where(
                 models.Security.symbol.in_(tickers),
                 models.Security.next_earnings_date.is_not(None),
             )
         ).all()
         seen: set[str] = set()
-        for symbol, when in rows:
+        sourced_at: datetime | None = None
+        for symbol, when, sourced in rows:
+            if sourced is not None and (sourced_at is None or sourced > sourced_at):
+                sourced_at = sourced
             if symbol in seen or when is None or not (today <= when <= end):
                 continue
             seen.add(symbol)
             events.append(CalendarEvent(event_date=when, kind="earnings", ticker=symbol, label=f"{symbol} earnings"))
+        summary.earnings_sourced_at = sourced_at
 
     # Macro events are global (not portfolio-scoped) — surfaced even with no holdings.
     events.extend(_macro_events(today, end, macro_events_source))
