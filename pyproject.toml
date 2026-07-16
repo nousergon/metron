@@ -33,7 +33,7 @@ dependencies = [
     # its JWKS (metron-ops#179) — [crypto] pulls in `cryptography` for the Ed25519 path.
     "pyjwt[crypto]>=2.8",
     # --- engine tier (portfolio_analytics/) ---
-    "pandas>=2.0",
+    "pandas>=3.0.3",
     "numpy>=1.26",
     # Quant core (factor risk, attribution, returns, VaR/CVaR, riskstats) + the shared
     # cost-telemetry & SFT-capture chokepoints (nousergon_lib.sft). AGPL-3.0 (the internal
