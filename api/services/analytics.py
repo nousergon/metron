@@ -22,15 +22,15 @@ import logging
 import uuid
 from collections import defaultdict
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api.db import models
+from api.services import compute_cache, labels
 from api.services import fx as fx_service
-from api.services import labels
 from api.services import prices as price_service
 from portfolio_analytics.domain import realized_lots_export as realized_lots_export_domain
 from portfolio_analytics.domain.ledger import Ledger, RealizedGain, Transaction, TxnType, build_ledger
@@ -225,6 +225,17 @@ class TransactionRow:
     # proceeds_base/cost_basis_base pattern.
     fx_rate: float | None = None
     amount_base: float | None = None
+
+
+def _scope_key(account_id: uuid.UUID | None, account_ids: Collection[uuid.UUID] | None) -> str:
+    """Stable cache-key fragment for an ``(account_id | account_ids | portfolio-wide)``
+    scope — shared by every ``compute_cache``-wrapped function in this module so the
+    same scope always hashes to the same fragment."""
+    if account_id is not None:
+        return f"one:{account_id}"
+    if account_ids is not None:
+        return "set:" + ",".join(sorted(str(a) for a in account_ids))
+    return "*"
 
 
 def _portfolio_rows(
@@ -595,6 +606,32 @@ def holdings(
     account_ids: Collection[uuid.UUID] | None = None,
 ) -> list[Holding]:
     """Current open positions with share-weighted average cost + total (native) cost basis.
+    See :func:`_holdings` for the full documentation of what this computes.
+
+    Cached on the portfolio's content fingerprint (``compute_cache``): this ledger-replay
+    read ran uncached on every ``/holdings`` call (and on every ``router.refresh()`` poll
+    of any page that renders holdings), which was the dominant driver of Neon's "public
+    network transfer" egress for a single-user deployment (metron-ops#198). Callers like
+    ``valued_holdings*`` mutate the returned ``Holding`` rows in place (stamping valuation,
+    security_type, account labels), so this returns a **fresh copy of each row** on every
+    call — the cached entry itself is never touched by a caller's mutation."""
+    scope = _scope_key(account_id, account_ids)
+    fp = compute_cache.portfolio_fingerprint(session, tenant_id, portfolio_id)
+    key = f"holdings|{tenant_id}|{portfolio_id}|{scope}|{fp}"
+    cached_rows = compute_cache.cached(
+        key, lambda: _holdings(session, tenant_id, portfolio_id, account_id, account_ids)
+    )
+    return [replace(h) for h in cached_rows]
+
+
+def _holdings(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    account_id: uuid.UUID | None = None,
+    account_ids: Collection[uuid.UUID] | None = None,
+) -> list[Holding]:
+    """Uncached core of :func:`holdings` — see that wrapper for caching.
 
     Unions the two ingestion models, aggregated by ticker: positions **derived from
     the transaction ledger** (CSV/OFX accounts) and positions **reported directly by
@@ -937,7 +974,27 @@ def realized(
     Native amounts are converted to the portfolio base currency at the FX rate **as of
     the close date** (the rate when the gain was realized). A lot whose currency has no
     cached as-of rate keeps its base fields None (native still shown). Scopes to one
-    account (``account_id``) or a set (``account_ids``)."""
+    account (``account_id``) or a set (``account_ids``).
+
+    Cached on the portfolio's content fingerprint (``compute_cache``, metron-ops#198) —
+    the merged rows are read-only downstream, no defensive copy needed (contrast
+    :func:`holdings`)."""
+    scope = _scope_key(account_id, account_ids)
+    fp = compute_cache.portfolio_fingerprint(session, tenant_id, portfolio_id)
+    key = f"realized|{tenant_id}|{portfolio_id}|{scope}|{fp}"
+    return compute_cache.cached(
+        key, lambda: _realized(session, tenant_id, portfolio_id, account_id, account_ids)
+    )
+
+
+def _realized(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    account_id: uuid.UUID | None = None,
+    account_ids: Collection[uuid.UUID] | None = None,
+) -> list[RealizedLot]:
+    """Uncached core of :func:`realized` — see that wrapper for caching."""
     base = _base_currency(session, portfolio_id)
     scope = _scoped_account_ids(session, portfolio_id, account_id, account_ids)
     stored = _stored_realized_lots(session, tenant_id, scope)
@@ -1052,7 +1109,26 @@ def transactions(
 
     ``amount`` is converted to the portfolio base currency at the FX rate **as of the
     trade date** — the same as-of-date convention ``realized()`` uses for proceeds/basis.
-    A currency with no cached as-of rate keeps ``amount_base`` None (native still shown)."""
+    A currency with no cached as-of rate keeps ``amount_base`` None (native still shown).
+
+    Cached on the portfolio's content fingerprint (``compute_cache``, metron-ops#198) —
+    the rows are read-only downstream, no defensive copy needed (contrast :func:`holdings`)."""
+    scope = _scope_key(account_id, account_ids)
+    fp = compute_cache.portfolio_fingerprint(session, tenant_id, portfolio_id)
+    key = f"transactions|{tenant_id}|{portfolio_id}|{scope}|{fp}"
+    return compute_cache.cached(
+        key, lambda: _transactions(session, tenant_id, portfolio_id, account_id, account_ids)
+    )
+
+
+def _transactions(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    account_id: uuid.UUID | None = None,
+    account_ids: Collection[uuid.UUID] | None = None,
+) -> list[TransactionRow]:
+    """Uncached core of :func:`transactions` — see that wrapper for caching."""
     base = _base_currency(session, portfolio_id)
     rows = list(_portfolio_rows(session, tenant_id, portfolio_id, account_id, account_ids))
     out: list[TransactionRow] = []
@@ -1211,7 +1287,36 @@ def income(
     ``distribution_account_ids`` (the tax-deferred accounts, computed by the caller from
     the *candidate* scope, NOT the taxable subset) adds their WITHDRAWAL transactions as
     a separate **distributions** column — taxable ordinary income for a retiree even
-    though the account is otherwise excluded from the taxable view (metron-ops#62)."""
+    though the account is otherwise excluded from the taxable view (metron-ops#62).
+
+    Cached on the portfolio's content fingerprint (``compute_cache``, metron-ops#198) —
+    the rows are read-only downstream, no defensive copy needed (contrast :func:`holdings`).
+    This is also the biggest remaining gap from #198: ``income()`` re-read ``_portfolio_rows``
+    directly rather than going through the cached ``transactions()``/``realized()`` wrappers,
+    and it's on the hot path via ``totals()`` (the Overview/home-page summary, hit on every
+    page load and every ``router.refresh()`` poll)."""
+    scope = _scope_key(None, account_ids)
+    dist_scope = _scope_key(None, distribution_account_ids)
+    fp = compute_cache.portfolio_fingerprint(session, tenant_id, portfolio_id)
+    key = f"income|{tenant_id}|{portfolio_id}|{scope}|{dist_scope}|{fp}"
+    return compute_cache.cached(
+        key,
+        lambda: _income(
+            session, tenant_id, portfolio_id,
+            account_ids=account_ids, distribution_account_ids=distribution_account_ids,
+        ),
+    )
+
+
+def _income(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    account_ids: Collection[uuid.UUID] | None = None,
+    distribution_account_ids: Collection[uuid.UUID] | None = None,
+) -> list[YearlyIncome]:
+    """Uncached core of :func:`income` — see that wrapper for caching."""
     base = _base_currency(session, portfolio_id)
     rows = _portfolio_rows(session, tenant_id, portfolio_id, account_ids=account_ids)
     # Broker-authoritative closed lots (IBKR) for accounts in scope — their realized comes
