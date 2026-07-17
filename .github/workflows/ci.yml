@@ -18,23 +18,18 @@ permissions: {}
 jobs:
   python:
     name: pytest + ruff (api, portfolio_analytics)
-    # CodeBuild-managed ephemeral GitHub Actions runner (project metron-runner,
-    # arm64/Graviton; cost-I2864 — replaces the self-hosted EC2-spot runner +
-    # metron-runner-dispatcher Lambda). actions/setup-python handles the arm64
-    # Python 3.12 fetch, so no bootstrap tool-cache pre-provisioning is needed;
-    # the web job (Node.js) stays on ubuntu-latest (metron#274).
-    runs-on: codebuild-metron-runner-${{ github.run_id }}-${{ github.run_attempt }}
+    # GitHub-hosted ubuntu-latest: this is a PUBLIC repo, so GHA-hosted runners are
+    # free/unlimited (0 billable minutes). Self-hosting a public repo only adds paid
+    # compute + a fork-PR self-hosted-runner security exposure and saves nothing —
+    # cost-I2864.
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      # actions/setup-python has no Amazon-Linux-2023 arm64 prebuilt, so it fails
-      # on the CodeBuild arm64 runner. Provision Python 3.12 the AL2023-native way
-      # (dnf) instead — the correct model for a self-hosted runner (cost-I2864).
-      - name: Set up Python 3.12 (AL2023 native)
-        run: |
-          dnf install -y -q python3.12 python3.12-pip
-          alternatives --install /usr/bin/python python /usr/bin/python3.12 100
-          alternatives --install /usr/bin/pip pip /usr/bin/pip3.12 100
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
       - name: Install
         run: |
           python -m pip install --upgrade pip
