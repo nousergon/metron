@@ -18,13 +18,12 @@ permissions: {}
 jobs:
   python:
     name: pytest + ruff (api, portfolio_analytics)
-    # Self-hosted ephemeral EC2-spot runner (metron-runner-dispatcher Lambda,
-    # nousergon-data infrastructure/lambdas/metron-runner-dispatcher) —
-    # mirrors alpha-engine-config-I2572's proven pattern. Single Python 3.12
-    # version matches the bootstrap script's pre-cached tool-cache exactly;
-    # the web job (Node.js) stays on ubuntu-latest until the bootstrap
-    # script's tool provisioning is extended (tracked follow-up, metron#274).
-    runs-on: [self-hosted, metron-spot]
+    # CodeBuild-managed ephemeral GitHub Actions runner (project metron-runner,
+    # arm64/Graviton; cost-I2864 — replaces the self-hosted EC2-spot runner +
+    # metron-runner-dispatcher Lambda). actions/setup-python handles the arm64
+    # Python 3.12 fetch, so no bootstrap tool-cache pre-provisioning is needed;
+    # the web job (Node.js) stays on ubuntu-latest (metron#274).
+    runs-on: codebuild-metron-runner-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
