@@ -18,7 +18,13 @@ permissions: {}
 jobs:
   python:
     name: pytest + ruff (api, portfolio_analytics)
-    runs-on: ubuntu-latest
+    # Self-hosted ephemeral EC2-spot runner (metron-runner-dispatcher Lambda,
+    # nousergon-data infrastructure/lambdas/metron-runner-dispatcher) —
+    # mirrors alpha-engine-config-I2572's proven pattern. Single Python 3.12
+    # version matches the bootstrap script's pre-cached tool-cache exactly;
+    # the web job (Node.js) stays on ubuntu-latest until the bootstrap
+    # script's tool provisioning is extended (tracked follow-up, metron#274).
+    runs-on: [self-hosted, metron-spot]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
