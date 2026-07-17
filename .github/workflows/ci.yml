@@ -27,10 +27,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
+      # actions/setup-python has no Amazon-Linux-2023 arm64 prebuilt, so it fails
+      # on the CodeBuild arm64 runner. Provision Python 3.12 the AL2023-native way
+      # (dnf) instead — the correct model for a self-hosted runner (cost-I2864).
+      - name: Set up Python 3.12 (AL2023 native)
+        run: |
+          dnf install -y -q python3.12 python3.12-pip
+          alternatives --install /usr/bin/python python /usr/bin/python3.12 100
+          alternatives --install /usr/bin/pip pip /usr/bin/pip3.12 100
       - name: Install
         run: |
           python -m pip install --upgrade pip
