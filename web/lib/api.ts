@@ -15,6 +15,15 @@ const API_URL = process.env.METRON_API_URL ?? "http://localhost:8000";
 // `buildUrl` can assert against it below rather than trusting string concatenation.
 const API_ORIGIN = new URL(API_URL).origin;
 
+// Every path this file builds is `/` + unreserved-URI-component characters (the charset
+// `encodeURIComponent` itself leaves unescaped, plus `/?=&` for the literal route/query
+// structure). Rejecting anything else BEFORE it ever reaches `new URL()` — in particular
+// a leading `//` (protocol-relative) or any `:` (a `scheme:` prefix) — means the value
+// that reaches the URL constructor can no longer carry a host/scheme override, so this
+// barrier is checked directly against the untrusted `path` argument itself rather than a
+// property of the URL built from it.
+const SAFE_PATH_PATTERN = /^\/(?!\/)[A-Za-z0-9\-._~!*'()%/?=&@]*$/;
+
 /** Resolve one backend request URL. `path` must be a fixed, literal route shape (never
  * itself request-controlled — every caller here interpolates only individually-encoded
  * id/ticker/symbol segments into a literal template). Building through `new URL(path,
@@ -27,6 +36,9 @@ const API_ORIGIN = new URL(API_URL).origin;
  * this — see that function's docstring for why the check has to be re-inlined there
  * rather than shared via a call to this function. */
 export function buildUrl(path: string): string {
+  if (!SAFE_PATH_PATTERN.test(path)) {
+    throw new Error(`buildUrl: rejecting unsafe path shape: ${path}`);
+  }
   const url = new URL(path, API_URL);
   if (url.origin !== API_ORIGIN) {
     throw new Error(`buildUrl: refusing cross-origin request (${url.origin} != ${API_ORIGIN})`);
@@ -39,14 +51,17 @@ export function buildUrl(path: string): string {
  * calls this), so there's one place the destination is pinned rather than 29 ad hoc
  * template literals.
  *
- * The origin check is INLINED here rather than delegated to `buildUrl` (even though
- * the logic is identical) because CodeQL's taint-tracking sanitizer-guard recognition
- * is per-function: a `url.origin !== API_ORIGIN` guard only clears the taint on values
- * used later IN THE SAME FUNCTION as the guard. Doing the guard in `buildUrl` and then
- * calling `fetch()` at 29 separate call sites left every one of those call sites still
- * flagged, because CodeQL's interprocedural summary for `buildUrl`'s return value can't
- * see that the throw path makes the return unconditionally safe — hence this wrapper. */
+ * Both checks are INLINED here rather than delegated to `buildUrl` (even though the
+ * logic is identical) because CodeQL's taint-tracking sanitizer-guard recognition is
+ * per-function: a guard only clears the taint on values used later IN THE SAME FUNCTION
+ * as the guard. Doing the guards in `buildUrl` and then calling `fetch()` at 29 separate
+ * call sites left every one of those call sites still flagged, because CodeQL's
+ * interprocedural summary for `buildUrl`'s return value can't see that the throw paths
+ * make the return unconditionally safe — hence this wrapper. */
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  if (!SAFE_PATH_PATTERN.test(path)) {
+    throw new Error(`apiFetch: rejecting unsafe path shape: ${path}`);
+  }
   const url = new URL(path, API_URL);
   if (url.origin !== API_ORIGIN) {
     throw new Error(`apiFetch: refusing cross-origin request (${url.origin} != ${API_ORIGIN})`);

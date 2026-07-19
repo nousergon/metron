@@ -26,14 +26,27 @@ describe("buildUrl", () => {
     vi.resetModules();
     process.env.METRON_API_URL = "https://api.metron.example";
     const { buildUrl } = await import("@/lib/api");
-    expect(() => buildUrl("//evil.example/steal")).toThrow(/cross-origin/);
+    // Caught by the path-shape guard (leading `//`) before the origin check even runs.
+    expect(() => buildUrl("//evil.example/steal")).toThrow(/unsafe path shape/);
   });
 
   it("refuses a path carrying its own absolute http(s) origin", async () => {
     vi.resetModules();
     process.env.METRON_API_URL = "https://api.metron.example";
     const { buildUrl } = await import("@/lib/api");
-    expect(() => buildUrl("https://evil.example/portfolios/1")).toThrow(/cross-origin/);
+    // Caught by the path-shape guard (no leading `/`, and `:` is never in the allowed
+    // charset) before the origin check even runs.
+    expect(() => buildUrl("https://evil.example/portfolios/1")).toThrow(/unsafe path shape/);
+  });
+
+  it("refuses a path carrying an embedded scheme-like colon mid-segment", async () => {
+    vi.resetModules();
+    process.env.METRON_API_URL = "https://api.metron.example";
+    const { buildUrl } = await import("@/lib/api");
+    // `new URL` would resolve this harmlessly as a literal path segment (no bypass), but
+    // the shape guard rejects any `:` outright — a stricter, easier-to-verify barrier
+    // than relying on `new URL`'s relative-resolution semantics for every future path.
+    expect(() => buildUrl("/portfolios/evil:example.com/data")).toThrow(/unsafe path shape/);
   });
 
   it("stays on the configured origin even when a path segment looks like a host", async () => {
@@ -76,7 +89,7 @@ describe("apiFetch", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const { apiFetch } = await import("@/lib/api");
-    await expect(apiFetch("//evil.example/steal")).rejects.toThrow(/cross-origin/);
+    await expect(apiFetch("//evil.example/steal")).rejects.toThrow(/unsafe path shape/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -86,7 +99,17 @@ describe("apiFetch", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const { apiFetch } = await import("@/lib/api");
-    await expect(apiFetch("https://evil.example/portfolios/1")).rejects.toThrow(/cross-origin/);
+    await expect(apiFetch("https://evil.example/portfolios/1")).rejects.toThrow(/unsafe path shape/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to call fetch for a path carrying an embedded scheme-like colon mid-segment", async () => {
+    vi.resetModules();
+    process.env.METRON_API_URL = "https://api.metron.example";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { apiFetch } = await import("@/lib/api");
+    await expect(apiFetch("/portfolios/evil:example.com/data")).rejects.toThrow(/unsafe path shape/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
