@@ -1,0 +1,23 @@
+[
+ {
+  "RuleID": "generic-api-key",
+  "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+  "StartLine": 49,
+  "EndLine": 49,
+  "StartColumn": 6,
+  "EndColumn": 28,
+  "Match": "key: REDACTED ",
+  "Secret": "REDACTED",
+  "File": "tests/test_auth_jwt.py",
+  "SymlinkFile": "",
+  "Commit": "411c10885aaf7386376cc7977c24d2e541058eb9",
+  "Link": "https://github.com/nousergon/metron/blob/411c10885aaf7386376cc7977c24d2e541058eb9/tests/test_auth_jwt.py#L49",
+  "Entropy": 3.8521688,
+  "Author": "Brian McMahon",
+  "Email": "brian@nousergon.ai",
+  "Date": "2026-07-11T14:35:02Z",
+  "Message": "feat(auth): cut over to the shared nousergon-auth identity service (metron-ops#179)\n\nMetron no longer runs Better Auth in-process. Sign-in, sessions, and the\ninvite gate live on the shared service (auth.nousergon.ai); Metron's\nFastAPI verifies the short-lived EdDSA JWTs it mints against its JWKS and\nresolves the `sub` claim to a workspace via users.identity_user_id\n(match -\u003e one-time email link -\u003e JIT-provision, mirroring vires-PR97).\n\nBackend:\n- api/services/auth_jwt.py: JWKS verifier (EdDSA pinned, exp/iss/aud\n  enforced, PyJWKClient-cached — no per-request round-trip).\n- api/services/identity.py: resolution ladder + require_tenant_id\n  dependency. Replaces the blind-trust X-Tenant-Id stub in\n  portfolios.py::_tenant_id: bearer is authoritative (invalid -\u003e 401,\n  never a fallthrough); X-Tenant-Id survives ONLY for the fixed demo\n  tenant id while DEMO_ENABLED (the signup-free read-only demo has no\n  session); anything else -\u003e 401.\n- api/routers/me.py: GET /me echoes the resolved tenant — the\n  deploy-verification chokepoint.\n- models.User.identity_user_id (nullable, unique, indexed; additive).\n- tests/test_auth_jwt.py: end-to-end coverage with real Ed25519\n  signatures (only the JWKS fetch stubbed); feature tests override the\n  auth seam with the legacy header stub via dependency_overrides.\n\nWeb:\n- Delete web/lib/auth.ts, invite-gate.ts, email.ts, the /api/auth/*\n  handler (all centralized in nousergon-auth); drop better-sqlite3 +\n  resend deps and the auth env vars.\n- lib/session.ts: getSession() fetches the shared get-session;\n  requireApiAuth() mints the identity JWT (demo cookie -\u003e demo tenant\n  id; else redirect to /login). requireTenantId/tenantId renamed to\n  requireApiAuth/apiAuth everywhere — the value is a credential now,\n  not a tenant id.\n- lib/api.ts: X-Tenant-Id replaced by Authorization: Bearer (demo\n  credential keeps the header); cacheIdentity() gives unstable_cache\n  keyParts/tags a STABLE per-identity key (JWT sub / demo id) so cache\n  hits and tag revalidation survive token rotation.\n- auth-forms.tsx: magic link against the shared service with required\n  metadata.product (\"metron\") + optional inviteCode; absolute\n  callbackURL (verify happens on the auth origin).\n\nCo-Authored-By: Claude Fable 5 \u003cnoreply@anthropic.com\u003e",
+  "Tags": [],
+  "Fingerprint": "411c10885aaf7386376cc7977c24d2e541058eb9:tests/test_auth_jwt.py:generic-api-key:49"
+ }
+]
