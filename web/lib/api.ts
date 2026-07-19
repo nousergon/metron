@@ -22,16 +22,36 @@ const API_ORIGIN = new URL(API_URL).origin;
  * gives a real parser the final say on scheme/host/path, and the origin assertion below
  * is the backstop: if a future refactor ever let a path segment carry `//host` or an
  * absolute `http(s)://` prefix, `new URL` would resolve it off-origin and this throws
- * instead of silently issuing the request. This is the fix for the CodeQL
- * js/request-forgery sweep (config#2611): every fetch in this file now funnels through
- * here (or `get()`, which calls this), so there's one place the destination is pinned
- * rather than 29 ad hoc template literals. */
+ * instead of silently issuing the request. Kept as a standalone export for direct URL
+ * resolution (e.g. tests); actual request call sites go through `apiFetch` below, not
+ * this — see that function's docstring for why the check has to be re-inlined there
+ * rather than shared via a call to this function. */
 export function buildUrl(path: string): string {
   const url = new URL(path, API_URL);
   if (url.origin !== API_ORIGIN) {
     throw new Error(`buildUrl: refusing cross-origin request (${url.origin} != ${API_ORIGIN})`);
   }
   return url.toString();
+}
+
+/** Validated fetch to the backend — the fix for the CodeQL js/request-forgery sweep
+ * (config#2611). Every request in this file funnels through here (or `get()`, which
+ * calls this), so there's one place the destination is pinned rather than 29 ad hoc
+ * template literals.
+ *
+ * The origin check is INLINED here rather than delegated to `buildUrl` (even though
+ * the logic is identical) because CodeQL's taint-tracking sanitizer-guard recognition
+ * is per-function: a `url.origin !== API_ORIGIN` guard only clears the taint on values
+ * used later IN THE SAME FUNCTION as the guard. Doing the guard in `buildUrl` and then
+ * calling `fetch()` at 29 separate call sites left every one of those call sites still
+ * flagged, because CodeQL's interprocedural summary for `buildUrl`'s return value can't
+ * see that the throw path makes the return unconditionally safe — hence this wrapper. */
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const url = new URL(path, API_URL);
+  if (url.origin !== API_ORIGIN) {
+    throw new Error(`apiFetch: refusing cross-origin request (${url.origin} != ${API_ORIGIN})`);
+  }
+  return fetch(url, init);
 }
 
 /** Auth headers for one backend request. The demo credential IS the fixed demo tenant
@@ -415,7 +435,7 @@ export class MetronApiError extends Error {
 }
 
 async function get<T>(apiAuth: string, path: string): Promise<T> {
-  const res = await fetch(buildUrl(path), {
+  const res = await apiFetch(path, {
     headers: authHeaders(apiAuth),
     cache: "no-store",
   });
@@ -513,7 +533,7 @@ export async function addWatchlist(
   symbol: string,
   note?: string | null,
 ): Promise<WatchlistEntry> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/watchlist`), {
+  const res = await apiFetch(`/portfolios/${id}/watchlist`, {
     method: "POST",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ symbol, note: note ?? null }),
@@ -532,7 +552,7 @@ export async function addWatchlist(
 }
 
 export async function removeWatchlist(apiAuth: string, id: string, symbol: string): Promise<void> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/watchlist/${encodeURIComponent(symbol)}`), {
+  const res = await apiFetch(`/portfolios/${id}/watchlist/${encodeURIComponent(symbol)}`, {
     method: "DELETE",
     headers: authHeaders(apiAuth),
     cache: "no-store",
@@ -575,7 +595,7 @@ export async function addCryptoAddress(
   address: string,
   label?: string | null,
 ): Promise<CryptoPosition> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/crypto/addresses`), {
+  const res = await apiFetch(`/portfolios/${id}/crypto/addresses`, {
     method: "POST",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ chain, address, label: label ?? null }),
@@ -594,7 +614,7 @@ export async function addCryptoAddress(
 }
 
 export async function deleteCryptoAddress(apiAuth: string, id: string, addressId: string): Promise<void> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/crypto/addresses/${encodeURIComponent(addressId)}`), {
+  const res = await apiFetch(`/portfolios/${id}/crypto/addresses/${encodeURIComponent(addressId)}`, {
     method: "DELETE",
     headers: authHeaders(apiAuth),
     cache: "no-store",
@@ -609,7 +629,7 @@ export async function setSecurityLabel(
   symbol: string,
   label: string | null,
 ): Promise<{ symbol: string; label: string | null }> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/securities/${encodeURIComponent(symbol)}/label`), {
+  const res = await apiFetch(`/portfolios/${id}/securities/${encodeURIComponent(symbol)}/label`, {
     method: "PUT",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ label }),
@@ -637,7 +657,7 @@ export async function setSecurityClassification(
   symbol: string,
   patch: { sector?: string | null; country?: string | null; instrument_type?: string | null },
 ): Promise<{ symbol: string; sector: string | null; country: string | null; instrument_type: string | null }> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/securities/${encodeURIComponent(symbol)}/classification`), {
+  const res = await apiFetch(`/portfolios/${id}/securities/${encodeURIComponent(symbol)}/classification`, {
     method: "PUT",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -661,7 +681,7 @@ export async function updatePortfolio(
   id: string,
   patch: { name?: string; base_currency?: string },
 ): Promise<Portfolio> {
-  const res = await fetch(buildUrl(`/portfolios/${id}`), {
+  const res = await apiFetch(`/portfolios/${id}`, {
     method: "PATCH",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -1102,7 +1122,7 @@ export const getCalendar = (apiAuth: string, id: string) =>
 
 /** Refresh held-ticker earnings dates (yfinance), then return the calendar (heavier POST). */
 export async function refreshCalendar(apiAuth: string, id: string): Promise<Calendar> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/calendar/refresh`), {
+  const res = await apiFetch(`/portfolios/${id}/calendar/refresh`, {
     method: "POST",
     headers: authHeaders(apiAuth),
     cache: "no-store",
@@ -1116,7 +1136,7 @@ export async function refreshCalendar(apiAuth: string, id: string): Promise<Cale
 /** Resolve sectors + backfill history, then run Brinson attribution (heavier POST).
  * `accountIds` scopes the computation to the selected accounts. */
 export async function computeAttribution(apiAuth: string, id: string, accountIds?: string[]): Promise<Attribution> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/attribution/compute${acctParams(accountIds)}`), {
+  const res = await apiFetch(`/portfolios/${id}/attribution/compute${acctParams(accountIds)}`, {
     method: "POST",
     headers: authHeaders(apiAuth),
     cache: "no-store",
@@ -1129,7 +1149,7 @@ export async function computeAttribution(apiAuth: string, id: string, accountIds
 
 /** Backfill history + compute factor risk (the heavier POST path). `accountIds` scopes it. */
 export async function computeRisk(apiAuth: string, id: string, accountIds?: string[]): Promise<Risk> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/risk/compute${acctParams(accountIds)}`), {
+  const res = await apiFetch(`/portfolios/${id}/risk/compute${acctParams(accountIds)}`, {
     method: "POST",
     headers: authHeaders(apiAuth),
     cache: "no-store",
@@ -1142,7 +1162,7 @@ export async function computeRisk(apiAuth: string, id: string, accountIds?: stri
 
 /** Seed NAV history from past prices (reconstruction). Returns the populated summary. */
 export async function reconstructPerformance(apiAuth: string, id: string): Promise<Performance> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/performance/reconstruct`), {
+  const res = await apiFetch(`/portfolios/${id}/performance/reconstruct`, {
     method: "POST",
     headers: authHeaders(apiAuth),
     cache: "no-store",
@@ -1155,7 +1175,7 @@ export async function reconstructPerformance(apiAuth: string, id: string): Promi
 
 /** Create a portfolio in the user's workspace (auto-provisions the tenant on the backend). */
 export async function createPortfolio(apiAuth: string, name: string): Promise<Portfolio> {
-  const res = await fetch(buildUrl(`/portfolios`), {
+  const res = await apiFetch(`/portfolios`, {
     method: "POST",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
@@ -1207,7 +1227,7 @@ export async function importFile(
 ): Promise<ImportResult> {
   const form = new FormData();
   form.append("file", file, file.name);
-  const res = await fetch(buildUrl(`/portfolios/${id}/import/${kind}`), {
+  const res = await apiFetch(`/portfolios/${id}/import/${kind}`, {
     method: "POST",
     headers: authHeaders(apiAuth),
     body: form,
@@ -1226,7 +1246,7 @@ export async function addManualPosition(
   id: string,
   position: { ticker: string; quantity: number; costBasis: number; tradeDate?: string | null },
 ): Promise<ImportResult> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/positions/manual`), {
+  const res = await apiFetch(`/portfolios/${id}/positions/manual`, {
     method: "POST",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1241,7 +1261,7 @@ export async function addManualPosition(
 }
 
 export async function syncFlex(apiAuth: string, id: string, token: string, queryId: string): Promise<ImportResult> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/import/flex`), {
+  const res = await apiFetch(`/portfolios/${id}/import/flex`, {
     method: "POST",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ token, query_id: queryId }),
@@ -1253,7 +1273,7 @@ export async function syncFlex(apiAuth: string, id: string, token: string, query
 /** One-click IBKR sync from the deployment's STORED Flex credentials (metron-ops#82) —
  * no token paste. 404 when none are configured (the UI shows the BYO-token form instead). */
 export async function syncFlexStored(apiAuth: string, id: string): Promise<ImportResult> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/sync/flex`), {
+  const res = await apiFetch(`/portfolios/${id}/sync/flex`, {
     method: "POST",
     headers: authHeaders(apiAuth),
     cache: "no-store",
@@ -1272,7 +1292,7 @@ export const getMeta = (apiAuth: string) => get<Meta>(apiAuth, "/meta");
  * connection, minus any the portfolio has excluded). Personal/single-operator only —
  * 404 when the deployment hasn't enabled it. */
 export async function syncSnapTrade(apiAuth: string, id: string): Promise<ImportResult> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/import/snaptrade`), {
+  const res = await apiFetch(`/portfolios/${id}/import/snaptrade`, {
     method: "POST",
     headers: authHeaders(apiAuth),
     cache: "no-store",
@@ -1320,7 +1340,7 @@ export async function createSnapTradeConnectUrl(
   id: string,
   reconnectId?: string,
 ): Promise<string> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/snaptrade/connect`), {
+  const res = await apiFetch(`/portfolios/${id}/snaptrade/connect`, {
     method: "POST",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(reconnectId ? { reconnect: reconnectId } : {}),
@@ -1339,8 +1359,8 @@ export async function removeSnapTradeConnection(
   id: string,
   authorizationId: string,
 ): Promise<void> {
-  const res = await fetch(
-    buildUrl(`/portfolios/${id}/snaptrade/connections/${encodeURIComponent(authorizationId)}`),
+  const res = await apiFetch(
+    `/portfolios/${id}/snaptrade/connections/${encodeURIComponent(authorizationId)}`,
     {
       method: "DELETE",
       headers: authHeaders(apiAuth),
@@ -1359,8 +1379,8 @@ export async function setSnapTradeConnectionExcluded(
   excluded: boolean,
 ): Promise<void> {
   const verb = excluded ? "exclude" : "include";
-  const res = await fetch(
-    buildUrl(`/portfolios/${id}/snaptrade/connections/${encodeURIComponent(authorizationId)}/${verb}`),
+  const res = await apiFetch(
+    `/portfolios/${id}/snaptrade/connections/${encodeURIComponent(authorizationId)}/${verb}`,
     {
       method: "POST",
       headers: authHeaders(apiAuth),
@@ -1372,7 +1392,7 @@ export async function setSnapTradeConnectionExcluded(
 
 /** Refresh the EOD price cache for a portfolio's held tickers (market value follows). */
 export async function refreshPrices(apiAuth: string, id: string): Promise<PriceRefreshResult> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/prices/refresh`), {
+  const res = await apiFetch(`/portfolios/${id}/prices/refresh`, {
     method: "POST",
     headers: authHeaders(apiAuth),
     cache: "no-store",
@@ -1402,7 +1422,7 @@ export async function updateAccountTags(
   accountId: string,
   patch: AccountTagPatch,
 ): Promise<Account> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/accounts/${accountId}`), {
+  const res = await apiFetch(`/portfolios/${id}/accounts/${accountId}`, {
     method: "PATCH",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -1421,7 +1441,7 @@ export async function deleteAccount(
   id: string,
   accountId: string,
 ): Promise<{ account_id: string; excluded_key: string }> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/accounts/${accountId}`), {
+  const res = await apiFetch(`/portfolios/${id}/accounts/${accountId}`, {
     method: "DELETE",
     headers: authHeaders(apiAuth),
     cache: "no-store",
@@ -1444,7 +1464,7 @@ export async function restoreExcludedAccount(
   id: string,
   key: string,
 ): Promise<{ excluded: ExcludedAccount[] }> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/accounts/excluded/restore`), {
+  const res = await apiFetch(`/portfolios/${id}/accounts/excluded/restore`, {
     method: "POST",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ key }),
@@ -1466,7 +1486,7 @@ export async function putAccountSelection(
   id: string,
   accountIds: string[],
 ): Promise<void> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/accounts/selection`), {
+  const res = await apiFetch(`/portfolios/${id}/accounts/selection`, {
     method: "PUT",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify({ account_ids: accountIds }),
@@ -1494,7 +1514,7 @@ export const getHoldingsView = (apiAuth: string, id: string) =>
 
 /** Persist the Holdings-table view (fire-and-forget from the toolbar controls). */
 export async function putHoldingsView(apiAuth: string, id: string, prefs: HoldingsViewPrefs): Promise<void> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/holdings-view`), {
+  const res = await apiFetch(`/portfolios/${id}/holdings-view`, {
     method: "PUT",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(prefs),
@@ -1521,7 +1541,7 @@ export async function putPreferences(
   id: string,
   prefs: Preferences,
 ): Promise<Preferences> {
-  const res = await fetch(buildUrl(`/portfolios/${id}/preferences`), {
+  const res = await apiFetch(`/portfolios/${id}/preferences`, {
     method: "PUT",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(prefs),
@@ -1624,7 +1644,7 @@ export async function getIndices(
   const headers: Record<string, string> = { ...authHeaders(apiAuth) };
   if (preview?.tier) headers["X-Preview-Tier"] = preview.tier;
   if (preview?.feed !== undefined) headers["X-Preview-Feed"] = String(preview.feed);
-  const res = await fetch(buildUrl(`/indices/intraday`), { headers, cache: "no-store" });
+  const res = await apiFetch(`/indices/intraday`, { headers, cache: "no-store" });
   if (!res.ok) throw new MetronApiError(res.status, `GET /indices/intraday → ${res.status}`);
   return res.json() as Promise<Indices>;
 }
@@ -1791,7 +1811,7 @@ export const getAdvisorProfile = (apiAuth: string, id: string) =>
 
 /** Run the Claude narrative for the current state (the one paid path). */
 export async function generateAdvisor(apiAuth: string, id: string): Promise<AdvisorView> {
-  const res = await fetch(buildUrl(`/ext/advisor/${id}/generate`), {
+  const res = await apiFetch(`/ext/advisor/${id}/generate`, {
     method: "POST",
     headers: authHeaders(apiAuth),
     cache: "no-store",
@@ -1814,7 +1834,7 @@ export async function putAdvisorProfile(
   id: string,
   profile: AdvisorProfile,
 ): Promise<AdvisorProfile> {
-  const res = await fetch(buildUrl(`/ext/advisor/${id}/profile`), {
+  const res = await apiFetch(`/ext/advisor/${id}/profile`, {
     method: "PUT",
     headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
     body: JSON.stringify(profile),

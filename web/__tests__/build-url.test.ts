@@ -47,3 +47,46 @@ describe("buildUrl", () => {
     );
   });
 });
+
+// apiFetch is the actual request chokepoint every call site in lib/api.ts uses (the
+// origin check is re-inlined here rather than delegated to buildUrl — see that
+// function's docstring) — covers the same cases directly against the real fetch sink.
+describe("apiFetch", () => {
+  afterEach(() => {
+    process.env.METRON_API_URL = ORIGINAL_ENV;
+    vi.resetModules();
+    vi.unstubAllGlobals();
+  });
+
+  it("issues the request against the configured origin", async () => {
+    vi.resetModules();
+    process.env.METRON_API_URL = "https://api.metron.example";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { apiFetch } = await import("@/lib/api");
+    await apiFetch("/portfolios/abc-123");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [calledUrl] = fetchMock.mock.calls[0];
+    expect((calledUrl as URL).toString()).toBe("https://api.metron.example/portfolios/abc-123");
+  });
+
+  it("refuses to call fetch for a protocol-relative path", async () => {
+    vi.resetModules();
+    process.env.METRON_API_URL = "https://api.metron.example";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { apiFetch } = await import("@/lib/api");
+    await expect(apiFetch("//evil.example/steal")).rejects.toThrow(/cross-origin/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to call fetch for a path carrying its own absolute origin", async () => {
+    vi.resetModules();
+    process.env.METRON_API_URL = "https://api.metron.example";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { apiFetch } = await import("@/lib/api");
+    await expect(apiFetch("https://evil.example/portfolios/1")).rejects.toThrow(/cross-origin/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
