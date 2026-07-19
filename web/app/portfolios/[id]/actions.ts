@@ -414,13 +414,30 @@ export async function setSecurityClassificationAction(
 ): Promise<ActionResult> {
   try {
     const apiAuth = await requireApiAuth();
-    // The UI "type" field maps to the API's instrument_type column.
-    const key = field === "type" ? "instrument_type" : field;
     // Empty string clears just this field (reverts to the spine/classified value, if any).
-    await setSecurityClassification(apiAuth, portfolioId, symbol, { [key]: value.trim() || null });
+    const trimmed = value.trim() || null;
+    // Server Actions are callable directly (not just from the compiled UI), so `field`
+    // is only TS-narrowed at compile time, not at runtime — branch explicitly per field
+    // instead of building the patch with a computed key derived from it (CodeQL
+    // js/remote-property-injection, metron#33 / config#2610).
+    let label: string;
+    switch (field) {
+      case "sector":
+        await setSecurityClassification(apiAuth, portfolioId, symbol, { sector: trimmed });
+        label = "Sector";
+        break;
+      case "country":
+        await setSecurityClassification(apiAuth, portfolioId, symbol, { country: trimmed });
+        label = "Country";
+        break;
+      case "type":
+        await setSecurityClassification(apiAuth, portfolioId, symbol, { instrument_type: trimmed });
+        label = "Type";
+        break;
+      default:
+        return { ok: false, message: "Invalid classification field." };
+    }
     revalidatePath(`/portfolios/${portfolioId}`);
-    revalidatePath(`/portfolios/${portfolioId}`);
-    const label = field === "sector" ? "Sector" : field === "country" ? "Country" : "Type";
     return { ok: true, message: `${label} saved.` };
   } catch (e) {
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Couldn’t save — backend reachable?" };
