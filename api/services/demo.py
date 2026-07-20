@@ -17,13 +17,17 @@ Two sleeves live under one portfolio id, seeded idempotently at startup:
 - A LIVE sleeve synced daily from the engine's published artifact
   (``metron/reference_rate.json``) — real, moving, the actual product signal.
 - A permanently-frozen SAMPLE sleeve (two accounts, three NON-EQUITY asset classes,
-  plus dividends), replayed once through the same CSV import bridge a real upload
-  uses, so the showcase also demonstrates account/asset-class breadth (tax-status
-  grouping #46, security-type grouping #47) that the live sleeve alone (equity/ETF
-  only, single account) can't exercise. Deliberately carries NO individual-stock
-  equity positions of its own (AAPL/MSFT retired) — the Showcase Portfolio's equity
-  count must equal Crucible's live holdings exactly; the sample sleeve may only add
-  non-equity instruments (ETF/bond/cash), never additional equities.
+  plus dividends), replayed on every startup through the same CSV import bridge a
+  real upload uses (``_reconcile_sample_sleeve``), so the showcase also demonstrates
+  account/asset-class breadth (tax-status grouping #46, security-type grouping #47)
+  that the live sleeve alone (equity/ETF only, single account) can't exercise.
+  Deliberately carries NO individual-stock equity positions of its own (AAPL/MSFT
+  retired 2026-07-13, metron-ops-I201) — the Showcase Portfolio's equity count must
+  equal Crucible's live holdings exactly; the sample sleeve may only add non-equity
+  instruments (ETF/bond/cash), never additional equities. The reconcile is
+  bidirectional (add rows newly in the fixture, prune rows no longer in it), not
+  just seed-once, so an already-deployed instance catches up on a future fixture
+  edit automatically instead of drifting from the code forever.
 
 The daily live sync only ever touches accounts present in ITS OWN artifact snapshot
 (persistence._upsert_accounts matches by (tenant_id, broker, external_id)), so it can
@@ -141,21 +145,32 @@ def assert_writable(tenant_id: uuid.UUID) -> None:
         raise HTTPException(status_code=403, detail="The demo portfolio is read-only.")
 
 
-def _ensure_sample_sleeve_seeded(session: Session) -> None:
-    """Fold the frozen breadth fixture into the Showcase Portfolio, once. Idempotent on
-    the sleeve's own source label — independent of the portfolio-exists check in
-    ``ensure_reference_seeded`` — so an already-deployed instance (seeded before this
-    sleeve existed) self-heals with it on next startup."""
-    already = session.scalars(
-        select(models.Account.id).where(
-            models.Account.portfolio_id == REFERENCE_PORTFOLIO_ID,
-            models.Account.broker == _SAMPLE_SLEEVE_SOURCE,
-        )
-    ).first()
-    if already is not None:
-        return
+def _reconcile_sample_sleeve(session: Session) -> None:
+    """Reconcile the persisted sample sleeve against the current fixture
+    (``_SAMPLE_SLEEVE_CSV`` / ``_SAMPLE_SLEEVE_SECURITY_META`` / ``_SAMPLE_SLEEVE_PRICES``),
+    unconditionally on every call.
 
-    # Replay the frozen CSV through the real import bridge (securities + accounts + ledger).
+    Replaces a prior version of this function that only checked "has the sleeve ever
+    been seeded" and returned immediately once true — so once seeded, an
+    already-deployed instance never picked up a later fixture edit at all. That let
+    metron-PR230 (2026-07-13, retiring AAPL/MSFT from the fixture) ship as a no-op
+    against any instance seeded before it (metron-ops-I201): the code changed, the
+    already-persisted rows never did.
+
+    Two halves:
+      * ADD — replay the current CSV through the same import bridge a real upload
+        uses. Free idempotency: transactions union by ``source_key``
+        (``persistence._insert_activities``), accounts/securities upsert by identity
+        (``_upsert_accounts``/``_upsert_securities``) — so a fixture row present on a
+        prior run is never duplicated, and a newly added fixture row lands with no
+        special-casing here.
+      * REMOVE — a symbol dropped from the fixture doesn't get pruned by a
+        union-only replay, so ``_prune_retired_sample_sleeve_holdings`` explicitly
+        deletes this sleeve's transactions (and this module's own frozen price bar)
+        for any symbol no longer in the fixture — scoped strictly to the sample
+        sleeve's own accounts and this module's fixed price-as-of date, so it can
+        never touch a real live-sleeve/user position or a genuine yfinance-sourced
+        price bar for the same globally-shared ``Security`` row."""
     result = parse_transactions_csv(_SAMPLE_SLEEVE_CSV, source=_SAMPLE_SLEEVE_SOURCE)
     persistence.persist_snapshot(
         session, tenant_id=DEMO_TENANT_ID, portfolio_id=REFERENCE_PORTFOLIO_ID, snapshot=result.snapshot
@@ -163,7 +178,54 @@ def _ensure_sample_sleeve_seeded(session: Session) -> None:
     _apply_sample_sleeve_security_meta(session)
     _apply_sample_sleeve_account_tax(session)
     _seed_sample_sleeve_prices(session)
+    _prune_retired_sample_sleeve_holdings(session)
     session.commit()
+
+
+def _prune_retired_sample_sleeve_holdings(session: Session) -> None:
+    """Delete sample-sleeve transactions (and this module's own frozen price bar) for
+    any symbol no longer present in ``_SAMPLE_SLEEVE_SECURITY_META`` — e.g. AAPL/MSFT,
+    retired 2026-07-13, metron-ops-I201. Scoped to the sample sleeve's own accounts
+    (never the live sleeve or a real user's data) and, for the price bar, to this
+    module's fixed ``_SAMPLE_SLEEVE_PRICE_AS_OF`` marker date (the only date this
+    module ever writes to a security's globally-shared price history), so a genuine
+    yfinance-sourced bar for the same ticker on a different date is never touched."""
+    account_ids = list(
+        session.scalars(
+            select(models.Account.id).where(
+                models.Account.portfolio_id == REFERENCE_PORTFOLIO_ID,
+                models.Account.broker == _SAMPLE_SLEEVE_SOURCE,
+            )
+        ).all()
+    )
+    if not account_ids:
+        return
+    current_symbols = list(_SAMPLE_SLEEVE_SECURITY_META)
+    retired_security_ids = list(
+        session.scalars(
+            select(models.Transaction.security_id)
+            .join(models.Security, models.Transaction.security_id == models.Security.id)
+            .where(
+                models.Transaction.account_id.in_(account_ids),
+                models.Security.symbol.not_in(current_symbols),
+            )
+            .distinct()
+        ).all()
+    )
+    if not retired_security_ids:
+        return
+    session.execute(
+        delete(models.Transaction).where(
+            models.Transaction.account_id.in_(account_ids),
+            models.Transaction.security_id.in_(retired_security_ids),
+        )
+    )
+    session.execute(
+        delete(models.PriceBar).where(
+            models.PriceBar.security_id.in_(retired_security_ids),
+            models.PriceBar.bar_date == _SAMPLE_SLEEVE_PRICE_AS_OF,
+        )
+    )
 
 
 def _apply_sample_sleeve_security_meta(session: Session) -> None:
@@ -192,11 +254,24 @@ def _apply_sample_sleeve_account_tax(session: Session) -> None:
 
 
 def _seed_sample_sleeve_prices(session: Session) -> None:
-    """Frozen EOD close per held symbol so holdings show a market value (no live fetch)."""
+    """Frozen EOD close per held symbol so holdings show a market value (no live
+    fetch). Idempotent per (security, ``_SAMPLE_SLEEVE_PRICE_AS_OF``) — skips a bar
+    that's already there, since this now runs on every startup (not just first-seed)
+    and ``price_bars`` has a unique constraint on (security_id, bar_date)."""
     secs = session.scalars(
         select(models.Security).where(models.Security.symbol.in_(list(_SAMPLE_SLEEVE_PRICES)))
     ).all()
+    existing_security_ids = set(
+        session.scalars(
+            select(models.PriceBar.security_id).where(
+                models.PriceBar.security_id.in_([sec.id for sec in secs]),
+                models.PriceBar.bar_date == _SAMPLE_SLEEVE_PRICE_AS_OF,
+            )
+        ).all()
+    )
     for sec in secs:
+        if sec.id in existing_security_ids:
+            continue
         close = _SAMPLE_SLEEVE_PRICES.get(sec.symbol)
         if close is None:
             continue
@@ -317,7 +392,7 @@ def ensure_reference_seeded(session: Session) -> bool:
         created = True
     _ensure_reference_intraday_default_on(session)
     _ensure_reference_display_name_current(session)
-    _ensure_sample_sleeve_seeded(session)
+    _reconcile_sample_sleeve(session)
     _retire_legacy_demo_portfolio(session)
     return created
 
