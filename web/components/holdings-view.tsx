@@ -41,9 +41,11 @@ import type { Account, Holding, ValuationMedians } from "@/lib/api";
 // fix on AccountScopeChip's panel). Reuses AccountPanel's grouping/subtotal logic
 // (same component the Overview's Accounts panel uses) so the numbers can never drift
 // between the two surfaces; selectable=false because account SCOPING already lives in
-// the toolbar's AccountScopeChip — this panel is read-only, for reconciliation, not
-// filtering. Defaults open (the point is to have it visible without an extra click);
-// collapsible so it can be tucked away once tied out.
+// the toolbar's AccountScopeChip — this panel is for reconciliation, not filtering.
+// editableClassification=true (Brian 2026-07-20): a per-row pencil lets you fix a
+// mis-tagged taxable/tax-deferred/tax-exempt account right where the mismatch is spotted,
+// without a trip to Settings. Defaults open (the point is to have it visible without an
+// extra click); collapsible so it can be tucked away once tied out.
 function BalanceByAccountPanel({
   accounts,
   baseCurrency,
@@ -78,6 +80,7 @@ function BalanceByAccountPanel({
             selectable={false}
             deletable={false}
             showDay={showDay}
+            editableClassification
           />
         </div>
       ) : null}

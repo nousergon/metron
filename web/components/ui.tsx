@@ -58,7 +58,11 @@ export function Table({ head, children }: { head: string[]; children: ReactNode 
   return (
     <div className="overflow-x-auto rounded-lg border border-line">
       <table className="w-full text-sm">
-        <thead>
+        {/* Frozen header row (metron-ops, Brian 2026-07-20) — mirrors HoldingsTable's
+            `sticky top-0` thead so a long table never scrolls its column labels out of
+            view. `bg-surface` already lives on the <tr> below, so it stays opaque as rows
+            scroll beneath it. */}
+        <thead className="sticky top-0 z-20">
           <tr className="border-b border-line bg-surface text-left text-xs uppercase tracking-wide text-muted">
             {head.map((h, i) => (
               <th key={h} className={`px-4 py-2 font-medium ${i === 0 ? "" : "text-right"}`}>
