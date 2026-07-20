@@ -103,6 +103,20 @@ class Account(Base):
     tax_treatment: Mapped[str | None] = mapped_column(String(20), nullable=True)  # taxable | tax_deferred | tax_exempt
     # Manual taxable override (Settings). NULL = auto-derive from tax_treatment/account_type.
     taxable_override: Mapped[bool | None] = mapped_column(nullable=True)
+    # Connector-reported cash/sweep balance (base currency), from the snapshot-sourced
+    # connectors' ``CanonicalAccount.cash_usd`` (Flex/SnapTrade/reference — the
+    # ``nav_usd − Σ positions_value`` reconciling plug each of those computes). Was
+    # computed by every snapshot connector but discarded before reaching persistence —
+    # the Accounts panel / Holdings "Balance by account" reconciliation undercounted
+    # every such account's total by its cash balance (metron-ops, live case: $20.3k
+    # missing from the Crucible reference-rate sleeve). Overwritten on every re-sync
+    # (a live balance, not a sticky tag like institution/account_type above — never
+    # "fill blank only"). NULL for CSV/OFX/manual accounts (no connector-reported
+    # balance for those — ``analytics._cash_by_account`` derives their cash from the
+    # transaction ledger instead) and for a snapshot-sourced account that hasn't synced
+    # since this column shipped. Nullable so it auto-ALTERs onto an existing SQLite DB
+    # (api/db/session._sync_additive_columns).
+    cash_balance_usd: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     portfolio: Mapped[Portfolio] = relationship(back_populates="accounts")

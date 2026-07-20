@@ -366,3 +366,57 @@ def test_persists_foreign_symbology_and_account_metadata(db_session):
     pos = db_session.scalars(select(models.Position)).one()
     assert float(pos.market_value_local) == 7000.0
     assert float(pos.market_price) == 70.0  # 7000 / 100
+
+
+def test_persists_connector_cash_balance(db_session):
+    """A snapshot-sourced connector's ``cash_usd`` (the NAV-minus-positions reconciling
+    plug every one of Flex/SnapTrade/reference computes — see reference_connector.py,
+    ibkr_flex_connector.py, snaptrade.py) was computed and then silently discarded
+    before reaching the DB (no column existed to hold it). This undercounted every such
+    account's displayed total by its cash balance (live case: $20.3k missing from the
+    Crucible reference-rate sleeve). ``_upsert_accounts`` now persists it onto
+    ``Account.cash_balance_usd`` at creation."""
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+    from portfolio_analytics.ingestion.schema import CanonicalAccount
+
+    tenant_id, portfolio_id = _make_portfolio(db_session)
+    snapshot = ConnectorSnapshot(
+        source="ibkr_flex",
+        accounts=[CanonicalAccount(number="U1", institution="Interactive Brokers", nav_usd=50_000.0, cash_usd=20_300.0)],
+    )
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_id, snapshot=snapshot)
+
+    acct = db_session.scalars(select(models.Account).where(models.Account.external_id == "U1")).one()
+    assert float(acct.cash_balance_usd) == 20_300.0
+
+
+def test_resync_overwrites_cash_balance_unlike_institution(db_session):
+    """Cash is a LIVE balance (unlike institution/account_type/tax_treatment, which are
+    sticky tags a Settings edit must survive) — a re-sync must always take the
+    connector's latest figure, even when the stored value is already non-null/non-zero,
+    the opposite of the fill-blank-only convention used for the tagging fields."""
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+    from portfolio_analytics.ingestion.schema import CanonicalAccount
+
+    tenant_id, portfolio_id = _make_portfolio(db_session)
+    first = ConnectorSnapshot(source="snaptrade", accounts=[CanonicalAccount(number="U2", cash_usd=1_000.0)])
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_id, snapshot=first)
+    acct = db_session.scalars(select(models.Account).where(models.Account.external_id == "U2")).one()
+    assert float(acct.cash_balance_usd) == 1_000.0
+
+    second = ConnectorSnapshot(source="snaptrade", accounts=[CanonicalAccount(number="U2", cash_usd=250.0)])
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_id, snapshot=second)
+    db_session.refresh(acct)
+    assert float(acct.cash_balance_usd) == 250.0  # overwritten, not left at the higher stale value
+
+
+def test_csv_account_cash_balance_stays_zero(db_session):
+    """CSV/manual accounts never report a connector cash balance (``CanonicalAccount``
+    defaults ``cash_usd`` to 0.0 for those sources) — persistence still writes that
+    default, but the analytics layer must derive their actual cash from the ledger
+    instead (see test_analytics_ledger.py), never trust this column for them."""
+    tenant_id, portfolio_id = _make_portfolio(db_session)
+    snapshot = parse_transactions_csv(CSV).snapshot
+    persist_snapshot(db_session, tenant_id=tenant_id, portfolio_id=portfolio_id, snapshot=snapshot)
+    acct = db_session.scalars(select(models.Account).where(models.Account.broker == "csv")).one()
+    assert float(acct.cash_balance_usd) == 0.0

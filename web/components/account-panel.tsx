@@ -49,6 +49,21 @@ const TAX_GROUP_ORDER = ["Taxable", "Tax-deferred", "Tax-exempt", "Tax-advantage
 
 type Subtotal = { cost: number | null; mv: number | null; unreal: number | null };
 
+/** An account's total balance = holdings market value + cash — the brokerage-statement
+ *  figure this panel exists to reconcile against (see the "Balance by account" wrapper
+ *  in holdings-view.tsx). The two are separate API fields (analytics.AccountInfo keeps
+ *  `market_value` as pure holdings valuation so `unrealized_gain` math elsewhere isn't
+ *  affected) — this is where they're recombined for display. Null only when BOTH sides
+ *  are unknown (no priced holdings AND no cash figure yet); a known side is never hidden
+ *  just because the other is still unknown (a cash-only or holdings-only account still
+ *  shows its known total, treating the missing side as 0). Cash was previously dropped
+ *  entirely before reaching the API (metron-ops) — live case: $20.3k missing from the
+ *  Crucible reference-rate sleeve. */
+function accountBalance(a: Pick<Account, "market_value" | "cash">): number | null {
+  if (a.market_value == null && a.cash == null) return null;
+  return (a.market_value ?? 0) + (a.cash ?? 0);
+}
+
 function subtotal(accts: Account[]): Subtotal {
   let cost = 0;
   let mv = 0;
@@ -61,8 +76,9 @@ function subtotal(accts: Account[]): Subtotal {
       cost += a.cost_basis_base;
       haveCost = true;
     }
-    if (a.market_value != null) {
-      mv += a.market_value;
+    const bal = accountBalance(a);
+    if (bal != null) {
+      mv += bal;
       haveMv = true;
     }
     if (a.unrealized_gain != null) {
@@ -91,7 +107,9 @@ function MetricHeader({ showDay = true }: { showDay?: boolean }) {
       <div className={COL_COST}>Cost</div>
       <div className={COL_UNREAL}>Unrealized $</div>
       <div className={COL_UNREAL_PCT}>Unrealized %</div>
-      <div className={COL_MARKET}>Market</div>
+      {/* Holdings market value + cash (metron-ops) — was "Market" (holdings only,
+          silently dropping the account's cash balance from this reconciliation panel). */}
+      <div className={COL_MARKET}>Balance</div>
       {showDay ? <div className={COL_PERIOD}>Day</div> : null}
       <div className={COL_PERIOD}>YTD</div>
       <div className={COL_PERIOD}>LTM</div>
@@ -267,7 +285,7 @@ export function AccountPanel({
 
   function row(a: Account) {
     const cost = a.cost_basis_base;
-    const mv = a.market_value;
+    const mv = accountBalance(a);
     const unreal = a.unrealized_gain;
     // Unselected rows dim — the figures that feed the (selection-scoped) totals read bold.
     const included = selected.has(a.account_id);

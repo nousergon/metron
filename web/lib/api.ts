@@ -257,6 +257,9 @@ export type Account = {
   market_value: number | null;
   unrealized_gain: number | null;
   n_unconverted: number;
+  // Cash/sweep balance (base currency), separate from market_value (holdings only).
+  // null = unknown, never fabricated.
+  cash: number | null;
   // Per-account period returns (metron-ops#87). Day legs need the intraday feed; YTD/LTM
   // from the per-account reconstructed NAV series. null when unavailable.
   overnight_pct: number | null;
@@ -337,6 +340,8 @@ export type Summary = {
   market_value: number | null;
   unrealized_gain: number | null;
   n_unconverted: number;
+  // Portfolio-level cash total (base currency), separate from market_value.
+  cash: number | null;
 };
 
 export type PriceRefreshResult = {

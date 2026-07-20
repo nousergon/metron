@@ -147,6 +147,55 @@ describe("totals track the selection (match the headline Total value)", () => {
   });
 });
 
+describe("cash balance is folded into the displayed total (metron-ops)", () => {
+  // Root-cause regression: a connector-computed cash balance was silently dropped
+  // before persistence, undercounting every such account's displayed total (live
+  // case: $20.3k missing from the Crucible reference-rate sleeve). market_value and
+  // cash are separate API fields; this panel recombines them for display.
+  const withCash = (id: string, name: string, cash: number | null): Account =>
+    ({ ...acct(id, name), cash }) as Account;
+
+  it("a row's Balance column includes both market value and cash", () => {
+    render(
+      <AccountPanel
+        accounts={[withCash("a1", "Brokerage", 20_300)]}
+        baseCurrency="USD"
+        portfolioId="p"
+      />,
+    );
+    // market_value 1200 (from the acct() fixture) + cash 20,300 = 21,500. Appears
+    // twice — once on the row, once on the (single-account) grand total.
+    expect(screen.getAllByText("$21,500").length).toBe(2);
+  });
+
+  it("the grand total sums cash across every account", () => {
+    render(
+      <AccountPanel
+        accounts={[withCash("a1", "Brokerage", 1_000), withCash("a2", "IRA", 500)]}
+        baseCurrency="USD"
+        portfolioId="p"
+      />,
+    );
+    const totalRow = screen.getByText("All accounts total").parentElement!;
+    // (1200 + 1000) + (1200 + 500) = 3,900.
+    expect(totalRow).toHaveTextContent("$3,900");
+  });
+
+  it("a known cash-only account isn't hidden by a null market_value", () => {
+    const cashOnly = { ...withCash("a1", "Sweep", 5_000), market_value: null } as Account;
+    render(<AccountPanel accounts={[cashOnly]} baseCurrency="USD" portfolioId="p" />);
+    const totalRow = screen.getByText("All accounts total").parentElement!;
+    expect(totalRow).toHaveTextContent("$5,000");
+  });
+
+  it("an account with neither market_value nor cash shows '—', not $0", () => {
+    const unknown = { ...withCash("a1", "Unsynced", null), market_value: null } as Account;
+    render(<AccountPanel accounts={[unknown]} baseCurrency="USD" portfolioId="p" />);
+    const totalRow = screen.getByText("All accounts total").parentElement!;
+    expect(totalRow).toHaveTextContent("—");
+  });
+});
+
 describe("delete (deletable mode — the Overview, metron-ops#77)", () => {
   it("deletes after confirm, prunes the id from the URL selection, refreshes", async () => {
     mocks.urlAccountIds = ["a1", "a2"];

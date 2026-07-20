@@ -39,6 +39,17 @@ function accountLabel(a: Account): string {
   return a.nickname || a.name || a.external_id || a.account_id;
 }
 
+// Mirrors AccountPanel's accountBalance() (metron-ops) — holdings market value + cash,
+// the brokerage-statement figure. Kept as a local copy rather than a cross-component
+// import, same convention as typeLabel()/TAX_GROUP_ORDER above; null only when BOTH
+// sides are unknown. Cash was previously dropped entirely before reaching the API, so
+// this popover (like AccountPanel) silently undercounted every connector account by
+// its cash balance.
+function accountBalance(a: Pick<Account, "market_value" | "cash">): number | null {
+  if (a.market_value == null && a.cash == null) return null;
+  return (a.market_value ?? 0) + (a.cash ?? 0);
+}
+
 export function AccountScopeChip({
   accounts,
   baseCurrency,
@@ -199,7 +210,7 @@ export function AccountScopeChip({
                     />
                     <span className="min-w-0 flex-1 truncate text-ink/90">{accountLabel(a)}</span>
                     <span className="shrink-0 text-xs tabular-nums text-muted">
-                      {a.market_value != null ? moneyWhole(a.market_value, baseCurrency) : "—"}
+                      {accountBalance(a) != null ? moneyWhole(accountBalance(a) as number, baseCurrency) : "—"}
                     </span>
                   </label>
                 ))}

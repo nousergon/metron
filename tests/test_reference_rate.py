@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from api.db import models
 from api.maintenance import daily_refresh
-from api.services import demo
+from api.services import analytics, demo
 from portfolio_analytics.ingestion import reference_connector
 from portfolio_analytics.ingestion.base import SNAPSHOT_SOURCES
 from portfolio_analytics.ingestion.schema import ASSET_EQUITY, ASSET_ETF
@@ -205,6 +205,27 @@ def test_sync_persists_holdings_sectors_and_nav(db_session):
     assert len(navs) == 3
     assert all(n.external_flow == 0.0 for n in navs)
     assert {str(n.snap_date) for n in navs} == {"2026-06-16", "2026-06-17", "2026-06-18"}
+
+
+def test_sync_persists_and_surfaces_live_sleeve_cash(db_session):
+    """Root-cause regression for the live bug: the Crucible reference-rate sleeve's
+    connector-computed cash (``nav_usd − Σ positions_value`` — see
+    reference_connector.py) was silently discarded before persistence, undercounting
+    the sleeve's displayed total by its cash balance (live case: $20.3k). After the
+    fix, ``persist_snapshot`` retains it on ``Account.cash_balance_usd`` and
+    ``analytics.accounts()``/``summary()`` surface it (separately from market_value,
+    which stays holdings-only)."""
+    assert demo.sync_reference_holdings(db_session, reader=_reader) is True
+
+    expected_cash = 1_001_593.11 - (103175.04 + 491354.92)
+    acct_ids = _live_sleeve_account_ids(db_session)
+    assert len(acct_ids) == 1
+    acct = db_session.get(models.Account, acct_ids[0])
+    assert round(float(acct.cash_balance_usd), 2) == round(expected_cash, 2)
+
+    infos = analytics.accounts(db_session, demo.DEMO_TENANT_ID, demo.REFERENCE_PORTFOLIO_ID)
+    live_info = next(a for a in infos if a.account_id == acct_ids[0])
+    assert round(live_info.cash, 2) == round(expected_cash, 2)
 
 
 def test_sync_is_idempotent(db_session):
