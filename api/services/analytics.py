@@ -614,7 +614,7 @@ def _ledger_cash_by_account(
     ``_replay_ledger`` — a SELL exceeding reconstructable BUYs for one ticker (an
     incomplete broker activity feed) is skipped (WARN-logged) rather than losing that
     account's ENTIRE cash figure. One query for every account in ``account_ids``."""
-    out: dict[uuid.UUID, float] = {aid: 0.0 for aid in account_ids}
+    out: dict[uuid.UUID, float] = dict.fromkeys(account_ids, 0.0)
     if not account_ids:
         return out
     groups: dict[tuple[uuid.UUID, str], list[Transaction]] = {}
