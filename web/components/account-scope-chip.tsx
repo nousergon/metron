@@ -158,8 +158,11 @@ export function AccountScopeChip({
           // Anchors below the trigger by default; flips to open upward (bottom-anchored)
           // when there isn't room below (see useLayoutEffect above). Internal content
           // order ("All accounts" then groups) stays the same either way — only the
-          // anchor point moves.
-          className={`absolute left-0 z-20 flex w-72 flex-col overflow-hidden rounded-md border border-line bg-surface shadow-xl shadow-black/40 ${
+          // anchor point moves. z-30 (not z-20): the holdings table's sticky <thead> is
+          // also z-20 and renders later in the DOM, so at a tied z-index it painted on
+          // top and visually clipped the bottom of this panel (metron-ops, Brian
+          // 2026-07-20 report) — the panel must outrank the sticky header, not tie it.
+          className={`absolute left-0 z-30 flex w-72 flex-col overflow-hidden rounded-md border border-line bg-surface shadow-xl shadow-black/40 ${
             placement === "up" ? "bottom-full mb-2" : "top-full mt-2"
           }`}
         >
