@@ -337,6 +337,9 @@ class AccountOut(BaseModel):
     market_value: float | None = None
     unrealized_gain: float | None = None
     n_unconverted: int = 0
+    # Cash/sweep balance (base currency), kept separate from ``market_value`` (holdings
+    # only) — see analytics.AccountInfo.cash. None = unknown, never fabricated.
+    cash: float | None = None
     # Per-account period returns (metron-ops#87). Day legs need the intraday feed; YTD/LTM
     # from the per-account reconstructed NAV series. Null when unavailable.
     overnight_pct: float | None = None
@@ -384,6 +387,8 @@ class SummaryOut(BaseModel):
     market_value: float | None = None
     unrealized_gain: float | None = None
     n_unconverted: int = 0
+    # Portfolio-level cash total (base currency) — see analytics.PortfolioSummary.cash.
+    cash: float | None = None
 
 
 class IntradayStatusOut(BaseModel):

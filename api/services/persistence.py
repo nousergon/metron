@@ -189,6 +189,7 @@ def _upsert_accounts(
                 institution=institution,
                 account_type=account_type,
                 tax_treatment=tax_treatment,
+                cash_balance_usd=acct.cash_usd,
             )
             session.add(row)
             session.flush()
@@ -202,6 +203,13 @@ def _upsert_accounts(
                 row.account_type = account_type
             if row.tax_treatment is None and tax_treatment:
                 row.tax_treatment = tax_treatment
+            # Cash is a LIVE balance, not a sticky tag — unlike institution/type/tax
+            # above, always overwrite from the connector's latest snapshot (same
+            # last-write-wins convention as ``_replace_positions``). CSV/OFX/manual
+            # accounts never set ``cash_usd`` (it defaults to 0.0 — see
+            # ``CanonicalAccount``), so this is a no-op for those; their cash is
+            # derived from the ledger instead at the analytics layer.
+            row.cash_balance_usd = acct.cash_usd
             # Reparent: a given broker account can only meaningfully live in one
             # portfolio's connector snapshot at a time under the app's per-portfolio
             # connector model, so a re-sync under a different portfolio must move the

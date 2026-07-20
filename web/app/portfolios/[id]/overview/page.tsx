@@ -76,7 +76,17 @@ export default async function PortfolioPage(
   }
 
   const ccy = summary.base_currency;
+  // `priced` gates the holdings-derived Allocation/Performers sections below (unchanged
+  // semantics — those need actually-priced holdings, not cash) — keep it scoped to
+  // market_value only.
   const priced = summary.market_value != null;
+  // Total value = holdings market value + cash, kept as separate API fields (see
+  // analytics.PortfolioSummary — market_value stays "sum of priced holdings" so
+  // unrealized-gain math elsewhere isn't affected). `hasTotalValue` additionally gates
+  // on cash being known, so a known-cash-only account (no priced holdings, e.g. a pure
+  // money-market sweep) still gets a headline instead of the fallback cost-basis card.
+  const hasTotalValue = priced || summary.cash != null;
+  const totalValue = (summary.market_value ?? 0) + (summary.cash ?? 0);
 
   const realizedYtdTaxable = summary.realized_st_ytd + summary.realized_lt_ytd;
 
@@ -131,7 +141,7 @@ export default async function PortfolioPage(
       ) : null}
 
       {/* Headline: total value, with unrealized broken out by tax treatment. */}
-      {priced ? (
+      {hasTotalValue ? (
         <div className="mt-6 rounded-lg border border-line p-5">
           <div className="flex items-baseline justify-between gap-2">
             {/* This page always shows the whole portfolio (scoped === false), so no
@@ -145,7 +155,7 @@ export default async function PortfolioPage(
             </span>
             <SettledRefresher />
           </div>
-          <div className="mt-1 text-3xl font-semibold tabular-nums">{moneyWhole(summary.market_value as number, ccy)}</div>
+          <div className="mt-1 text-3xl font-semibold tabular-nums">{moneyWhole(totalValue, ccy)}</div>
           <div className="mt-1 text-xs text-muted">cost basis {moneyWhole(summary.total_cost_basis, ccy)}</div>
           {/* Unrealized split by tax treatment — needs per-account data, so it streams. */}
           <Suspense fallback={<SplitCardsSkeleton />}>

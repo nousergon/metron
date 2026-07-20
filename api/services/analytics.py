@@ -598,6 +598,82 @@ def _snapshot_sourced_account_ids(
     }
 
 
+def _ledger_cash_by_account(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    account_ids: Collection[uuid.UUID],
+) -> dict[uuid.UUID, float]:
+    """Per-account net cash accrual from the transaction ledger — CSV/OFX/manual
+    accounts, which report no connector cash balance (``CanonicalAccount.cash_usd``
+    stays its 0.0 default for those sources). Deposits/dividends/interest less
+    withdrawals/fees/net-buys, exactly the same ``ledger.cash`` arithmetic
+    ``build_ledger`` already applies (see ``portfolio_analytics.domain.ledger._apply``).
+
+    Grouped by ``(account_id, ticker)`` and replayed independently per group, same as
+    ``_replay_ledger`` — a SELL exceeding reconstructable BUYs for one ticker (an
+    incomplete broker activity feed) is skipped (WARN-logged) rather than losing that
+    account's ENTIRE cash figure. One query for every account in ``account_ids``."""
+    out: dict[uuid.UUID, float] = {aid: 0.0 for aid in account_ids}
+    if not account_ids:
+        return out
+    groups: dict[tuple[uuid.UUID, str], list[Transaction]] = {}
+    for account_id, txn in engine_transactions_by_account(
+        session, tenant_id, portfolio_id, account_ids=account_ids
+    ):
+        groups.setdefault((account_id, txn.ticker), []).append(txn)
+    for (account_id, ticker), group in groups.items():
+        try:
+            ledger = build_ledger(group)
+        except ValueError as e:
+            logger.warning(
+                "Incomplete history for %s (account %s) — excluded from that account's "
+                "cash total: %s",
+                ticker, account_id, e,
+            )
+            continue
+        out[account_id] = out.get(account_id, 0.0) + ledger.cash
+    return out
+
+
+def _cash_by_account(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    account_ids: Collection[uuid.UUID] | None = None,
+) -> dict[uuid.UUID, float | None]:
+    """Per-account cash/sweep balance (base currency), from whichever source has it —
+    never both, mirroring the ledger-XOR-broker-snapshot split ``_holdings`` already
+    enforces (so an account's cash can't double-count any more than its shares can):
+
+      * snapshot-sourced (Flex/SnapTrade/reference) — the persisted, connector-reported
+        ``Account.cash_balance_usd`` (metron-ops: this was computed by every connector
+        and silently discarded before persistence — see ``models.Account.cash_balance_usd``
+        docstring). None when the account hasn't synced since that column shipped.
+      * ledger-sourced (CSV/OFX/manual) — accrued from the transaction ledger via
+        ``_ledger_cash_by_account`` (always a known number; these sources have no
+        connector balance to be missing).
+    """
+    scope_ids = _scoped_account_ids(session, portfolio_id, None, account_ids)
+    if not scope_ids:
+        return {}
+    snapshot_ids = _snapshot_sourced_account_ids(session, tenant_id, portfolio_id) & scope_ids
+    ledger_ids = scope_ids - snapshot_ids
+
+    out: dict[uuid.UUID, float | None] = {}
+    if snapshot_ids:
+        rows = session.execute(
+            select(models.Account.id, models.Account.cash_balance_usd).where(
+                models.Account.id.in_(snapshot_ids)
+            )
+        ).all()
+        for aid, cash in rows:
+            out[aid] = float(cash) if cash is not None else None
+    if ledger_ids:
+        out.update(_ledger_cash_by_account(session, tenant_id, portfolio_id, ledger_ids))
+    return out
+
+
 def holdings(
     session: Session,
     tenant_id: uuid.UUID,
@@ -1171,6 +1247,13 @@ class AccountInfo:
     market_value: float | None = None
     unrealized_gain: float | None = None
     n_unconverted: int = 0
+    # Cash/sweep balance (base currency) — deliberately SEPARATE from ``market_value``
+    # (which stays "sum of priced holdings" so ``unrealized_gain = market_value −
+    # cost_basis_base`` keeps holding). None = unknown (a snapshot-sourced account that
+    # hasn't synced since ``cash_balance_usd`` shipped); 0.0 = known zero. Callers that
+    # want the brokerage-statement total add ``market_value + cash`` themselves (treating
+    # a None side as 0) — see ``_cash_by_account``.
+    cash: float | None = None
     # Per-account period returns (metron-ops#87) — enriched by the accounts endpoint via
     # performance.account_period_returns. Day legs need the intraday feed; YTD/LTM derive
     # from the per-account reconstructed NAV series. None until enriched / when unavailable.
@@ -1254,6 +1337,11 @@ class PortfolioSummary:
     # yet (foreign listing, no ``{CCY}USD=X`` bar) — surfaced so the UI can flag a
     # partial total rather than silently undercount.
     n_unconverted: int = 0
+    # Portfolio-level cash total (base currency) — see ``AccountInfo.cash`` for why this
+    # is kept separate from ``market_value`` rather than folded in. Sum of only the
+    # accounts with a KNOWN cash figure (never fabricates an unknown account's cash as
+    # 0); None when no account in scope has one yet.
+    cash: float | None = None
 
     @property
     def realized_total(self) -> float:
@@ -1395,6 +1483,7 @@ def accounts(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) ->
         .order_by(models.Account.broker, models.Account.external_id)
     ).all()
     by_account = valued_holdings_by_account(session, tenant_id, portfolio_id)
+    cash_by_account = _cash_by_account(session, tenant_id, portfolio_id)
     out: list[AccountInfo] = []
     for a in rows:
         held = by_account.get(a.id, [])
@@ -1422,6 +1511,7 @@ def accounts(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) ->
                     else None
                 ),
                 n_unconverted=len(held) - len(convertible),
+                cash=cash_by_account.get(a.id),
             )
         )
     return out
@@ -1503,6 +1593,9 @@ def summary(
     # summed at face value into a USD total.
     convertible = [h for h in held if h.cost_basis_base is not None]
     n_unconverted = len(held) - len(convertible)
+    cash_by_account = _cash_by_account(session, tenant_id, portfolio_id, account_ids=account_ids)
+    known_cash = [c for c in cash_by_account.values() if c is not None]
+    total_cash = sum(known_cash) if known_cash else None
     return PortfolioSummary(
         base_currency=portfolio.base_currency if portfolio else "USD",
         n_accounts=int(n_accounts or 0),
@@ -1532,4 +1625,5 @@ def summary(
         market_value=market_value,
         unrealized_gain=unrealized_gain,
         n_unconverted=n_unconverted,
+        cash=total_cash,
     )

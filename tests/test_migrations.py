@@ -54,6 +54,21 @@ def test_account_nickname_column_is_added(tmp_path):
     engine.dispose()
 
 
+def test_account_cash_balance_column_is_added(tmp_path):
+    """The new nullable ``accounts.cash_balance_usd`` back-fills onto an existing DB
+    (same personal-SQLite-tier path as ``nickname`` — no Alembic needed). This is the
+    column that fixed the connector-cash-dropped-at-persistence bug (metron-ops)."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'old.sqlite'}")
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE accounts DROP COLUMN cash_balance_usd"))  # simulate the pre-fix schema
+    assert "cash_balance_usd" not in _columns(engine, "accounts")
+
+    _sync_additive_columns(engine)
+    assert "cash_balance_usd" in _columns(engine, "accounts")
+    engine.dispose()
+
+
 def test_account_nav_snapshots_table_is_created(tmp_path):
     """The new ``account_nav_snapshots`` table auto-creates via create_all (checkfirst) on
     an older DB that predates it."""
