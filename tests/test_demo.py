@@ -26,6 +26,70 @@ def test_sample_sleeve_seed_is_idempotent(db_session):
     assert len(accounts) == 2  # Sample Brokerage + Sample IRA, exactly once
 
 
+def test_sample_sleeve_reconciles_retired_symbols(db_session):
+    """metron-ops-I201: an already-deployed instance seeded under an older fixture
+    version (that carried AAPL/MSFT, retired by metron-PR230 on 2026-07-13) must
+    self-heal on the next ``ensure_reference_seeded`` call — the prior
+    ``_ensure_sample_sleeve_seeded`` only checked "has the sleeve ever been seeded"
+    and skipped forever once true, so a fixture edit never reached already-persisted
+    data. This reproduces that exact scenario against the real reconcile path."""
+    from api.services import persistence
+    from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
+
+    # Simulate the pre-PR230 seed: the old fixture carried AAPL/MSFT alongside VOO,
+    # under the same account labels the current fixture still uses.
+    old_csv = (
+        "date,type,symbol,quantity,price,amount,account\n"
+        "2024-01-08,BUY,AAPL,40,185,7400,Sample Brokerage\n"
+        "2024-01-08,BUY,VOO,15,440,6600,Sample Brokerage\n"
+        "2024-01-16,BUY,MSFT,20,390,7800,Sample IRA\n"
+    )
+    result = parse_transactions_csv(old_csv, source=demo._SAMPLE_SLEEVE_SOURCE)
+    persistence.persist_snapshot(
+        db_session,
+        tenant_id=demo.DEMO_TENANT_ID,
+        portfolio_id=demo.REFERENCE_PORTFOLIO_ID,
+        snapshot=result.snapshot,
+    )
+    aapl = db_session.scalars(select(models.Security).where(models.Security.symbol == "AAPL")).one()
+    db_session.add(
+        models.PriceBar(
+            security_id=aapl.id, bar_date=demo._SAMPLE_SLEEVE_PRICE_AS_OF, close=210.0, currency="USD"
+        )
+    )
+    db_session.commit()
+
+    # Run the real startup path against the CURRENT (trimmed) fixture.
+    demo.ensure_reference_seeded(db_session)
+
+    tickers = set(
+        db_session.scalars(
+            select(models.Security.symbol)
+            .join(models.Transaction, models.Transaction.security_id == models.Security.id)
+            .join(models.Account, models.Transaction.account_id == models.Account.id)
+            .where(
+                models.Account.portfolio_id == demo.REFERENCE_PORTFOLIO_ID,
+                models.Account.broker == demo._SAMPLE_SLEEVE_SOURCE,
+            )
+        ).all()
+    )
+    assert "AAPL" not in tickers and "MSFT" not in tickers
+    assert {"VOO", "912828YK0", "VMFXX"} <= tickers
+
+    # This module's own frozen price bar for the retired symbol is pruned too.
+    remaining_bar = db_session.scalars(
+        select(models.PriceBar).where(
+            models.PriceBar.security_id == aapl.id,
+            models.PriceBar.bar_date == demo._SAMPLE_SLEEVE_PRICE_AS_OF,
+        )
+    ).first()
+    assert remaining_bar is None
+
+    # NAV/holdings totals recompute off the reconciled sleeve, not the stale one.
+    value, cost_basis = demo._sample_sleeve_totals(db_session)
+    assert (value, cost_basis) == (14300.0, 13500.0)
+
+
 def test_demo_holdings_span_asset_classes(client, db_session):
     demo.ensure_reference_seeded(db_session)
     r = client.get(f"/portfolios/{demo.REFERENCE_PORTFOLIO_ID}/holdings", headers=DEMO_HEADERS)
