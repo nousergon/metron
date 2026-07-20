@@ -64,8 +64,10 @@ export function BaseCurrencyForm({ portfolioId, current }: { portfolioId: string
 }
 
 // Empty string = Auto (derive taxable status from the broker tags / keywords). The three
-// explicit values map straight onto Account.tax_treatment and are authoritative.
-const TAX_TREATMENTS: { value: string; label: string }[] = [
+// explicit values map straight onto Account.tax_treatment and are authoritative. Exported
+// so the Holdings "Balance by account" panel's inline classification editor (account-panel.tsx)
+// uses the exact same option set instead of a drifting duplicate.
+export const TAX_TREATMENTS: { value: string; label: string }[] = [
   { value: "", label: "Auto" },
   { value: "taxable", label: "Taxable" },
   { value: "tax_deferred", label: "Tax-deferred" },

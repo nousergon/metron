@@ -12,19 +12,22 @@
 // on landing — it's reserved for the Phase 2 saved-view work (metron-ops#114).
 //
 // Accounts are grouped by tax status with per-group subtotals + a grand total
-// (metron-ops#46). The tax-status label is read-only here — editing the 3-way treatment
-// lives on the Settings page (the grouping already shows the category, so the inline
-// dropdown was redundant on the Overview).
+// (metron-ops#46). The tax-status label is read-only on the Overview's selector usage —
+// editing the 3-way treatment there still lives on the Settings page (the grouping already
+// shows the category, so an inline dropdown was redundant). The Holdings "Balance by
+// account" usage opts in via `editableClassification` (Brian, 2026-07-20): reclassifying
+// mid-reconciliation without a trip to Settings is worth the small pencil affordance there.
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { deleteAccountAction } from "@/app/portfolios/[id]/actions";
+import { deleteAccountAction, updateAccountTagsAction } from "@/app/portfolios/[id]/actions";
 import { useAccountSelection } from "@/lib/use-account-selection";
 import type { Account } from "@/lib/api";
 import { accountingMoneyWhole, accountingPercent, moneyWhole, signClass } from "@/lib/format";
 import { isReferencePortfolio } from "@/lib/demo";
 import { ReadOnlyNotice } from "@/components/ui";
+import { TAX_TREATMENTS } from "@/components/settings-forms";
 
 /** Human label for the 3-way tax treatment, falling back to the derived taxable flag. */
 function typeLabel(a: Account): string {
@@ -104,12 +107,14 @@ const COL_PERIOD = "w-16"; // Day / YTD / LTM % (metron-ops#87)
 function MetricHeader({ showDay = true }: { showDay?: boolean }) {
   return (
     <div className="flex shrink-0 gap-x-6 text-right text-[10px] uppercase tracking-wide text-muted">
-      <div className={COL_COST}>Cost</div>
+      {/* Holdings market value + cash (metron-ops) — was "Market" (holdings only,
+          silently dropping the account's cash balance from this reconciliation panel).
+          Balance leads the column order (Brian, 2026-07-20) since it's the headline
+          figure this panel exists to reconcile against a brokerage statement. */}
+      <div className={COL_MARKET}>Balance</div>
       <div className={COL_UNREAL}>Unrealized $</div>
       <div className={COL_UNREAL_PCT}>Unrealized %</div>
-      {/* Holdings market value + cash (metron-ops) — was "Market" (holdings only,
-          silently dropping the account's cash balance from this reconciliation panel). */}
-      <div className={COL_MARKET}>Balance</div>
+      <div className={COL_COST}>Cost</div>
       {showDay ? <div className={COL_PERIOD}>Day</div> : null}
       <div className={COL_PERIOD}>YTD</div>
       <div className={COL_PERIOD}>LTM</div>
@@ -155,20 +160,100 @@ function MetricCells({
   const unrealClass = unreal != null ? signClass(unreal) : "text-muted";
   return (
     <div className="flex shrink-0 gap-x-6 text-right text-sm tabular-nums">
-      <div className={`${COL_COST} ${muted ? "text-muted" : ""}`}>
-        {cost != null ? moneyWhole(cost, baseCurrency) : "—"}
+      <div className={`${COL_MARKET} ${muted ? "text-muted" : ""}`}>
+        {mv != null ? moneyWhole(mv, baseCurrency) : "—"}
       </div>
       <div className={`${COL_UNREAL} ${unrealClass}`}>
         {unreal != null ? accountingMoneyWhole(unreal, baseCurrency) : "—"}
       </div>
       <div className={`${COL_UNREAL_PCT} ${unrealClass}`}>{pct != null ? accountingPercent(pct) : "—"}</div>
-      <div className={`${COL_MARKET} ${muted ? "text-muted" : ""}`}>
-        {mv != null ? moneyWhole(mv, baseCurrency) : "—"}
+      <div className={`${COL_COST} ${muted ? "text-muted" : ""}`}>
+        {cost != null ? moneyWhole(cost, baseCurrency) : "—"}
       </div>
       {showDay ? <PeriodCell pct={dayPct} /> : null}
       <PeriodCell pct={ytdPct} />
       <PeriodCell pct={ltmPct} />
     </div>
+  );
+}
+
+/** Pencil-triggered inline editor for an account's 3-way tax classification (Holdings
+ *  "Balance by account" panel only, see `editableClassification` on <AccountPanel>). Saves
+ *  through the same `updateAccountTagsAction` the Settings page uses, so the two surfaces
+ *  can never define "taxable"/"tax_deferred"/"tax_exempt" differently. */
+function ClassificationEditor({ account, portfolioId }: { account: Account; portfolioId: string }) {
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(account.tax_treatment ?? "");
+  const [pending, startSave] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  function save() {
+    setError(null);
+    startSave(async () => {
+      const r = await updateAccountTagsAction(portfolioId, account.account_id, { tax_treatment: value || null });
+      if (!r.ok) {
+        setError(r.message);
+        return;
+      }
+      setEditing(false);
+      // The account's tax-status GROUP may have just changed — refresh so the row
+      // re-sorts into its new group instead of showing a stale label under the old one.
+      router.refresh();
+    });
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        aria-label={`Edit tax classification for ${accountLabel(account)}`}
+        title="Edit tax classification"
+        className="shrink-0 text-[10px] leading-none text-muted/50 transition hover:text-ink"
+      >
+        <span aria-hidden="true">✎</span>
+      </button>
+    );
+  }
+
+  return (
+    <span className="flex shrink-0 items-center gap-1.5">
+      <select
+        className="rounded border border-line bg-transparent px-1 py-0.5 text-[10px] uppercase tracking-wide"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        disabled={pending}
+        autoFocus
+      >
+        {TAX_TREATMENTS.map((t) => (
+          <option key={t.value} value={t.value}>
+            {t.label}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        disabled={pending}
+        onClick={save}
+        className="text-[10px] font-medium text-accent underline disabled:opacity-50"
+      >
+        {pending ? "Saving…" : "Save"}
+      </button>
+      <button
+        type="button"
+        disabled={pending}
+        onClick={() => {
+          setEditing(false);
+          setValue(account.tax_treatment ?? "");
+          setError(null);
+        }}
+        className="text-[10px] text-muted underline disabled:opacity-50"
+      >
+        Cancel
+      </button>
+      {error ? <span className="text-[10px] text-negative">{error}</span> : null}
+    </span>
   );
 }
 
@@ -179,6 +264,7 @@ export function AccountPanel({
   selectable = true,
   deletable = false,
   showDay = true,
+  editableClassification = false,
 }: {
   accounts: Account[];
   baseCurrency: string;
@@ -192,6 +278,11 @@ export function AccountPanel({
   deletable?: boolean;
   /** Render the per-account session Day % (live valuation mode only, metron-ops#153). */
   showDay?: boolean;
+  /** Small pencil affordance per row to reclassify taxable/tax-deferred/tax-exempt inline
+   *  (the Holdings "Balance by account" usage, Brian 2026-07-20) — see <ClassificationEditor>.
+   *  Off by default: the Overview's selector usage keeps tax-status read-only here (Settings
+   *  page owns it there) so the checkbox row doesn't get busier than it needs to be. */
+  editableClassification?: boolean;
 }) {
   // The Showcase Portfolio (metron-ops#120) is a live, real-tenant-visible read-only
   // mirror (metron#162) — the API 403s account delete for it regardless of caller tenant
@@ -319,10 +410,13 @@ export function AccountPanel({
             {a.institution ? <span className="text-xs text-muted">{a.institution}</span> : null}
             <span className="text-xs text-muted">{a.currency}</span>
             {/* The per-row tax-treatment label is redundant once the rows are grouped under
-                a tax-status heading; show it only when there's a single group (no heading). */}
-            {!showGroups ? (
+                a tax-status heading; show it only when there's a single group (no heading) —
+                UNLESS classification is editable here, where the label + pencil need to stay
+                visible on every row (reclassifying moves the row to a different group). */}
+            {!showGroups || editableClassification ? (
               <span className="text-[10px] uppercase tracking-wide text-muted">{typeLabel(a)}</span>
             ) : null}
+            {editableClassification ? <ClassificationEditor account={a} portfolioId={portfolioId} /> : null}
             {a.n_unconverted > 0 ? (
               <span className="text-[10px] text-muted" title="Some holdings excluded — no FX rate cached">
                 {a.n_unconverted} unconverted
