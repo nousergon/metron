@@ -43,10 +43,11 @@ const h = (ticker: string, overrides: Partial<Holding> = {}): Holding =>
 describe("estimated badge", () => {
   it("renders the estimated marker + tooltip when is_estimated is true", () => {
     render(<HoldingsTable baseCurrency="USD" priced holdings={[h("FNILX", { is_estimated: true })]} />);
-    // Price renders twice with every band visible (Value "Last" + the Valuation "Price"
-    // duplicate, metron-ops#178 — same shared cell renderer) — both carry the marker.
+    // Price renders three times with every band visible — Value "Last", the Valuation
+    // "Price" duplicate (metron-ops#178), and the Intraday band's own "Last" duplicate — all
+    // sharing the same renderPriceCell, so all three carry the marker.
     const markers = screen.getAllByLabelText("estimated");
-    expect(markers.length).toBe(2);
+    expect(markers.length).toBe(3);
     for (const marker of markers) {
       expect(marker.getAttribute("title")).toMatch(/tracking-proxy ETF/i);
       expect(marker.getAttribute("title")).toMatch(/reconcile/i);

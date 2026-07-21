@@ -41,18 +41,27 @@ const h = (ticker: string): Holding =>
 describe("column definitions", () => {
   it("shows a click-to-open ⓘ disclosure on a column that carries a definition (Unrealized %)", () => {
     render(<HoldingsTable baseCurrency="USD" priced holdings={[h("AAPL")]} />);
-    // The sort button itself no longer carries the definition — just the sort affordance.
-    const header = screen.getByRole("button", { name: /Unrealized %/ });
-    expect(header).toHaveAttribute("title", "Sort by Unrealized %");
-    expect(header).not.toHaveTextContent("ⓘ");
-    // A separate, independently-clickable ⓘ disclosure sits beside the sort button and
+    // "Unrealized %" now renders twice — once in Value, once as the Intraday band's own
+    // self-sufficient duplicate (metron-ops#178 dual-band-duplicate precedent) — so both
+    // headers are checked, not just one.
+    const headers = screen.getAllByRole("button", { name: /Unrealized %/ });
+    expect(headers).toHaveLength(2);
+    for (const header of headers) {
+      // The sort button itself no longer carries the definition — just the sort affordance.
+      expect(header).toHaveAttribute("title", "Sort by Unrealized %");
+      expect(header).not.toHaveTextContent("ⓘ");
+    }
+    // A separate, independently-clickable ⓘ disclosure sits beside each sort button and
     // reveals the definition text — it is NOT nested inside the sort button (nested buttons
     // are invalid HTML and would swallow the click into the sort toggle).
-    const info = screen.getByLabelText("What is Unrealized %?");
-    expect(info.tagName).toBe("SUMMARY");
-    expect(header.contains(info)).toBe(false);
-    expect(info.closest("button")).toBeNull();
-    expect(info.closest("details")).toHaveTextContent(/cost basis/i);
+    const infos = screen.getAllByLabelText("What is Unrealized %?");
+    expect(infos).toHaveLength(2);
+    for (const info of infos) {
+      expect(info.tagName).toBe("SUMMARY");
+      expect(headers.some((header) => header.contains(info))).toBe(false);
+      expect(info.closest("button")).toBeNull();
+      expect(info.closest("details")).toHaveTextContent(/cost basis/i);
+    }
   });
 
   it("self-evident columns carry no definition (no ⓘ in the Ticker header)", () => {
