@@ -66,6 +66,27 @@ describe("HoldingsTable visibleBands", () => {
     expect(screen.getByText("Technicals")).toBeInTheDocument();
   });
 
+  it("Intraday band is self-sufficient — Last, Day $/%, O/N, Intra, Unrealized $/%, no Position drag-along", () => {
+    render(
+      <HoldingsTable
+        baseCurrency="USD"
+        priced
+        holdings={[h("AAPL", { day_change: 24, day_pct: 0.02, overnight_pct: 0.008, intraday_pct: 0.012 })]}
+        visibleBands={["Intraday"]}
+      />,
+    );
+    expect(screen.getAllByText("Intraday").length).toBeGreaterThan(0); // band header
+    expect(screen.getByText("Last")).toBeInTheDocument();
+    expect(screen.getByText("Day $")).toBeInTheDocument();
+    expect(screen.getByText("Day %")).toBeInTheDocument();
+    expect(screen.getByText("· O/N")).toBeInTheDocument();
+    expect(screen.getByText("· Intra")).toBeInTheDocument();
+    expect(screen.getByText("Unrealized $")).toBeInTheDocument();
+    expect(screen.getByText("Unrealized %")).toBeInTheDocument();
+    expect(screen.queryByText("Quantity")).not.toBeInTheDocument(); // Position band absent
+    expect(screen.queryByText("Avg cost")).not.toBeInTheDocument();
+  });
+
   it("holds Market Value constant in the frozen spine regardless of which band is visible", () => {
     render(
       <HoldingsTable baseCurrency="USD" priced holdings={[h("AAPL")]} visibleBands={["Attractiveness"]} showTotals={false} />,
@@ -93,6 +114,13 @@ describe("ColumnPresetControl", () => {
     render(<ColumnPresetControl value={["Position", "Value"]} onChange={onChange} />);
     fireEvent.click(screen.getByRole("button", { name: "Fundamentals" }));
     expect(onChange).toHaveBeenCalledWith(["Fundamentals"]);
+  });
+
+  it("clicking Intraday replaces Overview — Intraday band only, no Position/Value drag-along", () => {
+    const onChange = vi.fn();
+    render(<ColumnPresetControl value={["Position", "Value"]} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Intraday" }));
+    expect(onChange).toHaveBeenCalledWith(["Intraday"]);
   });
 
   it("clicking Returns replaces Overview — Returns band only, no Position/Value drag-along", () => {

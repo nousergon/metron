@@ -1,21 +1,24 @@
 "use client";
 
 // Column-preset control for the Holdings table (metron-ops#114, #118+, realigned #140). The
-// table carries ~40 columns across 9 bands; the only always-on (frozen) columns are Ticker +
+// table carries ~40 columns across 10 bands; the only always-on (frozen) columns are Ticker +
 // Market Value — everything else lives in a band the preset can toggle. SOTA pattern: a
 // Ticker + Market Value spine + a swappable set of bands chosen by a preset. The lean default
 // shows the position economics (Position + Value) so the table reads at a glance without
 // horizontal scrolling. Every OTHER preset maps 1:1 onto its own named band — an analytic
-// preset (Valuation / Fundamentals / Attractiveness / Technicals / Consensus) never drags the
-// Position/Value bands along for context; the frozen spine already anchors the row. Overview
-// is the lean position-economics default (Position + Value). Returns replaces Overview — it
-// shows only the Returns band (Day/YTD/LTM) beside the spine, same as other analytic presets.
-// "Customize" drops to band-level checkboxes for a bespoke set (→ "Custom").
+// preset (Intraday / Valuation / Fundamentals / Attractiveness / Technicals / Consensus) never
+// drags the Position/Value bands along for context; the frozen spine already anchors the row.
+// Overview is the lean position-economics default (Position + Value). Intraday is the
+// self-sufficient "market open" band — Last, Day $/%, the overnight/intraday decomposition,
+// and Unrealized $/% (Brian, 2026-07-21). Returns replaces Overview — it shows only the
+// Returns band (Day/YTD/LTM) beside the spine, same as other analytic presets. "Customize"
+// drops to band-level checkboxes for a bespoke set (→ "Custom").
 
 import { BAND_ORDER, type ColumnBand } from "@/components/holdings-table";
 
 export type PresetKey =
   | "overview"
+  | "intraday"
   | "returns"
   | "valuation"
   | "fundamentals"
@@ -27,6 +30,7 @@ export type PresetKey =
 
 export const COLUMN_PRESETS: { key: PresetKey; label: string; groups: ColumnBand[] }[] = [
   { key: "overview", label: "Overview", groups: ["Position", "Value"] },
+  { key: "intraday", label: "Intraday", groups: ["Intraday"] },
   { key: "returns", label: "Returns", groups: ["Returns"] },
   { key: "valuation", label: "Valuation", groups: ["Valuation"] },
   { key: "fundamentals", label: "Fundamentals", groups: ["Fundamentals"] },

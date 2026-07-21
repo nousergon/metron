@@ -4,6 +4,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 // GroupedHoldings → HoldingsTable (a client component) → next/navigation + the server
 // actions module (the inline alias editor). Stub both so the import chain works in jsdom.
@@ -114,5 +115,22 @@ describe("GroupedHoldings", () => {
     const holdings = [h("AAPL", "equity")]; // no broker_as_of — ledger-derived
     render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced />);
     expect(screen.queryByText(/Positions synced through/)).not.toBeInTheDocument();
+  });
+
+  it("collapses and re-expands a group's table on heading click, defaulting open (metron-ops#178)", async () => {
+    const user = userEvent.setup();
+    const holdings = [h("AAPL", "equity"), h("037833100", "bond")];
+    render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced />);
+    // Defaults open — every row visible without interaction.
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+    expect(screen.getByText("037833100")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("heading", { level: 3, name: /Equities/ }));
+    expect(screen.queryByText("AAPL")).not.toBeInTheDocument();
+    // The other group is unaffected — collapse is per-section, not page-wide.
+    expect(screen.getByText("037833100")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("heading", { level: 3, name: /Equities/ }));
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
   });
 });

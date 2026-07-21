@@ -79,6 +79,17 @@ describe("HoldingsWhatIfPanel", () => {
     expect(screen.queryByText(/does not tie to 100%/)).not.toBeInTheDocument();
   });
 
+  it("Zero all clears every ticker's hypothetical weight to cash in one click", () => {
+    const holdings = [h("AAPL", { market_value: 500 }), h("MSFT", { market_value: 500 })];
+    render(<HoldingsWhatIfPanel holdings={holdings} />);
+    openPanel();
+    fireEvent.click(screen.getByText("Zero all"));
+    const inputs = screen.getAllByLabelText("Hypothetical weight (%)");
+    expect((inputs[0] as HTMLInputElement).value).toBe("0");
+    expect((inputs[1] as HTMLInputElement).value).toBe("0");
+    expect(screen.getByText(/Hypothetical weights \+ cash: 100\.0%/)).toBeInTheDocument();
+  });
+
   it("Reset to current restores every hypothetical weight to the baseline", () => {
     const holdings = [h("AAPL", { market_value: 500 }), h("MSFT", { market_value: 500 })];
     render(<HoldingsWhatIfPanel holdings={holdings} />);

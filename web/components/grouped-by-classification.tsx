@@ -8,6 +8,7 @@
 // (empty off a feed-entitled build → the bands show "—" but the grouping still works).
 
 import type { ReactNode } from "react";
+import { CollapsibleSection } from "@/components/collapsible-section";
 import { HoldingsTable, type ColumnBand } from "@/components/holdings-table";
 import { PortfolioTotalBar } from "@/components/portfolio-total-bar";
 import type { GroupMedians, Holding, ValuationMedians } from "@/lib/api";
@@ -99,35 +100,42 @@ export function GroupedByClassification({
       {sectors.map(([sector, sectorHoldings]) => {
         const countries = partition(sectorHoldings, "country");
         return (
-          <div key={sector} className="space-y-3">
-            <div className="border-b border-line pb-1.5">
-              <h3 className="flex items-baseline gap-2 text-sm font-semibold">
-                {sector}
-                <span className="text-xs font-normal text-muted">
-                  {sectorHoldings.length} {sectorHoldings.length === 1 ? "holding" : "holdings"}
-                </span>
-              </h3>
-              <div className="mt-1">
-                <MedianBand m={medians?.by_sector?.[sector]} scope="sector" />
-              </div>
-            </div>
-            {countries.map(([country, countryHoldings]) => (
-              <div key={country} className="space-y-1.5 pl-3">
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <h4 className="text-xs font-medium text-ink">{country}</h4>
-                  <MedianBand m={medians?.by_country?.[country]} scope="country" />
+          <CollapsibleSection
+            key={sector}
+            className="space-y-3"
+            summary={
+              <div className="border-b border-line pb-1.5">
+                <h3 className="flex items-baseline gap-2 text-sm font-semibold">
+                  {sector}
+                  <span className="text-xs font-normal text-muted">
+                    {sectorHoldings.length} {sectorHoldings.length === 1 ? "holding" : "holdings"}
+                  </span>
+                </h3>
+                <div className="mt-1">
+                  <MedianBand m={medians?.by_sector?.[sector]} scope="sector" />
                 </div>
-                <HoldingsTable
-                  holdings={countryHoldings}
-                  baseCurrency={baseCurrency}
-                  priced={priced}
-                  portfolioId={portfolioId}
-                  visibleBands={visibleBands}
-                  accountColumn={accountColumn}
-                />
               </div>
-            ))}
-          </div>
+            }
+          >
+            <div className="space-y-3">
+              {countries.map(([country, countryHoldings]) => (
+                <div key={country} className="space-y-1.5 pl-3">
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <h4 className="text-xs font-medium text-ink">{country}</h4>
+                    <MedianBand m={medians?.by_country?.[country]} scope="country" />
+                  </div>
+                  <HoldingsTable
+                    holdings={countryHoldings}
+                    baseCurrency={baseCurrency}
+                    priced={priced}
+                    portfolioId={portfolioId}
+                    visibleBands={visibleBands}
+                    accountColumn={accountColumn}
+                  />
+                </div>
+              ))}
+            </div>
+          </CollapsibleSection>
         );
       })}
     </div>
