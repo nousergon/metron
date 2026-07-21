@@ -206,6 +206,48 @@ class Position(Base):
     account: Mapped[Account] = relationship(back_populates="positions")
 
 
+class ReconciliationBreak(Base):
+    """A detected divergence between Metron's persisted state and a fresh broker
+    read — the layer-1 custodian-reconciliation record (metron-ops#216).
+
+    One row per distinct break IDENTITY (``break_key`` — an account/type/security
+    composite, see ``api.services.reconciliation._break_key``), not per day: the
+    nightly job upserts on that key, so a break that reproduces every night updates
+    the same row (``break_date`` = first detected, ``updated_at`` = last seen) rather
+    than accumulating a new row per day. ``break_key`` is a plain string rather than a
+    composite UNIQUE(account_id, break_type, security_id) because ``security_id`` is
+    NULL for account-level (cash) breaks, and SQLite/Postgres both treat NULL as
+    distinct-from-NULL in a UNIQUE index — a composite constraint would silently admit
+    duplicate cash-break rows for the same account. ``resolved_at`` is stamped (never
+    deleted) the first run after the break stops reproducing, so this table is a
+    durable audit trail, not a live-only view."""
+
+    __tablename__ = "reconciliation_breaks"
+    __table_args__ = (UniqueConstraint("break_key", name="uq_reconciliation_break_key"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    # NULL for an account-level break (cash); set for a per-security break
+    # (quantity/cost-basis mismatch, or a position missing on one side).
+    security_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("securities.id"), nullable=True, index=True)
+    # "quantity" | "cost_basis" | "cash" | "missing_in_metron" | "missing_at_broker"
+    break_type: Mapped[str] = mapped_column(String(30))
+    break_key: Mapped[str] = mapped_column(String(140), index=True)
+    break_date: Mapped[date] = mapped_column(index=True)  # first-detected date; not updated on re-detect
+    metron_value: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    broker_value: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    # The tolerance threshold this break exceeded, recorded alongside the values so a
+    # later tolerance-tuning change doesn't strand un-reproducible context on old rows.
+    tolerance: Mapped[float] = mapped_column(Numeric(28, 10), default=0)
+    alerted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+    account: Mapped[Account] = relationship()
+
+
 class PriceBar(Base):
     """Global EOD price cache — NOT tenant-scoped. One fetch serves all tenants."""
 
