@@ -33,6 +33,20 @@ class Settings(BaseSettings):
     # token is read-only + expirable). Empty → the UI falls back to the BYO-token form.
     flex_token: str = ""
     flex_query_id: str = ""
+    # Custodian-reconciliation alerting (metron-ops#216) — a Telegram bot/chat the
+    # nightly reconciliation job posts break summaries to. Hydrated from SSM
+    # (/metron/telegram_bot_token, /metron/telegram_chat_id) same as the credentials
+    # above; empty means unconfigured, in which case the job logs (routed through
+    # flow-doctor) instead of posting, rather than failing the run.
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    # Reconciliation break tolerances (metron-ops#216) — quantity is exact-match
+    # (a share-count mismatch is never "rounding"); cost-basis/cash allow a small
+    # absolute-or-relative band for FX conversion + broker rounding, whichever is
+    # larger, so a $50k position isn't flagged for a one-cent FX rounding diff and a
+    # $10 position isn't flagged for its own cost basis being $0.02 off.
+    reconciliation_cash_tolerance_usd: float = 1.0
+    reconciliation_cost_basis_tolerance_bps: float = 5.0
     # Data-spine sync (metron ↔ alpha-engine-data). `alpha-engine-data` is the system's
     # sole market-data producer; Metron publishes its held-ticker universe here and reads
     # back EOD-close / FX artifacts (no direct market-data API calls). The bucket is the
