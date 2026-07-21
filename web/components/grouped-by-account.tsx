@@ -8,6 +8,7 @@
 // account column is suppressed here — the section heading already names the account.
 
 import type { ReactNode } from "react";
+import { CollapsibleSection } from "@/components/collapsible-section";
 import { HoldingsTable, type ColumnBand } from "@/components/holdings-table";
 import { PortfolioTotalBar } from "@/components/portfolio-total-bar";
 import type { Holding } from "@/lib/api";
@@ -145,18 +146,22 @@ export function GroupedByAccount({
         groups.map(([label, hs]) => {
           const sub = totalsOf(hs);
           return (
-            <div key={label}>
-              <h3 className="mb-2 flex flex-wrap items-baseline gap-2 text-sm font-medium">
-                {label}
-                <span className="text-xs text-muted">
-                  {hs.length} {hs.length === 1 ? "holding" : "holdings"}
-                </span>
-                {priced && sub.mv != null ? (
-                  <span className="text-xs text-muted">· {moneyWhole(sub.mv, baseCurrency)}</span>
-                ) : null}
-              </h3>
+            <CollapsibleSection
+              key={label}
+              summary={
+                <h3 className="mb-2 flex flex-wrap items-baseline gap-2 text-sm font-medium">
+                  {label}
+                  <span className="text-xs text-muted">
+                    {hs.length} {hs.length === 1 ? "holding" : "holdings"}
+                  </span>
+                  {priced && sub.mv != null ? (
+                    <span className="text-xs text-muted">· {moneyWhole(sub.mv, baseCurrency)}</span>
+                  ) : null}
+                </h3>
+              }
+            >
               <HoldingsTable holdings={hs} baseCurrency={baseCurrency} priced={priced} portfolioId={portfolioId} visibleBands={visibleBands} />
-            </div>
+            </CollapsibleSection>
           );
         })
       )}
