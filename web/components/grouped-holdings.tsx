@@ -9,6 +9,7 @@
 // sort/interaction; this wrapper only partitions and lays out.
 
 import type { ReactNode } from "react";
+import { CollapsibleSection } from "@/components/collapsible-section";
 import { HoldingsTable, type ColumnBand } from "@/components/holdings-table";
 import { PortfolioTotalBar } from "@/components/portfolio-total-bar";
 import type { Holding } from "@/lib/api";
@@ -152,15 +153,19 @@ export function GroupedHoldings({
         <HoldingsTable holdings={holdings} baseCurrency={baseCurrency} priced={priced} portfolioId={portfolioId} visibleBands={visibleBands} accountColumn={accountColumn} />
       ) : (
         groups.map(([label, hs]) => (
-          <div key={label}>
-            <h3 className="mb-2 flex items-baseline gap-2 text-sm font-medium">
-              {label}
-              <span className="text-xs text-muted">
-                {hs.length} {hs.length === 1 ? "holding" : "holdings"}
-              </span>
-            </h3>
+          <CollapsibleSection
+            key={label}
+            summary={
+              <h3 className="mb-2 flex items-baseline gap-2 text-sm font-medium">
+                {label}
+                <span className="text-xs text-muted">
+                  {hs.length} {hs.length === 1 ? "holding" : "holdings"}
+                </span>
+              </h3>
+            }
+          >
             <HoldingsTable holdings={hs} baseCurrency={baseCurrency} priced={priced} portfolioId={portfolioId} visibleBands={visibleBands} accountColumn={accountColumn} />
-          </div>
+          </CollapsibleSection>
         ))
       )}
     </div>
