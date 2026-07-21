@@ -66,6 +66,19 @@ export function zeroWeight(weights: WeightMap, ticker: string): WeightMap {
   return setWeight(weights, ticker, 0);
 }
 
+/** Zero every named-ticker weight at once — the panel's "Zero all" control. All freed
+ *  weight flows to cash (same residual contract as a single `zeroWeight`), leaving the
+ *  full 100% sitting in cash so the user starts a from-scratch reallocation instead of
+ *  zeroing tickers one at a time. */
+export function zeroAllWeights(weights: WeightMap): WeightMap {
+  const cleared: WeightMap = {};
+  for (const ticker of Object.keys(weights)) {
+    if (ticker === CASH_ROW_KEY) continue;
+    cleared[ticker] = 0;
+  }
+  return recomputeCash(cleared);
+}
+
 /** Recompute the cash row as 1 − Σ(named-ticker weights), floored at 0. A weight set
  *  that already exceeds 100% (every non-cash weight increased) reports 0 cash rather
  *  than a negative residual — the tie-out assertion (below) is what surfaces that

@@ -32,6 +32,7 @@ import {
   weightFnFromMap,
   weightedAttractiveness,
   weightedValuationAggregate,
+  zeroAllWeights,
   type Delta,
   type WeightMap,
 } from "@/lib/whatif";
@@ -143,6 +144,7 @@ export function HoldingsWhatIfPanel({ holdings }: { holdings: Holding[] }) {
 
   const editWeight = (ticker: string, pct: number) => setHypothetical((prev) => setWeight(prev, ticker, pct));
   const zero = (ticker: string) => editWeight(ticker, 0);
+  const zeroAll = () => setHypothetical((prev) => zeroAllWeights(prev));
   const resetToBaseline = () => setHypothetical(baseline);
   const normalize = () => setHypothetical((prev) => normalizeToFull(prev));
 
@@ -217,6 +219,9 @@ export function HoldingsWhatIfPanel({ holdings }: { holdings: Holding[] }) {
             <div className="flex gap-3">
               <button type="button" onClick={normalize} className="text-muted underline hover:text-ink">
                 Normalize to 100%
+              </button>
+              <button type="button" onClick={zeroAll} className="text-muted underline hover:text-ink">
+                Zero all
               </button>
               <button type="button" onClick={resetToBaseline} className="text-muted underline hover:text-ink">
                 Reset to current
