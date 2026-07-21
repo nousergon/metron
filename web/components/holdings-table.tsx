@@ -142,6 +142,7 @@ type RowCtx = {
 export type ColumnBand =
   | "Position"
   | "Value"
+  | "Intraday"
   | "Returns"
   | "Class"
   | "Attractiveness"
@@ -153,6 +154,7 @@ export type ColumnBand =
 export const BAND_ORDER: ColumnBand[] = [
   "Position",
   "Value",
+  "Intraday",
   "Returns",
   "Class",
   "Attractiveness",
@@ -351,6 +353,124 @@ const POSITION_COLUMNS: ColumnDef[] = [
     key: "unrealized_pct",
     label: "Unrealized %",
     band: "Value",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title: "Unrealized gain/loss as a % of cost basis (the position's total return so far, ex-dividends).",
+    sort: (h) => h.unrealized_pct,
+    cell: (h) => (
+      <span className={signClass(h.unrealized_pct ?? 0)}>
+        {h.unrealized_pct != null ? accountingPercent(h.unrealized_pct) : "—"}
+      </span>
+    ),
+    foot: (t) => (
+      <span className={signClass(t.unrealPct ?? 0)}>{t.unrealPct != null ? accountingPercent(t.unrealPct) : "—"}</span>
+    ),
+  },
+  // Intraday — the self-sufficient "market open" band (Brian, 2026-07-21): Last, Day $/%,
+  // the overnight/intraday decomposition, and Unrealized $/% in ONE band, so the Intraday
+  // preset needs no Position/Value drag-along (same "every OTHER preset maps 1:1 onto its
+  // own band" invariant as Valuation/Fundamentals/etc. above). Every cell here duplicates a
+  // Value or Returns column verbatim under a new key — same dual-band-duplicate precedent as
+  // day_pct/day_change_pct and price/last (metron-ops#178).
+  {
+    key: "intraday_last",
+    label: "Last",
+    band: "Intraday",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    sort: sortPrice,
+    cell: renderPriceCell,
+  },
+  {
+    key: "intraday_day_change",
+    label: "Day $",
+    band: "Intraday",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title:
+      "Today's change in this position's market value (base currency) — price move only, at today's quantity and FX. Needs the live feed.",
+    sort: (h) => h.day_change,
+    cell: (h, ctx) => (
+      <span className={h.day_change != null ? signClass(h.day_change) : "text-muted"}>
+        {h.day_change != null ? accountingMoneyWhole(h.day_change, ctx.baseCurrency) : "—"}
+      </span>
+    ),
+    foot: (t, ccy) =>
+      t.day != null ? <span className={signClass(t.day)}>{accountingMoneyWhole(t.day, ccy)}</span> : "—",
+  },
+  {
+    key: "intraday_day_change_pct",
+    label: "Day %",
+    band: "Intraday",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title:
+      "Today's price return — the sum of its two legs, shown beside it: overnight (open vs prior close) + intraday (latest vs open). Needs the live feed.",
+    sort: (h) => h.day_pct,
+    cell: (h) => (
+      <span className={h.day_pct != null ? signClass(h.day_pct) : "text-muted"}>
+        {h.day_pct != null ? accountingPercent(h.day_pct) : "—"}
+      </span>
+    ),
+  },
+  {
+    key: "intraday_overnight_pct",
+    label: "· O/N",
+    band: "Intraday",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title: "Component of Day: the overnight leg — today's open vs the prior close.",
+    sort: (h) => h.overnight_pct,
+    cell: (h) => (
+      <span className="text-xs opacity-70">
+        <span className={h.overnight_pct != null ? signClass(h.overnight_pct) : "text-muted"}>
+          {h.overnight_pct != null ? accountingPercent(h.overnight_pct) : "—"}
+        </span>
+      </span>
+    ),
+  },
+  {
+    key: "intraday_intraday_pct",
+    label: "· Intra",
+    band: "Intraday",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title: "Component of Day: the intraday leg — the latest price vs today's open.",
+    sort: (h) => h.intraday_pct,
+    cell: (h) => (
+      <span className="text-xs opacity-70">
+        <span className={h.intraday_pct != null ? signClass(h.intraday_pct) : "text-muted"}>
+          {h.intraday_pct != null ? accountingPercent(h.intraday_pct) : "—"}
+        </span>
+      </span>
+    ),
+  },
+  {
+    key: "intraday_unrealized",
+    label: "Unrealized $",
+    band: "Intraday",
+    priced: true,
+    defaultDesc: true,
+    live: true,
+    title: "Paper gain/loss if sold now: market value − cost basis (base currency). Excludes realized gains + dividends.",
+    sort: (h) => h.unrealized_gain,
+    cell: (h, ctx) => (
+      <span className={signClass(h.unrealized_gain ?? 0)}>
+        {h.unrealized_gain != null ? accountingMoneyWhole(h.unrealized_gain, ctx.baseCurrency) : "—"}
+      </span>
+    ),
+    foot: (t, ccy) => <span className={signClass(t.unreal)}>{accountingMoneyWhole(t.unreal, ccy)}</span>,
+  },
+  {
+    key: "intraday_unrealized_pct",
+    label: "Unrealized %",
+    band: "Intraday",
     priced: true,
     defaultDesc: true,
     live: true,
@@ -743,6 +863,14 @@ const DEFAULT_COL_WIDTH: Record<string, number> = {
   day_change_pct: 80,
   unrealized: 100,
   unrealized_pct: 90,
+  // Intraday.
+  intraday_last: 90,
+  intraday_day_change: 90,
+  intraday_day_change_pct: 80,
+  intraday_overnight_pct: 70,
+  intraday_intraday_pct: 70,
+  intraday_unrealized: 100,
+  intraday_unrealized_pct: 90,
   // Returns.
   day_pct: 70,
   overnight_pct: 70,
