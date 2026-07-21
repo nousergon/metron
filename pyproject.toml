@@ -73,6 +73,11 @@ dev = [
     # (tests/test_realized_lots_export_contract.py) so the export can't silently drift from
     # nousergon/telos realized_lots v1.0.0 — metron-ops#127.
     "jsonschema>=4.26.0",
+    # Property-based testing for the dashboard-accuracy verification framework's layer 4
+    # (golden portfolios + property tests, metron-ops#210): generates randomized-but-valid
+    # transaction histories to assert ledger invariants hold universally, not just on
+    # hand-picked fixtures (tests/test_golden_portfolios.py).
+    "hypothesis>=6.100",
 ]
 
 [tool.hatch.build.targets.wheel]
