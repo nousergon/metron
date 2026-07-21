@@ -20,6 +20,7 @@ import {
   weightFnFromMap,
   weightedAttractiveness,
   weightedValuationAggregate,
+  zeroAllWeights,
   zeroWeight,
 } from "@/lib/whatif";
 
@@ -104,6 +105,26 @@ describe("setWeight / zeroWeight — cash residual", () => {
     expect(next[CASH_ROW_KEY]).toBe(0);
     // The over-100% state is surfaced via tiesOutToFull, not a negative cash row.
     expect(tiesOutToFull(next)).toBe(false);
+  });
+});
+
+describe("zeroAllWeights", () => {
+  it("zeros every named ticker and sends the full 100% to cash", () => {
+    const base = recomputeCash({ A: 0.5, B: 0.3, C: 0.2 });
+    const cleared = zeroAllWeights(base);
+    expect(cleared.A).toBe(0);
+    expect(cleared.B).toBe(0);
+    expect(cleared.C).toBe(0);
+    expect(cleared[CASH_ROW_KEY]).toBeCloseTo(1);
+    expect(tiesOutToFull(cleared)).toBe(true);
+  });
+
+  it("is a no-op on an already-zeroed weight set", () => {
+    const zero = recomputeCash({ A: 0, B: 0 });
+    const cleared = zeroAllWeights(zero);
+    expect(cleared.A).toBe(0);
+    expect(cleared.B).toBe(0);
+    expect(cleared[CASH_ROW_KEY]).toBe(1);
   });
 });
 
