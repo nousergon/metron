@@ -3,22 +3,25 @@
 // Column-preset control for the Holdings table (metron-ops#114, #118+, realigned #140). The
 // table carries ~40 columns across 10 bands; the only always-on (frozen) columns are Ticker +
 // Market Value — everything else lives in a band the preset can toggle. SOTA pattern: a
-// Ticker + Market Value spine + a swappable set of bands chosen by a preset. The lean default
-// shows the position economics (Position + Value) so the table reads at a glance without
-// horizontal scrolling. Every OTHER preset maps 1:1 onto its own named band — an analytic
-// preset (Intraday / Valuation / Fundamentals / Attractiveness / Technicals / Consensus) never
-// drags the Position/Value bands along for context; the frozen spine already anchors the row.
-// Overview is the lean position-economics default (Position + Value). Intraday is the
-// self-sufficient "market open" band — Last, Day $/%, the overnight/intraday decomposition,
-// and Unrealized $/% (Brian, 2026-07-21). Returns replaces Overview — it shows only the
-// Returns band (Day/YTD/LTM) beside the spine, same as other analytic presets. "Customize"
-// drops to band-level checkboxes for a bespoke set (→ "Custom").
+// Ticker + Market Value spine + a swappable set of bands chosen by a preset. Every OTHER
+// preset maps 1:1 onto its own named band — an analytic preset (Intraday / Valuation /
+// Fundamentals / Attractiveness / Technicals / Consensus) never drags the Position/Value
+// bands along for context; the frozen spine already anchors the row.
+// Intraday leads the list and is the DEFAULT landing preset while the live valuation regime
+// is resolved (market open, post-close recap, or frozen after hours — Brian, 2026-07-22):
+// Last, Day $/%, the overnight/intraday decomposition, and Unrealized $/% in one
+// self-sufficient band, so the page opens on "how are my stocks doing" without a click.
+// Overview (Position + Value) is the settled-mode fallback — a straight rename would have
+// misdescribed its Position half, which isn't intraday-relevant, so it stays a separate
+// preset, just second in line now. Returns shows only the Returns band (Day/YTD/LTM) beside
+// the spine, same as other analytic presets. "Customize" drops to band-level checkboxes for
+// a bespoke set (→ "Custom").
 
 import { BAND_ORDER, type ColumnBand } from "@/components/holdings-table";
 
 export type PresetKey =
-  | "overview"
   | "intraday"
+  | "overview"
   | "returns"
   | "valuation"
   | "fundamentals"
@@ -29,8 +32,8 @@ export type PresetKey =
   | "all";
 
 export const COLUMN_PRESETS: { key: PresetKey; label: string; groups: ColumnBand[] }[] = [
-  { key: "overview", label: "Overview", groups: ["Position", "Value"] },
   { key: "intraday", label: "Intraday", groups: ["Intraday"] },
+  { key: "overview", label: "Overview", groups: ["Position", "Value"] },
   { key: "returns", label: "Returns", groups: ["Returns"] },
   { key: "valuation", label: "Valuation", groups: ["Valuation"] },
   { key: "fundamentals", label: "Fundamentals", groups: ["Fundamentals"] },
@@ -41,8 +44,17 @@ export const COLUMN_PRESETS: { key: PresetKey; label: string; groups: ColumnBand
   { key: "all", label: "All", groups: [...BAND_ORDER] },
 ];
 
-/** The lean default — the position economics (Position + Value) beside the Ticker spine. */
-export const DEFAULT_VISIBLE_GROUPS: ColumnBand[] = COLUMN_PRESETS[0].groups;
+function bandsFor(key: PresetKey): ColumnBand[] {
+  return COLUMN_PRESETS.find((p) => p.key === key)!.groups;
+}
+
+/** The settled-mode / no-live-available fallback — position economics (Position + Value)
+ *  beside the Ticker spine. Looked up by key, not by array position — Intraday leads the
+ *  preset list now (see header comment) but Overview remains this fallback. */
+export const DEFAULT_VISIBLE_GROUPS: ColumnBand[] = bandsFor("overview");
+
+/** The live-regime landing preset (see header comment) — Intraday's self-sufficient band. */
+export const INTRADAY_VISIBLE_GROUPS: ColumnBand[] = bandsFor("intraday");
 
 function sameBands(a: ColumnBand[], b: ColumnBand[]): boolean {
   if (a.length !== b.length) return false;

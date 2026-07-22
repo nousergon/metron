@@ -8,15 +8,18 @@
 // client-side presentational state. Grouping / combine / type-filter / valuation persist to
 // InvestorPreferences (metron-ops#114) so the view survives reloads. The COLUMN PRESET is
 // deliberately session-only: Holdings is the landing page, and landing must always open on
-// the lean Overview set — an analytic lens (Attractiveness, Valuation, …) left selected
-// yesterday must not become today's landing view (Brian, 2026-07-08). Switching presets
-// mid-session works as before; a fresh load resets to Overview.
+// a fixed, regime-appropriate default — an analytic lens (Attractiveness, Valuation, …) left
+// selected yesterday must not become today's landing view (Brian, 2026-07-08). Switching
+// presets mid-session works as before; a fresh load resets to that default. As of 2026-07-22
+// the default itself is regime-aware: Intraday while the live valuation regime is resolved
+// (open, recap, or frozen after hours), Overview for settled/no-live — see page.tsx and
+// holdings-column-presets.tsx's INTRADAY_VISIBLE_GROUPS/DEFAULT_VISIBLE_GROUPS.
 //
 // The COLUMN PRESET selection now lives in ColumnBandsProvider (column-bands-context.tsx),
 // lifted out of local state so the Watchlist comparison table further down the page reads
 // the SAME band selection instead of its own hardcoded set (metron-ops#121 sync fix). The
-// session-only behavior above is unchanged — the provider is mounted fresh per page load
-// and still initializes to DEFAULT_VISIBLE_GROUPS.
+// session-only behavior above is unchanged — the provider is mounted fresh per page load and
+// initializes to whichever default page.tsx passes it.
 
 import { useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -126,11 +129,14 @@ function CombineToggle({ byAccount, onChange }: { byAccount: boolean; onChange: 
 /** The valuation-regime selector (metron-ops#153/#156): the session view vs Settled close
  *  (the official EOD valuation). URL-driven like Combine — it changes the holdings DATA
  *  (the server re-fetches with `?valuation=`), and the whole page follows the regime.
- *  MARKET-STATE-AWARE (metron-ops-I156): the first option is labeled "Live session" only
- *  while the market is open ("live"); post-close the same data is honestly "Today's
- *  session" ("recap"); pre-market/weekend/holiday ("closed") the option grays out — a
- *  prior session has nothing live mode can add over settled, and a control must never
- *  imply live-ness after hours. */
+ *  MARKET-STATE-AWARE (metron-ops-I156, partially superseded 2026-07-22): the first option
+ *  is labeled "Live session" while the market is open ("live"); post-close the same data is
+ *  honestly "Today's session" ("recap"); pre-market/weekend/holiday ("closed") it now reads
+ *  "Last session" and STAYS clickable — frozen at the last completed session's close instead
+ *  of graying out. I156's original "a control must never imply live-ness after hours" is
+ *  honored by the honest label, not by hiding the control: the label never claims freshness
+ *  it can't back up, but the option to see the last live view (vs. the settled close) is
+ *  Brian's daily-driver landing page and should never simply vanish (Brian, 2026-07-22). */
 function ValuationToggle({
   live,
   sessionState,
@@ -141,9 +147,9 @@ function ValuationToggle({
   onChange: (live: boolean) => void;
 }) {
   const closed = sessionState === "closed";
-  const liveLabel = sessionState === "recap" ? "Today's session" : "Live session";
+  const liveLabel = sessionState === "recap" ? "Today's session" : closed ? "Last session" : "Live session";
   const liveTitle = closed
-    ? "Market closed — no session data beyond the settled close"
+    ? "Frozen at the last completed session's close — nothing has moved since; switch to Settled close for the official EOD record"
     : sessionState === "recap"
       ? "The completed session's decomposition — session closed, values as of the close"
       : "Value positions from delayed intraday quotes while the session is open, with covered-basis session detail";
@@ -151,11 +157,9 @@ function ValuationToggle({
     <div className="inline-flex rounded-lg border border-line p-0.5 text-xs">
       <button
         type="button"
-        onClick={closed ? undefined : () => onChange(true)}
-        disabled={closed}
-        className={closed ? "cursor-not-allowed rounded-md px-2.5 py-1 text-muted/40" : SEG_BTN(live)}
-        aria-pressed={live && !closed}
-        aria-disabled={closed}
+        onClick={() => onChange(true)}
+        className={SEG_BTN(live)}
+        aria-pressed={live}
         title={liveTitle}
       >
         {liveLabel}
@@ -163,8 +167,8 @@ function ValuationToggle({
       <button
         type="button"
         onClick={() => onChange(false)}
-        className={SEG_BTN(!live || closed)}
-        aria-pressed={!live || closed}
+        className={SEG_BTN(!live)}
+        aria-pressed={!live}
         title="Value positions from the official end-of-day close — the settled record"
       >
         Settled close
