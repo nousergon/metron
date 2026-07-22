@@ -30,7 +30,17 @@ from sqlalchemy.orm import Session
 from api.config import settings
 from api.db import models
 from api.db.session import SessionLocal, create_all
-from api.services import analytics, attribution, broker_sync, data_spine, fx, performance, reconciliation, risk
+from api.services import (
+    analytics,
+    attribution,
+    broker_sync,
+    data_spine,
+    fx,
+    performance,
+    reconciliation,
+    risk,
+    shadow_recompute,
+)
 from api.services import calendar as calendar_svc
 from api.services import prices as price_service
 from api.services.demo import REFERENCE_PORTFOLIO_ID, SAMPLE_SLEEVE_TICKERS, live_sleeve_tickers
@@ -436,6 +446,13 @@ def main(argv: list[str] | None = None) -> int:
         "broker read, record breaks, alert on new ones (nightly timer, metron-ops#216)",
     )
     sub.add_parser(
+        "shadow-recompute",
+        help="layer-3 dashboard-accuracy shadow recompute: independently re-derive NAV/TWR "
+        "from raw transactions via a deliberately different aggregation order than "
+        "reconstruct_snapshots, diff against what production served, record breaks, alert "
+        "on new ones (nightly timer, metron-ops#218)",
+    )
+    sub.add_parser(
         "backfill-tax-treatment",
         help="one-time: re-derive tax_treatment for existing NULL accounts from their stored "
         "account_type (metron-ops#194); safe to re-run, never clobbers a set value",
@@ -526,6 +543,27 @@ def main(argv: list[str] | None = None) -> int:
         # the non-zero exit additionally fails the systemd unit so it's visible in
         # `systemctl status` / journalctl, not just the Telegram channel.
         return 1 if r.fetch_failures else 0
+    if args.cmd == "shadow-recompute":
+        create_all()
+        session = SessionLocal()
+        try:
+            r = shadow_recompute.shadow_recompute_all(session)
+        finally:
+            session.close()
+        logger.info(
+            "shadow-recompute done: %d portfolios, %d breaks open (%d new/reopened, %d resolved), "
+            "%d error(s)",
+            r.portfolios_checked,
+            r.breaks_open,
+            r.breaks_new,
+            r.breaks_resolved,
+            len(r.errors),
+        )
+        # Same fail-loud posture as `reconcile` above: a per-portfolio failure already
+        # alerted individually inside shadow_recompute_portfolio; the non-zero exit
+        # additionally fails the systemd unit so it surfaces in `systemctl status` /
+        # journalctl, not just the Telegram channel.
+        return 1 if r.errors else 0
     if args.cmd == "backfill-tax-treatment":
         create_all()
         session = SessionLocal()
