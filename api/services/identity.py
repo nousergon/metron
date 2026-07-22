@@ -31,6 +31,7 @@ Mirrors the resolution-ladder contract in nousergon/vires
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import Depends, Header, HTTPException
 from sqlalchemy import func, select
@@ -90,6 +91,10 @@ def resolve_identity_user(session: Session, sub: str, email: str | None) -> mode
         tenant_id=tenant.id,
         email=email,
         identity_user_id=sub,
+        # ToS/privacy acceptance (metron-ops#203): the sign-in form's "by continuing
+        # you agree" copy is the consent gesture; this is the workspace's first-ever
+        # creation, so it's the accurate acceptance timestamp.
+        tos_accepted_at=datetime.now(UTC),
     )
     session.add(tenant)
     session.add(user)

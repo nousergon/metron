@@ -144,6 +144,29 @@ def test_jit_provisions_new_tenant_and_user(raw_client, db_session):
     assert db_session.get(models.Tenant, user.tenant_id) is not None
 
 
+def test_jit_provision_records_tos_acceptance(raw_client, db_session):
+    """JIT-provisioning a brand-new workspace records a ToS/privacy acceptance
+    timestamp (metron-ops#203) — the "by continuing you agree" consent gesture on the
+    sign-in form applies at exactly this moment (first-ever workspace creation)."""
+    r = list_portfolios(raw_client, bearer(make_token("idu-consents", "consents@example.com")))
+    assert r.status_code == 200, r.text
+    user = db_session.scalar(select(models.User).where(models.User.identity_user_id == "idu-consents"))
+    assert user is not None
+    assert user.tos_accepted_at is not None
+
+
+def test_linking_existing_user_by_email_does_not_backfill_tos_acceptance(raw_client, db_session):
+    """A pre-existing row (created before this column existed, or linked rather than
+    freshly provisioned) has no acceptance gesture to record — leave it null rather
+    than fabricating one."""
+    _seed_user(db_session, email="preexisting@example.com", identity_user_id=None)
+    r = list_portfolios(raw_client, bearer(make_token("idu-linked-late", "preexisting@example.com")))
+    assert r.status_code == 200, r.text
+    user = db_session.scalar(select(models.User).where(models.User.identity_user_id == "idu-linked-late"))
+    assert user is not None
+    assert user.tos_accepted_at is None
+
+
 def test_jit_provision_is_stable_across_requests(raw_client, db_session):
     """Second request with the same identity resolves to the SAME tenant — the exact
     anti-"always mint a new workspace" contract (the vires-ops#57 failure mode)."""

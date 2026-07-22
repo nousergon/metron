@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import { signIn } from "@/lib/auth-client";
 
 const inputClass = "w-full rounded border border-line px-3 py-2 text-sm";
@@ -74,6 +75,22 @@ export function MagicLinkForm() {
         <button className={buttonClass} disabled={pending} type="submit">
           {pending ? "Sending…" : "Send sign-in link"}
         </button>
+        {/* Beta-tester acceptance (metron-ops#203): no separate signup screen exists
+            (first magic-link click both authenticates and provisions the workspace —
+            see the module docstring above), so this "by continuing" notice next to the
+            single actionable control IS the consent gesture; the backend records its
+            timestamp on `users.tos_accepted_at` at JIT-provision time. */}
+        <p className="text-xs text-muted">
+          By continuing you agree to our{" "}
+          <Link href="/terms" className="underline hover:text-fg">
+            Terms
+          </Link>{" "}
+          and{" "}
+          <Link href="/privacy" className="underline hover:text-fg">
+            Privacy Policy
+          </Link>
+          .
+        </p>
       </form>
     </AuthShell>
   );
