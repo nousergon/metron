@@ -8,7 +8,13 @@
 // A quoted-but-flat holding stays in (a real 0% move is information, not a coverage gap).
 //
 // Market closed → the intraday snapshot is stale and these figures are the COMPLETED
-// session's closing state, labeled "as of close" — the honest last-session recap.
+// session's closing state, labeled "as of close" — the honest last-session recap. This framing
+// was written generically enough that it needed no change to also cover a fully "closed"
+// session (pre-market/weekend/holiday, not just same-day post-close "recap") once page.tsx
+// stopped clamping the regime to settled there (metron-ops-I156 supersession, 2026-07-22) —
+// the panel simply mounts more often now, showing the last live snapshot frozen indefinitely
+// instead of vanishing. Only the "as of" timestamp needed a fix (below): a bare time reads as
+// "today" and would misrepresent a multi-day-old frozen snapshot as fresher than it is.
 
 import type { IntradayStatus, IntradayLegHistory, Today } from "@/lib/api";
 import { accountingMoneyWhole, moneyWhole, percent, signClass } from "@/lib/format";
@@ -20,12 +26,19 @@ const EXCLUDED_REASON: Record<string, string> = {
   no_fx: "no FX rate to base currency",
 };
 
-/** "11:03 AM" local, from the snapshot's UTC write time. */
+/** "11:03 AM" local for a same-day snapshot; "Fri, Jul 18 · 4:00 PM" once the frozen
+ *  snapshot is from an earlier calendar day (metron-ops-I156 supersession, 2026-07-22) — a
+ *  bare time reads as "today" and would misrepresent a weekend/holiday view of the last
+ *  completed session as fresher than it is. */
 function asOf(iso: string | null): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  const sameDay = d.toDateString() === new Date().toDateString();
+  if (sameDay) return time;
+  const day = d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  return `${day} · ${time}`;
 }
 
 function CoverageBanner({ status, today, ccy }: { status: IntradayStatus; today: Today; ccy: string }) {
