@@ -455,7 +455,15 @@ export function AccountPanel({
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-line">
+    // The metric columns are fixed-width and, together, wider than a phone viewport. Float
+    // the panel to a min-width past that column sum and let the bordered wrapper scroll it
+    // horizontally (overflow-x-auto) — the same pattern the <Table> and holdings tables use.
+    // Without this the account column (min-w-0 flex-1) collapses to zero on a narrow screen
+    // and the figures overlap the labels with no way to reach the cut-off columns (mobile
+    // fix). The floor tracks the column count: the live Day column adds one more. On desktop
+    // the panel is already wider than the floor, so nothing changes there.
+    <div className="overflow-x-auto rounded-lg border border-line">
+      <div className={showDay ? "min-w-[62rem]" : "min-w-[56rem]"}>
       {selectable ? (
         <div className="flex items-center justify-between border-b border-line bg-surface px-4 py-2">
           <span className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted">
@@ -537,6 +545,7 @@ export function AccountPanel({
         </div>
         <MetricCells cost={grand.cost} unreal={grand.unreal} mv={grand.mv} baseCurrency={baseCurrency} showDay={showDay} />
         <span className="w-6 shrink-0" aria-hidden="true" />
+      </div>
       </div>
     </div>
   );
