@@ -5,9 +5,10 @@ export const metadata: Metadata = {
   description: "Metron Privacy Policy",
 };
 
-// DRAFT — pending counsel review. Entity facts filled 2026-07-09 (Nous Ergon LLC / WA).
-// Do not link from signup or treat as published until reviewed by counsel (metron-ops#18).
-const LAST_UPDATED = "July 9, 2026";
+// Template-quality draft (attorney review deferred to public/paid launch — Brian's
+// 2026-07-20 ruling, alpha-engine-config-I1611). Entity facts filled 2026-07-09
+// (Nous Ergon LLC / WA).
+const LAST_UPDATED = "July 22, 2026";
 
 export default function PrivacyPage() {
   return (
@@ -106,9 +107,10 @@ export default function PrivacyPage() {
       </p>
 
       <p className="mt-8 rounded border border-line bg-panel p-3 text-xs text-muted">
-        Draft status: this page is a working draft prepared for legal review. Entity facts filled (Nous Ergon LLC,
-        WA; privacy@nousergon.ai) pending counsel sign-off before this route is linked from signup or made
-        publicly indexable. Tracked in nousergon/metron-ops#18.
+        Draft status: this is a template-quality document (not yet attorney-reviewed) prepared for the hosted beta.
+        Attorney review is deliberately deferred until public/paid launch or the first advice-flavored feature,
+        per Brian&rsquo;s 2026-07-20 ruling (alpha-engine-config-I1611) — until then this page, not a lawyer, is the
+        governing draft for the beta. Tracked in nousergon/metron-ops#203 (supersedes the closed metron-ops#18).
       </p>
     </article>
   );
