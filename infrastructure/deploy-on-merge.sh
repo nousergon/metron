@@ -83,8 +83,11 @@ if [ "$UNITS_CHANGED" = 1 ]; then
 fi
 
 # One-shot retirement of metron-web.service (:3000, portfolio.nousergon.ai —
-# deprecated 2026-07-22, metron-ops#225). The unit was never repo-tracked, so the
-# box copy is the only copy; idempotent — a no-op once the unit is gone.
+# deprecated 2026-07-22, metron-ops#225). Idempotent — a no-op once the unit is
+# gone. Companion metron-ops PR removes the tracked unit from
+# infrastructure/systemd/ so the install loop above can't re-copy it; until that
+# merges, a deploy may re-copy then immediately re-remove the file (harmless —
+# the service is never in the restart list, so it can't run).
 if [ -e /etc/systemd/system/metron-web.service ]; then
   sudo systemctl disable --now metron-web.service || true
   sudo rm /etc/systemd/system/metron-web.service
