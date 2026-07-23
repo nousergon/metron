@@ -45,7 +45,7 @@ dependencies = [
     # specifically because compute_psr only gained its periods_per_year param there
     # (nousergon-lib#193); Metron's NAV-snapshot cadence is irregular per-user-refresh,
     # not daily, so the pre-0.110.0 hardcoded-252 PSR would silently mis-annualize.
-    "nousergon-lib[quant,quant-stats]>=0.116.0",
+    "nousergon-lib[quant,quant-stats]>=0.124.13",
     # flow-doctor pipeline error-handler via krepis (MIT). krepis owns the
     # logging+flow-doctor glue; metron is AGPL but pulls the MIT commodity
     # layer from krepis and only the AGPL quant core from nousergon-lib.
