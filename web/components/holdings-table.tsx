@@ -15,7 +15,7 @@
 // unrelated axis. Bands render under a grouped two-row header; each metric is null off-feed
 // or on a coverage gap → "—" (never fabricated).
 
-import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -1225,63 +1225,19 @@ export function HoldingsTable({
           </tr>
         </thead>
         <tbody>
-          {sorted.map((h) => {
-            const foreign = h.currency !== baseCurrency;
-            // Base-currency cell with the no-fabrication fallback: muted native + `*`
-            // when a foreign holding has no cached FX rate. `fmt` is money() for per-unit
-            // prices (cents) or moneyWhole() for aggregates (metron-ops#45).
-            const baseMoney = (
-              base: number | null,
-              native: number | null,
-              fmt: (v: number, c: string) => string = money,
-            ): ReactNode => {
-              if (base != null) return fmt(base, baseCurrency);
-              if (native == null) return "—";
-              if (!foreign) return fmt(native, baseCurrency);
-              return (
-                <span className="text-muted" title={`No ${baseCurrency} FX rate cached`}>
-                  {fmt(native, h.currency)}*
-                </span>
-              );
-            };
-            const ctx: RowCtx = { baseCurrency, portfolioId, foreign, baseMoney, positionApplicable: showPositionEconomics };
-            return (
-              <tr key={h.ticker} className="border-b border-line last:border-0">
-                <td className={`${STICKY} overflow-hidden whitespace-nowrap bg-paper px-3 py-2 font-medium`}>
-                  <TickerCell h={h} portfolioId={portfolioId} />
-                </td>
-                {accountColumn ? (
-                  <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-left text-muted">{h.account_label ?? "—"}</td>
-                ) : null}
-                {marketValueVisible ? (
-                  <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-right tabular-nums">{MARKET_VALUE_COLUMN.cell(h, ctx)}</td>
-                ) : null}
-                {colsByBand.map(([, cols]) =>
-                  cols.map((col, j) => (
-                    <td
-                      key={col.key}
-                      className={`overflow-hidden whitespace-nowrap px-3 py-2 tabular-nums ${col.align === "left" ? "text-left" : "text-right"} ${j === 0 ? "border-l border-line" : ""}`}
-                      title={col.title}
-                    >
-                      {col.cell(h, ctx)}
-                    </td>
-                  )),
-                )}
-                {onRemove ? (
-                  <td className="px-3 py-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => onRemove(h.ticker)}
-                      aria-label={`Remove ${h.ticker}`}
-                      className="rounded px-2 py-0.5 text-xs text-muted hover:bg-rose-500/10 hover:text-rose-300"
-                    >
-                      Remove
-                    </button>
-                  </td>
-                ) : null}
-              </tr>
-            );
-          })}
+          {sorted.map((h) => (
+            <HoldingsRow
+              key={h.ticker}
+              h={h}
+              baseCurrency={baseCurrency}
+              portfolioId={portfolioId}
+              accountColumn={accountColumn}
+              marketValueVisible={marketValueVisible}
+              colsByBand={colsByBand}
+              showPositionEconomics={showPositionEconomics}
+              onRemove={onRemove}
+            />
+          ))}
         </tbody>
         {holdings.length > 0 && showTotals ? (
           <tfoot>
@@ -1316,6 +1272,102 @@ export function HoldingsTable({
     </DualScroll>
   );
 }
+
+/** A single row in the holdings table, extracted as a React.memo component so that
+ *  rows whose data hasn't changed don't re-render when sorting, toggling columns, or
+ *  expanding panels. The custom areEqual compares the holding data and column-visibility
+ *  props structurally but skips re-rendering when only the sort order changed (same `h`
+ *  references, just reordered). */
+const HoldingsRow = memo(function HoldingsRow({
+  h,
+  baseCurrency,
+  portfolioId,
+  accountColumn,
+  marketValueVisible,
+  colsByBand,
+  showPositionEconomics,
+  onRemove,
+}: {
+  h: Holding;
+  baseCurrency: string;
+  portfolioId?: string;
+  accountColumn: boolean;
+  marketValueVisible: boolean;
+  colsByBand: readonly (readonly [ColumnBand, readonly ColumnDef[]])[];
+  showPositionEconomics: boolean;
+  onRemove?: (ticker: string) => void;
+}) {
+  const foreign = h.currency !== baseCurrency;
+  // Base-currency cell with the no-fabrication fallback: muted native + `*` when a
+  // foreign holding has no cached FX rate. `fmt` is money() for per-unit prices (cents)
+  // or moneyWhole() for aggregates (metron-ops#45).
+  const baseMoney = (
+    base: number | null,
+    native: number | null,
+    fmt: (v: number, c: string) => string = money,
+  ): ReactNode => {
+    if (base != null) return fmt(base, baseCurrency);
+    if (native == null) return "—";
+    if (!foreign) return fmt(native, baseCurrency);
+    return (
+      <span className="text-muted" title={`No ${baseCurrency} FX rate cached`}>
+        {fmt(native, h.currency)}*
+      </span>
+    );
+  };
+  const ctx: RowCtx = { baseCurrency, portfolioId, foreign, baseMoney, positionApplicable: showPositionEconomics };
+  return (
+    <tr className="border-b border-line last:border-0">
+      <td className={`${STICKY} overflow-hidden whitespace-nowrap bg-paper px-3 py-2 font-medium`}>
+        <TickerCell h={h} portfolioId={portfolioId} />
+      </td>
+      {accountColumn ? (
+        <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-left text-muted">{h.account_label ?? "—"}</td>
+      ) : null}
+      {marketValueVisible ? (
+        <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-right tabular-nums">{MARKET_VALUE_COLUMN.cell(h, ctx)}</td>
+      ) : null}
+      {colsByBand.map(([, cols]) =>
+        cols.map((col, j) => (
+          <td
+            key={col.key}
+            className={`overflow-hidden whitespace-nowrap px-3 py-2 tabular-nums ${col.align === "left" ? "text-left" : "text-right"} ${j === 0 ? "border-l border-line" : ""}`}
+            title={col.title}
+          >
+            {col.cell(h, ctx)}
+          </td>
+        )),
+      )}
+      {onRemove ? (
+        <td className="px-3 py-2 text-right">
+          <button
+            type="button"
+            onClick={() => onRemove(h.ticker)}
+            aria-label={`Remove ${h.ticker}`}
+            className="rounded px-2 py-0.5 text-xs text-muted hover:bg-rose-500/10 hover:text-rose-300"
+          >
+            Remove
+          </button>
+        </td>
+      ) : null}
+    </tr>
+  );
+}, (prev, next) => {
+  // Re-render only when the holding data or visible columns actually changed — not when
+  // sort order changes (same `h` refs, just reordered).
+  if (prev.h !== next.h) return false;
+  if (prev.baseCurrency !== next.baseCurrency) return false;
+  if (prev.portfolioId !== next.portfolioId) return false;
+  if (prev.accountColumn !== next.accountColumn) return false;
+  if (prev.marketValueVisible !== next.marketValueVisible) return false;
+  if (prev.showPositionEconomics !== next.showPositionEconomics) return false;
+  if (prev.onRemove !== next.onRemove) return false;
+  // colsByBand is recreated each render (not useMemo'd) — compare the visible band set
+  // structurally rather than by reference.
+  const prevBands = prev.colsByBand.map(([b]) => b).join(",");
+  const nextBands = next.colsByBand.map(([b]) => b).join(",");
+  return prevBands === nextBands;
+});
 
 /** Wraps a wide table in a single horizontal scroll container and mirrors its scrollbar at
  *  the TOP as well, so a long table can be scrolled horizontally from either end without
