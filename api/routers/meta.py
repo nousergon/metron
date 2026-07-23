@@ -1,14 +1,20 @@
-"""Meta endpoints — prove the shared engine is wired in and advertise capabilities."""
+"""Meta endpoints — prove the shared engine is wired in, advertise capabilities,
+and report system-wide data freshness (metron-ops#220 provenance surface)."""
 
 from __future__ import annotations
 
 import importlib.metadata
+from datetime import date
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 import portfolio_analytics
 from api import entitlements
 from api.config import settings
+from api.db import models
+from api.db.session import get_session
 from api.plugins import active_plugins
 
 router = APIRouter(prefix="/meta", tags=["system"])
@@ -97,3 +103,66 @@ def entitlements_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from None
     result["simulator"] = settings.tier_simulator
     return result
+
+
+@router.get("/status")
+def system_status(session: Session = Depends(get_session)) -> dict:
+    """System-wide data-surface freshness (metron-ops#220 — provenance surface).
+
+    Reports what data is available, how fresh each source is, and the deployment's
+    entitlement state — the machine-readable /status surface every served analytics
+    payload carries provenance markers for individually (the ``as_of`` / ``last_price_date``
+    / ``estimated`` / ``stale`` fields on `HoldingOut`, `IntradayStatusOut`, `PerformanceOut`,
+    etc.). Reconciliation-run and open-break-count fields are explicitly gated on the
+    layer-1 break store (metron-ops#210 layer 1) and will be added once it lands.
+    """
+    # Account counts by broker source — the number of distinct connected accounts
+    # across all tenants, plus a breakdown by broker type.
+    total_accounts = session.scalar(select(func.count(models.Account.id)))
+    broker_counts = dict(
+        session.execute(
+            select(models.Account.broker, func.count(models.Account.id))
+            .group_by(models.Account.broker)
+        ).all()
+    )
+
+    # Most recent NAV snapshot date across all portfolios — a proxy for
+    # "when was the last successful price refresh / EOD valuation?"
+    latest_nav = session.scalar(
+        select(models.NavSnapshot.snap_date)
+        .order_by(models.NavSnapshot.snap_date.desc())
+        .limit(1)
+    )
+
+    # Total portfolio count
+    total_portfolios = session.scalar(select(func.count(models.Portfolio.id)))
+
+    return {
+        "engine": "portfolio-analytics",
+        "engine_version": _engine_version(),
+        "deployment": {
+            "tier": settings.default_tier,
+            "feed_entitled": settings.feed_entitled,
+            "market_data_sync_enabled": settings.market_data_sync_enabled,
+            "tier_simulator": settings.tier_simulator,
+        },
+        "connectors": {
+            "flex_stored": bool(settings.flex_token and settings.flex_query_id),
+            "snaptrade_personal": settings.snaptrade_personal,
+        },
+        "data_freshness": {
+            "latest_eod_valuation_date": latest_nav.isoformat() if latest_nav else None,
+            "latest_eod_valuation_source": "nav_snapshots — EOD close cache after price refresh",
+        },
+        "accounts": {
+            "total": total_accounts or 0,
+            "by_broker": broker_counts,
+        },
+        "portfolios": {
+            "total": total_portfolios or 0,
+        },
+        "reconciliation": {
+            "available": False,
+            "note": "Layer 1 (break store) not yet deployed — reconciliation-run and open-break-count fields will be added once metron-ops#210 layer 1 lands.",
+        },
+    }
