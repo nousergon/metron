@@ -25,7 +25,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.51.0",
     # Multipart parsing for CSV/OFX file uploads (FastAPI UploadFile requires it).
-    "python-multipart>=0.0.9",
+    "python-multipart>=0.0.32",
     "sqlalchemy>=2.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.3",
@@ -45,7 +45,7 @@ dependencies = [
     # specifically because compute_psr only gained its periods_per_year param there
     # (nousergon-lib#193); Metron's NAV-snapshot cadence is irregular per-user-refresh,
     # not daily, so the pre-0.110.0 hardcoded-252 PSR would silently mis-annualize.
-    "nousergon-lib[quant,quant-stats]>=0.116.0",
+    "nousergon-lib[quant,quant-stats]>=0.124.13",
     # flow-doctor pipeline error-handler via krepis (MIT). krepis owns the
     # logging+flow-doctor glue; metron is AGPL but pulls the MIT commodity
     # layer from krepis and only the AGPL quant core from nousergon-lib.
@@ -60,7 +60,7 @@ dependencies = [
     # universe and reads EOD closes / FX / sectors / earnings from its S3 artifacts —
     # it makes NO direct market-data API calls (no yfinance). Remaining external fetch:
     # FRED (Macro page) — a separate spine cutover (the producer already emits macro).
-    "boto3>=1.43.49",
+    "boto3>=1.43.54",
 ]
 
 [project.optional-dependencies]
@@ -77,7 +77,7 @@ dev = [
     # (golden portfolios + property tests, metron-ops#210): generates randomized-but-valid
     # transaction histories to assert ledger invariants hold universally, not just on
     # hand-picked fixtures (tests/test_golden_portfolios.py).
-    "hypothesis>=6.100",
+    "hypothesis>=6.160.0",
 ]
 
 [tool.hatch.build.targets.wheel]
