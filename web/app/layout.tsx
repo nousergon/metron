@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
 import { UserNav } from "@/components/user-nav";
+import { MobileNav } from "@/components/mobile-nav";
 import { DemoBanner } from "@/components/demo-banner";
 
 export const metadata: Metadata = {
@@ -30,23 +31,26 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <DemoBanner />
-        <div className="mx-auto max-w-7xl px-6">
-          <header className="flex items-center justify-between border-b border-line py-5">
-            <Link href="/" className="flex items-baseline gap-3">
-              <span className="text-base font-semibold uppercase tracking-[0.22em]">Metron</span>
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <header className="flex items-center justify-between border-b border-line py-4 sm:py-5">
+            <Link href="/" className="flex items-baseline gap-2 sm:gap-3">
+              <span className="text-sm font-semibold uppercase tracking-[0.22em] sm:text-base">Metron</span>
               <span className="hidden text-[11px] uppercase tracking-[0.18em] text-muted sm:inline">
                 portfolio analytics, measured
               </span>
             </Link>
-            <UserNav />
+            <div className="hidden lg:block">
+              <UserNav />
+            </div>
+            <MobileNav />
           </header>
-          <main className="py-8">{children}</main>
+          <main className="py-6 sm:py-8">{children}</main>
           <footer className="border-t border-line py-6 text-xs leading-relaxed text-muted">
             <p>
               Read-only analytics. No ads, no trackers, no investment advice — we compute the numbers; what you do
               with them is up to you.
             </p>
-            <p className="mt-2 flex gap-4">
+            <p className="mt-2 flex flex-col gap-2 sm:flex-row sm:gap-4">
               <Link href="/terms" className="hover:text-fg">
                 Terms
               </Link>
