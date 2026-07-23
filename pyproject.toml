@@ -60,7 +60,7 @@ dependencies = [
     # universe and reads EOD closes / FX / sectors / earnings from its S3 artifacts —
     # it makes NO direct market-data API calls (no yfinance). Remaining external fetch:
     # FRED (Macro page) — a separate spine cutover (the producer already emits macro).
-    "boto3>=1.43.49",
+    "boto3>=1.43.54",
 ]
 
 [project.optional-dependencies]
