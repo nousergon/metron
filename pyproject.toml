@@ -77,7 +77,7 @@ dev = [
     # (golden portfolios + property tests, metron-ops#210): generates randomized-but-valid
     # transaction histories to assert ledger invariants hold universally, not just on
     # hand-picked fixtures (tests/test_golden_portfolios.py).
-    "hypothesis>=6.100",
+    "hypothesis>=6.160.0",
 ]
 
 [tool.hatch.build.targets.wheel]
