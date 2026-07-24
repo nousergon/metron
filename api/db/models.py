@@ -254,6 +254,49 @@ class ReconciliationBreak(Base):
     account: Mapped[Account] = relationship()
 
 
+class ShadowRecomputeBreak(Base):
+    """A detected divergence between the shadow NAV/returns/realized-P&L recompute
+    and what production actually served — the layer-3 dashboard-accuracy-verification
+    record (metron-ops#218).
+
+    Deliberately a SIBLING of ``ReconciliationBreak`` (layer 1, metron-ops#216), not a
+    row in that table: layer-1 breaks are account/security-grained (a broker position
+    diverges from Metron's own DB), which is why that table's ``account_id`` is
+    NOT NULL with a security-scoped FK — but a shadow-recompute break is
+    PORTFOLIO-grained (the shadow engine's independently-aggregated NAV/TWR/realized
+    for a whole portfolio on a day diverges from the production-served figure), with
+    no natural single account or security to hang it on. Forcing a portfolio-level
+    break into the account-shaped table would mean either a sentinel account_id or
+    loosening its NOT NULL — both worse than this sibling table, which deliberately
+    MIRRORS layer 1's conventions instead: same break-lifecycle shape (``break_key``
+    upsert, ``alerted_at``/``resolved_at``, never-deleted audit trail), same
+    ``api.services.alerting`` channel, same nightly-job-CLI posture. This is the
+    schema-coordination point the epic (metron-ops#210) asks for — one alerting/audit
+    convention, two tables shaped for what each layer actually diverges on, rather
+    than two ad hoc parallel stores with incompatible shapes."""
+
+    __tablename__ = "shadow_recompute_breaks"
+    __table_args__ = (UniqueConstraint("break_key", name="uq_shadow_recompute_break_key"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
+    # "nav" | "twr" | "realized_pnl"
+    break_type: Mapped[str] = mapped_column(String(30))
+    break_key: Mapped[str] = mapped_column(String(140), index=True)
+    break_date: Mapped[date] = mapped_column(index=True)  # first-detected date; not updated on re-detect
+    as_of_date: Mapped[date] = mapped_column(index=True)  # the snapshot/session date being diffed
+    production_value: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    shadow_value: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    tolerance: Mapped[float] = mapped_column(Numeric(28, 10), default=0)
+    alerted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+    portfolio: Mapped[Portfolio] = relationship()
+
+
 class PriceBar(Base):
     """Global EOD price cache — NOT tenant-scoped. One fetch serves all tenants."""
 

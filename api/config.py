@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     # $10 position isn't flagged for its own cost basis being $0.02 off.
     reconciliation_cash_tolerance_usd: float = 1.0
     reconciliation_cost_basis_tolerance_bps: float = 5.0
+    # Shadow-recompute divergence tolerances (metron-ops#218, dashboard-accuracy layer 3)
+    # — NAV/realized-P&L allow a small absolute-or-relative band (broker-rounding /
+    # as-of-price-staleness noise between the two independent valuation passes), same
+    # shape as the reconciliation tolerances above. TWR is a % figure so its floor is a
+    # flat bp band, not a $ one.
+    shadow_recompute_nav_tolerance_usd: float = 1.0
+    shadow_recompute_nav_tolerance_bps: float = 10.0
+    shadow_recompute_twr_tolerance_bps: float = 25.0
     # Data-spine sync (metron ↔ alpha-engine-data). `alpha-engine-data` is the system's
     # sole market-data producer; Metron publishes its held-ticker universe here and reads
     # back EOD-close / FX artifacts (no direct market-data API calls). The bucket is the
