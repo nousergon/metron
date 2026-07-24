@@ -1,11 +1,11 @@
 import { Suspense } from "react";
 import { acctParams, getAccounts, getHoldings, getHoldingsView, getIntradayLegs, getIntradayStatus, getSummary, getToday, getValuationMedians, getWatchlist, MetronApiError, type Entitlements, type Holding, type HoldingsViewPrefs, type IntradayLegHistory, type IntradayStatus, type Summary, type Today, type ValuationMedians, type WatchlistEntry } from "@/lib/api";
 import { Empty, Section } from "@/components/ui";
-import { HoldingsView } from "@/components/holdings-view";
+import { HoldingsViewWithSwr } from "@/components/holdings-view-with-swr";
 import { LiveValuationProvider } from "@/components/live-valuation-context";
 import { RefreshPrices } from "@/components/refresh-prices";
 import { IntradayRefresher } from "@/components/intraday-refresher";
-import { SettledRefresher } from "@/components/settled-refresher";
+import { HoldingsPoller } from "@/components/holdings-poller";
 import { SessionPanel } from "@/components/session-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { WatchlistCompareTable } from "@/components/watchlist-compare-table";
@@ -132,10 +132,11 @@ export default async function HoldingsPage(
 
       <div className="mt-3 flex items-baseline gap-2">
         <h1 className="text-lg font-semibold">Holdings</h1>
-        {/* Live mode: position values revalue from intraday balances every ~5 min while
-            open (#79), with the honest coverage label. Settled mode: a quiet slow poll so
-            an all-day-open tab still catches the EOD snapshot advance (metron-ops#154). */}
-        {valuation === "live" ? <IntradayRefresher portfolioId={id} /> : <SettledRefresher />}
+        {/* SWR-backed polling (metron-ops#232): IntradayRefresher handles the live status
+            label; HoldingsPoller keeps the SWR cache fresh at the right cadence for the
+            current valuation mode — no blanket `router.refresh()`. */}
+        <IntradayRefresher portfolioId={id} />
+        <HoldingsPoller portfolioId={id} accountIds={accountIds} byAccount={byAccount} valuation={valuation} />
       </div>
       <p className="text-sm text-muted">
         All accounts are included by default. (De)activate accounts below to filter the positions for this view.
@@ -247,7 +248,7 @@ async function HoldingsSection({
         // markers (metron-ops#147) — settled mode mounts it with live=false so the table
         // makes zero live claims; the Watchlist section below stays outside it entirely.
         (<LiveValuationProvider live={valuation === "live" && (live?.applied ?? false)}>
-          <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} accounts={accounts ?? undefined} selectedAccountIds={accountIds} />
+          <HoldingsViewWithSwr portfolioId={id} accountIds={accountIds} byAccount={byAccount} valuation={valuation} initialHoldings={holdings} baseCurrency={ccy} priced={priced} medians={medians} savedGrouping={savedView?.grouping ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} liveAvailable={liveAvailable} sessionState={sessionState} accounts={accounts ?? undefined} selectedAccountIds={accountIds} />
         </LiveValuationProvider>)
       )}
     </Section>

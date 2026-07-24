@@ -14,10 +14,14 @@ import {
   createSnapTradeConnectUrl,
   deleteAccount,
   deleteCryptoAddress,
+  getCrypto,
+  getHoldings,
   getSnapTradeConnections,
   getWatchlist,
   importFile,
   MetronApiError,
+  type CryptoSummary,
+  type Holding,
   type HoldingsViewPrefs,
   type Preferences,
   putAccountSelection,
@@ -368,6 +372,21 @@ export async function syncFlexStoredAction(portfolioId: string): Promise<ActionR
 export async function fetchWatchlistAction(portfolioId: string): Promise<WatchlistEntry[]> {
   const apiAuth = await requireApiAuth();
   return getWatchlist(apiAuth, portfolioId);
+}
+
+export async function fetchHoldingsAction(
+  portfolioId: string,
+  accountIds: string[],
+  byAccount: boolean,
+  valuation: "live" | "settled",
+): Promise<Holding[]> {
+  const apiAuth = await requireApiAuth();
+  return getHoldings(apiAuth, portfolioId, accountIds, byAccount, valuation);
+}
+
+export async function fetchCryptoAction(portfolioId: string): Promise<CryptoSummary> {
+  const apiAuth = await requireApiAuth();
+  return getCrypto(apiAuth, portfolioId);
 }
 
 export async function addWatchlistAction(portfolioId: string, symbol: string, note?: string): Promise<ActionResult> {

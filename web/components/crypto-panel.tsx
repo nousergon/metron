@@ -4,14 +4,15 @@
 // their synced balances + USD value. Standalone: decoupled from the EOD-close holdings/NAV
 // (crypto is 24/7). Balances are synced by the nousergon-data producer; a row shows
 // "Pending sync" until the first balance arrives. Mutations go through server actions that
-// revalidate the page; failures surface inline (never silently swallowed).
+// revalidate the SWR cache (metron-ops#232); failures surface inline (never silently swallowed).
 
 import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useSWRConfig } from "swr";
 import type { CryptoSummary } from "@/lib/api";
 import { money, quantity } from "@/lib/format";
 import { Empty, Section, Table } from "@/components/ui";
 import { addCryptoAddressAction, deleteCryptoAddressAction } from "@/app/portfolios/[id]/actions";
+import { cryptoKey, useCrypto } from "@/lib/use-crypto";
 
 const CHAINS = [
   { value: "BTC", label: "Bitcoin (BTC)" },
@@ -22,8 +23,9 @@ function short(addr: string): string {
   return addr.length > 16 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr;
 }
 
-export function CryptoPanel({ portfolioId, summary }: { portfolioId: string; summary: CryptoSummary }) {
-  const router = useRouter();
+export function CryptoPanel({ portfolioId, summary: fallbackSummary }: { portfolioId: string; summary: CryptoSummary }) {
+  const { mutate } = useSWRConfig();
+  const { data: summary = fallbackSummary } = useCrypto(portfolioId, fallbackSummary);
   const [chain, setChain] = useState("BTC");
   const [address, setAddress] = useState("");
   const [label, setLabel] = useState("");
@@ -43,7 +45,7 @@ export function CryptoPanel({ portfolioId, summary }: { portfolioId: string; sum
       }
       setAddress("");
       setLabel("");
-      router.refresh();
+      void mutate(cryptoKey(portfolioId));
     });
   }
 
@@ -55,7 +57,7 @@ export function CryptoPanel({ portfolioId, summary }: { portfolioId: string; sum
         setError(r.message);
         return;
       }
-      router.refresh();
+      void mutate(cryptoKey(portfolioId));
     });
   }
 
@@ -63,114 +65,98 @@ export function CryptoPanel({ portfolioId, summary }: { portfolioId: string; sum
   const asOfLocal = as_of_utc ? new Date(as_of_utc).toLocaleString() : null;
 
   return (
-    <div>
-      <form onSubmit={add} className="mt-3 flex flex-wrap items-center gap-2">
-        <select
-          value={chain}
-          onChange={(e) => setChain(e.target.value)}
-          aria-label="Chain"
-          className="rounded border border-line bg-surface px-2 py-1 text-sm"
+    <>
+      {positions.length > 0 && (
+        <Section
+          title="Wallet addresses"
+          note={stale ? "Pending sync — balances shown may be stale" : asOfLocal ? `As of ${asOfLocal}` : undefined}
         >
-          {CHAINS.map((c) => (
-            <option key={c.value} value={c.value}>
-              {c.label}
-            </option>
-          ))}
-        </select>
-        <input
-          value={address}
-          onChange={(e) => setAddress(e.target.value)}
-          placeholder="Address — or BTC xpub/ypub/zpub for a whole wallet"
-          aria-label="Wallet address or extended public key"
-          className="w-96 max-w-full rounded border border-line bg-surface px-2 py-1 text-sm font-mono"
-        />
-        <input
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          placeholder="Label (optional)"
-          aria-label="Label"
-          className="w-44 rounded border border-line bg-surface px-2 py-1 text-sm"
-        />
-        <button
-          type="submit"
-          disabled={pending || !address.trim()}
-          className="rounded border border-line px-3 py-1 text-sm font-medium hover:bg-white/5 disabled:opacity-50"
-        >
-          Add wallet
-        </button>
-      </form>
-      {error ? <p className="mt-2 text-xs text-negative">{error}</p> : null}
+          <Table head={["Chain", "Address", "Label", "Balance", "Price (USD)", "Value (USD)", ""]}>
+              {positions.map((p) => (
+                <tr key={p.id} className={p.synced ? "" : "text-muted"}>
+                  <td className="font-mono text-xs">{p.chain}</td>
+                  <td className="font-mono text-xs" title={p.address}>
+                    {short(p.address)}
+                  </td>
+                  <td className="text-sm">{p.label ?? "—"}</td>
+                  <td className="text-right font-mono text-xs">{p.balance != null ? quantity(p.balance) : "Pending"}</td>
+                  <td className="text-right font-mono text-xs">
+                    {p.price_usd != null ? money(p.price_usd) : "—"}
+                  </td>
+                  <td className="text-right font-mono text-xs">
+                    {p.value_usd != null ? money(p.value_usd) : "—"}
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => remove(p.id)}
+                      aria-label={`Remove ${short(p.address)}`}
+                      title="Remove"
+                      disabled={pending}
+                      className="text-[11px] text-negative/70 transition hover:text-negative"
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {n_pending > 0 && (
+                <tr className="text-muted">
+                  <td colSpan={7} className="py-2 text-center text-xs italic">
+                    {n_pending} address{n_pending > 1 ? "es" : ""} awaiting first sync
+                  </td>
+                </tr>
+              )}
+          </Table>
+        </Section>
+      )}
 
-      <Section
-        title="Crypto wallets"
-        note={
-          total_usd != null
-            ? `total ${money(total_usd)}${stale ? " · sync delayed" : ""}${asOfLocal ? ` · as of ${asOfLocal}` : ""}`
-            : "balances sync automatically once a wallet is added"
-        }
-      >
-        {positions.length === 0 ? (
-          <Empty>
-            No wallets tracked yet. Add a BTC or ETH address above — balances sync automatically (this page is
-            read-only; we never hold your keys).
-          </Empty>
-        ) : (
-          <>
-            <Table head={["Asset", "Wallet", "Balance", "Price", "Value", ""]}>
-              {positions.map((p, i) => {
-                // One wallet → many rows (native + ERC-20 tokens). Show the wallet address +
-                // Remove only on the first row of each wallet; token rows indent under it.
-                const firstOfWallet = i === 0 || positions[i - 1].id !== p.id;
-                return (
-                  <tr key={`${p.id}-${p.symbol ?? p.chain}`} className="border-b border-line last:border-0">
-                    <td className={`px-4 py-2 ${firstOfWallet ? "font-medium" : "pl-8 text-muted"}`}>
-                      {p.symbol ?? p.chain}
-                    </td>
-                    <td className="px-4 py-2 text-muted">
-                      {firstOfWallet ? (
-                        <>
-                          <span className="font-mono" title={p.address}>
-                            {short(p.address)}
-                          </span>
-                          {p.label ? <span className="ml-2 text-xs">{p.label}</span> : null}
-                        </>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-2 tabular-nums">{p.balance != null ? quantity(p.balance) : "—"}</td>
-                    <td className="px-4 py-2 tabular-nums text-muted">{p.price_usd != null ? money(p.price_usd) : "—"}</td>
-                    <td className="px-4 py-2 tabular-nums">
-                      {p.synced && p.value_usd != null ? (
-                        money(p.value_usd)
-                      ) : (
-                        <span className="text-[10px] uppercase tracking-wide text-muted">Pending sync</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      {firstOfWallet ? (
-                        <button
-                          type="button"
-                          onClick={() => remove(p.id)}
-                          disabled={pending}
-                          aria-label={`Remove ${p.chain} wallet`}
-                          className="rounded px-2 py-0.5 text-xs text-muted hover:bg-rose-500/10 hover:text-rose-300 disabled:opacity-50"
-                        >
-                          Remove
-                        </button>
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              })}
-            </Table>
-            {n_pending > 0 ? (
-              <p className="mt-2 text-xs text-muted">
-                {n_pending} wallet{n_pending === 1 ? "" : "s"} awaiting first sync — balances appear within a few
-                minutes of being added.
-              </p>
-            ) : null}
-          </>
-        )}
+      <Section title="Add address">
+        <form onSubmit={add} className="flex flex-wrap items-end gap-2">
+          <label className="flex flex-col gap-1 text-xs text-muted">
+            Chain
+            <select
+              value={chain}
+              onChange={(e) => setChain(e.target.value)}
+              className="rounded border border-line bg-surface px-2 py-1 font-mono text-sm text-ink"
+            >
+              {CHAINS.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-muted">
+            Address
+            <input
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              placeholder="1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+              disabled={pending}
+              className="w-72 rounded border border-line bg-surface px-2 py-1 font-mono text-sm text-ink disabled:opacity-50"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-muted">
+            Label
+            <input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="Optional label"
+              disabled={pending}
+              className="w-36 rounded border border-line bg-surface px-2 py-1 font-mono text-sm text-ink disabled:opacity-50"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={pending || !address.trim()}
+            className="rounded bg-ink px-3 py-[7px] text-sm text-surface transition hover:opacity-80 disabled:opacity-30"
+          >
+            {pending ? "Adding..." : "Add"}
+          </button>
+        </form>
+        {error ? <div className="mt-1 text-xs text-negative">{error}</div> : null}
       </Section>
-    </div>
+    </>
   );
 }

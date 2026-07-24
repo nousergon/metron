@@ -10,7 +10,6 @@ import { PerfTiles } from "@/components/perf-tiles";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { TierSimulator } from "@/components/tier-simulator";
 import { IndexStrip } from "@/components/index-strip";
-import { SettledRefresher } from "@/components/settled-refresher";
 import { RenamePortfolio } from "@/components/rename-portfolio";
 import { featureEntitlement, loadEntitlements, previewFromCookies, toFeatureStates } from "@/lib/entitlements";
 import { requireApiAuth } from "@/lib/session";
@@ -153,7 +152,6 @@ export default async function PortfolioPage(
             <span className="text-[11px] text-muted" title="Settled view — the official end-of-day close valuation. Live session detail is on Holdings → Live session.">
               settled close
             </span>
-            <SettledRefresher />
           </div>
           <div className="mt-1 text-3xl font-semibold tabular-nums">{moneyWhole(totalValue, ccy)}</div>
           <div className="mt-1 text-xs text-muted">cost basis {moneyWhole(summary.total_cost_basis, ccy)}</div>

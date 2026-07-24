@@ -17,7 +17,8 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useSWRConfig } from "swr";
+import { holdingsKey } from "@/lib/use-holdings";
 import {
   getCoreRowModel,
   useReactTable,
@@ -1426,7 +1427,7 @@ function ClassifyCellContent({
   field: "sector" | "country" | "type";
   portfolioId?: string;
 }) {
-  const router = useRouter();
+  const { mutate } = useSWRConfig();
   // Type rides on security_type (a key like "treasury" shown via a friendly label); sector /
   // country are free strings where the value IS the label.
   const value = field === "sector" ? h.sector : field === "country" ? h.country : h.security_type;
@@ -1461,7 +1462,7 @@ function ClassifyCellContent({
         return;
       }
       setEditing(false);
-      router.refresh();
+      void mutate(holdingsKey(portfolioId!));
     });
   }
 
@@ -1510,7 +1511,7 @@ function ClassifyCellContent({
  *  symbol. With a portfolioId it exposes an inline editor so an opaque numeric-CUSIP bond
  *  can be named (metron-ops#47). Read-only contexts (no portfolioId) just render. */
 function TickerCell({ h, portfolioId }: { h: Holding; portfolioId?: string }) {
-  const router = useRouter();
+  const { mutate } = useSWRConfig();
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(h.user_label ?? "");
   const [error, setError] = useState<string | null>(null);
@@ -1537,7 +1538,7 @@ function TickerCell({ h, portfolioId }: { h: Holding; portfolioId?: string }) {
         return;
       }
       setEditing(false);
-      router.refresh();
+      void mutate(holdingsKey(portfolioId!));
     });
   }
 

@@ -23,12 +23,12 @@
 // the JSON can never be misread as a real position.
 
 import { useMemo, useState, useTransition, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
 import type { Holding, WatchlistEntry } from "@/lib/api";
 import { Empty } from "@/components/ui";
 import { HoldingsTable } from "@/components/holdings-table";
 import { useColumnBands } from "@/components/column-bands-context";
 import { addWatchlistAction, removeWatchlistAction } from "@/app/portfolios/[id]/actions";
+import { useWatchlist } from "@/lib/use-watchlist";
 
 function toShellHolding(e: WatchlistEntry): Holding {
   return {
@@ -124,14 +124,19 @@ export function WatchlistCompareTable({
   baseCurrency: string;
   entries: WatchlistEntry[];
 }) {
-  const router = useRouter();
   const [symbol, setSymbol] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const { bands } = useColumnBands();
 
-  const shells = useMemo(() => entries.map(toShellHolding), [entries]);
-  const alsoHeld = useMemo(() => entries.filter((e) => e.held).map((e) => e.symbol), [entries]);
+  // SWR-backed watchlist (metron-ops#232): SSR data seeds the cache for instant first
+  // paint; a mutation calls `mutate()` to revalidate just this cache key instead of
+  // `router.refresh()` re-rendering the whole page. The compare-table's visual entries
+  // now come from the shared client-side cache so add/remove reflects instantly.
+  const { data: watchlistEntries = entries, mutate } = useWatchlist(portfolioId, entries);
+
+  const shells = useMemo(() => watchlistEntries.map(toShellHolding), [watchlistEntries]);
+  const alsoHeld = useMemo(() => watchlistEntries.filter((e) => e.held).map((e) => e.symbol), [watchlistEntries]);
 
   function add(e: FormEvent) {
     e.preventDefault();
@@ -145,7 +150,7 @@ export function WatchlistCompareTable({
         return;
       }
       setSymbol("");
-      router.refresh();
+      void mutate();
     });
   }
 
@@ -157,7 +162,7 @@ export function WatchlistCompareTable({
         setError(r.message);
         return;
       }
-      router.refresh();
+      void mutate();
     });
   }
 
