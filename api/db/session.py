@@ -97,10 +97,15 @@ def _sync_additive_columns(bind: Engine) -> None:
             _sync_missing_indexes(conn, table)
 
 
-def create_all() -> None:
-    """Create tables for dev/test. Production uses migrations (Alembic) instead."""
+def create_all(bind: Engine | None = None) -> None:
+    """Create tables for the SQLite/personal tier. Postgres (multi-tenant) uses
+    Alembic migrations — this gate is on DB dialect, not an ENV string, so a
+    SQLite deploy always self-heals regardless of what ``ENV`` says (metron-ops#202)."""
+    bind = bind or engine
+    if not bind.dialect.name == "sqlite":
+        return  # Postgres → Alembic owns schema evolution; never auto-DDL here.
     # Import models so they register on Base.metadata before create_all.
     from api.db import models  # noqa: F401
 
-    Base.metadata.create_all(bind=engine)
-    _sync_additive_columns(engine)
+    Base.metadata.create_all(bind=bind)
+    _sync_additive_columns(bind)
