@@ -65,7 +65,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "httpx>=0.28.1",            # FastAPI TestClient
     "psycopg[binary]>=3.3.4",   # Postgres driver (prod); SQLite needs nothing extra
