@@ -23,7 +23,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from krepis.trading_calendar import last_closed_trading_day, previous_trading_day
-from nousergon_lib.quant.returns import ValuationPoint, annualize, time_weighted_return
+from nousergon_lib.quant.returns import CashFlow, ValuationPoint, annualize, time_weighted_return, xirr
 from nousergon_lib.quant.risk_measures import historical_cvar
 from nousergon_lib.quant.riskstats import max_drawdown, sharpe_ratio, sortino_ratio, volatility
 from nousergon_lib.quant.stats.dsr import compute_psr
@@ -689,6 +689,8 @@ class PerformanceSummary:
     cumulative_return: float | None = None
     twr: float | None = None
     annualized_twr: float | None = None
+    mwr: float | None = None        # money-weighted return over the full window (XIRR-derived, window-annualized)
+    annualized_mwr: float | None = None  # XIRR annualized rate (identical to mwr for >=1yr; differs sub-year)
     # Risk metrics over the flow-neutralized return series (None until ≥3 snapshots) +
     # the benchmark comparison (None until ≥2 snapshots carry an SPY close). psr = P(true
     # Sharpe > 0) (None until the annualization floor + PSR's own n>=30 are both met); cvar
@@ -734,6 +736,7 @@ class PeriodTile:
     end_date: date | None
     gain: float | None
     twr: float | None
+    mwr: float | None = None   # money-weighted return over the window (XIRR, same flow series as TWR)
     benchmarks: list[BenchmarkReturn] = field(default_factory=list)
     # Honest empty-state reason when the window can't be formed (e.g. "as of 2026-06-25"
     # for a TODAY tile whose freshest valuation predates today). None for a formed tile.
@@ -962,6 +965,11 @@ def performance(
     )
     if summary.twr is not None and summary.days >= _MIN_ANNUALIZE_DAYS:
         summary.annualized_twr = annualize(summary.twr, summary.days)
+    # MWR (XIRR) over the same flow series — only once there are multiple snapshots with sign
+    # change (XIRR convergence requires at least one inflow and one outflow).
+    summary.mwr = _window_mwr(points)
+    if summary.mwr is not None and summary.days >= _MIN_ANNUALIZE_DAYS:
+        summary.annualized_mwr = annualize(summary.mwr, summary.days)
     _apply_risk_and_alpha(summary, points)
     summary.rolling = _rolling_risk(points)
     return summary
@@ -977,6 +985,38 @@ def _window_twr(window: list[PerfPoint]) -> float | None:
     for r in _flow_neutralized_returns(window):
         cum *= 1.0 + r
     return cum - 1.0
+
+
+def _window_mwr(window: list[PerfPoint]) -> float | None:
+    """Money-weighted return (XIRR) over a window of NAV snapshots.
+
+    Reuses the **same** ``external_flow`` series TWR's flow-neutralization uses — never
+    derives a second flow definition (metron-ops#204 binding constraint). The XIRR is computed
+    from the start-of-window NAV (initial investment, negative), each intermediate snapshot's
+    external flow (negated for investor-perspective sign), and the end-of-window NAV (terminal
+    liquidation, positive). Returns the **window** return (not annualized), matching the display
+    convention of ``_window_twr``. None for < 2 points or when XIRR doesn't converge."""
+    if len(window) < 2:
+        return None
+    flows: list[CashFlow] = []
+    # Start-of-window portfolio value as the initial "investment" (negative from investor perspective).
+    # The external_flow on this date is excluded because it happened before the window (the start
+    # boundary is the first snapshot, and its external_flow relates to the prior sub-period).
+    flows.append(CashFlow(window[0].snap_date, -window[0].nav))
+    # Intermediate external flows, investor-perspective: net purchases (external_flow > 0) mean
+    # money entered the portfolio → negative cash flow to the investor.
+    for p in window[1:]:
+        if p.external_flow:
+            flows.append(CashFlow(p.snap_date, -p.external_flow))
+    # End-of-window portfolio value as the terminal liquidation proceeds.
+    flows.append(CashFlow(window[-1].snap_date, window[-1].nav))
+    annualized = xirr(flows)
+    if annualized is None:
+        return None
+    days = (window[-1].snap_date - window[0].snap_date).days
+    if days <= 0:
+        return None
+    return (1.0 + annualized) ** (days / 365.0) - 1.0
 
 
 _MARKET_TZ = ZoneInfo("America/New_York")
@@ -1177,6 +1217,7 @@ def period_tiles(
         window = points[base_i : end_i + 1]
         base, end = window[0], window[-1]
         twr = _window_twr(window)
+        mwr = _window_mwr(window)
         gain = end.nav - base.nav - sum(p.external_flow for p in window[1:])
         # TODAY's benchmark from the index strip when the settled window is the last closed
         # session on the current calendar day (post-close); pre-open / prior-session tiles
@@ -1206,7 +1247,7 @@ def period_tiles(
             if period == "today" and end.snap_date != cal
             else None
         )
-        result.tiles.append(PeriodTile(period, label, base.snap_date, end.snap_date, gain, twr, benches, note))
+        result.tiles.append(PeriodTile(period, label, base.snap_date, end.snap_date, gain, twr, mwr=mwr, benchmarks=benches, note=note))
     return result
 
 

@@ -528,6 +528,8 @@ class PerformanceOut(BaseModel):
     cumulative_return: float | None
     twr: float | None
     annualized_twr: float | None
+    mwr: float | None = None
+    annualized_mwr: float | None = None
     volatility: float | None
     sharpe: float | None
     sortino: float | None
@@ -2138,6 +2140,7 @@ class PeriodTileOut(BaseModel):
     end_date: date | None
     gain: float | None
     twr: float | None
+    mwr: float | None = None
     benchmarks: list[BenchmarkReturnOut] = []
     note: str | None = None  # honest empty-state reason (e.g. TODAY "as of <prior date>")
 
