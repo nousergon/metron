@@ -24,6 +24,14 @@ dependencies = [
     # --- web/API tier ---
     "fastapi>=0.115",
     "uvicorn[standard]>=0.51.0",
+    # Production WSGI process manager — gunicorn + uvicorn workers for multi-worker
+    # deployments (metron-ops#234). Replaces bare `uvicorn` in prod; dev/test still use
+    # uvicorn directly for simplicity.
+    "gunicorn>=23.0",
+    # Cross-process compute cache backend (metron-ops#234) — diskcache uses SQLite with
+    # file-level locking so multiple workers share a single cache store and single-flight
+    # lock. Replaces the original in-process ``dict`` + ``threading.Lock``.
+    "diskcache>=5.6",
     # Multipart parsing for CSV/OFX file uploads (FastAPI UploadFile requires it).
     "python-multipart>=0.0.32",
     "sqlalchemy>=2.0",
