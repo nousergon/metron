@@ -15,7 +15,7 @@
 // unrelated axis. Bands render under a grouped two-row header; each metric is null off-feed
 // or on a coverage gap → "—" (never fabricated).
 
-import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -24,6 +24,7 @@ import {
   type ColumnDef as TSColumnDef,
   type ColumnSizingState,
 } from "@tanstack/react-table";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import type { Holding } from "@/lib/api";
 import {
   accountingMoneyWhole,
@@ -831,6 +832,11 @@ const DESC_BY_DEFAULT = new Set<string>(
 // Sticky first (ticker) column — stays put while the bands scroll right.
 const STICKY = "sticky left-0 z-10";
 
+// Row-virtualization estimate (metron-ops#231): every body row is a single-line `tabular-nums`
+// cell (`whitespace-nowrap`, `py-2`) so real height is uniform — 36px (2 * 0.5rem padding + a
+// text-sm line) covers every row without per-row measurement.
+const ROW_HEIGHT_PX = 36;
+
 // Bands whose every metric is computed from close/spine data (metron-ops#147). While the
 // live overlay is applied their band header carries a "· close" marker so they're not read
 // as moving with the live row values beside them. Position/Class are reference data (no
@@ -1082,6 +1088,31 @@ export function HoldingsTable({
     setSort((s) => (s?.key === key ? { key, desc: !s.desc } : { key, desc: DESC_BY_DEFAULT.has(key) }));
   }
 
+  // Row virtualization (metron-ops#231): only the visible slice of `sorted` mounts as real
+  // <tr> DOM nodes. useWindowVirtualizer (rather than a bounded inner scroll box) keeps the
+  // page-level-scroll / sticky-thead-to-viewport UX identical to today — only the DOM node
+  // count drops. `scrollMargin` is the table's own offset from the document top, since the
+  // window virtualizer otherwise assumes the virtualized content starts at y=0.
+  const tableRef = useRef<HTMLTableElement>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  useLayoutEffect(() => {
+    const el = tableRef.current;
+    if (!el) return;
+    setScrollMargin(el.getBoundingClientRect().top + window.scrollY);
+  }, [holdings.length, visibleColumns.length, accountColumn, marketValueVisible]);
+
+  const rowVirtualizer = useWindowVirtualizer({
+    count: sorted.length,
+    estimateSize: () => ROW_HEIGHT_PX,
+    overscan: 12,
+    scrollMargin,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const rowsPaddingTop = virtualRows.length > 0 ? virtualRows[0].start - scrollMargin : 0;
+  const rowsPaddingBottom =
+    virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end + scrollMargin : 0;
+  const totalCols = spineCols + visibleColumns.length + (onRemove ? 1 : 0);
+
   // Portfolio totals over the base-currency aggregates. A foreign holding with no
   // cached FX rate has no base value — it is EXCLUDED from the sum (never fabricated as
   // base), and the totals row flags `*` so the number is read as a partial total.
@@ -1158,7 +1189,7 @@ export function HoldingsTable({
     <DualScroll
       deps={`${spineCols}:${holdings.length}:${priced}:${visibleColumns.length}:${JSON.stringify(columnSizing)}`}
     >
-      <table className="table-fixed text-sm">
+      <table ref={tableRef} className="table-fixed text-sm">
         <colgroup>
           <col style={{ width: sizeOf("ticker") }} />
           {accountColumn ? <col style={{ width: sizeOf("account") }} /> : null}
@@ -1225,7 +1256,13 @@ export function HoldingsTable({
           </tr>
         </thead>
         <tbody>
-          {sorted.map((h) => {
+          {rowsPaddingTop > 0 ? (
+            <tr aria-hidden>
+              <td colSpan={totalCols} style={{ height: rowsPaddingTop, padding: 0, border: 0 }} />
+            </tr>
+          ) : null}
+          {virtualRows.map((vr) => {
+            const h = sorted[vr.index];
             const foreign = h.currency !== baseCurrency;
             // Base-currency cell with the no-fabrication fallback: muted native + `*`
             // when a foreign holding has no cached FX rate. `fmt` is money() for per-unit
@@ -1282,6 +1319,11 @@ export function HoldingsTable({
               </tr>
             );
           })}
+          {rowsPaddingBottom > 0 ? (
+            <tr aria-hidden>
+              <td colSpan={totalCols} style={{ height: rowsPaddingBottom, padding: 0, border: 0 }} />
+            </tr>
+          ) : null}
         </tbody>
         {holdings.length > 0 && showTotals ? (
           <tfoot>

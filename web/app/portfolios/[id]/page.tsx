@@ -10,6 +10,7 @@ import { SessionPanel } from "@/components/session-panel";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { WatchlistCompareTable } from "@/components/watchlist-compare-table";
 import { ColumnBandsProvider } from "@/components/column-bands-context";
+import { DEFAULT_VISIBLE_GROUPS, INTRADAY_VISIBLE_GROUPS } from "@/components/holdings-column-presets";
 import { loadEntitlements, navFeatureStates } from "@/lib/entitlements";
 import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
@@ -76,12 +77,17 @@ export default async function HoldingsPage(
   // when the deployment has the feed and the user's intraday toggle is on — reasons "off"
   // and "feed" mean neither will change within this session.
   const sessionState = live?.session_state ?? "closed";
-  // Live is OFFERED only when feed + toggle allow it AND the session state has something
-  // live mode can add ("live" in session, "recap" post-close same day). Pre-market /
-  // weekend / holiday → the toggle grays and the regime clamps to settled even if the
-  // saved preference is live (metron-ops-I156).
+  // Live is OFFERED whenever feed + toggle allow it, at EVERY session state — including
+  // "closed" (pre-market / weekend / holiday). Supersedes part of metron-ops-I156 (Brian,
+  // 2026-07-22): the prior rule clamped to settled once closed on the theory that "a control
+  // must never imply live-ness after hours." The new rule keeps the live regime resolvable
+  // and FREEZES it instead — the same data path recap already uses (day/session legs come
+  // from the last-written intraday snapshot regardless of its age; see
+  // security_perf.enrich_holdings + intraday.today_view) stays live indefinitely, honestly
+  // labeled as stale via ValuationToggle's "Last session" copy and SessionPanel's
+  // as-of-close framing, rather than the whole page vanishing back to settled.
   const liveAvailable = !!live && live.reason !== "off" && live.reason !== "feed";
-  const liveOffered = liveAvailable && sessionState !== "closed";
+  const liveOffered = liveAvailable;
   const requested =
     searchParams.val === "live" || searchParams.val === "settled"
       ? searchParams.val
@@ -137,7 +143,10 @@ export default async function HoldingsPage(
 
       {/* Live-session panel (metron-ops#153): coverage banner + covered-basis session strip
           + excluded-holdings disclosure. Live mode only — the settled regime shows no
-          session figures anywhere on the page. */}
+          session figures anywhere on the page. Now mounts through "closed" too (the live
+          regime is offered at every session state as of 2026-07-22): SessionPanel and its
+          CoverageBanner were already written generically for "stale → as of close" framing,
+          so no change was needed here beyond letting valuation stay "live" that long. */}
       {valuation === "live" && priced && live ? (
         <Suspense fallback={<SectionSkeleton rows={2} />}>
           <SessionSection apiAuth={apiAuth} id={id} ccy={ccy} accountIds={accountIds} status={live} />
@@ -149,8 +158,11 @@ export default async function HoldingsPage(
           down the page — they're two separate async Server Components under independent
           <Suspense> boundaries (kept independent here for their own streaming; collapsing
           them would make Watchlist wait on the Holdings fetch), so a shared client context
-          mounted above both is the bridge. The provider itself renders no DOM. */}
-      <ColumnBandsProvider>
+          mounted above both is the bridge. The provider itself renders no DOM. Its initial
+          selection follows the resolved regime (Brian, 2026-07-22): Intraday while live
+          (including frozen-after-hours) is the landing view Brian actually checks day to
+          day; Overview is the settled-mode fallback. */}
+      <ColumnBandsProvider initialBands={valuation === "live" ? INTRADAY_VISIBLE_GROUPS : DEFAULT_VISIBLE_GROUPS}>
         <Suspense fallback={<SectionSkeleton rows={6} />}>
           <HoldingsSection apiAuth={apiAuth} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} savedView={savedView} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} />
         </Suspense>

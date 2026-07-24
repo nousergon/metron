@@ -11,7 +11,8 @@
 // mounted in page.tsx wrapping BOTH the Holdings and Watchlist <Suspense> sections (the
 // Suspense boundaries themselves stay separate — they exist for independent streaming, not
 // removed here). Session-only, like the control it mirrors (holdings-view.tsx header
-// comment): a fresh page load remounts the provider and resets to DEFAULT_VISIBLE_GROUPS.
+// comment): a fresh page load remounts the provider and resets to its regime-appropriate
+// default (Intraday while live, Overview/DEFAULT_VISIBLE_GROUPS for settled — page.tsx).
 //
 // Unlike LiveValuationProvider this context is READ-WRITE — Holdings both reads and sets the
 // selection (it owns the COLUMNS control); Watchlist only reads it. A component rendered
@@ -35,8 +36,10 @@ export function ColumnBandsProvider({
   initialBands = DEFAULT_VISIBLE_GROUPS,
 }: {
   children: ReactNode;
-  /** Test-only override of the initial selection; production callers always get the lean
-   *  Overview default (see header comment — landing must always open lean). */
+  /** The initial column-preset selection. page.tsx passes the regime-appropriate default
+   *  (Intraday while the live valuation regime is resolved, Overview for settled/no-live —
+   *  see holdings-column-presets.tsx header comment); the DEFAULT_VISIBLE_GROUPS fallback
+   *  here only fires for callers that don't pass one (e.g. isolated unit tests). */
   initialBands?: ColumnBand[];
 }) {
   const [bands, setBands] = useState<ColumnBand[]>(initialBands);

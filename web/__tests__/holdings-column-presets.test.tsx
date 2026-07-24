@@ -13,7 +13,7 @@ vi.mock("@/app/portfolios/[id]/actions", () => ({
 }));
 
 import { HoldingsTable } from "@/components/holdings-table";
-import { ColumnPresetControl, COLUMN_PRESETS, DEFAULT_VISIBLE_GROUPS } from "@/components/holdings-column-presets";
+import { ColumnPresetControl, COLUMN_PRESETS, DEFAULT_VISIBLE_GROUPS, INTRADAY_VISIBLE_GROUPS } from "@/components/holdings-column-presets";
 import type { Holding } from "@/lib/api";
 
 const h = (ticker: string, over: Partial<Holding> = {}): Holding =>
@@ -104,9 +104,14 @@ describe("HoldingsTable visibleBands", () => {
 });
 
 describe("ColumnPresetControl", () => {
-  it("the default visible groups match the lean Overview preset (Position + Value)", () => {
+  it("Intraday leads the preset list — the live-regime landing default (2026-07-22)", () => {
+    expect(COLUMN_PRESETS[0].key).toBe("intraday");
+    expect(INTRADAY_VISIBLE_GROUPS).toEqual(["Intraday"]);
+  });
+
+  it("the settled-mode fallback groups still match the lean Overview preset (Position + Value)", () => {
     expect(DEFAULT_VISIBLE_GROUPS).toEqual(["Position", "Value"]);
-    expect(COLUMN_PRESETS[0].key).toBe("overview");
+    expect(COLUMN_PRESETS.find((p) => p.key === "overview")?.groups).toEqual(["Position", "Value"]);
   });
 
   it("clicking an analytic preset emits ONLY its own band — no Position/Value drag-along", () => {

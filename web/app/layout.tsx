@@ -3,6 +3,7 @@ import Link from "next/link";
 import "./globals.css";
 import { UserNav } from "@/components/user-nav";
 import { DemoBanner } from "@/components/demo-banner";
+import { SwrProvider } from "@/components/swr-provider";
 
 export const metadata: Metadata = {
   title: "Metron — portfolio analytics, measured",
@@ -40,7 +41,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </Link>
             <UserNav />
           </header>
-          <main className="py-8">{children}</main>
+          <main className="py-8">
+            <SwrProvider>{children}</SwrProvider>
+          </main>
           <footer className="border-t border-line py-6 text-xs leading-relaxed text-muted">
             <p>
               Read-only analytics. No ads, no trackers, no investment advice — we compute the numbers; what you do

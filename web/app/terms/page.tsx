@@ -5,9 +5,10 @@ export const metadata: Metadata = {
   description: "Metron Terms of Service",
 };
 
-// DRAFT — pending counsel review. Entity facts filled 2026-07-09 (Nous Ergon LLC / WA).
-// Do not link from signup or treat as published until reviewed by counsel (metron-ops#18).
-const LAST_UPDATED = "July 9, 2026";
+// Template-quality draft (attorney review deferred to public/paid launch — Brian's
+// 2026-07-20 ruling, alpha-engine-config-I1611). Entity facts filled 2026-07-09
+// (Nous Ergon LLC / WA). Beta status + beta-tester sections added (metron-ops#203).
+const LAST_UPDATED = "July 22, 2026";
 
 export default function TermsPage() {
   return (
@@ -99,10 +100,30 @@ export default function TermsPage() {
         principles. Questions about these Terms can be sent to privacy@nousergon.ai.
       </p>
 
+      <h2 className="text-base font-semibold">11. Beta / pre-release status</h2>
+      <p>
+        Metron is currently offered as a pre-release beta. The Service is provided &ldquo;as-is&rdquo; with no
+        uptime, availability, or data-retention guarantee, and beta testing may be modified, suspended, or ended at
+        any time without notice. Features, pricing, and this beta may change materially before any general or paid
+        release. Back up anything you cannot afford to lose (e.g. export CSV copies of imported statement data) —
+        Metron itself does not guarantee data survives the transition from beta to general release.
+      </p>
+
+      <h2 className="text-base font-semibold">12. Beta-tester feedback</h2>
+      <p>
+        If you send us feedback, bug reports, or suggestions about the Service, you grant us a perpetual,
+        irrevocable, royalty-free license to use them for any purpose (including incorporating them into the
+        Service) without compensation or attribution to you. You are not relying on any promised future feature,
+        timeline, or roadmap item when you continue using the beta. Unreleased features you see during the beta are
+        confidential until we publicly announce or ship them — please don&rsquo;t share screenshots or descriptions
+        of unreleased functionality outside your own use.
+      </p>
+
       <p className="mt-8 rounded border border-line bg-panel p-3 text-xs text-muted">
-        Draft status: this page is a working draft prepared for legal review. Entity facts filled (Nous Ergon LLC,
-        WA; privacy@nousergon.ai) pending counsel sign-off before this route is linked from signup or made
-        publicly indexable. Tracked in nousergon/metron-ops#18.
+        Draft status: this is a template-quality document (not yet attorney-reviewed) prepared for the hosted beta.
+        Attorney review is deliberately deferred until public/paid launch or the first advice-flavored feature,
+        per Brian&rsquo;s 2026-07-20 ruling (alpha-engine-config-I1611) — until then this page, not a lawyer, is the
+        governing draft for the beta. Tracked in nousergon/metron-ops#203 (supersedes the closed metron-ops#18).
       </p>
     </article>
   );

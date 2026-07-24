@@ -52,7 +52,7 @@ def _jwk_client() -> PyJWKClient:
         # Integrity Check in front of auth.nousergon.ai (found live 2026-07-11).
         # A service-identifying UA is correct HTTP hygiene AND passes the edge
         # without weakening it.
-        headers={"User-Agent": "metron-api/1.0 (+https://portfolio.nousergon.ai)"},
+        headers={"User-Agent": "metron-api/1.0 (+https://metron.nousergon.ai/dash)"},
     )
 
 

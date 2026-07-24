@@ -1,6 +1,7 @@
 // Saved Holdings-table view (metron-ops#114): HoldingsView hydrates the grouping from the
 // saved value and persists every control change fire-and-forget. The COLUMN PRESET is
-// session-only since 2026-07-08 — landing always opens on Overview, never a saved band set.
+// session-only since 2026-07-08 — landing always opens on the regime-appropriate default
+// (Intraday while live, Overview for settled — page.tsx, 2026-07-22), never a saved band set.
 
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -132,7 +133,7 @@ describe("HoldingsView saved-view hydration", () => {
     expect(push).toHaveBeenCalledWith("/portfolios/p1/holdings?val=settled");
   });
 
-  it("labels and gates the session option by market state (metron-ops-I156)", () => {
+  it("labels the session option by market state, honestly — never disabled (metron-ops-I156, superseded 2026-07-22)", () => {
     // recap: post-close same day — same data, honestly framed, still clickable.
     const { unmount } = render(
       <HoldingsView holdings={[h("AAPL")]} baseCurrency="USD" priced medians={null} portfolioId="p1" valuation="live" liveAvailable sessionState="recap" />,
@@ -141,14 +142,24 @@ describe("HoldingsView saved-view hydration", () => {
     expect(screen.getByRole("button", { name: "Today's session" })).not.toBeDisabled();
     unmount();
 
-    // closed: pre-market / weekend — grayed + disabled; settled reads as active.
+    // closed: pre-market / weekend — frozen at the last session, labeled "Last session",
+    // still clickable and can be the active regime (the freeze-not-hide behavior).
+    const { unmount: unmount2 } = render(
+      <HoldingsView holdings={[h("AAPL")]} baseCurrency="USD" priced medians={null} portfolioId="p1" valuation="live" liveAvailable sessionState="closed" />,
+    );
+    const liveBtn = screen.getByRole("button", { name: "Last session" });
+    expect(liveBtn).not.toBeDisabled();
+    expect(liveBtn).toHaveAttribute("aria-pressed", "true");
+    unmount2();
+
+    // Settled close remains a normal, always-available explicit opt-out.
     render(
       <HoldingsView holdings={[h("AAPL")]} baseCurrency="USD" priced medians={null} portfolioId="p1" valuation="settled" liveAvailable sessionState="closed" />,
     );
-    const liveBtn = screen.getByRole("button", { name: "Live session" });
-    expect(liveBtn).toBeDisabled();
-    fireEvent.click(liveBtn);
-    expect(push).not.toHaveBeenCalledWith(expect.stringContaining("val=live"));
+    const liveBtn2 = screen.getByRole("button", { name: "Last session" });
+    expect(liveBtn2).not.toBeDisabled();
+    fireEvent.click(liveBtn2);
+    expect(push).toHaveBeenCalledWith(expect.stringContaining("val=live"));
     expect(screen.getByRole("button", { name: "Settled close" })).toHaveAttribute("aria-pressed", "true");
   });
 });

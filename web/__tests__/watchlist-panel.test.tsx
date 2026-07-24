@@ -1,19 +1,22 @@
 // WatchlistPanel — add/remove via server actions + the held/watching status badge and
-// the surfaced error on a failed action (never silently swallowed).
+// the surfaced error on a failed action (never silently swallowed). Mutations revalidate
+// the SWR-backed watchlist cache (metron-ops#232) instead of a full `router.refresh()`.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
-  refresh: vi.fn(),
+  mutate: vi.fn(),
   addWatchlistAction: vi.fn(async (_pid: string, _sym: string, _note?: string) => ({ ok: true, message: "" })),
   removeWatchlistAction: vi.fn(async (_pid: string, _sym: string) => ({ ok: true, message: "" })),
 }));
 
-vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: mocks.refresh }) }));
 vi.mock("@/app/portfolios/[id]/actions", () => ({
   addWatchlistAction: mocks.addWatchlistAction,
   removeWatchlistAction: mocks.removeWatchlistAction,
+}));
+vi.mock("@/lib/use-watchlist", () => ({
+  useWatchlist: (_portfolioId: string, fallbackData: unknown) => ({ data: fallbackData, mutate: mocks.mutate }),
 }));
 
 import { WatchlistPanel } from "@/components/watchlist-panel";
@@ -87,7 +90,7 @@ const entry = (symbol: string, held: boolean): WatchlistEntry => ({
 });
 
 beforeEach(() => {
-  mocks.refresh.mockClear();
+  mocks.mutate.mockClear();
   mocks.addWatchlistAction.mockClear();
   mocks.removeWatchlistAction.mockClear();
 });
@@ -99,12 +102,12 @@ describe("WatchlistPanel", () => {
     expect(screen.getByText("Watching")).toBeInTheDocument();
   });
 
-  it("adds a ticker (normalized upper-case) then refreshes", async () => {
+  it("adds a ticker (normalized upper-case) then revalidates the cache", async () => {
     render(<WatchlistPanel portfolioId="p" entries={[]} />);
     fireEvent.change(screen.getByLabelText("Ticker to add"), { target: { value: "nvda" } });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() => expect(mocks.addWatchlistAction).toHaveBeenCalledWith("p", "NVDA", ""));
-    await waitFor(() => expect(mocks.refresh).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.mutate).toHaveBeenCalled());
   });
 
   it("removes a ticker", async () => {
@@ -119,6 +122,6 @@ describe("WatchlistPanel", () => {
     fireEvent.change(screen.getByLabelText("Ticker to add"), { target: { value: "NVDA" } });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() => expect(screen.getByText("The demo portfolio is read-only.")).toBeInTheDocument());
-    expect(mocks.refresh).not.toHaveBeenCalled();
+    expect(mocks.mutate).not.toHaveBeenCalled();
   });
 });

@@ -2,18 +2,26 @@
 
 // Watchlist (metron-ops#42) — add/remove tracked tickers and see reference data + a held
 // flag. Read-only/illustrative in the no-feed beta: NO live price (un-held tickers have
-// no price source until the Pro feed). Mutations go through server actions that
-// revalidate the page; a failure surfaces inline (never silently swallowed).
+// no price source until the Pro feed). Mutations go through server actions; the SSR page
+// fetch seeds the SWR cache (metron-ops#232) so first paint is instant, and a successful
+// mutation revalidates just this key instead of a full `router.refresh()`. A failure
+// surfaces inline (never silently swallowed).
 
 import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import type { WatchlistEntry } from "@/lib/api";
 import { isoDate } from "@/lib/format";
 import { Empty, Section, Table } from "@/components/ui";
 import { addWatchlistAction, removeWatchlistAction } from "@/app/portfolios/[id]/actions";
+import { useWatchlist } from "@/lib/use-watchlist";
 
-export function WatchlistPanel({ portfolioId, entries }: { portfolioId: string; entries: WatchlistEntry[] }) {
-  const router = useRouter();
+export function WatchlistPanel({
+  portfolioId,
+  entries: fallbackEntries,
+}: {
+  portfolioId: string;
+  entries: WatchlistEntry[];
+}) {
+  const { data: entries = fallbackEntries, mutate } = useWatchlist(portfolioId, fallbackEntries);
   const [symbol, setSymbol] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +40,7 @@ export function WatchlistPanel({ portfolioId, entries }: { portfolioId: string; 
       }
       setSymbol("");
       setNote("");
-      router.refresh();
+      void mutate();
     });
   }
 
@@ -44,7 +52,7 @@ export function WatchlistPanel({ portfolioId, entries }: { portfolioId: string; 
         setError(r.message);
         return;
       }
-      router.refresh();
+      void mutate();
     });
   }
 

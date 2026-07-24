@@ -100,10 +100,13 @@ const COL_UNREAL = "w-28"; // Unrealized $
 const COL_UNREAL_PCT = "w-20"; // Unrealized %
 const COL_MARKET = "w-24";
 const COL_PERIOD = "w-16"; // Day / YTD / LTM % (metron-ops#87)
+const COL_PERIOD_SUB = "w-14"; // O/N / Intra % decomposition legs, visually subordinate
 
 /** A single column-header row for the metric columns — replaces the per-row labels with
  *  one header. Unrealized is split into $ and % columns (metron-ops#80); Day/YTD/LTM are
- *  per-account period returns (metron-ops#87). */
+ *  per-account period returns (metron-ops#87). O/N and Intra are Day's decomposition legs
+ *  (metron-ops), shown beside Day wherever the live session valuation is active, matching
+ *  the main holdings table's overnight/intraday columns. */
 function MetricHeader({ showDay = true }: { showDay?: boolean }) {
   return (
     <div className="flex shrink-0 gap-x-6 text-right text-[10px] uppercase tracking-wide text-muted">
@@ -116,6 +119,8 @@ function MetricHeader({ showDay = true }: { showDay?: boolean }) {
       <div className={COL_UNREAL_PCT}>Unrealized %</div>
       <div className={COL_COST}>Cost</div>
       {showDay ? <div className={COL_PERIOD}>Day</div> : null}
+      {showDay ? <div className={COL_PERIOD_SUB}>· O/N</div> : null}
+      {showDay ? <div className={COL_PERIOD_SUB}>· Intra</div> : null}
       <div className={COL_PERIOD}>YTD</div>
       <div className={COL_PERIOD}>LTM</div>
     </div>
@@ -129,10 +134,23 @@ function PeriodCell({ pct }: { pct?: number | null }) {
   return <div className={`${COL_PERIOD} ${pct != null ? signClass(pct) : "text-muted"}`}>{pct != null ? accountingPercent(pct) : "—"}</div>;
 }
 
+/** Decomposition leg (O/N or Intra): same signed % format, but smaller and muted, matching
+ *  the main holdings table's subordinate overnight/intraday columns. */
+function PeriodCellSub({ pct }: { pct?: number | null }) {
+  if (pct === undefined) return <div className={COL_PERIOD_SUB} />;
+  return (
+    <div className={`${COL_PERIOD_SUB} text-xs opacity-70 ${pct != null ? signClass(pct) : "text-muted"}`}>
+      {pct != null ? accountingPercent(pct) : "—"}
+    </div>
+  );
+}
+
 /** The money readout, shared by account rows and subtotal/total rows. Labels live once in
  *  <MetricHeader>. Unrealized $ and % are separate columns; gains/losses read from color
  *  + parentheses (no leading "+"/"−") — accounting style (metron-ops#80). Day/YTD/LTM are
- *  passed only on account rows (undefined on subtotals/total → blank). */
+ *  passed only on account rows (undefined on subtotals/total → blank). O/N and Intra are
+ *  Day's decomposition legs (metron-ops), shown beside Day wherever the live session
+ *  valuation is active, matching the main holdings table. */
 function MetricCells({
   cost,
   unreal,
@@ -140,6 +158,8 @@ function MetricCells({
   baseCurrency,
   muted,
   dayPct,
+  overnightPct,
+  intradayPct,
   ytdPct,
   ltmPct,
   showDay = true,
@@ -150,6 +170,8 @@ function MetricCells({
   baseCurrency: string;
   muted?: boolean;
   dayPct?: number | null;
+  overnightPct?: number | null;
+  intradayPct?: number | null;
   ytdPct?: number | null;
   ltmPct?: number | null;
   /** Session Day % is live-quote-derived — hidden entirely in the settled valuation
@@ -171,6 +193,8 @@ function MetricCells({
         {cost != null ? moneyWhole(cost, baseCurrency) : "—"}
       </div>
       {showDay ? <PeriodCell pct={dayPct} /> : null}
+      {showDay ? <PeriodCellSub pct={overnightPct} /> : null}
+      {showDay ? <PeriodCellSub pct={intradayPct} /> : null}
       <PeriodCell pct={ytdPct} />
       <PeriodCell pct={ltmPct} />
     </div>
@@ -430,6 +454,8 @@ export function AccountPanel({
           mv={mv}
           baseCurrency={baseCurrency}
           dayPct={a.day_pct}
+          overnightPct={a.overnight_pct}
+          intradayPct={a.intraday_pct}
           ytdPct={a.ytd_pct}
           ltmPct={a.ltm_pct}
           showDay={showDay}

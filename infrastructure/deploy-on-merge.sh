@@ -19,10 +19,11 @@ cd "$REPO"
 # Python deps — idempotent; picks up metron / metron-ops / boto3 changes. Fast when satisfied.
 .venv/bin/pip install -q -e . -e ../metron-ops boto3 || { echo "pip install FAILED"; exit 1; }
 
-# Web build with a capped Node heap so a build spike can't OOM the co-resident services.
+# Web deps — the only web build is the /dash variant below (the primary no-basePath
+# build served portfolio.nousergon.ai, retired 2026-07-22 per Brian's ruling:
+# metron.nousergon.ai/dash is the sole app entry point).
 cd "$REPO/web"
 npm install --no-audit --no-fund --silent || { echo "npm install FAILED"; exit 1; }
-NODE_OPTIONS=--max-old-space-size=700 npm run build || { echo "web build FAILED"; exit 1; }
 
 # Hydrate secrets + durable config flags from SSM Parameter Store into the
 # metron-ops/.env EnvironmentFile so SSM is the durable source of truth — the .env is a
@@ -81,7 +82,20 @@ if [ "$UNITS_CHANGED" = 1 ]; then
   sudo systemctl daemon-reload
 fi
 
-sudo systemctl restart metron-api metron-web
+# One-shot retirement of metron-web.service (:3000, portfolio.nousergon.ai —
+# deprecated 2026-07-22, metron-ops#225). Idempotent — a no-op once the unit is
+# gone. Companion metron-ops PR removes the tracked unit from
+# infrastructure/systemd/ so the install loop above can't re-copy it; until that
+# merges, a deploy may re-copy then immediately re-remove the file (harmless —
+# the service is never in the restart list, so it can't run).
+if [ -e /etc/systemd/system/metron-web.service ]; then
+  sudo systemctl disable --now metron-web.service || true
+  sudo rm /etc/systemd/system/metron-web.service
+  sudo systemctl daemon-reload
+  echo "retired metron-web.service (portfolio.nousergon.ai deprecation)"
+fi
+
+sudo systemctl restart metron-api
 
 # Health checks — poll with a bounded retry instead of a fixed sleep. A fixed sleep races
 # cold-start time (credential-provider lookups, first-import cost, Next.js server boot)
@@ -103,31 +117,24 @@ wait_for_200() {
 }
 
 wait_for_200 "http://127.0.0.1:8000/health" "metron-api" || exit 1
-wait_for_200 "http://127.0.0.1:3000/" "metron-web" || exit 1
-echo "deploy OK — metron-api + metron-web both healthy"
+echo "api deploy OK — metron-api healthy"
 
-# ── /dash second process (metron-ops#180) ────────────────────────────────────
-# metron.nousergon.ai/dash is served by a SECOND Next.js process
-# (metron-dash-web.service, :3003) built from this SAME checkout with
-# METRON_WEB_BASE_PATH=/dash. Next.js bakes basePath in at build time, so the
-# variant builds into its own distDir (web/.next-dash — see web/next.config.mjs)
-# and the two builds coexist without clobbering each other; the unit starts
-# `next start` with the same env var so it serves the matching output.
+# ── /dash web process (metron-ops#180; sole web surface since 2026-07-22) ────
+# metron.nousergon.ai/dash is served by metron-dash-web.service (:3003), built
+# from this checkout with METRON_WEB_BASE_PATH=/dash. Next.js bakes basePath in
+# at build time, so the variant builds into its own distDir (web/.next-dash —
+# see web/next.config.mjs); the unit starts `next start` with the same env var
+# so it serves the matching output.
 #
-# Gated on the unit being ENABLED: until the one-time box bootstrap runs
-# (bootstrap build + `sudo systemctl enable --now metron-dash-web` — see the
-# unit file in metron-ops/infrastructure/systemd/ and metron-ops#180), this
-# whole stage is a graceful no-op, so merging it early can never fail the
-# primary deploy. It runs AFTER the primary health checks so a /dash-only
-# failure is unambiguous in the deploy log (primary already declared OK).
-if systemctl is-enabled --quiet metron-dash-web.service 2>/dev/null; then
-  echo "=== building /dash variant (METRON_WEB_BASE_PATH=/dash → web/.next-dash) ==="
-  cd "$REPO/web"
-  NODE_OPTIONS=--max-old-space-size=700 METRON_WEB_BASE_PATH=/dash npm run build \
-    || { echo "dash web build FAILED"; exit 1; }
-  sudo systemctl restart metron-dash-web
-  wait_for_200 "http://127.0.0.1:3003/dash" "metron-dash-web" || exit 1
-  echo "dash deploy OK — metron-dash-web healthy"
-else
-  echo "metron-dash-web.service not enabled — skipping /dash stage (box bootstrap pending, metron-ops#180)"
-fi
+# MANDATORY (fail loud): with the portfolio.nousergon.ai primary retired, this
+# is the only web process — a box missing the unit is a broken box, not a
+# pending bootstrap.
+systemctl is-enabled --quiet metron-dash-web.service 2>/dev/null \
+  || { echo "metron-dash-web.service not enabled — sole web surface missing (see metron-ops#180 bootstrap)"; exit 1; }
+echo "=== building /dash variant (METRON_WEB_BASE_PATH=/dash → web/.next-dash) ==="
+cd "$REPO/web"
+NODE_OPTIONS=--max-old-space-size=700 METRON_WEB_BASE_PATH=/dash npm run build \
+  || { echo "dash web build FAILED"; exit 1; }
+sudo systemctl restart metron-dash-web
+wait_for_200 "http://127.0.0.1:3003/dash" "metron-dash-web" || exit 1
+echo "dash deploy OK — metron-dash-web healthy"

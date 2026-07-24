@@ -64,6 +64,12 @@ class User(Base):
     # DBs get it from create_all.
     identity_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # Beta-tester ToS/privacy acceptance record (metron-ops#203): set once, at
+    # JIT-provisioning time (api/services/identity.py), the moment "by continuing you
+    # agree" applies — see the consent copy on the sign-in form. Nullable so
+    # `_sync_additive_columns` can back-fill it onto an existing SQLite DB; pre-existing
+    # rows simply have no recorded acceptance.
+    tos_accepted_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")
 
