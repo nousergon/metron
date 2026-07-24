@@ -24,6 +24,7 @@ from the env so this engine layer stays free of the api config.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -99,18 +100,44 @@ def spine_latest_closes(symbols: list[str], *, s3=None) -> dict[str, ClosePoint]
 
 def spine_close_history(symbols: list[str], start: date, end: date, *, s3=None) -> dict[str, list[ClosePoint]]:
     """Daily close series per symbol over ``[start, end]`` from the per-symbol history
-    artifacts. Equity → close_history/{sym}.json; ``{CCY}USD=X`` → fx_history/{CCY}.json."""
+    artifacts. Equity → close_history/{sym}.json; ``{CCY}USD=X`` → fx_history/{CCY}.json.
+
+    S3 reads are parallelized via ``ThreadPoolExecutor``: N tickers take ~1 round-trip
+    latency instead of N sequential round-trips. The thread pool is kept small enough to
+    avoid S3 rate limits for typical portfolio sizes (≤30 symbols)."""
+    if not symbols:
+        return {}
     s3 = s3 or _s3()
     bucket = _bucket()
-    out: dict[str, list[ClosePoint]] = {}
+
+    # Build the symbol → S3 key mapping before firing parallel reads.
+    sym_key_map: dict[str, str] = {}
     for sym in symbols:
         ccy = _fx_currency(sym)
-        if ccy is not None:
-            art = _read_json(s3, bucket, f"{FX_HISTORY_PREFIX}{ccy}.json")
-            series = (art or {}).get("rates", [])
-        else:
-            art = _read_json(s3, bucket, f"{CLOSE_HISTORY_PREFIX}{sym}.json")
-            series = (art or {}).get("closes", [])
+        sym_key_map[sym] = (
+            f"{FX_HISTORY_PREFIX}{ccy}.json" if ccy is not None
+            else f"{CLOSE_HISTORY_PREFIX}{sym}.json"
+        )
+
+    # Parallel S3 reads via thread pool (boto3 is sync but thread-safe).
+    raw: dict[str, dict | None] = {}
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(len(sym_key_map), 30),
+    ) as pool:
+        future_map = {pool.submit(_read_json, s3, bucket, key): sym for sym, key in sym_key_map.items()}
+        for future in concurrent.futures.as_completed(future_map):
+            sym = future_map[future]
+            try:
+                raw[sym] = future.result()
+            except Exception:
+                raw[sym] = None
+
+    # Process results in original order (IO is done; all reads are cached in `raw`).
+    out: dict[str, list[ClosePoint]] = {}
+    for sym in symbols:
+        art = raw.get(sym) or {}
+        ccy = _fx_currency(sym)
+        series = art.get("rates" if ccy is not None else "closes", [])
         points: list[ClosePoint] = []
         for row in series:
             try:
