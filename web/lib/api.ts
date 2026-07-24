@@ -378,6 +378,8 @@ export type Performance = {
   cumulative_return: number | null;
   twr: number | null;
   annualized_twr: number | null;
+  mwr: number | null;
+  annualized_mwr: number | null;
   volatility: number | null;
   sharpe: number | null;
   sortino: number | null;
@@ -408,6 +410,7 @@ export type PeriodTile = {
   end_date: string | null;
   gain: number | null;  // $ investment gain over the window (net of external flows)
   twr: number | null;   // % time-weighted return over the window
+  mwr: number | null;   // % money-weighted return (XIRR) over the window
   benchmarks: BenchmarkReturn[];
   note?: string | null; // honest empty-state reason (e.g. TODAY "as of <prior date>")
 };
