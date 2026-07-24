@@ -203,7 +203,7 @@ class SnapTradeReader:
             user_id=self._user_id,
             user_secret=self._user_secret,
         )
-        logger.info("Removed brokerage connection %s", authorization_id)
+        logger.info("Removed brokerage connection %s", _log_safe(authorization_id))
 
     def get_holdings(self, account_id: str) -> list[dict]:
         """Get positions for a single account."""
