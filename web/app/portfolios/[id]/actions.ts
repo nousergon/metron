@@ -15,6 +15,7 @@ import {
   deleteAccount,
   deleteCryptoAddress,
   getSnapTradeConnections,
+  getWatchlist,
   importFile,
   MetronApiError,
   type HoldingsViewPrefs,
@@ -37,6 +38,7 @@ import {
   updateAccountTags,
   updatePortfolio,
   type ImportResult,
+  type WatchlistEntry,
 } from "@/lib/api";
 import { requireApiAuth } from "@/lib/session";
 
@@ -359,6 +361,13 @@ export async function syncFlexStoredAction(portfolioId: string): Promise<ActionR
   } catch (e) {
     return { ok: false, message: errorMessage(e) };
   }
+}
+
+// SWR fetcher (metron-ops#232) — the client-side cache revalidates through the same
+// server-only credential path as the SSR page fetch; the JWT never reaches the browser.
+export async function fetchWatchlistAction(portfolioId: string): Promise<WatchlistEntry[]> {
+  const apiAuth = await requireApiAuth();
+  return getWatchlist(apiAuth, portfolioId);
 }
 
 export async function addWatchlistAction(portfolioId: string, symbol: string, note?: string): Promise<ActionResult> {
