@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 
-from api.db.session import Base, _sync_additive_columns
+from api.db.session import Base, _sync_additive_columns, create_all
 
 
 def _columns(engine, table: str) -> set[str]:
@@ -164,3 +164,36 @@ def test_missing_non_nullable_column_fails_loud(tmp_path):
     with pytest.raises(RuntimeError, match="non-nullable"):
         _sync_additive_columns(engine)
     engine.dispose()
+
+
+@pytest.mark.parametrize("env_val", ["prod", "personal", "dev", "staging", ""])
+def test_create_all_fires_on_sqlite_regardless_of_env(tmp_path, env_val, monkeypatch):
+    """The self-heal fires on a SQLite engine regardless of what ``ENV`` says — only
+    DB dialect (not deployment naming convention) should gate the auto-DDL path
+    (metron-ops#202)."""
+    monkeypatch.setattr("api.config.settings.env", env_val)
+    engine = create_engine(f"sqlite:///{tmp_path / f'regression_{env_val}.sqlite'}")
+    # Bootstrap then drop the sector column to simulate an old schema.
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE securities DROP COLUMN sector"))
+    assert "sector" not in _columns(engine, "securities")
+
+    create_all(bind=engine)
+    assert "sector" in _columns(engine, "securities")
+    engine.dispose()
+
+
+def test_create_all_skipped_for_non_sqlite_dialect():
+    """A non-SQLite dialect never fires table creation or column sync — Postgres/
+    multi-tenant tier uses Alembic exclusively (metron-ops#202)."""
+    from unittest.mock import MagicMock
+
+    mock_engine = MagicMock()
+    mock_engine.dialect.name = "postgresql"
+
+    # Should be a no-op: no tables created, no columns synced, no error raised.
+    result = create_all(bind=mock_engine)
+    assert result is None
+    # Base.metadata.create_all was never called on the mock engine.
+    mock_engine.connect.assert_not_called()
