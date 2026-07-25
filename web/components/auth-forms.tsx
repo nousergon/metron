@@ -9,8 +9,8 @@ const buttonClass = "w-full rounded bg-ink px-3 py-2 text-sm font-medium text-pa
 
 function AuthShell({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="mx-auto mt-12 max-w-sm">
-      <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+    <div className="mx-auto mt-6 max-w-sm px-4 sm:mt-12 sm:px-0">
+      <h1 className="text-lg font-semibold tracking-tight sm:text-xl">{title}</h1>
       <div className="mt-4 space-y-3">{children}</div>
     </div>
   );

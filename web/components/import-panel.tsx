@@ -410,7 +410,7 @@ export function ImportPanel({ portfolioId, flexStored = false }: { portfolioId: 
     );
   }
   return (
-    <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <FileImport portfolioId={portfolioId} action={importCsvAction} label="Import CSV" accept=".csv,text/csv" />
       <FileImport
         portfolioId={portfolioId}

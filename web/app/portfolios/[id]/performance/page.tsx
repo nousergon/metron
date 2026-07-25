@@ -47,7 +47,7 @@ export default async function PerformancePage(
   }
 
   const ccy = summary.base_currency;
-  const hasMetrics = perf.twr != null || perf.cumulative_return != null;
+  const hasMetrics = perf.twr != null || perf.cumulative_return != null || perf.mwr != null;
   const recent = [...perf.points].reverse().slice(0, 30); // newest first
   // perf.points are ascending (oldest → newest) — the chart wants chronological order.
   const navSeries = perf.points.map((p) => ({ snap_date: p.snap_date, nav: p.nav }));
@@ -143,6 +143,18 @@ export default async function PerformancePage(
             label="Annualized (TWR)"
             value={perf.annualized_twr != null ? percent(perf.annualized_twr) : "—"}
             valueClass={signClass(perf.annualized_twr ?? 0)}
+          />
+          <StatCard
+            label="Money-weighted return"
+            value={perf.mwr != null ? percent(perf.mwr) : "—"}
+            valueClass={signClass(perf.mwr ?? 0)}
+            hint={`${perf.days} days`}
+          />
+          <StatCard
+            label="Annualized (MWR/XIRR)"
+            value={perf.annualized_mwr != null ? percent(perf.annualized_mwr) : "—"}
+            valueClass={signClass(perf.annualized_mwr ?? 0)}
+            hint="TWR judges the strategy; MWR judges your timing and sizing"
           />
           <StatCard
             label="Cumulative"
