@@ -40,9 +40,12 @@ setup_logging("metron", flow_doctor_yaml=_FLOW_DOCTOR_YAML)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Dev/test convenience: create tables on boot. Production uses Alembic migrations.
-    if settings.env != "prod":
-        create_all()
+    # Create tables + auto-ALTER additive nullable columns on boot. SQLite
+    # (the personal-tier deploy) self-heals automatically; Postgres (the multi-tenant
+    # tier) uses Alembic migrations — gated in create_all() on DB dialect, not
+    # the ENV label, so a SQLite deploy always self-heals regardless of deployment
+    # naming conventions (metron-ops#202).
+    create_all()
     # Seed the canned read-only Showcase Portfolio (idempotent) — the shell, its
     # frozen sample sleeve, and the legacy-portfolio cleanup all run unconditionally on
     # every boot, independent of S3 artifact availability, so the no-auth /demo entry
