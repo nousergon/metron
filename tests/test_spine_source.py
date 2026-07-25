@@ -68,6 +68,47 @@ class TestHistory:
         s3 = _s3_with({"market_data/close_history/AAPL.json": None})
         assert spine_source.spine_close_history(["AAPL"], date(2026, 1, 1), date(2026, 12, 31), s3=s3) == {}
 
+    def test_consolidated_close_history_reads_one_file(self):
+        # metron-ops#233: when the consolidated artifact exists, spine_close_history loads
+        # it once and filters in memory rather than reading N per-ticker files.
+        s3 = _s3_with({
+            spine_source.CLOSE_HISTORY_CONSOLIDATED_KEY: {
+                "schema_version": 1,
+                "series": {
+                    "AAPL": [["2026-06-09", 198.0], ["2026-06-10", 200.0], ["2026-06-11", 201.5]],
+                    "MSFT": [["2026-06-10", 350.0], ["2026-06-11", 355.0]],
+                },
+                "currency": {"AAPL": "USD", "MSFT": "USD"},
+            },
+        })
+        out = spine_source.spine_close_history(["AAPL", "MSFT"], date(2026, 6, 10), date(2026, 6, 11), s3=s3)
+        assert out["AAPL"] == [ClosePoint(date(2026, 6, 10), 200.0), ClosePoint(date(2026, 6, 11), 201.5)]
+        assert out["MSFT"] == [ClosePoint(date(2026, 6, 10), 350.0), ClosePoint(date(2026, 6, 11), 355.0)]
+
+    def test_consolidated_missing_falls_back_to_per_ticker_files(self):
+        # Without the consolidated artifact, spine_close_history degrades to per-ticker
+        # reads (transition period or producer lag).
+        s3 = _s3_with({
+            "market_data/close_history/AAPL.json": {"closes": [["2026-06-09", 198.0], ["2026-06-10", 200.0], ["2026-06-11", 201.5]]},
+        })
+        out = spine_source.spine_close_history(["AAPL"], date(2026, 6, 10), date(2026, 6, 11), s3=s3)
+        assert out["AAPL"] == [ClosePoint(date(2026, 6, 10), 200.0), ClosePoint(date(2026, 6, 11), 201.5)]
+
+    def test_consolidated_does_not_break_fx_pairs(self):
+        # FX pairs must still resolve from per-currency FX history even when the
+        # consolidated equity file is present (FX is never consolidated into it).
+        s3 = _s3_with({
+            spine_source.CLOSE_HISTORY_CONSOLIDATED_KEY: {
+                "schema_version": 1,
+                "series": {"AAPL": [["2026-06-11", 201.5]]},
+                "currency": {"AAPL": "USD"},
+            },
+            "market_data/fx_history/HKD.json": {"rates": [["2026-06-11", 0.1282]]},
+        })
+        out = spine_source.spine_close_history(["AAPL", "HKDUSD=X"], date(2026, 6, 11), date(2026, 6, 11), s3=s3)
+        assert out["AAPL"] == [ClosePoint(date(2026, 6, 11), 201.5)]
+        assert out["HKDUSD=X"] == [ClosePoint(date(2026, 6, 11), 0.1282)]
+
 
 class TestDispatcherDefaultsToSpine:
     def test_fetch_latest_closes_uses_spine_by_default(self, monkeypatch):
