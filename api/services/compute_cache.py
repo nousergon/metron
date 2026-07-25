@@ -1,4 +1,5 @@
-"""Process-level single-flight cache for expensive read computations.
+"""Cross-process single-flight cache for expensive read computations, backed by
+``diskcache`` so multiple gunicorn uvicorn workers share the same cache store.
 
 A dashboard page fans out into several parallel API requests that each recompute the
 same costly per-portfolio aggregates (NAV reconstruction, valued holdings). This caches
@@ -7,22 +8,29 @@ those results keyed by a **content fingerprint** of the portfolio's mutable stat
 - a cache entry is valid for *exactly* as long as the underlying data is unchanged — a
   fingerprint mismatch (after any import / price refresh / account change) misses and
   recomputes, so there is **no staleness window** (unlike a pure TTL cache); and
-- concurrent callers within one process share a single computation via a per-key lock
-  (single-flight) — no thundering-herd recompute when six requests land at once.
+- concurrent callers across multiple workers share a single computation via a per-key
+  cross-process lock (single-flight via ``diskcache.Lock``) — no thundering-herd
+  recompute when six requests land at once across six workers.
 
-The TTL here is only a memory-eviction backstop (bound the number of retained
-fingerprints), NOT a correctness mechanism. In-process only (one uvicorn worker on the
-owner build); a future multi-tenant deployment swaps this for a shared cache behind the
-same `cached()` seam. Errors are never cached — a failed compute raises to the caller
-(fail-loud) and leaves the slot empty so the next request retries."""
+The TTL here is only a disk-eviction backstop (bound the number of retained
+fingerprints), NOT a correctness mechanism. The ``diskcache.Cache`` backend uses SQLite
+with file-level locking so workers across processes share the same cache store and
+per-key lock. Errors are never cached — a failed compute raises to the caller
+(fail-loud) and leaves the slot empty so the next request retries.
+
+Two environment variables tune the location:
+  ``METRON_COMPUTE_CACHE_DIR``  — path to the diskcache SQLite directory
+                                  (default: ``$TMPDIR/metron-compute-cache``)
+"""
 
 from __future__ import annotations
 
-import threading
-import time
+import os
+import tempfile
 from collections.abc import Callable
 from typing import TypeVar
 
+import diskcache as dc
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -30,10 +38,13 @@ from api.db import models
 
 T = TypeVar("T")
 
-_TTL_S = 300.0  # memory-eviction backstop only; correctness comes from the fingerprint key
-_lock = threading.Lock()  # guards the registry + per-key lock creation
-_key_locks: dict[str, threading.Lock] = {}
-_entries: dict[str, tuple[float, object]] = {}  # key -> (stored_monotonic, value)
+_TTL_S = 300.0  # disk-eviction backstop only; correctness comes from the fingerprint key
+_CACHE_DIR = os.environ.get(
+    "METRON_COMPUTE_CACHE_DIR",
+    os.path.join(tempfile.gettempdir(), "metron-compute-cache"),
+)
+_cache = dc.Cache(_CACHE_DIR)
+_MISS = object()  # sentinel so None-valued entries are cacheable
 
 
 def _term(session: Session, model, tenant_id, portfolio_id) -> str:
@@ -82,41 +93,26 @@ def portfolio_fingerprint(session: Session, tenant_id, portfolio_id) -> str:
 
 
 def cached(key: str, compute: Callable[[], T]) -> T:
-    """Return `compute()`'s result for `key`, computed at most once per (key, content)
-    across concurrent callers. The first caller for a fresh key computes while others
-    block on that key's lock and then read the stored value. Include a
-    `portfolio_fingerprint` in `key` so the entry self-invalidates on any data change."""
-    now = time.monotonic()
-    with _lock:
-        hit = _entries.get(key)
-        if hit is not None and now - hit[0] < _TTL_S:
-            return hit[1]  # type: ignore[return-value]
-        key_lock = _key_locks.setdefault(key, threading.Lock())
+    """Return ``compute()``'s result for ``key``, computed at most once per (key, content)
+    across all workers. The first caller for a fresh key computes while others
+    block on that key's cross-process lock (``diskcache.Lock``) and then read the
+    stored value. Include a ``portfolio_fingerprint`` in ``key`` so the entry
+    self-invalidates on any data change."""
+    entry = _cache.get(key, _MISS)
+    if entry is not _MISS:
+        return entry  # type: ignore[return-value]
 
-    with key_lock:
-        # Re-check inside the per-key lock: a racing caller may have just populated it.
-        with _lock:
-            hit = _entries.get(key)
-            if hit is not None and time.monotonic() - hit[0] < _TTL_S:
-                return hit[1]  # type: ignore[return-value]
+    lock = dc.Lock(_cache, f"lck:{key}")
+    with lock:
+        # Re-check inside the cross-process lock: a racing worker may have just populated it.
+        entry = _cache.get(key, _MISS)
+        if entry is not _MISS:
+            return entry  # type: ignore[return-value]
         value = compute()  # may raise — intentionally NOT cached (fail-loud, retry next call)
-        with _lock:
-            _entries[key] = (time.monotonic(), value)
-            _evict_locked()
+        _cache.set(key, value, expire=_TTL_S)
         return value
-
-
-def _evict_locked() -> None:
-    """Drop entries past the eviction-backstop TTL. Caller holds `_lock`."""
-    cutoff = time.monotonic() - _TTL_S
-    stale = [k for k, (ts, _v) in _entries.items() if ts < cutoff]
-    for k in stale:
-        _entries.pop(k, None)
-        _key_locks.pop(k, None)
 
 
 def clear() -> None:
     """Drop all cached entries — for tests, so one test's cache never bleeds into another."""
-    with _lock:
-        _entries.clear()
-        _key_locks.clear()
+    _cache.clear()
