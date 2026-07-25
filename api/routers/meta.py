@@ -4,7 +4,6 @@ and report system-wide data freshness (metron-ops#220 provenance surface)."""
 from __future__ import annotations
 
 import importlib.metadata
-from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
