@@ -4,6 +4,7 @@ import "./globals.css";
 import { UserNav } from "@/components/user-nav";
 import { MobileNav } from "@/components/mobile-nav";
 import { DemoBanner } from "@/components/demo-banner";
+import { SwrProvider } from "@/components/swr-provider";
 
 export const metadata: Metadata = {
   title: "Metron — portfolio analytics, measured",
@@ -44,7 +45,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </div>
             <MobileNav />
           </header>
-          <main className="py-6 sm:py-8">{children}</main>
+          <main className="py-6 sm:py-8">
+            <SwrProvider>{children}</SwrProvider>
+          </main>
           <footer className="border-t border-line py-6 text-xs leading-relaxed text-muted">
             <p>
               Read-only analytics. No ads, no trackers, no investment advice — we compute the numbers; what you do

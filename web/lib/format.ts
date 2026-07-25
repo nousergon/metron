@@ -3,8 +3,20 @@
 // income) show whole dollars via moneyWhole() — cents are noise at portfolio magnitude
 // and misalign columns. (metron-ops#45.) Quantities trim trailing zeros.
 
+const _nfCache = new Map<string, Intl.NumberFormat>();
+
+function _cachedNF(locale: string, options: Intl.NumberFormatOptions): Intl.NumberFormat {
+  const key = `${locale}:${JSON.stringify(options)}`;
+  let f = _nfCache.get(key);
+  if (!f) {
+    f = new Intl.NumberFormat(locale, options);
+    _nfCache.set(key, f);
+  }
+  return f;
+}
+
 export function money(value: number, currency = "USD"): string {
-  return new Intl.NumberFormat("en-US", {
+  return _cachedNF("en-US", {
     style: "currency",
     currency,
     maximumFractionDigits: 2,
@@ -13,7 +25,7 @@ export function money(value: number, currency = "USD"): string {
 
 /** Whole-dollar money for aggregates (no cents). Rounds to the nearest dollar. */
 export function moneyWhole(value: number, currency = "USD"): string {
-  return new Intl.NumberFormat("en-US", {
+  return _cachedNF("en-US", {
     style: "currency",
     currency,
     maximumFractionDigits: 0,
@@ -59,7 +71,7 @@ export function accountingPercent(ratio: number): string {
 }
 
 export function quantity(value: number): string {
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value);
+  return _cachedNF("en-US", { maximumFractionDigits: 4 }).format(value);
 }
 
 /** Signed percentage from a decimal ratio (0.5 → "+50.0%"). */
@@ -72,7 +84,7 @@ export function percent(ratio: number): string {
 /** FX rate display — significant digits, not fixed decimals, so small rates
  * stay meaningful (HKD→USD ≈ 0.1274) without padding rates near 1. */
 export function fxRate(rate: number): string {
-  return new Intl.NumberFormat("en-US", { maximumSignificantDigits: 4 }).format(rate);
+  return _cachedNF("en-US", { maximumSignificantDigits: 4 }).format(rate);
 }
 
 /** Format a date-only ISO string (YYYY-MM-DD) without Date parsing, to avoid a

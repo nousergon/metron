@@ -24,6 +24,7 @@ from the env so this engine layer stays free of the api config.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -36,6 +37,10 @@ logger = logging.getLogger(__name__)
 CLOSES_LATEST_KEY = "market_data/eod_closes/latest.json"
 FX_LATEST_KEY = "market_data/fx/latest.json"
 CLOSE_HISTORY_PREFIX = "market_data/close_history/"
+# Consolidated close-history artifact (metron-ops#233): a single file containing all
+# symbols' close series + currency map, written alongside per-ticker files during the
+# transition period. The consumer loads this when present to avoid N sequential reads.
+CLOSE_HISTORY_CONSOLIDATED_KEY = f"{CLOSE_HISTORY_PREFIX}consolidated.json"
 FX_HISTORY_PREFIX = "market_data/fx_history/"
 _FX_PAIR_SUFFIX = "USD=X"  # the engine asks FX as {CCY}USD=X; the artifact base is USD
 
@@ -97,30 +102,87 @@ def spine_latest_closes(symbols: list[str], *, s3=None) -> dict[str, ClosePoint]
     return out
 
 
+def _parse_series(series: list, start: date, end: date) -> list[ClosePoint]:
+    """Parse raw series rows ``[[date, val], …]``, filter to window, return sorted."""
+    points: list[ClosePoint] = []
+    for row in series:
+        try:
+            d, val = _parse_date(row[0]), float(row[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if d is not None and val > 0 and start <= d <= end:
+            points.append(ClosePoint(bar_date=d, close=val))
+    if points:
+        points.sort(key=lambda p: p.bar_date)
+    return points
+
+
 def spine_close_history(symbols: list[str], start: date, end: date, *, s3=None) -> dict[str, list[ClosePoint]]:
-    """Daily close series per symbol over ``[start, end]`` from the per-symbol history
-    artifacts. Equity → close_history/{sym}.json; ``{CCY}USD=X`` → fx_history/{CCY}.json."""
+    """Daily close series per symbol over ``[start, end]`` from the spine.
+
+    Primary source (metron-ops#233): the consolidated artifact at
+    ``market_data/close_history/consolidated.json`` (all equity symbols in one file) —
+    the consumer loads it once and filters in memory. Falls back to per-symbol history
+    files during the transition period. Equity → consolidated / close_history/{sym}.json;
+    ``{CCY}USD=X`` → fx_history/{CCY}.json (FX history is always 1–2 currencies, not N).
+
+    S3 reads are parallelized via ``ThreadPoolExecutor`` for the per-symbol fallback path:
+    N tickers take ~1 round-trip latency instead of N sequential round-trips. The thread
+    pool is kept small enough to avoid S3 rate limits for typical portfolio sizes (≤30
+    symbols)."""
+    if not symbols:
+        return {}
     s3 = s3 or _s3()
     bucket = _bucket()
     out: dict[str, list[ClosePoint]] = {}
+
+    # FX pairs — always read from per-currency files (few currencies, never N>1).
     for sym in symbols:
         ccy = _fx_currency(sym)
         if ccy is not None:
             art = _read_json(s3, bucket, f"{FX_HISTORY_PREFIX}{ccy}.json")
             series = (art or {}).get("rates", [])
-        else:
-            art = _read_json(s3, bucket, f"{CLOSE_HISTORY_PREFIX}{sym}.json")
-            series = (art or {}).get("closes", [])
-        points: list[ClosePoint] = []
-        for row in series:
-            try:
-                d, val = _parse_date(row[0]), float(row[1])
-            except (TypeError, ValueError, IndexError):
+            points = _parse_series(series, start, end)
+            if points:
+                out[sym] = points
+
+    # Equity symbols — try consolidated file first, fall back to parallel per-ticker reads.
+    equity_symbols = [sym for sym in symbols if _fx_currency(sym) is None]
+    if not equity_symbols:
+        return out
+    consolidated = _read_json(s3, bucket, CLOSE_HISTORY_CONSOLIDATED_KEY)
+    if consolidated is not None:
+        series_map = consolidated.get("series", {})
+        for sym in equity_symbols:
+            series = series_map.get(sym)
+            if not series:
                 continue
-            if d is not None and val > 0 and start <= d <= end:
-                points.append(ClosePoint(bar_date=d, close=val))
-        if points:
-            out[sym] = sorted(points, key=lambda p: p.bar_date)
+            points = _parse_series(series, start, end)
+            if points:
+                out[sym] = points
+    else:
+        # Fall back to per-ticker files (transition period or producer lag).
+        # Parallel S3 reads via thread pool (boto3 is sync but thread-safe).
+        raw: dict[str, dict | None] = {}
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(equity_symbols), 30),
+        ) as pool:
+            future_map = {
+                pool.submit(_read_json, s3, bucket, f"{CLOSE_HISTORY_PREFIX}{sym}.json"): sym
+                for sym in equity_symbols
+            }
+            for future in concurrent.futures.as_completed(future_map):
+                sym = future_map[future]
+                try:
+                    raw[sym] = future.result()
+                except Exception:
+                    raw[sym] = None
+        for sym in equity_symbols:
+            art = raw.get(sym) or {}
+            series = art.get("closes", [])
+            points = _parse_series(series, start, end)
+            if points:
+                out[sym] = points
     return out
 
 
