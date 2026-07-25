@@ -1211,7 +1211,7 @@ def period_tiles(
     for period, label in PERIOD_TILES:
         anchor = anchors[period]
         if anchor is None:
-            result.tiles.append(PeriodTile(period, label, None, None, None, None, [], None))
+            result.tiles.append(PeriodTile(period, label, None, None, None, None, benchmarks=[], note=None))
             continue
         base_i, end_i = anchor
         window = points[base_i : end_i + 1]
