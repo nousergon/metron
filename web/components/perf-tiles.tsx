@@ -33,7 +33,7 @@ function AlphaRow({ b }: { b: BenchmarkReturn }) {
 }
 
 function Tile({ tile, selected, sessionHref }: { tile: PeriodTile; selected: Set<string>; sessionHref?: string }) {
-  const has = tile.twr != null || tile.gain != null;
+  const has = tile.twr != null || tile.mwr != null || tile.gain != null;
   const shown = tile.benchmarks.filter((b) => selected.has(b.symbol));
   // Only YTD/LTM carry a meaningful span worth labeling; Today is self-evident.
   const span = tile.period !== "today" && tile.start_date ? isoDate(tile.start_date) : null;
@@ -67,8 +67,13 @@ function Tile({ tile, selected, sessionHref }: { tile: PeriodTile; selected: Set
           <div className={`mt-2 text-2xl font-semibold tabular-nums ${signClass(tile.gain ?? 0)}`}>
             {tile.gain != null ? signedMoneyWhole(tile.gain) : "—"}
           </div>
-          <div className={`mt-0.5 text-sm tabular-nums ${signClass(tile.twr ?? 0)}`}>
-            {tile.twr != null ? `${percent(tile.twr)} TWR` : "—"}
+          <div className="mt-0.5 flex items-baseline gap-3">
+            <div className={`text-sm tabular-nums ${signClass(tile.twr ?? 0)}`}>
+              {tile.twr != null ? `${percent(tile.twr)} TWR` : "—"}
+            </div>
+            <div className={`text-sm tabular-nums ${signClass(tile.mwr ?? 0)}`}>
+              {tile.mwr != null ? `${percent(tile.mwr)} MWR` : "—"}
+            </div>
           </div>
           {shown.length > 0 ? (
             <div className="mt-3 space-y-1 border-t border-line pt-2">
