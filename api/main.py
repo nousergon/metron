@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from krepis.logging import setup_logging
 
 from api.config import settings
-from api.db.session import create_all
+from api.db.session import create_all, engine
 from api.plugins import active_plugins
 from api.routers import events, indices, macro, me, meta, portfolios, research_intel
 from api.services.demo import DEMO_TENANT_ID, REFERENCE_PORTFOLIO_ID
@@ -40,12 +40,11 @@ setup_logging("metron", flow_doctor_yaml=_FLOW_DOCTOR_YAML)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create tables + auto-ALTER additive nullable columns on boot. SQLite
-    # (the personal-tier deploy) self-heals automatically; Postgres (the multi-tenant
-    # tier) uses Alembic migrations — gated in create_all() on DB dialect, not
-    # the ENV label, so a SQLite deploy always self-heals regardless of deployment
-    # naming conventions (metron-ops#202).
-    create_all()
+    # Auto-create tables only on SQLite (dev/test convenience).
+    # Postgres schema is managed by Alembic — never auto-DDL a production DB
+    # (metron-ops#202: an env-based gate diverged from dialect reality).
+    if engine.dialect.name == "sqlite":
+        create_all()
     # Seed the canned read-only Showcase Portfolio (idempotent) — the shell, its
     # frozen sample sleeve, and the legacy-portfolio cleanup all run unconditionally on
     # every boot, independent of S3 artifact availability, so the no-auth /demo entry
