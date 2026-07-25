@@ -19,6 +19,7 @@ const tiles: PeriodTile[] = [
     end_date: "2024-06-30",
     gain: 20,
     twr: 0.015,
+    mwr: null,
     benchmarks: [bench("SPY", "S&P 500", 0.008, 0.007)],
   },
   {
@@ -28,6 +29,7 @@ const tiles: PeriodTile[] = [
     end_date: "2024-06-30",
     gain: 220,
     twr: 0.2,
+    mwr: null,
     benchmarks: [bench("SPY", "S&P 500", 0.1, 0.1), bench("QQQ", "Nasdaq 100", 0.15, 0.05)],
   },
   {
@@ -37,6 +39,7 @@ const tiles: PeriodTile[] = [
     end_date: "2024-06-30",
     gain: 320,
     twr: 0.32,
+    mwr: null,
     benchmarks: [bench("SPY", "S&P 500", 0.21, 0.11)],
   },
 ];
@@ -70,7 +73,7 @@ describe("PerfTiles", () => {
 
   it("shows 'history building' for a window with no data", () => {
     const building: PeriodTile[] = [
-      { period: "today", label: "Today", start_date: null, end_date: null, gain: null, twr: null, benchmarks: [] },
+      { period: "today", label: "Today", start_date: null, end_date: null, gain: null, twr: null, mwr: null, benchmarks: [] },
       ...tiles.slice(1),
     ];
     render(<PerfTiles tiles={building} benchmarksAvailable={false} />);
@@ -89,6 +92,7 @@ describe("PerfTiles", () => {
         end_date: "2026-06-25",
         gain: 20,
         twr: 0.015,
+        mwr: null,
         benchmarks: [],
         note: "as of 2026-06-25",
       },
