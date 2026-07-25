@@ -24,6 +24,7 @@ from the env so this engine layer stays free of the api config.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -123,7 +124,14 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3=None) 
     ``market_data/close_history/consolidated.json`` (all equity symbols in one file) —
     the consumer loads it once and filters in memory. Falls back to per-symbol history
     files during the transition period. Equity → consolidated / close_history/{sym}.json;
-    ``{CCY}USD=X`` → fx_history/{CCY}.json (FX history is always 1–2 currencies, not N)."""
+    ``{CCY}USD=X`` → fx_history/{CCY}.json (FX history is always 1–2 currencies, not N).
+
+    S3 reads are parallelized via ``ThreadPoolExecutor`` for the per-symbol fallback path:
+    N tickers take ~1 round-trip latency instead of N sequential round-trips. The thread
+    pool is kept small enough to avoid S3 rate limits for typical portfolio sizes (≤30
+    symbols)."""
+    if not symbols:
+        return {}
     s3 = s3 or _s3()
     bucket = _bucket()
     out: dict[str, list[ClosePoint]] = {}
@@ -138,7 +146,7 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3=None) 
             if points:
                 out[sym] = points
 
-    # Equity symbols — try consolidated file first, fall back to per-ticker.
+    # Equity symbols — try consolidated file first, fall back to parallel per-ticker reads.
     equity_symbols = [sym for sym in symbols if _fx_currency(sym) is None]
     if not equity_symbols:
         return out
@@ -154,9 +162,24 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3=None) 
                 out[sym] = points
     else:
         # Fall back to per-ticker files (transition period or producer lag).
+        # Parallel S3 reads via thread pool (boto3 is sync but thread-safe).
+        raw: dict[str, dict | None] = {}
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(equity_symbols), 30),
+        ) as pool:
+            future_map = {
+                pool.submit(_read_json, s3, bucket, f"{CLOSE_HISTORY_PREFIX}{sym}.json"): sym
+                for sym in equity_symbols
+            }
+            for future in concurrent.futures.as_completed(future_map):
+                sym = future_map[future]
+                try:
+                    raw[sym] = future.result()
+                except Exception:
+                    raw[sym] = None
         for sym in equity_symbols:
-            art = _read_json(s3, bucket, f"{CLOSE_HISTORY_PREFIX}{sym}.json")
-            series = (art or {}).get("closes", [])
+            art = raw.get(sym) or {}
+            series = art.get("closes", [])
             points = _parse_series(series, start, end)
             if points:
                 out[sym] = points
