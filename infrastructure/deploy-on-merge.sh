@@ -43,14 +43,6 @@ with e.connect() as c:
 fi
 
 
-# Run pending Alembic migrations (idempotent — a no-op when at head).
-# Postgres schema is Alembic-managed; this runs before any service restart
-# so new code never sees a schema it can't satisfy.
-echo "=== running Alembic migrations ==="
-.venv/bin/alembic upgrade head || { echo "Alembic migration FAILED"; exit 1; }
-echo "  migrations up to date"
-
-
 # Web deps — the only web build is the /dash variant below (the primary no-basePath
 # build served portfolio.nousergon.ai, retired 2026-07-22 per Brian's ruling:
 # metron.nousergon.ai/dash is the sole app entry point).
