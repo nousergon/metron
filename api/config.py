@@ -8,8 +8,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # Dev default: local SQLite, no vendor cost. Prod: postgresql+psycopg://…
-    database_url: str = "sqlite:///./dev.sqlite"
+    # Default: local Postgres (Docker). SQLite fallback for quick dev without Docker:
+    #   DATABASE_URL=sqlite:///./dev.sqlite uvicorn api.main:app
+    database_url: str = "postgresql+psycopg://postgres:metron@localhost:5432/metron"
     cors_origins: str = "http://localhost:3000"
     env: str = "dev"
     # Shared identity service (metron-ops#179) — nousergon-auth. Metron no longer runs
