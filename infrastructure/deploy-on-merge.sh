@@ -29,6 +29,15 @@ ALEMBIC_DB_URL=$(aws ssm get-parameter --region us-east-1 --name /metron/databas
 if [ -z "$ALEMBIC_DB_URL" ] || [ "$ALEMBIC_DB_URL" = "None" ]; then
     echo "  /metron/database_url not in SSM — skipping Alembic (pre-migration)"
 else
+    # Neon projects created via API may need explicit schema permissions
+    # for the role before Alembic can create its version table (idempotent).
+    DATABASE_URL="$ALEMBIC_DB_URL" "$REPO"/.venv/bin/python3 -c "
+from sqlalchemy import create_engine, text
+e = create_engine(__import__('os').environ['DATABASE_URL'])
+with e.connect() as c:
+    c.execute(text('GRANT ALL ON SCHEMA public TO metron_owner'))
+    c.commit()
+" 2>/dev/null || true
     DATABASE_URL="$ALEMBIC_DB_URL" .venv/bin/alembic upgrade head || { echo "Alembic migration FAILED"; exit 1; }
     echo "  migrations up to date"
 fi
@@ -65,6 +74,7 @@ BLOCK=$(mktemp)
 {
   echo "# >>> ssm-hydrated (managed by deploy-on-merge.sh — do not edit) >>>"
   for pair in \
+    "DATABASE_URL:/metron/database_url" \
     "FLEX_TOKEN:/metron/flex_token" \
     "FLEX_QUERY_ID:/metron/flex_query_id" \
     "OPENROUTER_API_KEY:/metron/openrouter_api_key" \
