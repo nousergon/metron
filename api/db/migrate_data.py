@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 import sys
 
-from sqlalchemy import create_engine, insert, inspect, select, text
+from sqlalchemy import MetaData, Table, create_engine, insert, inspect, select, text
 from sqlalchemy.engine import Engine
 
 # FK-safe dependency order: parents before children.
@@ -82,18 +82,26 @@ def migrate(*, sqlite_url: str, pg_url: str) -> None:
     if missing:
         print(f"  WARNING: skipping tables in SQLite but not in Postgres: {missing}")
 
+    # Reflect destination tables for proper SQLAlchemy 2.0 insert/select
+    dst_md = MetaData()
+    dst_md.reflect(bind=dst)
+
     with dst.begin() as conn:
         for table_name in TABLE_ORDER:
             if table_name not in src_tables:
-                continue  # table doesn't exist in source (e.g. empty overlay)
+                continue
             if table_name not in dst_tables:
-                continue  # table doesn't exist in destination (e.g. overlay not installed)
-
-            rows_raw = conn.execute(select("*").select_from(text(table_name))).fetchall()
-            if rows_raw:
-                print(f"  WARNING: {table_name} already has {len(rows_raw)} rows — skipping")
                 continue
 
+            dst_table = dst_md.tables[table_name]
+
+            # Check if destination already has rows (idempotent)
+            row_check = conn.execute(select(dst_table).limit(1)).fetchone()
+            if row_check:
+                print(f"  WARNING: {table_name} already has rows — skipping")
+                continue
+
+            # Read from SQLite using raw text (avoids cross-dialect reflection issues)
             src_rows = [
                 dict(r._mapping)
                 for r in src.connect().execute(select("*").select_from(text(table_name)))
@@ -102,7 +110,7 @@ def migrate(*, sqlite_url: str, pg_url: str) -> None:
                 print(f"  {table_name}: 0 rows (empty)")
                 continue
 
-            conn.execute(insert(text(table_name)), src_rows)
+            conn.execute(insert(dst_table), src_rows)
             print(f"  {table_name}: {len(src_rows)} rows migrated")
 
     # Verification
