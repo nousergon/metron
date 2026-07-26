@@ -66,6 +66,7 @@ BLOCK=$(mktemp)
 {
   echo "# >>> ssm-hydrated (managed by deploy-on-merge.sh — do not edit) >>>"
   for pair in \
+    "DATABASE_URL:/metron/database_url" \
     "FLEX_TOKEN:/metron/flex_token" \
     "FLEX_QUERY_ID:/metron/flex_query_id" \
     "OPENROUTER_API_KEY:/metron/openrouter_api_key" \
