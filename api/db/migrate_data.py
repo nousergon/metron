@@ -75,12 +75,12 @@ def migrate(*, sqlite_url: str, pg_url: str) -> None:
     src_tables = _all_table_names(src)
     dst_tables = _all_table_names(dst)
 
-    # Pre-flight: verify every source table has a matching destination table
+    # Tables that exist in SQLite but not in Postgres are skipped (e.g.
+    # metron-ops overlay models whose import was guarded in Alembic's env.py).
+    # Warn but do not fail — the migration should proceed for all other tables.
     missing = [t for t in TABLE_ORDER if t in src_tables and t not in dst_tables]
     if missing:
-        print(f"ERROR: tables in SQLite but not in Postgres: {missing}")
-        print("Run `alembic upgrade head` first to create the schema.")
-        sys.exit(1)
+        print(f"  WARNING: skipping tables in SQLite but not in Postgres: {missing}")
 
     with dst.begin() as conn:
         for table_name in TABLE_ORDER:
