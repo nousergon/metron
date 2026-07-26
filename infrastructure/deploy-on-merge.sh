@@ -17,7 +17,22 @@ echo "=== metron deploy $(date -u +%FT%TZ) — metron@$(git -C "$REPO" rev-parse
 
 cd "$REPO"
 # Python deps — idempotent; picks up metron / metron-ops / boto3 changes. Fast when satisfied.
-.venv/bin/pip install -q -e . -e ../metron-ops boto3 || { echo "pip install FAILED"; exit 1; }
+.venv/bin/pip install -q -e . -e ../metron-ops boto3 alembic || { echo "pip install FAILED"; exit 1; }
+
+# Run pending Alembic migrations against Postgres (idempotent — a no-op
+# when at head). Reads DATABASE_URL from SSM directly because the deploy
+# shell doesn't source any env file. Skips gracefully when the SSM param
+# doesn't exist yet (pre-provisioning) so the deploy doesn't fail before
+# the Neon project is created.
+echo "=== running Alembic migrations ==="
+ALEMBIC_DB_URL=$(aws ssm get-parameter --region us-east-1 --name /metron/database_url --with-decryption --query Parameter.Value --output text 2>/dev/null || true)
+if [ -z "$ALEMBIC_DB_URL" ] || [ "$ALEMBIC_DB_URL" = "None" ]; then
+    echo "  /metron/database_url not in SSM — skipping Alembic (pre-migration)"
+else
+    DATABASE_URL="$ALEMBIC_DB_URL" .venv/bin/alembic upgrade head || { echo "Alembic migration FAILED"; exit 1; }
+    echo "  migrations up to date"
+fi
+
 
 # Run pending Alembic migrations (idempotent — a no-op when at head).
 # Postgres schema is Alembic-managed; this runs before any service restart
