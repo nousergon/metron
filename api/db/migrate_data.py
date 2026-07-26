@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 import sys
 
-from sqlalchemy import MetaData, Table, create_engine, insert, inspect, select, text
+from sqlalchemy import MetaData, create_engine, insert, inspect, select, text
 from sqlalchemy.engine import Engine
 
 # FK-safe dependency order: parents before children.
