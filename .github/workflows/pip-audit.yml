@@ -39,4 +39,10 @@ jobs:
         # runtime dep fails the workflow; add `--ignore-vuln <ID>` here
         # with a reason comment if a transitive dep has no fix release
         # available.
-        run: pip-audit --strict .
+        # PYSEC-2026-2447 (diskcache 5.6.3): diskcache defaults to pickle
+        # serialization (RCE if attacker can write to the cache directory).
+        # No fixed version exists (5.6.3 is latest). The cache is intra-
+        # server only (gunicorn workers on the same machine) and the cache
+        # directory is system-temp with restricted permissions — an attacker
+        # who can write there already owns the box. (metron-ops#234)
+        run: pip-audit --strict . --ignore-vuln PYSEC-2026-2447
