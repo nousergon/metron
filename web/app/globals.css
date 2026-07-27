@@ -1,11 +1,22 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-/* Semantic color tokens as RGB channels (space-separated) so Tailwind's
-   `rgb(var(--c-x) / <alpha-value>)` tokens can switch theme at runtime. Dark is the
+@theme {
+  --color-paper: rgb(var(--c-paper));
+  --color-surface: rgb(var(--c-surface));
+  --color-ink: rgb(var(--c-ink));
+  --color-muted: rgb(var(--c-muted));
+  --color-line: rgb(var(--c-line));
+  --color-positive: rgb(var(--c-positive));
+  --color-negative: rgb(var(--c-negative));
+  --color-accent: rgb(var(--c-accent));
+}
+
+/* Semantic color tokens as RGB channels (space-separated) so the `--color-*`
+   tokens in the @theme block above can switch theme at runtime. Dark is the
    default (:root); `.light` on <html> re-points them. The no-flash script in
-   app/layout.tsx applies the saved theme class before first paint. (metron-ops#50) */
+   app/layout.tsx applies the saved theme class before first paint. (metron-ops#50)
+   Tailwind v4 handles opacity modifiers automatically via color-mix(), so the
+   v3 `<alpha-value>` pattern is no longer needed. */
 :root {
   --c-paper: 9 9 11; /* zinc-950 */
   --c-surface: 19 19 22;
