@@ -110,7 +110,7 @@ export default async function PortfolioPage(
   } catch {
     tiles = null;
   }
-  const showTiles = tiles?.tiles.some((t) => t.twr != null || t.gain != null) ?? false;
+  const showTiles = tiles?.tiles.some((t) => t.twr != null || t.mwr != null || t.gain != null) ?? false;
 
   // Markets strip: intraday major-index proxies (feed-gated → Pro). Fetched server-side
   // for first paint ONLY when entitled (hidden in the no-feed beta, per metron-ops#53);
@@ -142,7 +142,7 @@ export default async function PortfolioPage(
 
       {/* Headline: total value, with unrealized broken out by tax treatment. */}
       {hasTotalValue ? (
-        <div className="mt-6 rounded-lg border border-line p-5">
+        <div className="mt-6 rounded-lg border border-line p-4 sm:p-5">
           <div className="flex items-baseline justify-between gap-2">
             {/* This page always shows the whole portfolio (scoped === false), so no
                 "n of m accounts" subtitle — every account contributes to this headline. */}

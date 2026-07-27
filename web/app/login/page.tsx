@@ -4,7 +4,7 @@ export const metadata = { title: "Sign in — Metron" };
 
 export default function LoginPage() {
   return (
-    <div>
+    <div className="px-4 sm:px-0">
       <MagicLinkForm />
       <p className="mt-6 text-center text-sm text-muted">
         Just looking?{" "}

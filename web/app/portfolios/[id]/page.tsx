@@ -130,8 +130,8 @@ export default async function HoldingsPage(
     <div>
       <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
 
-      <div className="mt-3 flex items-baseline gap-2">
-        <h1 className="text-lg font-semibold">Holdings</h1>
+      <div className="mt-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <h1 className="text-base font-semibold sm:text-lg">Holdings</h1>
         {/* Live mode: position values revalue from intraday balances every ~5 min while
             open (#79), with the honest coverage label. Settled mode: a quiet slow poll so
             an all-day-open tab still catches the EOD snapshot advance (metron-ops#154). */}

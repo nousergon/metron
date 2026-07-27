@@ -24,6 +24,13 @@ dependencies = [
     # --- web/API tier ---
     "fastapi>=0.115",
     "uvicorn[standard]>=0.51.0",
+    # Process manager wrapping uvicorn workers (systemd ExecStart). Declared here
+    # so no dependency-sync operation can strip it from the prod venv (metron-I333).
+    "gunicorn>=26.0.0",
+    # Cross-process compute cache backend (metron-ops#234) — diskcache uses SQLite with
+    # file-level locking so multiple workers share a single cache store and single-flight
+    # lock. Replaces the original in-process ``dict`` + ``threading.Lock``.
+    "diskcache>=5.6",
     # Multipart parsing for CSV/OFX file uploads (FastAPI UploadFile requires it).
     "python-multipart>=0.0.32",
     "sqlalchemy>=2.0",
@@ -61,6 +68,8 @@ dependencies = [
     # it makes NO direct market-data API calls (no yfinance). Remaining external fetch:
     # FRED (Macro page) — a separate spine cutover (the producer already emits macro).
     "boto3>=1.43.54",
+    # Postgres driver (prod). SQLite is a dev/test fallback and needs nothing extra.
+    "psycopg[binary]>=3.3.4",
 ]
 
 [project.optional-dependencies]
@@ -68,7 +77,6 @@ dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "httpx>=0.28.1",            # FastAPI TestClient
-    "psycopg[binary]>=3.3.4",   # Postgres driver (prod); SQLite needs nothing extra
     # Validates the realized-lots export against the pinned telos contract schema in CI
     # (tests/test_realized_lots_export_contract.py) so the export can't silently drift from
     # nousergon/telos realized_lots v1.0.0 — metron-ops#127.
@@ -78,6 +86,7 @@ dev = [
     # transaction histories to assert ledger invariants hold universally, not just on
     # hand-picked fixtures (tests/test_golden_portfolios.py).
     "hypothesis>=6.160.0",
+    "alembic>=1.18",            # Postgres schema migrations
 ]
 
 [tool.hatch.build.targets.wheel]

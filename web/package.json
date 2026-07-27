@@ -23,6 +23,7 @@
     "swr": "^2.4.2"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
@@ -30,14 +31,16 @@
     "@types/react": "18.3.11",
     "@types/react-dom": "18.3.0",
     "@vitejs/plugin-react": "^6.0.4",
-    "autoprefixer": "10.5.4",
     "eslint": "8.57.1",
     "eslint-config-next": "15.5.20",
     "jsdom": "^29.1.1",
     "postcss": "8.5.22",
-    "tailwindcss": "3.4.19",
+    "tailwindcss": "^4.3.3",
     "typescript": "5.6.3",
     "vitest": "^4.1.10"
+  },
+  "optionalDependencies": {
+    "@tailwindcss/oxide-linux-arm64-gnu": "^4.3.3"
   },
   "overrides": {
     "@next/eslint-plugin-next": {

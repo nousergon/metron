@@ -17,7 +17,31 @@ echo "=== metron deploy $(date -u +%FT%TZ) — metron@$(git -C "$REPO" rev-parse
 
 cd "$REPO"
 # Python deps — idempotent; picks up metron / metron-ops / boto3 changes. Fast when satisfied.
-.venv/bin/pip install -q -e . -e ../metron-ops boto3 || { echo "pip install FAILED"; exit 1; }
+.venv/bin/pip install -q -e . -e ../metron-ops boto3 alembic || { echo "pip install FAILED"; exit 1; }
+
+# Run pending Alembic migrations against Postgres (idempotent — a no-op
+# when at head). Reads DATABASE_URL from SSM directly because the deploy
+# shell doesn't source any env file. Skips gracefully when the SSM param
+# doesn't exist yet (pre-provisioning) so the deploy doesn't fail before
+# the Neon project is created.
+echo "=== running Alembic migrations ==="
+ALEMBIC_DB_URL=$(aws ssm get-parameter --region us-east-1 --name /metron/database_url --with-decryption --query Parameter.Value --output text 2>/dev/null || true)
+if [ -z "$ALEMBIC_DB_URL" ] || [ "$ALEMBIC_DB_URL" = "None" ]; then
+    echo "  /metron/database_url not in SSM — skipping Alembic (pre-migration)"
+else
+    # Neon projects created via API may need explicit schema permissions
+    # for the role before Alembic can create its version table (idempotent).
+    DATABASE_URL="$ALEMBIC_DB_URL" "$REPO"/.venv/bin/python3 -c "
+from sqlalchemy import create_engine, text
+e = create_engine(__import__('os').environ['DATABASE_URL'])
+with e.connect() as c:
+    c.execute(text('GRANT ALL ON SCHEMA public TO metron_owner'))
+    c.commit()
+" 2>/dev/null || true
+    DATABASE_URL="$ALEMBIC_DB_URL" .venv/bin/alembic upgrade head || { echo "Alembic migration FAILED"; exit 1; }
+    echo "  migrations up to date"
+fi
+
 
 # Web deps — the only web build is the /dash variant below (the primary no-basePath
 # build served portfolio.nousergon.ai, retired 2026-07-22 per Brian's ruling:
@@ -42,6 +66,7 @@ BLOCK=$(mktemp)
 {
   echo "# >>> ssm-hydrated (managed by deploy-on-merge.sh — do not edit) >>>"
   for pair in \
+    "DATABASE_URL:/metron/database_url" \
     "FLEX_TOKEN:/metron/flex_token" \
     "FLEX_QUERY_ID:/metron/flex_query_id" \
     "OPENROUTER_API_KEY:/metron/openrouter_api_key" \
