@@ -11,6 +11,12 @@ const basePath = process.env.METRON_WEB_BASE_PATH || undefined;
 const nextConfig = {
   reactStrictMode: true,
   ...(basePath ? { basePath, distDir: ".next-dash" } : {}),
+  // Re-export the SAME basePath value to client/runtime code (lib/base-path.ts).
+  // Next only auto-prefixes basePath for <Link>/redirect()/next-image; anything that
+  // builds a URL by hand (the magic-link callbackURL, a <form action>, a route
+  // handler's Location header) has to read it explicitly — and must read it from
+  // here, not a second hardcoded "/dash" that can drift from what Next is serving.
+  env: { NEXT_PUBLIC_BASE_PATH: basePath ?? "" },
   // Defense-in-depth for metron-ops#193: Next.js 14's built-in Server Actions
   // same-origin check compares `x-forwarded-host` against `origin` and hard-
   // rejects a mismatch. The metron-dash-web process (:3003) is reachable both
