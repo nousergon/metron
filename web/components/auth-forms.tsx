@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { signIn } from "@/lib/auth-client";
+import { appUrl } from "@/lib/base-path";
 
 const inputClass = "w-full rounded border border-line px-3 py-2 text-sm";
 const buttonClass = "w-full rounded bg-ink px-3 py-2 text-sm font-medium text-paper hover:bg-white disabled:opacity-50";
@@ -41,10 +42,14 @@ export function MagicLinkForm() {
     setError(null);
     start(async () => {
       // callbackURL must be ABSOLUTE: the verify link lives on the shared auth
-      // origin, so a bare "/" would land on auth.nousergon.ai, not Metron.
+      // origin, so a bare "/" would land on auth.nousergon.ai, not Metron. It must
+      // also carry the basePath — `${origin}/` resolves to the MARKETING site at
+      // metron.nousergon.ai, so a user who clicked a valid link was signed in (the
+      // cookie is set on .nousergon.ai) but dropped on the marketing page, which
+      // reads as "sign-in didn't work".
       const { error } = await signIn.magicLink({
         email,
-        callbackURL: `${window.location.origin}/`,
+        callbackURL: appUrl("/"),
         metadata: { product: "metron" },
       });
       if (error) setError(error.message ?? "Couldn't send the sign-in link.");
