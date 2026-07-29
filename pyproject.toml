@@ -33,12 +33,12 @@ dependencies = [
     "diskcache>=5.6",
     # Multipart parsing for CSV/OFX file uploads (FastAPI UploadFile requires it).
     "python-multipart>=0.0.32",
-    "sqlalchemy>=2.0",
+    "sqlalchemy>=2.0.51",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.3",
     # Verifies the shared nousergon-auth identity service's EdDSA/Ed25519 JWTs against
     # its JWKS (metron-ops#179) — [crypto] pulls in `cryptography` for the Ed25519 path.
-    "pyjwt[crypto]>=2.8",
+    "pyjwt[crypto]>=2.13.0",
     # --- engine tier (portfolio_analytics/) ---
     "pandas>=3.0.3",
     "numpy>=1.26",
@@ -59,7 +59,7 @@ dependencies = [
     "krepis[flow_doctor]>=0.2.0",
     # Thin SnapTrade REST client used by portfolio_analytics.broker_io.snaptrade_reader
     # (imported at module load; tests stub the client but the import still runs).
-    "snaptrade-python-sdk>=11.0.198",
+    "snaptrade-python-sdk>=12.0.3",
     # OFX/QFX parsing (spec-strict) for the free-tier OFX import path.
     "ofxtools>=0.9.5",
     # S3 client for the data spine. `alpha-engine-data` is the single market/reference-
@@ -85,7 +85,7 @@ dev = [
     # (golden portfolios + property tests, metron-ops#210): generates randomized-but-valid
     # transaction histories to assert ledger invariants hold universally, not just on
     # hand-picked fixtures (tests/test_golden_portfolios.py).
-    "hypothesis>=6.160.0",
+    "hypothesis>=6.163.0",
     "alembic>=1.18",            # Postgres schema migrations
 ]
 
