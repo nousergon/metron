@@ -1,34 +1,41 @@
 # Standard fleet Dependabot config (weekly, grouped minor+patch) — alpha-engine-config-I2525
-# Majors are grouped into a single monthly PR per ecosystem — alpha-engine-config-I2734
+# Majors are surfaced as ONE grouped PR per ecosystem, throttled by a 30-day
+# major-version cooldown — alpha-engine-config-I2734. NOTE: Dependabot requires a
+# unique (package-ecosystem, directory, target-branch) per update config, so the
+# I2734 intent CANNOT be a second per-ecosystem block on its own monthly schedule
+# (that shape is invalid and disables ALL updates for the repo). The `majors`
+# group + `cooldown.semver-major-days: 30` below is the closest legal expression.
+#
+# This file previously carried exactly that invalid duplicate-block shape — two
+# blocks each for (pip, /), (npm, /web) and (github-actions, /). The symptom was
+# not an error but SILENT non-enforcement: on 2026-07-23 Dependabot opened four
+# separate UNGROUPED major PRs against /web (next, react-dom, eslint,
+# eslint-config-next) despite the weekly npm block carrying an
+# `ignore: "*" version-update:semver-major` that should have prevented every one
+# of them, while sibling repos on the single-block fleet config correctly
+# received ONE grouped `majors` PR. Corrected to the fleet shape 2026-07-28
+# during /backlog-triage (metron-ops-I243, metron-ops-I244).
+#
+# `cooldown` is set for pip only. Dependabot rejects cooldown.semver-major-days
+# for the github-actions ecosystem (validated live 2026-07-16, alpha-engine-config);
+# it is omitted for npm here rather than assumed-supported, so a rejected key
+# cannot silently disable this file a second time.
 version: 2
 updates:
   - package-ecosystem: pip
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      semver-major-days: 30
     groups:
       minor-and-patch:
         update-types:
           - minor
           - patch
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-major"
-
-  - package-ecosystem: pip
-    directory: "/"
-    schedule:
-      interval: monthly
-    groups:
       majors:
         update-types:
           - major
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-minor"
-          - "version-update:semver-patch"
 
   - package-ecosystem: npm
     directory: "/web"
@@ -39,24 +46,27 @@ updates:
         update-types:
           - minor
           - patch
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-major"
-
-  - package-ecosystem: npm
-    directory: "/web"
-    schedule:
-      interval: monthly
-    groups:
       majors:
         update-types:
           - major
+    # Deferred to the tracked Next 16 / React 19 / eslint 9 migration
+    # (metron-ops-I243). These five cannot land independently — next 16 requires
+    # React 19, and eslint-config-next 16 requires eslint 9+ — so Dependabot
+    # re-proposing them individually every week is pure queue noise. Narrow by
+    # dependency-name ON PURPOSE: a blanket "*" major ignore would also suppress
+    # future security-relevant majors. REMOVING THESE FIVE ENTRIES IS PART OF
+    # metron-ops-I243's closes-when.
     ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-minor"
-          - "version-update:semver-patch"
+      - dependency-name: "next"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eslint-config-next"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -67,22 +77,6 @@ updates:
         update-types:
           - minor
           - patch
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-major"
-
-  - package-ecosystem: github-actions
-    directory: "/"
-    schedule:
-      interval: monthly
-    groups:
       majors:
         update-types:
           - major
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-minor"
-          - "version-update:semver-patch"
-
