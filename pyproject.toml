@@ -41,7 +41,7 @@ dependencies = [
     "pyjwt[crypto]>=2.13.0",
     # --- engine tier (portfolio_analytics/) ---
     "pandas>=3.0.5",
-    "numpy>=1.26",
+    "numpy>=2.4.6",
     # Quant core (factor risk, attribution, returns, VaR/CVaR, riskstats) + the shared
     # cost-telemetry & SFT-capture chokepoints (nousergon_lib.sft). AGPL-3.0 (the internal
     # NE dedup lib, relicensed from MIT at 0.60.0) — fine here, metron core is AGPL too.
