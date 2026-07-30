@@ -30,7 +30,7 @@ dependencies = [
     # Cross-process compute cache backend (metron-ops#234) — diskcache uses SQLite with
     # file-level locking so multiple workers share a single cache store and single-flight
     # lock. Replaces the original in-process ``dict`` + ``threading.Lock``.
-    "diskcache>=5.6",
+    "diskcache>=5.6.3",
     # Multipart parsing for CSV/OFX file uploads (FastAPI UploadFile requires it).
     "python-multipart>=0.0.32",
     "sqlalchemy>=2.0.51",
