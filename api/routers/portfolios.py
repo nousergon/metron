@@ -49,6 +49,7 @@ from api.services import (
     tax,
     watchlist,
 )
+from api.services import invariants as _inv
 from api.services import (
     classifications as classifications_service,
 )
@@ -2104,7 +2105,17 @@ def get_performance(
     snapshots exist (never a fabricated number). A non-empty ``account_id`` selection
     scopes the series to those accounts' own forward-recorded NAV history (metron-ops#9 —
     per-account NAV can't be reconstructed, so it accrues forward only)."""
-    return performance.performance(session, portfolio.tenant_id, portfolio.id, account_ids=account_ids)
+    result = performance.performance(session, portfolio.tenant_id, portfolio.id, account_ids=account_ids)
+    # Layer-2 invariant checks (metron-ops#217) — run against every served
+    # response; violations log at WARNING for CloudWatch observability.
+    if result.points:
+        _inv.run_invariants(checks=[
+            ("nav_continuity", _inv.check_nav_continuity(nav_points=result.points)),
+            ("twr_chain_link", _inv.check_twr_chain_link(
+                cumulative_return=result.cumulative_return, twr=result.twr,
+            )),
+        ])
+    return result
 
 
 @router.post("/{portfolio_id}/performance/reconstruct", response_model=PerformanceOut)
@@ -2524,9 +2535,20 @@ def get_attribution(
         return attribution.AttributionSummary(
             computable=False, reason=feat["reason"], required_tier=feat["required_tier"]
         )
-    return attribution.compute_attribution(
+    result = attribution.compute_attribution(
         session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=False, account_ids=account_ids
     )
+    # Layer-2 invariant checks (metron-ops#217) — Brinson effects sum
+    if result.computable and result.allocation is not None:
+        _inv.run_invariants(checks=[
+            ("brinson_effects", _inv.check_brinson_effects(
+                allocation=result.allocation,
+                selection=result.selection,
+                interaction=result.interaction,
+                active_return=result.active_return,
+            )),
+        ])
+    return result
 
 
 @router.post("/{portfolio_id}/attribution/compute", response_model=AttributionOut)
@@ -2879,9 +2901,22 @@ def get_summary(
         prices, _ = intraday.for_portfolio(
             session, portfolio.tenant_id, portfolio.id, feed_entitled=settings.feed_entitled, account_ids=account_ids
         )
-    return analytics.summary(
+    result = analytics.summary(
         session, portfolio.tenant_id, portfolio.id, account_ids=account_ids, prices=prices
     )
+    # Layer-2 invariant checks (metron-ops#217)
+    _inv.run_invariants(checks=[
+        ("realized_unrealized_total", _inv.check_realized_unrealized_total(
+            realized_total=result.realized_total,
+            unrealized_gain=result.unrealized_gain,
+        )),
+        ("position_nav_consistency", _inv.check_position_nav_consistency(
+            holdings=analytics.holdings(session, portfolio.tenant_id, portfolio.id),
+            nav=result.market_value or 0.0,
+            cash=result.cash or 0.0,
+        )),
+    ])
+    return result
 
 
 @router.get("/{portfolio_id}/intraday", response_model=IntradayStatusOut)
