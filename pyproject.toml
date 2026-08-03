@@ -59,7 +59,21 @@ dependencies = [
     "krepis[flow_doctor]>=0.2.0",
     # Thin SnapTrade REST client used by portfolio_analytics.broker_io.snaptrade_reader
     # (imported at module load; tests stub the client but the import still runs).
-    "snaptrade-python-sdk>=12.0.3",
+    # PINNED BELOW 12 — the 12.x line does NOT sign requests for this deploy's key.
+    # Measured on the box 2026-08-03 against the SAME credentials: 11.0.213 returns 6
+    # linked accounts; 12.0.3 AND 12.0.4 both return `401 {'detail': 'Authentication
+    # credentials were not provided.'}` with `WWW-Authenticate: Signature realm="api"`,
+    # in every documented v12 auth mode (bare kwargs, SnapTradeAuth.personal_api_key,
+    # SnapTradeAuth.commercial_api_key). v12 moved signing behind an explicit `auth=`
+    # mode and none of them produce an accepted signature here.
+    # Consequence of the unbounded floor: SnapTrade position sync died silently on
+    # 2026-07-26 when pip resolved 12.0.1, and the Dependabot major bump (#354, merged
+    # 2026-07-28) codified it — the Fidelity/E*Trade/401(k) sleeves froze at
+    # broker_as_of 2026-07-25 for 9 days. CI stayed green because every test stubs the
+    # client, so the bump's only real exercise was production (metron-ops#260).
+    # The upper bound is what makes a future ceiling-raising Dependabot PR visible;
+    # tests/test_snaptrade_sdk_pin.py fails if it is removed or the major moves.
+    "snaptrade-python-sdk>=11.0.198,<12",
     # OFX/QFX parsing (spec-strict) for the free-tier OFX import path.
     "ofxtools>=1.1.1",
     # S3 client for the data spine. `alpha-engine-data` is the single market/reference-

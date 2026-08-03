@@ -282,7 +282,7 @@ class TestShadowRecomputeEndToEnd:
     def test_divergent_nav_snapshot_creates_break_and_alerts(self, db_session, monkeypatch):
         alerts: list[str] = []
         monkeypatch.setattr(
-            shadow_recompute, "send_telegram_alert", lambda text: (alerts.append(text), True)[1]
+            shadow_recompute, "send_alert", lambda text: (alerts.append(text), True)[1]
         )
         tenant, pf = _seed_portfolio(db_session, "e2e")
         acct = _add_account(db_session, tenant, pf)
@@ -310,7 +310,7 @@ class TestShadowRecomputeEndToEnd:
         assert stored.alerted_at is not None
 
     def test_agreeing_nav_snapshot_creates_no_break(self, db_session, monkeypatch):
-        monkeypatch.setattr(shadow_recompute, "send_telegram_alert", lambda text: True)
+        monkeypatch.setattr(shadow_recompute, "send_alert", lambda text: True)
         tenant, pf = _seed_portfolio(db_session, "e2e-clean")
         acct = _add_account(db_session, tenant, pf)
         sec = _add_security(db_session, "AAPL")
@@ -333,7 +333,7 @@ class TestShadowRecomputeEndToEnd:
         the Showcase Portfolio's NAV series is sole-sourced from the engine's published
         artifact, not from Metron's own transaction ledger — nothing for either the
         production or the shadow path to independently recompute."""
-        monkeypatch.setattr(shadow_recompute, "send_telegram_alert", lambda text: True)
+        monkeypatch.setattr(shadow_recompute, "send_alert", lambda text: True)
         from api.services.demo import REFERENCE_PORTFOLIO_ID
 
         tenant = models.Tenant(name="demo-tenant")
@@ -347,7 +347,7 @@ class TestShadowRecomputeEndToEnd:
         assert total.portfolios_checked == 0
 
     def test_shadow_recompute_all_covers_normal_portfolios(self, db_session, monkeypatch):
-        monkeypatch.setattr(shadow_recompute, "send_telegram_alert", lambda text: True)
+        monkeypatch.setattr(shadow_recompute, "send_alert", lambda text: True)
         tenant, pf = _seed_portfolio(db_session, "e2e-all")
         db_session.commit()
 
@@ -360,7 +360,7 @@ class TestShadowRecomputeEndToEnd:
         posture)."""
         alerts: list[str] = []
         monkeypatch.setattr(
-            shadow_recompute, "send_telegram_alert", lambda text: (alerts.append(text), True)[1]
+            shadow_recompute, "send_alert", lambda text: (alerts.append(text), True)[1]
         )
 
         def _boom(*a, **k):

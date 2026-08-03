@@ -20,16 +20,97 @@ credentials it doesn't use).
 
 from __future__ import annotations
 
-from sqlalchemy import select
+import uuid
+from dataclasses import dataclass
+from datetime import date
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api.config import settings
 from api.db import models
 from api.services import persistence
+from api.services.security_perf import STALE_AFTER_SESSIONS, sessions_behind
 from portfolio_analytics.broker_io.snaptrade_reader import SnapTradeReader
 from portfolio_analytics.ingestion.base import ConnectorSnapshot
 from portfolio_analytics.ingestion.ibkr_flex_connector import IbkrFlexConnector
 from portfolio_analytics.ingestion.snaptrade import SnapTradeConnector
+
+# Brokers whose positions arrive as a re-fetched SNAPSHOT and therefore go stale when the
+# scheduled sync stops working. CSV/OFX-sourced accounts are excluded by construction: their
+# positions come from an uploaded ledger, so "the sync hasn't run" is not a failure mode.
+_SNAPSHOT_BROKER_PREFIXES = ("ibkr_flex", "snaptrade")
+
+
+@dataclass(frozen=True)
+class StaleBrokerAccount:
+    """One broker-connected account whose share counts have stopped advancing."""
+
+    account_id: uuid.UUID
+    account_name: str
+    broker: str
+    as_of: date              # latest Position.as_of for the account
+    sessions_behind: int     # NYSE sessions between ``as_of`` and today
+
+    def __str__(self) -> str:
+        return (
+            f"{self.account_name} ({self.broker}): positions as of {self.as_of.isoformat()}, "
+            f"{self.sessions_behind} session(s) behind"
+        )
+
+
+def stale_broker_accounts(session: Session, *, today: date | None = None) -> list[StaleBrokerAccount]:
+    """Every snapshot-sourced account whose latest ``Position.as_of`` lags ``today`` by at
+    least ``STALE_AFTER_SESSIONS`` NYSE sessions.
+
+    This is the headless twin of the Holdings view's ⚠ "Positions synced through …"
+    badge, and it exists because that badge is the only thing that noticed the
+    2026-07-26 SnapTrade breakage: the nightly job logged ``snaptrade_synced=False``
+    at INFO and exited 0 for nine consecutive days, so the sole detector was Brian
+    reading the screen. A staleness predicate — rather than "did this run's sync
+    raise?" — is deliberate: it tolerates a single transient broker outage (IBKR Flex
+    returned a 503 on 2026-08-02 and self-healed the next run) and fires only once a
+    whole session's worth of share counts has actually been missed.
+
+    **Known blind spot, stated rather than hidden:** an account holding NO positions is
+    not flagged. ``Position.as_of`` is the only sync timestamp Metron persists — there is
+    no ``Account.last_synced_at`` — so a legitimately empty (all-cash) account and one
+    whose rows were wiped are indistinguishable here. Flagging them would page on the
+    former; skipping them under-reports the latter, and under-reporting an edge case
+    beats a recurring false page that trains the operator to ignore this alert.
+
+    Read-only. Returns ``[]`` when everything is current, so ``if stale:`` is the
+    caller's gate.
+    """
+    today = today or date.today()
+    latest = (
+        select(
+            models.Account.id.label("account_id"),
+            models.Account.name.label("account_name"),
+            models.Account.broker.label("broker"),
+            func.max(models.Position.as_of).label("as_of"),
+        )
+        .select_from(models.Account)
+        .join(models.Position, models.Position.account_id == models.Account.id)
+        .group_by(models.Account.id, models.Account.name, models.Account.broker)
+    )
+    stale: list[StaleBrokerAccount] = []
+    for row in session.execute(latest):
+        if not any(row.broker.startswith(p) for p in _SNAPSHOT_BROKER_PREFIXES):
+            continue
+        behind = sessions_behind(row.as_of, today)
+        if behind < STALE_AFTER_SESSIONS:
+            continue
+        stale.append(
+            StaleBrokerAccount(
+                account_id=row.account_id,
+                account_name=row.account_name or str(row.account_id),
+                broker=row.broker,
+                as_of=row.as_of,
+                sessions_behind=behind,
+            )
+        )
+    return stale
 
 
 def _synced_brokers(session: Session, portfolio: models.Portfolio) -> set[str]:
