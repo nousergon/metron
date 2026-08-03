@@ -15,6 +15,40 @@ set -uo pipefail
 REPO=/home/ec2-user/metron
 echo "=== metron deploy $(date -u +%FT%TZ) — metron@$(git -C "$REPO" rev-parse --short HEAD) metron-ops@$(git -C "$REPO/../metron-ops" rev-parse --short HEAD) ==="
 
+# ── Fail loudly, to a human (metron-ops#268) ─────────────────────────────────
+# This script failed on every deploy from 2026-08-02 to 2026-08-03 and nobody knew for
+# four days. It dies EARLY (Alembic is the first real step), so nothing below ever ran —
+# no restart, no health check — while the PREVIOUSLY deployed services stayed up and kept
+# answering :8000/health with a 200. A red GitHub Actions run was the only signal, on a
+# surface nobody watches.
+#
+# The trap sends the alert from HERE rather than from the workflow because this is where
+# credentials already work: krepis.alerts resolves the fleet bot from
+# /alpha-engine/TELEGRAM_BOT_TOKEN and publishes to the alerts SNS topic, both of which
+# the dashbox instance role can already reach. It is a best-effort send — an alerting
+# failure must never change the deploy's own exit code, which is what the workflow reads.
+#
+# It is NOT the only line of defence: `metron-deploy-drift.timer` independently compares
+# the box's HEAD against origin/main every hour, so a deploy that never started, an SSM
+# outage, or a failure of this very trap is still caught. State, not events.
+DEPLOY_STAGE="startup"
+_deploy_failed() {
+  local rc=$?
+  trap - EXIT
+  [ "$rc" -eq 0 ] && exit 0
+  echo "=== deploy FAILED (rc=${rc}) during stage: ${DEPLOY_STAGE} ==="
+  "$REPO"/.venv/bin/python -c '
+import sys
+from krepis import alerts
+alerts.publish(sys.argv[1], severity="error", source="metron/deploy",
+               dedup_key="metron-deploy-failed", dedup_window_min=60)
+' "metron deploy FAILED at stage '${DEPLOY_STAGE}' (rc=${rc}), commit $(git -C "$REPO" rev-parse --short HEAD). Nothing was restarted — the box is still serving the PREVIOUSLY deployed code, so health checks will look green. See the deploy.yml run log." \
+    || echo "  (alert publish failed — the drift timer remains the backstop)"
+  exit "$rc"
+}
+trap _deploy_failed EXIT
+
+DEPLOY_STAGE="pip install"
 cd "$REPO"
 # Python deps — idempotent; picks up metron / metron-ops / boto3 changes. Fast when satisfied.
 .venv/bin/pip install -q -e . -e ../metron-ops boto3 alembic || { echo "pip install FAILED"; exit 1; }
@@ -24,6 +58,7 @@ cd "$REPO"
 # shell doesn't source any env file. Skips gracefully when the SSM param
 # doesn't exist yet (pre-provisioning) so the deploy doesn't fail before
 # the Neon project is created.
+DEPLOY_STAGE="alembic migrations"
 echo "=== running Alembic migrations ==="
 ALEMBIC_DB_URL=$(aws ssm get-parameter --region us-east-1 --name /metron/database_url --with-decryption --query Parameter.Value --output text 2>/dev/null || true)
 if [ -z "$ALEMBIC_DB_URL" ] || [ "$ALEMBIC_DB_URL" = "None" ]; then
@@ -46,6 +81,7 @@ fi
 # Web deps — the only web build is the /dash variant below (the primary no-basePath
 # build served portfolio.nousergon.ai, retired 2026-07-22 per Brian's ruling:
 # metron.nousergon.ai/dash is the sole app entry point).
+DEPLOY_STAGE="npm install"
 cd "$REPO/web"
 npm install --no-audit --no-fund --silent || { echo "npm install FAILED"; exit 1; }
 
@@ -67,6 +103,7 @@ npm install --no-audit --no-fund --silent || { echo "npm install FAILED"; exit 1
 # krepis.alerts, which resolves the FLEET bot from /alpha-engine/TELEGRAM_BOT_TOKEN —
 # one bot, one rotation point, and a parameter that exists.
 ENVF="$REPO/../metron-ops/.env"
+DEPLOY_STAGE="SSM hydration + unit install"
 echo "=== hydrating SSM secrets → metron-ops/.env ==="
 touch "$ENVF"
 BLOCK=$(mktemp)
@@ -146,6 +183,7 @@ if [ -e /etc/systemd/system/metron-web.service ]; then
   echo "retired metron-web.service (portfolio.nousergon.ai deprecation)"
 fi
 
+DEPLOY_STAGE="metron-api restart + health check"
 sudo systemctl restart metron-api
 
 # Health checks — poll with a bounded retry instead of a fixed sleep. A fixed sleep races
@@ -182,6 +220,7 @@ echo "api deploy OK — metron-api healthy"
 # pending bootstrap.
 systemctl is-enabled --quiet metron-dash-web.service 2>/dev/null \
   || { echo "metron-dash-web.service not enabled — sole web surface missing (see metron-ops#180 bootstrap)"; exit 1; }
+DEPLOY_STAGE="web build + dash restart"
 echo "=== building /dash variant (METRON_WEB_BASE_PATH=/dash → web/.next-dash) ==="
 cd "$REPO/web"
 NODE_OPTIONS=--max-old-space-size=700 METRON_WEB_BASE_PATH=/dash npm run build \
