@@ -36,6 +36,20 @@ updates:
       majors:
         update-types:
           - major
+    # INTEGRATION-ONLY dependencies (metron-ops#265). Every test stubs these, so a major
+    # bump's only real exercise is production — which is how snaptrade-python-sdk 12.x
+    # merged green and killed SnapTrade position sync for nine days (metron-ops#260).
+    # A green CI run is not evidence for a package CI cannot evaluate, so the major is
+    # not proposed at all; raising one is a deliberate human act with a live check.
+    # Minor and patch updates still flow normally.
+    #
+    # This list is not free-form: [tool.metron.dependency-exposure] in pyproject.toml is
+    # the source of truth, and tests/test_dependency_exposure.py fails if the two drift.
+    ignore:
+      - dependency-name: "snaptrade-python-sdk"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "boto3"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: npm
     directory: "/web"
