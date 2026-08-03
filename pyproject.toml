@@ -41,7 +41,7 @@ dependencies = [
     "pyjwt[crypto]>=2.13.0",
     # --- engine tier (portfolio_analytics/) ---
     "pandas>=3.0.5",
-    "numpy>=1.26",
+    "numpy>=2.4.6",
     # Quant core (factor risk, attribution, returns, VaR/CVaR, riskstats) + the shared
     # cost-telemetry & SFT-capture chokepoints (nousergon_lib.sft). AGPL-3.0 (the internal
     # NE dedup lib, relicensed from MIT at 0.60.0) — fine here, metron core is AGPL too.
@@ -61,7 +61,7 @@ dependencies = [
     # (imported at module load; tests stub the client but the import still runs).
     "snaptrade-python-sdk>=12.0.3",
     # OFX/QFX parsing (spec-strict) for the free-tier OFX import path.
-    "ofxtools>=0.9.5",
+    "ofxtools>=1.1.1",
     # S3 client for the data spine. `alpha-engine-data` is the single market/reference-
     # data ground truth for the Nous Ergon system; Metron publishes its held-ticker
     # universe and reads EOD closes / FX / sectors / earnings from its S3 artifacts —
