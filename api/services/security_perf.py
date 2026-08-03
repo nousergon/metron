@@ -29,7 +29,11 @@ _MARKET_TZ = ZoneInfo("America/New_York")
 # Flag a close-fed price as stale once it lags the latest session by this many sessions.
 # 0 = priced today, 1 = priced the prior session (normal before today's close prints), so
 # the first value that means "a whole session was skipped" is 2.
-_STALE_AFTER_SESSIONS = 2
+# Public because ``broker_sync.stale_broker_accounts`` — the headless detector that pages
+# the operator — must use the SAME threshold the Holdings view renders its ⚠ badge from.
+# Two thresholds would let the screen warn while nothing alerts, which is the exact shape
+# of the 2026-07-26 SnapTrade freeze (metron-ops#260).
+STALE_AFTER_SESSIONS = 2
 
 
 def sessions_behind(price_date: date, today: date) -> int:
@@ -169,7 +173,7 @@ def enrich_holdings(
         h.last_price_stale = (
             h.last_price_from_close
             and h.last_price_date is not None
-            and sessions_behind(h.last_price_date, today) >= _STALE_AFTER_SESSIONS
+            and sessions_behind(h.last_price_date, today) >= STALE_AFTER_SESSIONS
         )
         # Positions staleness (metron-ops#150) — DISTINCT from last_price_stale: this is
         # about how current the broker-reported SHARE COUNT is (has the daily broker
@@ -180,6 +184,6 @@ def enrich_holdings(
         # broker snapshot to go stale.
         h.positions_stale = (
             h.broker_as_of is not None
-            and sessions_behind(h.broker_as_of, today) >= _STALE_AFTER_SESSIONS
+            and sessions_behind(h.broker_as_of, today) >= STALE_AFTER_SESSIONS
         )
     return held

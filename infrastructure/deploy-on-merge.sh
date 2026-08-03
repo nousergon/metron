@@ -59,6 +59,13 @@ npm install --no-audit --no-fund --silent || { echo "npm install FAILED"; exit 1
 # open-weight provider (config#1658) self-heals on a box rebuild instead of needing a
 # hand-pasted key; ANTHROPIC_API_KEY stays hand-set (no /metron/anthropic_api_key param).
 # Values are written straight to the file and NEVER echoed (they'd leak into the GHA log).
+#
+# TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID were dropped 2026-08-03: they pointed at
+# /metron/telegram_bot_token and /metron/telegram_chat_id, which have never existed, so
+# the loop's `[ -n "$val" ]` guard silently skipped them on every deploy and every alert
+# metron ever raised degraded to a log line (metron-ops#260). Alerting now goes through
+# krepis.alerts, which resolves the FLEET bot from /alpha-engine/TELEGRAM_BOT_TOKEN —
+# one bot, one rotation point, and a parameter that exists.
 ENVF="$REPO/../metron-ops/.env"
 echo "=== hydrating SSM secrets → metron-ops/.env ==="
 touch "$ENVF"
@@ -70,9 +77,7 @@ BLOCK=$(mktemp)
     "FLEX_TOKEN:/metron/flex_token" \
     "FLEX_QUERY_ID:/metron/flex_query_id" \
     "OPENROUTER_API_KEY:/metron/openrouter_api_key" \
-    "METRON_ADVISOR_SFT_CAPTURE_ENABLED:/metron/advisor_sft_capture_enabled" \
-    "TELEGRAM_BOT_TOKEN:/metron/telegram_bot_token" \
-    "TELEGRAM_CHAT_ID:/metron/telegram_chat_id"; do
+    "METRON_ADVISOR_SFT_CAPTURE_ENABLED:/metron/advisor_sft_capture_enabled"; do
     var=${pair%%:*}; path=${pair#*:}
     val=$(aws ssm get-parameter --region us-east-1 --name "$path" --with-decryption --query Parameter.Value --output text 2>/dev/null)
     [ -n "$val" ] && [ "$val" != "None" ] && printf '%s=%s\n' "$var" "$val"
@@ -90,8 +95,7 @@ echo "  hydrated ${HYDRATED} var(s) from SSM (values not logged)"
 # edit deploys via the merge button alone (metron-ops DEPLOY.md declares
 # infrastructure/systemd/ the source of truth — before this step the box copy drifted
 # until someone hand-copied it; the 2026-07-08 flex-sync env-overlay fix is the case in
-# point). First-time unit INSTALLS still need a manual `systemctl enable` (see DEPLOY.md);
-# this handles updates to already-enabled units.
+# point).
 UNITS_DIR="$REPO/../metron-ops/infrastructure/systemd"
 UNITS_CHANGED=0
 for f in "$UNITS_DIR"/*.service "$UNITS_DIR"/*.timer; do
@@ -106,6 +110,28 @@ done
 if [ "$UNITS_CHANGED" = 1 ]; then
   sudo systemctl daemon-reload
 fi
+
+# Enable + start every tracked TIMER. This step used to be a manual `systemctl enable`
+# after a first-time install, which is how metron-reconcile.timer came to be copied onto
+# the box and never started: the custodian-reconciliation job (metron-ops#216) had ZERO
+# journal entries on 2026-08-03, months after shipping, and it is the job that would have
+# caught the SnapTrade 401 the same night it began (metron-ops#260). A scheduled job that
+# depends on someone remembering to enable it is not scheduled.
+# Idempotent: `enable --now` on an already-running timer is a no-op.
+for f in "$UNITS_DIR"/*.timer; do
+  [ -e "$f" ] || continue
+  unit=$(basename "$f")
+  sudo systemctl enable --now "$unit" || { echo "timer enable FAILED: $unit"; exit 1; }
+done
+# Fail the deploy if any tracked timer is not actually armed — an enable that silently
+# no-ops leaves the box looking deployed while nothing runs.
+for f in "$UNITS_DIR"/*.timer; do
+  [ -e "$f" ] || continue
+  unit=$(basename "$f")
+  systemctl is-active --quiet "$unit" \
+    || { echo "timer $unit installed but NOT active after enable"; exit 1; }
+done
+echo "  all tracked timers enabled + active"
 
 # One-shot retirement of metron-web.service (:3000, portfolio.nousergon.ai —
 # deprecated 2026-07-22, metron-ops#225). Idempotent — a no-op once the unit is
