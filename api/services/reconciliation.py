@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from api.config import settings
 from api.db import models
 from api.services import broker_sync
-from api.services.alerting import send_telegram_alert
+from api.services.alerting import send_alert
 from portfolio_analytics.ingestion.base import ConnectorSnapshot
 
 logger = logging.getLogger(__name__)
@@ -267,7 +267,7 @@ def reconcile_portfolio(session: Session, portfolio: models.Portfolio, *, today:
         except Exception as e:  # noqa: BLE001 — a fetch failure must alert, not crash the run
             msg = f"reconciliation fetch failed — portfolio={portfolio.id} broker={broker}: {e}"
             logger.error(msg)
-            send_telegram_alert(f"⚠️ {msg}")
+            send_alert(f"⚠️ {msg}")
             result.fetch_failures.append(msg)
             continue
         if snapshot is None:
@@ -288,7 +288,7 @@ def reconcile_portfolio(session: Session, portfolio: models.Portfolio, *, today:
 
     if new_count:
         new_rows = [r for r in rows if r.alerted_at is None]
-        if send_telegram_alert(_alert_text(portfolio, new_rows)):
+        if send_alert(_alert_text(portfolio, new_rows)):
             now = datetime.now(UTC)
             for row in new_rows:
                 row.alerted_at = now

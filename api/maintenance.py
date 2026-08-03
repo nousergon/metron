@@ -31,10 +31,12 @@ from api.config import settings
 from api.db import models
 from api.db.session import SessionLocal, create_all
 from api.services import (
+    alerting,
     analytics,
     attribution,
     broker_sync,
     data_spine,
+    deploy_drift,
     fx,
     performance,
     reconciliation,
@@ -399,6 +401,73 @@ def backfill_tax_treatment(session: Session) -> int:
     return updated
 
 
+def report_broker_staleness(session: Session, *, today: date | None = None) -> list:
+    """Check every snapshot-sourced account's position freshness; ERROR-log and page the
+    operator when any has stopped advancing. Returns the stale accounts (empty = healthy).
+
+    This is the fail-loud half of the broker re-sync. The sync itself is deliberately
+    best-effort per broker (a Flex outage must not cost the price refresh), and before
+    this check that posture had no counterweight: on 2026-07-26 the SnapTrade credential
+    path broke, ``daily-refresh`` logged ``snaptrade_synced=False`` at INFO, exited 0, and
+    kept doing so for nine days while four accounts' share counts froze (metron-ops#260).
+    A run that cannot keep positions current is a FAILED run, and says so — in the log, on
+    the alert channels, and in the process exit code.
+
+    Deduped over 12 hours so a persistent fault pages once a day rather than once per
+    timer fire (``metron-refresh`` alone fires three times each evening).
+    """
+    stale = broker_sync.stale_broker_accounts(session, today=today)
+    if not stale:
+        logger.info("broker-staleness check: all snapshot-sourced accounts current")
+        return []
+    detail = "\n".join(f"  - {s}" for s in stale)
+    logger.error(
+        "broker positions STALE for %d account(s) — the scheduled re-sync is not "
+        "working; share counts are frozen while prices keep updating:\n%s",
+        len(stale), detail,
+    )
+    alerting.send_alert(
+        f"Metron: broker positions stale for {len(stale)} account(s) — the scheduled "
+        f"re-sync is not keeping share counts current:\n{detail}",
+        severity="error",
+        dedup_key="metron-broker-staleness",
+        dedup_window_min=720,
+    )
+    return stale
+
+
+def report_deploy_drift(*, grace_minutes: int = deploy_drift.DEFAULT_GRACE_MINUTES) -> list:
+    """Check whether the box is running code behind origin/main; page if it is.
+
+    The companion to ``report_broker_staleness``, for the deploy pipeline rather than the
+    data: `deploy.yml` failed on every run for four days and nothing said so, because a
+    deploy that dies before ``systemctl restart`` leaves the previously deployed services
+    up and health-checking green (metron-ops#268). Returns the drifted repos (empty =
+    healthy).
+
+    Deduped over 6 hours: this runs hourly, and a stuck deploy should page a few times a
+    day, not once an hour.
+    """
+    drifted = deploy_drift.check(grace_minutes=grace_minutes)
+    if not drifted:
+        logger.info("deploy-drift check: box is at origin/main for every repo")
+        return []
+    detail = "\n".join(
+        f"  - {s.path}: running {s.head}, origin/main is {s.remote} "
+        f"({s.behind} commit(s) behind, newest waiting {s.remote_age_min} min)"
+        for s in drifted
+    )
+    alerting.send_alert(
+        f"Metron: the box is running code behind origin/main — a deploy has not "
+        f"landed:\n{detail}\nServices still serving the OLD code will keep "
+        f"health-checking green; check the deploy.yml run history.",
+        severity="error",
+        dedup_key="metron-deploy-drift",
+        dedup_window_min=360,
+    )
+    return drifted
+
+
 def flex_sync_all(session: Session) -> int:
     """Re-sync IBKR Flex broker positions for every non-reference portfolio.
     A lighter pre-market variant of the daily-refresh: Flex sync only, no price
@@ -444,6 +513,17 @@ def main(argv: list[str] | None = None) -> int:
         "reconcile",
         help="layer-1 custodian reconciliation: diff persisted positions/cash against a fresh "
         "broker read, record breaks, alert on new ones (nightly timer, metron-ops#216)",
+    )
+    p_drift = sub.add_parser(
+        "deploy-drift-check",
+        help="alert when the box is running code behind origin/main — a deploy that died "
+        "before restarting leaves the OLD services up and health-checking green "
+        "(hourly timer, metron-ops#268). Touches no database.",
+    )
+    p_drift.add_argument(
+        "--grace-minutes", type=int, default=deploy_drift.DEFAULT_GRACE_MINUTES,
+        help="how long a commit may sit on origin/main before an undeployed box is a "
+        f"defect rather than a deploy in progress (default: {deploy_drift.DEFAULT_GRACE_MINUTES})",
     )
     sub.add_parser(
         "shadow-recompute",
@@ -493,6 +573,7 @@ def main(argv: list[str] | None = None) -> int:
         session = SessionLocal()
         try:
             r = daily_refresh(session)
+            stale = report_broker_staleness(session)
         finally:
             session.close()
         logger.info(
@@ -512,15 +593,22 @@ def main(argv: list[str] | None = None) -> int:
             r.broker_flex_synced,
             r.broker_snaptrade_synced,
         )
-        return 0
+        # Non-zero when positions are stale: the run refreshed prices but did NOT keep
+        # share counts current, and a green systemd unit would say otherwise.
+        return 1 if stale else 0
+    if args.cmd == "deploy-drift-check":
+        # No create_all()/session: this reads git state, not the database. Keeping it
+        # DB-free means it still reports when the DB is the thing that is broken.
+        return 1 if report_deploy_drift(grace_minutes=args.grace_minutes) else 0
     if args.cmd == "flex-sync":
         create_all()
         session = SessionLocal()
         try:
             flex_sync_all(session)
+            stale = report_broker_staleness(session)
         finally:
             session.close()
-        return 0
+        return 1 if stale else 0
     if args.cmd == "reconcile":
         create_all()
         session = SessionLocal()
