@@ -28,6 +28,46 @@ def _engine_kwargs(url: str) -> dict:
     return {"pool_pre_ping": True}
 
 
+# Environments where a SQLite database is the expected, documented setup: local dev and
+# the test suite. README's self-host path ships `ENV=dev` with the SQLite default, so a
+# self-hoster following the docs is unaffected by the guard below.
+_SQLITE_OK_ENVS = frozenset({"dev", "test", "local"})
+
+
+def _assert_database_is_deliberate(url: str, env: str, allow_sqlite: bool) -> None:
+    """Refuse to hand out a SQLite engine to a non-local deployment (metron-ops#264).
+
+    The dashbox carries TWO databases. Every systemd unit gets Neon from a drop-in, but
+    the repo-root env file still names ``sqlite:////home/ec2-user/metron/personal.sqlite``
+    — so anything run WITHOUT that drop-in (a manual ``python -m api.maintenance``, an
+    ad-hoc query, a debugging session) silently reads a file that stopped being written
+    on 2026-07-25. During the metron-ops#260 investigation it answered a diagnostic query
+    with confident, four-days-stale data, and nothing about it looked wrong.
+
+    A second database that silently answers is worse than none: nothing errors, the
+    numbers merely disagree, and there is no signal about which one you are looking at.
+    So a non-local ``ENV`` plus a SQLite URL raises here, at engine construction, instead
+    of quietly serving stale rows.
+
+    ``METRON_ALLOW_SQLITE=true`` is the deliberate escape hatch for someone genuinely
+    running a non-dev SQLite deployment — the point is to make the choice explicit, not
+    to forbid it.
+    """
+    if not url.startswith("sqlite"):
+        return
+    if env.lower() in _SQLITE_OK_ENVS or allow_sqlite:
+        return
+    raise RuntimeError(
+        f"refusing to start: DATABASE_URL is SQLite ({url!r}) but ENV={env!r} is not a "
+        f"local environment ({sorted(_SQLITE_OK_ENVS)}). On a deployed box this almost "
+        "always means the process is missing the environment that names the real "
+        "database, and it would otherwise read a stale local file with no error "
+        "(metron-ops#264). Point DATABASE_URL at the real database, or set "
+        "METRON_ALLOW_SQLITE=true if this deployment genuinely runs on SQLite."
+    )
+
+
+_assert_database_is_deliberate(settings.database_url, settings.env, settings.allow_sqlite)
 engine = create_engine(settings.database_url, **_engine_kwargs(settings.database_url))
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
