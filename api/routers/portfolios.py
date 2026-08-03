@@ -49,7 +49,6 @@ from api.services import (
     tax,
     watchlist,
 )
-from api.services import invariants as _inv
 from api.services import (
     classifications as classifications_service,
 )
@@ -59,6 +58,7 @@ from api.services import (
 from api.services import diagnostics as diagnostics_service
 from api.services import fx as fx_service
 from api.services import identity as identity_service
+from api.services import invariants as _inv
 from api.services import prices as price_service
 from api.services import (
     sectors as sectors_service,

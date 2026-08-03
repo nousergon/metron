@@ -14,12 +14,10 @@ runs the invariant check against that state, exactly as the serving path does.
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass
 from datetime import date
 
 from api.services import invariants
-
 
 # ── Fixture data shapes (mirror actual response dataclasses) ────────────────
 
