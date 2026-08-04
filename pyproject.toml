@@ -73,7 +73,7 @@ dependencies = [
     # client, so the bump's only real exercise was production (metron-ops#260).
     # The upper bound is what makes a future ceiling-raising Dependabot PR visible;
     # tests/test_snaptrade_sdk_pin.py fails if it is removed or the major moves.
-    "snaptrade-python-sdk>=11.0.198,<12",
+    "snaptrade-python-sdk>=11.0.213,<12",
     # OFX/QFX parsing (spec-strict) for the free-tier OFX import path.
     "ofxtools>=1.1.1",
     # S3 client for the data spine. `alpha-engine-data` is the single market/reference-
