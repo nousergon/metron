@@ -107,25 +107,56 @@ DEPLOY_STAGE="SSM hydration + unit install"
 echo "=== hydrating SSM secrets → metron-ops/.env ==="
 touch "$ENVF"
 BLOCK=$(mktemp)
-{
-  echo "# >>> ssm-hydrated (managed by deploy-on-merge.sh — do not edit) >>>"
-  for pair in \
-    "DATABASE_URL:/metron/database_url" \
-    "FLEX_TOKEN:/metron/flex_token" \
-    "FLEX_QUERY_ID:/metron/flex_query_id" \
-    "OPENROUTER_API_KEY:/metron/openrouter_api_key" \
-    "METRON_ADVISOR_SFT_CAPTURE_ENABLED:/metron/advisor_sft_capture_enabled"; do
-    var=${pair%%:*}; path=${pair#*:}
-    val=$(aws ssm get-parameter --region us-east-1 --name "$path" --with-decryption --query Parameter.Value --output text 2>/dev/null)
-    [ -n "$val" ] && [ "$val" != "None" ] && printf '%s=%s\n' "$var" "$val"
-  done
-  echo "# <<< ssm-hydrated <<<"
-} >> "$BLOCK"
+MISSING_REQUIRED=""
+# Each entry is VAR:SSM_PATH:CRITICALITY.
+#
+# CRITICALITY is not decoration — it is the fix for metron-ops#260. This loop used to be
+# `[ -n "$val" ] && printf ...`, i.e. a parameter it could not read was SILENTLY skipped.
+# TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID pointed at /metron/telegram_bot_token and
+# /metron/telegram_chat_id, which never existed, so they were skipped on every deploy for
+# months and every alert metron raised degraded to a log line. Nothing was ever red.
+#
+#   required — absent ⇒ FAIL the deploy. The box cannot do its job without it.
+#   optional — absent ⇒ an explicit "NOT SET" line in the deploy log. Never silent.
+#
+# A value that is legitimately not configured yet is `optional`; it becomes `required` the
+# moment something depends on it. There is no third state, and "just don't list it" is not
+# one either — an unlisted variable is invisible, which is how this class hides.
+for pair in \
+  "DATABASE_URL:/metron/database_url:required" \
+  "FLEX_TOKEN:/metron/flex_token:required" \
+  "FLEX_QUERY_ID:/metron/flex_query_id:required" \
+  "SNAPTRADE_CLIENT_ID:/metron/snaptrade_client_id:optional" \
+  "SNAPTRADE_CONSUMER_KEY:/metron/snaptrade_consumer_key:optional" \
+  "SNAPTRADE_USER_ID:/metron/snaptrade_user_id:optional" \
+  "SNAPTRADE_USER_SECRET:/metron/snaptrade_user_secret:optional" \
+  "OPENROUTER_API_KEY:/metron/openrouter_api_key:optional" \
+  "METRON_ADVISOR_SFT_CAPTURE_ENABLED:/metron/advisor_sft_capture_enabled:optional"; do
+  var=${pair%%:*}; rest=${pair#*:}; path=${rest%:*}; crit=${rest##*:}
+  val=$(aws ssm get-parameter --region us-east-1 --name "$path" --with-decryption --query Parameter.Value --output text 2>/dev/null)
+  if [ -n "$val" ] && [ "$val" != "None" ]; then
+    printf '%s=%s\n' "$var" "$val" >> "$BLOCK"
+  elif [ "$crit" = "required" ]; then
+    MISSING_REQUIRED="${MISSING_REQUIRED} ${var}(${path})"
+  else
+    # Loud on stdout, which lands in the deploy log — the signal that did not exist before.
+    echo "  NOT SET: ${var} — ${path} is absent from SSM (declared optional)"
+  fi
+done
 HYDRATED=$(grep -cE '^[A-Z][A-Z0-9_]*=' "$BLOCK" || true)
-# Replace any prior managed block in place, then append the fresh one (idempotent).
+if [ -n "$MISSING_REQUIRED" ]; then
+  echo "SSM hydration FAILED — required parameter(s) absent:${MISSING_REQUIRED}"
+  rm -f "$BLOCK"
+  exit 1
+fi
+# Wrap the collected assignments in the managed markers, then replace any prior managed
+# block in place and append the fresh one (idempotent).
+{ echo "# >>> ssm-hydrated (managed by deploy-on-merge.sh — do not edit) >>>"
+  cat "$BLOCK"
+  echo "# <<< ssm-hydrated <<<"; } > "${BLOCK}.wrapped"
 sed -i '/# >>> ssm-hydrated/,/# <<< ssm-hydrated/d' "$ENVF"
-cat "$BLOCK" >> "$ENVF"
-rm -f "$BLOCK"
+cat "${BLOCK}.wrapped" >> "$ENVF"
+rm -f "$BLOCK" "${BLOCK}.wrapped"
 echo "  hydrated ${HYDRATED} var(s) from SSM (values not logged)"
 
 # Install tracked systemd units when the repo copy differs from the live one, so a unit

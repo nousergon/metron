@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:metron@localhost:5432/metron"
     cors_origins: str = "http://localhost:3000"
     env: str = "dev"
+    # Escape hatch for a deliberate non-dev SQLite deployment. Off by default so a
+    # deployed process that has lost the environment naming its real database FAILS
+    # instead of silently reading a stale local file (metron-ops#264; see
+    # api.db.session._assert_database_is_deliberate).
+    allow_sqlite: bool = False
     # Shared identity service (metron-ops#179) — nousergon-auth. Metron no longer runs
     # its own Better Auth instance; the shared service at `auth_base_url` authenticates
     # users and mints short-lived EdDSA JWTs, which the API verifies locally against the
