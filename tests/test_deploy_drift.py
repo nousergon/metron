@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from api import maintenance
-from api.services import deploy_drift
+from api.services import alerting, deploy_drift
 from api.services.deploy_drift import RepoState, is_drifted
 
 
@@ -64,12 +63,12 @@ def test_a_git_failure_is_not_reported_as_healthy(monkeypatch):
 
 def test_cli_exits_non_zero_on_drift(monkeypatch):
     sent: list[tuple[str, dict]] = []
-    monkeypatch.setattr(maintenance.alerting, "send_alert", lambda t, **kw: sent.append((t, kw)) or True)
+    monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append((t, kw)) or True)
     monkeypatch.setattr(
-        maintenance.deploy_drift, "check",
+        deploy_drift, "check",
         lambda **kw: [_state(head="old", remote="new", behind=4, age=5760)],
     )
-    assert maintenance.main(["deploy-drift-check"]) == 1
+    assert deploy_drift.main([]) == 1
     text, kwargs = sent[0]
     assert "behind" in text and "old" in text and "new" in text
     assert kwargs["severity"] == "error"
@@ -77,9 +76,9 @@ def test_cli_exits_non_zero_on_drift(monkeypatch):
 
 def test_cli_exits_zero_and_stays_silent_when_current(monkeypatch):
     sent: list[str] = []
-    monkeypatch.setattr(maintenance.alerting, "send_alert", lambda t, **kw: sent.append(t) or True)
-    monkeypatch.setattr(maintenance.deploy_drift, "check", lambda **kw: [])
-    assert maintenance.main(["deploy-drift-check"]) == 0
+    monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append(t) or True)
+    monkeypatch.setattr(deploy_drift, "check", lambda **kw: [])
+    assert deploy_drift.main([]) == 0
     assert sent == []
 
 
@@ -87,6 +86,33 @@ def test_cli_grace_minutes_reaches_the_check(monkeypatch):
     """A flag that silently fails to reach the predicate is the same class of defect as a
     detector wired to a channel that does not exist."""
     seen: dict = {}
-    monkeypatch.setattr(maintenance.deploy_drift, "check", lambda **kw: seen.update(kw) or [])
-    maintenance.main(["deploy-drift-check", "--grace-minutes", "5"])
+    monkeypatch.setattr(deploy_drift, "check", lambda **kw: seen.update(kw) or [])
+    deploy_drift.main(["--grace-minutes", "5"])
     assert seen["grace_minutes"] == 5
+
+
+def test_the_drift_check_does_not_import_the_database_layer():
+    """The regression this module was moved out of api.maintenance to prevent.
+
+    The systemd unit loads only the repo-root env file, which still names SQLite, so the
+    import-time guard in api.db.session (metron-ops#264) killed
+    `python -m api.maintenance deploy-drift-check` before it checked anything — the unit
+    went red for a reason that had nothing to do with drift. A subprocess is used because
+    the pytest process has already imported half the app.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys; import api.services.deploy_drift as d; "
+        "bad=[m for m in sys.modules if m.startswith('api.db')]; "
+        "print('DB_MODULES=' + ','.join(sorted(bad)))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True, timeout=120
+    ).stdout
+    assert "DB_MODULES=" in out
+    assert out.strip() == "DB_MODULES=", (
+        f"api.services.deploy_drift pulled in the database layer: {out.strip()}. The "
+        "drift check must keep working when the database is the thing that is broken."
+    )

@@ -98,3 +98,64 @@ def check(
             s.path, s.head, s.remote, s.behind, s.remote_age_min,
         )
     return drifted
+
+
+def report(*, grace_minutes: int = DEFAULT_GRACE_MINUTES) -> list[RepoState]:
+    """Check for drift and page the operator if there is any. Returns the drifted repos.
+
+    Deduped over 6 hours: the timer runs hourly, and a stuck deploy should page a few
+    times a day rather than 24.
+    """
+    from api.services.alerting import send_alert
+
+    drifted = check(grace_minutes=grace_minutes)
+    if not drifted:
+        logger.info("deploy-drift check: box is at origin/main for every repo")
+        return []
+    detail = "\n".join(
+        f"  - {s.path}: running {s.head}, origin/main is {s.remote} "
+        f"({s.behind} commit(s) behind, newest waiting {s.remote_age_min} min)"
+        for s in drifted
+    )
+    send_alert(
+        f"Metron: the box is running code behind origin/main — a deploy has not landed:\n"
+        f"{detail}\nServices still serving the OLD code will keep health-checking green; "
+        f"check the deploy.yml run history.",
+        severity="error",
+        dedup_key="metron-deploy-drift",
+        dedup_window_min=360,
+    )
+    return drifted
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`python -m api.services.deploy_drift` — the entry point the systemd unit uses.
+
+    Deliberately NOT a subcommand of ``api.maintenance``. That module imports
+    ``api.db.models`` at module load, which builds the engine, so the drift check
+    inherited a hard dependency on the database being configured — and on 2026-08-03 the
+    new SQLite guard (metron-ops#264) turned that inherited dependency into a crash: the
+    unit loads only the repo-root env file, which still names SQLite, so
+    `python -m api.maintenance deploy-drift-check` died at import before checking
+    anything. The unit's own comment claimed it was DB-free "so it keeps reporting when
+    the database is the thing that is broken"; that was aspiration, not architecture.
+    This module imports nothing from api.db, which makes the claim true.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python -m api.services.deploy_drift",
+        description="Alert when the box is running code behind origin/main.",
+    )
+    parser.add_argument(
+        "--grace-minutes", type=int, default=DEFAULT_GRACE_MINUTES,
+        help="how long a commit may sit on origin/main before an undeployed box is a "
+             f"defect rather than a deploy in progress (default: {DEFAULT_GRACE_MINUTES})",
+    )
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    return 1 if report(grace_minutes=args.grace_minutes) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
