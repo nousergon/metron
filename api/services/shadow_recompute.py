@@ -72,7 +72,7 @@ from api.config import settings
 from api.db import models
 from api.services import analytics, performance
 from api.services import prices as price_service
-from api.services.alerting import send_telegram_alert
+from api.services.alerting import send_alert
 from portfolio_analytics.domain.ledger import Ledger, Transaction, TxnType, build_ledger
 from portfolio_analytics.prices.source import ClosePoint
 
@@ -473,7 +473,7 @@ def shadow_recompute_portfolio(
 
         if new_count:
             new_rows = [r for r in rows if r.alerted_at is None]
-            if send_telegram_alert(_alert_text(portfolio, new_rows)):
+            if send_alert(_alert_text(portfolio, new_rows)):
                 now = datetime.now(UTC)
                 for row in new_rows:
                     row.alerted_at = now
@@ -481,7 +481,7 @@ def shadow_recompute_portfolio(
     except Exception as e:  # noqa: BLE001 — a per-portfolio failure must alert, never crash the batch
         msg = f"shadow-recompute failed — portfolio={portfolio.id}: {e}"
         logger.error(msg, exc_info=True)
-        send_telegram_alert(f"⚠️ {msg}")
+        send_alert(f"⚠️ {msg}")
         result.errors.append(msg)
         session.rollback()
 

@@ -91,7 +91,7 @@ def test_no_breaks_when_db_matches_broker(db_session, flex_ok):
 
 def test_quantity_mismatch_creates_break_and_alerts(db_session, flex_ok, monkeypatch):
     alerts = []
-    monkeypatch.setattr(reconciliation, "send_telegram_alert", lambda text: alerts.append(text) or True)
+    monkeypatch.setattr(reconciliation, "send_alert", lambda text: alerts.append(text) or True)
 
     pf = _seed_portfolio(db_session, broker="ibkr_flex")
     account = select_account(db_session, pf, "ibkr_flex", FLEX_ACCT)
@@ -233,7 +233,7 @@ def test_break_resolves_when_it_stops_reproducing(db_session, flex_ok):
 
 def test_rerun_same_day_does_not_duplicate_or_realert(db_session, flex_ok, monkeypatch):
     alerts = []
-    monkeypatch.setattr(reconciliation, "send_telegram_alert", lambda text: alerts.append(text) or True)
+    monkeypatch.setattr(reconciliation, "send_alert", lambda text: alerts.append(text) or True)
 
     pf = _seed_portfolio(db_session, broker="ibkr_flex")
     account = select_account(db_session, pf, "ibkr_flex", FLEX_ACCT)
@@ -260,7 +260,7 @@ def test_fetch_failure_alerts_and_reports_without_raising(db_session, monkeypatc
 
     monkeypatch.setattr("portfolio_analytics.ingestion.ibkr_flex_connector.fetch_flex_xml", _boom)
     alerts = []
-    monkeypatch.setattr(reconciliation, "send_telegram_alert", lambda text: alerts.append(text) or True)
+    monkeypatch.setattr(reconciliation, "send_alert", lambda text: alerts.append(text) or True)
 
     pf = _seed_portfolio(db_session, broker="ibkr_flex")
     result = reconciliation.reconcile_portfolio(db_session, pf)
