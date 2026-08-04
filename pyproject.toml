@@ -22,7 +22,7 @@ requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }
 dependencies = [
     # --- web/API tier ---
-    "fastapi>=0.115",
+    "fastapi>=0.141.1",
     "uvicorn[standard]>=0.51.0",
     # Process manager wrapping uvicorn workers (systemd ExecStart). Declared here
     # so no dependency-sync operation can strip it from the prod venv (metron-I333).
@@ -35,7 +35,7 @@ dependencies = [
     "python-multipart>=0.0.32",
     "sqlalchemy>=2.0.51",
     "pydantic>=2.13.4",
-    "pydantic-settings>=2.3",
+    "pydantic-settings>=2.14.2",
     # Verifies the shared nousergon-auth identity service's EdDSA/Ed25519 JWTs against
     # its JWKS (metron-ops#179) — [crypto] pulls in `cryptography` for the Ed25519 path.
     "pyjwt[crypto]>=2.13.0",
@@ -56,7 +56,7 @@ dependencies = [
     # flow-doctor pipeline error-handler via krepis (MIT). krepis owns the
     # logging+flow-doctor glue; metron is AGPL but pulls the MIT commodity
     # layer from krepis and only the AGPL quant core from nousergon-lib.
-    "krepis[flow_doctor]>=0.2.0",
+    "krepis[flow_doctor]>=0.30.0",
     # Thin SnapTrade REST client used by portfolio_analytics.broker_io.snaptrade_reader
     # (imported at module load; tests stub the client but the import still runs).
     # PINNED BELOW 12 — the 12.x line does NOT sign requests for this deploy's key.
@@ -73,7 +73,7 @@ dependencies = [
     # client, so the bump's only real exercise was production (metron-ops#260).
     # The upper bound is what makes a future ceiling-raising Dependabot PR visible;
     # tests/test_snaptrade_sdk_pin.py fails if it is removed or the major moves.
-    "snaptrade-python-sdk>=11.0.198,<12",
+    "snaptrade-python-sdk>=11.0.213,<12",
     # OFX/QFX parsing (spec-strict) for the free-tier OFX import path.
     "ofxtools>=1.1.1",
     # S3 client for the data spine. `alpha-engine-data` is the single market/reference-
@@ -81,7 +81,11 @@ dependencies = [
     # universe and reads EOD closes / FX / sectors / earnings from its S3 artifacts —
     # it makes NO direct market-data API calls (no yfinance). Remaining external fetch:
     # FRED (Macro page) — a separate spine cutover (the producer already emits macro).
-    "boto3>=1.43.54",
+    # INTEGRATION-ONLY (see [tool.metron.dependency-exposure]): every test stubs boto3
+    # via conftest's autouse `_no_live_aws_calls`, so no test exercises a real S3 call.
+    # `<2` is close to free — boto3 has been on 1.x for its entire life — and it means a
+    # major cannot arrive on a routine deploy the way snaptrade 12.x did (metron-ops#260).
+    "boto3>=1.43.63,<2",
     # Postgres driver (prod). SQLite is a dev/test fallback and needs nothing extra.
     "psycopg[binary]>=3.3.4",
 ]
@@ -101,6 +105,40 @@ dev = [
     # hand-picked fixtures (tests/test_golden_portfolios.py).
     "hypothesis>=6.163.0",
     "alembic>=1.18.5",            # Postgres schema migrations
+    # tests/test_dependency_exposure.py parses .github/dependabot.yml. PyYAML is already
+    # present transitively (krepis, nousergon-lib), but a test that imports it must not
+    # depend on someone else's dependency tree staying the way it is today.
+    "pyyaml>=6.0",
+]
+
+[tool.metron.dependency-exposure]
+# Dependencies whose REAL behaviour no test exercises (metron-ops#265).
+#
+# The distinction that matters is not "is it a network client" but "if this package
+# changed how it talks to its third party, would anything in CI notice?" For these two the
+# answer is no: every test stubs them, deliberately and correctly — hermetic tests must not
+# depend on live credentials. The consequence is that a version bump's only real exercise
+# is production, which is exactly how snaptrade-python-sdk 12.x reached the box and killed
+# position sync for nine days on a green Dependabot merge (metron-ops#260).
+#
+# Being on this list carries two obligations, both enforced by
+# tests/test_dependency_exposure.py:
+#   1. an upper version bound in [project].dependencies, so a major cannot arrive on a
+#      routine `pip install -e .` during a deploy;
+#   2. a `version-update:semver-major` ignore in .github/dependabot.yml, so the bump is
+#      never proposed for the standing Dependabot auto-merge to carry through on a green
+#      CI run that cannot evaluate it.
+#
+# Deliberately NOT on this list, with the reason, so the next reader does not re-litigate:
+#   ofxtools      — tests/test_ofx_import.py parses real OFX text through parse_ofx.
+#   psycopg       — the "pytest on Postgres (dialect parity gate)" job runs a real server.
+#   krepis        — trading_calendar and logging run for real in the suite. Only
+#                   krepis.alerts is stubbed, which is one surface, not the package.
+#   nousergon-lib — the quant functions are exercised directly.
+# Add a name here the moment its real behaviour stops being exercised anywhere.
+integration-only = [
+    "snaptrade-python-sdk",
+    "boto3",
 ]
 
 [tool.hatch.build.targets.wheel]
