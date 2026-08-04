@@ -122,14 +122,22 @@ MISSING_REQUIRED=""
 # A value that is legitimately not configured yet is `optional`; it becomes `required` the
 # moment something depends on it. There is no third state, and "just don't list it" is not
 # one either — an unlisted variable is invisible, which is how this class hides.
+#
+# The four SNAPTRADE_* entries were `optional` for exactly one day: they were listed before
+# the parameters existed, so that every deploy log carried a NOT SET line for each until
+# they were seeded (metron-ops#263). Seeded 2026-08-03, the hand-set copies removed from the
+# box's repo-root env file the same day, and a metron-refresh-flex run then reported
+# `2 broker-sources synced` on the hydrated values alone. They are load-bearing now, so a
+# deploy that cannot read them must fail rather than quietly ship a box whose SnapTrade
+# sleeves will freeze — which is the whole shape of metron-ops#260.
 for pair in \
   "DATABASE_URL:/metron/database_url:required" \
   "FLEX_TOKEN:/metron/flex_token:required" \
   "FLEX_QUERY_ID:/metron/flex_query_id:required" \
-  "SNAPTRADE_CLIENT_ID:/metron/snaptrade_client_id:optional" \
-  "SNAPTRADE_CONSUMER_KEY:/metron/snaptrade_consumer_key:optional" \
-  "SNAPTRADE_USER_ID:/metron/snaptrade_user_id:optional" \
-  "SNAPTRADE_USER_SECRET:/metron/snaptrade_user_secret:optional" \
+  "SNAPTRADE_CLIENT_ID:/metron/snaptrade_client_id:required" \
+  "SNAPTRADE_CONSUMER_KEY:/metron/snaptrade_consumer_key:required" \
+  "SNAPTRADE_USER_ID:/metron/snaptrade_user_id:required" \
+  "SNAPTRADE_USER_SECRET:/metron/snaptrade_user_secret:required" \
   "OPENROUTER_API_KEY:/metron/openrouter_api_key:optional" \
   "METRON_ADVISOR_SFT_CAPTURE_ENABLED:/metron/advisor_sft_capture_enabled:optional"; do
   var=${pair%%:*}; rest=${pair#*:}; path=${rest%:*}; crit=${rest##*:}
