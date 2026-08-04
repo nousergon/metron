@@ -36,7 +36,6 @@ from api.services import (
     attribution,
     broker_sync,
     data_spine,
-    deploy_drift,
     fx,
     performance,
     reconciliation,
@@ -436,38 +435,6 @@ def report_broker_staleness(session: Session, *, today: date | None = None) -> l
     return stale
 
 
-def report_deploy_drift(*, grace_minutes: int = deploy_drift.DEFAULT_GRACE_MINUTES) -> list:
-    """Check whether the box is running code behind origin/main; page if it is.
-
-    The companion to ``report_broker_staleness``, for the deploy pipeline rather than the
-    data: `deploy.yml` failed on every run for four days and nothing said so, because a
-    deploy that dies before ``systemctl restart`` leaves the previously deployed services
-    up and health-checking green (metron-ops#268). Returns the drifted repos (empty =
-    healthy).
-
-    Deduped over 6 hours: this runs hourly, and a stuck deploy should page a few times a
-    day, not once an hour.
-    """
-    drifted = deploy_drift.check(grace_minutes=grace_minutes)
-    if not drifted:
-        logger.info("deploy-drift check: box is at origin/main for every repo")
-        return []
-    detail = "\n".join(
-        f"  - {s.path}: running {s.head}, origin/main is {s.remote} "
-        f"({s.behind} commit(s) behind, newest waiting {s.remote_age_min} min)"
-        for s in drifted
-    )
-    alerting.send_alert(
-        f"Metron: the box is running code behind origin/main — a deploy has not "
-        f"landed:\n{detail}\nServices still serving the OLD code will keep "
-        f"health-checking green; check the deploy.yml run history.",
-        severity="error",
-        dedup_key="metron-deploy-drift",
-        dedup_window_min=360,
-    )
-    return drifted
-
-
 def flex_sync_all(session: Session) -> int:
     """Re-sync IBKR Flex broker positions for every non-reference portfolio.
     A lighter pre-market variant of the daily-refresh: Flex sync only, no price
@@ -513,17 +480,6 @@ def main(argv: list[str] | None = None) -> int:
         "reconcile",
         help="layer-1 custodian reconciliation: diff persisted positions/cash against a fresh "
         "broker read, record breaks, alert on new ones (nightly timer, metron-ops#216)",
-    )
-    p_drift = sub.add_parser(
-        "deploy-drift-check",
-        help="alert when the box is running code behind origin/main — a deploy that died "
-        "before restarting leaves the OLD services up and health-checking green "
-        "(hourly timer, metron-ops#268). Touches no database.",
-    )
-    p_drift.add_argument(
-        "--grace-minutes", type=int, default=deploy_drift.DEFAULT_GRACE_MINUTES,
-        help="how long a commit may sit on origin/main before an undeployed box is a "
-        f"defect rather than a deploy in progress (default: {deploy_drift.DEFAULT_GRACE_MINUTES})",
     )
     sub.add_parser(
         "shadow-recompute",
@@ -596,10 +552,6 @@ def main(argv: list[str] | None = None) -> int:
         # Non-zero when positions are stale: the run refreshed prices but did NOT keep
         # share counts current, and a green systemd unit would say otherwise.
         return 1 if stale else 0
-    if args.cmd == "deploy-drift-check":
-        # No create_all()/session: this reads git state, not the database. Keeping it
-        # DB-free means it still reports when the DB is the thing that is broken.
-        return 1 if report_deploy_drift(grace_minutes=args.grace_minutes) else 0
     if args.cmd == "flex-sync":
         create_all()
         session = SessionLocal()
