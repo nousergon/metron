@@ -108,7 +108,7 @@ dev = [
     # tests/test_dependency_exposure.py parses .github/dependabot.yml. PyYAML is already
     # present transitively (krepis, nousergon-lib), but a test that imports it must not
     # depend on someone else's dependency tree staying the way it is today.
-    "pyyaml>=6.0",
+    "pyyaml>=6.0.3",
 ]
 
 [tool.metron.dependency-exposure]
