@@ -85,7 +85,7 @@ dependencies = [
     # via conftest's autouse `_no_live_aws_calls`, so no test exercises a real S3 call.
     # `<2` is close to free — boto3 has been on 1.x for its entire life — and it means a
     # major cannot arrive on a routine deploy the way snaptrade 12.x did (metron-ops#260).
-    "boto3>=1.43.63,<2",
+    "boto3>=1.43.65,<2",
     # Postgres driver (prod). SQLite is a dev/test fallback and needs nothing extra.
     "psycopg[binary]>=3.3.4",
 ]
@@ -108,7 +108,7 @@ dev = [
     # tests/test_dependency_exposure.py parses .github/dependabot.yml. PyYAML is already
     # present transitively (krepis, nousergon-lib), but a test that imports it must not
     # depend on someone else's dependency tree staying the way it is today.
-    "pyyaml>=6.0",
+    "pyyaml>=6.0.3",
 ]
 
 [tool.metron.dependency-exposure]
