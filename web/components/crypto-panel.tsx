@@ -3,15 +3,15 @@
 // Crypto wallet tracking (metron-ops#111) — add/remove BTC+ETH wallet addresses and see
 // their synced balances + USD value. Standalone: decoupled from the EOD-close holdings/NAV
 // (crypto is 24/7). Balances are synced by the nousergon-data producer; a row shows
-// "Pending sync" until the first balance arrives. Mutations go through server actions that
-// revalidate the page; failures surface inline (never silently swallowed).
+// "Pending sync" until the first balance arrives. Mutations call `mutate()` on the SWR key
+// (metron-ops#232) so only the crypto data re-fetches instead of a full page refresh.
 
 import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import type { CryptoSummary } from "@/lib/api";
 import { money, quantity } from "@/lib/format";
 import { Empty, Section, Table } from "@/components/ui";
 import { addCryptoAddressAction, deleteCryptoAddressAction } from "@/app/portfolios/[id]/actions";
+import { useCrypto } from "@/lib/use-crypto";
 
 const CHAINS = [
   { value: "BTC", label: "Bitcoin (BTC)" },
@@ -23,7 +23,7 @@ function short(addr: string): string {
 }
 
 export function CryptoPanel({ portfolioId, summary }: { portfolioId: string; summary: CryptoSummary }) {
-  const router = useRouter();
+  const { data, mutate } = useCrypto(portfolioId, summary);
   const [chain, setChain] = useState("BTC");
   const [address, setAddress] = useState("");
   const [label, setLabel] = useState("");
@@ -43,7 +43,7 @@ export function CryptoPanel({ portfolioId, summary }: { portfolioId: string; sum
       }
       setAddress("");
       setLabel("");
-      router.refresh();
+      void mutate();
     });
   }
 
@@ -55,11 +55,12 @@ export function CryptoPanel({ portfolioId, summary }: { portfolioId: string; sum
         setError(r.message);
         return;
       }
-      router.refresh();
+      void mutate();
     });
   }
 
-  const { positions, total_usd, n_pending, as_of_utc, stale } = summary;
+  // `data` is always defined because `fallbackData` seeds it from the server fetch
+  const { positions, total_usd, n_pending, as_of_utc, stale } = data!;
   const asOfLocal = as_of_utc ? new Date(as_of_utc).toLocaleString() : null;
 
   return (
