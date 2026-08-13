@@ -18,12 +18,8 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  getCoreRowModel,
-  useReactTable,
-  type ColumnDef as TSColumnDef,
-  type ColumnSizingState,
-} from "@tanstack/react-table";
+import { useLegacyTable, type LegacyColumnDef as TSColumnDef } from "@tanstack/react-table/legacy";
+import type { ColumnSizingState } from "@tanstack/react-table";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import type { Holding } from "@/lib/api";
 import {
@@ -1028,10 +1024,9 @@ export function HoldingsTable({
     [resizableKeys],
   );
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({});
-  const sizingTable = useReactTable({
+  const sizingTable = useLegacyTable({
     data: holdings,
     columns: tsColumns,
-    getCoreRowModel: getCoreRowModel(),
     columnResizeMode: "onChange",
     enableColumnResizing: true,
     state: { columnSizing },
