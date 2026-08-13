@@ -49,7 +49,10 @@ describe("HoldingsTable column resize", () => {
     const handle = screen.getByTestId("resize-ticker");
     fireEvent.mouseDown(handle, { clientX: 100 });
     fireEvent.mouseMove(document, { clientX: 180 });
-    fireEvent.mouseUp(document);
+    // TanStack v9 recommits from the mouseup event's own clientX (not just the
+    // last mousemove) — a real browser mouseup always carries the release
+    // coordinate, so the release position must match the drag's final point.
+    fireEvent.mouseUp(document, { clientX: 180 });
 
     expect(tickerCol.style.width).not.toBe(before);
     // Grew by roughly the drag distance (TanStack's onChange resize mode applies deltas live).
@@ -71,7 +74,7 @@ describe("HoldingsTable column resize", () => {
 
     fireEvent.mouseDown(peHandle, { clientX: 50 });
     fireEvent.mouseMove(document, { clientX: 10 }); // drag left -> shrink
-    fireEvent.mouseUp(document);
+    fireEvent.mouseUp(document, { clientX: 10 });
 
     expect(peCol.style.width).not.toBe(before);
     expect(parseInt(peCol.style.width, 10)).toBeLessThan(parseInt(before, 10));
