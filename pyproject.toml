@@ -33,7 +33,7 @@ dependencies = [
     "diskcache>=5.6.3",
     # Multipart parsing for CSV/OFX file uploads (FastAPI UploadFile requires it).
     "python-multipart>=0.0.32",
-    "sqlalchemy>=2.0.51",
+    "sqlalchemy>=2.0.52",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     # Verifies the shared nousergon-auth identity service's EdDSA/Ed25519 JWTs against
