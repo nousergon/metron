@@ -13,7 +13,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@tanstack/react-table": "^8.21.3",
+    "@tanstack/react-table": "^9.1.2",
     "@tanstack/react-virtual": "^3.14.9",
     "better-auth": "^1.6.26",
     "next": "15.5.23",
@@ -36,7 +36,7 @@
     "jsdom": "^30.0.1",
     "postcss": "8.5.26",
     "tailwindcss": "^4.3.3",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "vitest": "^4.1.10"
   },
   "optionalDependencies": {
