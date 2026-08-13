@@ -35,7 +35,7 @@ dependencies = [
     "python-multipart>=0.0.32",
     "sqlalchemy>=2.0.52",
     "pydantic>=2.13.4",
-    "pydantic-settings>=2.14.2",
+    "pydantic-settings>=2.15.0",
     # Verifies the shared nousergon-auth identity service's EdDSA/Ed25519 JWTs against
     # its JWKS (metron-ops#179) — [crypto] pulls in `cryptography` for the Ed25519 path.
     "pyjwt[crypto]>=2.13.0",
@@ -52,7 +52,7 @@ dependencies = [
     # specifically because compute_psr only gained its periods_per_year param there
     # (nousergon-lib#193); Metron's NAV-snapshot cadence is irregular per-user-refresh,
     # not daily, so the pre-0.110.0 hardcoded-252 PSR would silently mis-annualize.
-    "nousergon-lib[quant,quant-stats]>=0.124.13",
+    "nousergon-lib[quant,quant-stats]>=0.124.53",
     # flow-doctor pipeline error-handler via krepis (MIT). krepis owns the
     # logging+flow-doctor glue; metron is AGPL but pulls the MIT commodity
     # layer from krepis and only the AGPL quant core from nousergon-lib.
@@ -85,7 +85,7 @@ dependencies = [
     # via conftest's autouse `_no_live_aws_calls`, so no test exercises a real S3 call.
     # `<2` is close to free — boto3 has been on 1.x for its entire life — and it means a
     # major cannot arrive on a routine deploy the way snaptrade 12.x did (metron-ops#260).
-    "boto3>=1.43.65,<2",
+    "boto3>=1.43.70,<2",
     # Postgres driver (prod). SQLite is a dev/test fallback and needs nothing extra.
     "psycopg[binary]>=3.3.4",
 ]
@@ -103,7 +103,7 @@ dev = [
     # (golden portfolios + property tests, metron-ops#210): generates randomized-but-valid
     # transaction histories to assert ledger invariants hold universally, not just on
     # hand-picked fixtures (tests/test_golden_portfolios.py).
-    "hypothesis>=6.165.2",
+    "hypothesis>=6.165.5",
     "alembic>=1.19.0",            # Postgres schema migrations
     # tests/test_dependency_exposure.py parses .github/dependabot.yml. PyYAML is already
     # present transitively (krepis, nousergon-lib), but a test that imports it must not

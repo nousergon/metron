@@ -60,7 +60,14 @@ cd "$REPO"
 # the Neon project is created.
 DEPLOY_STAGE="alembic migrations"
 echo "=== running Alembic migrations ==="
-ALEMBIC_DB_URL=$(aws ssm get-parameter --region us-east-1 --name /metron/database_url --with-decryption --query Parameter.Value --output text 2>/dev/null || true)
+ALEMBIC_ERRF=$(mktemp)
+ALEMBIC_DB_URL=$(aws ssm get-parameter --region us-east-1 --name /metron/database_url --with-decryption --query Parameter.Value --output text 2>"$ALEMBIC_ERRF")
+ALEMBIC_RC=$?
+ALEMBIC_ERR=$(cat "$ALEMBIC_ERRF"); rm -f "$ALEMBIC_ERRF"
+if [ $ALEMBIC_RC -ne 0 ] && ! printf '%s' "$ALEMBIC_ERR" | grep -q "ParameterNotFound"; then
+    echo "  could not read /metron/database_url: ${ALEMBIC_ERR}"
+    exit 1
+fi
 if [ -z "$ALEMBIC_DB_URL" ] || [ "$ALEMBIC_DB_URL" = "None" ]; then
     echo "  /metron/database_url not in SSM — skipping Alembic (pre-migration)"
 else
@@ -141,7 +148,19 @@ for pair in \
   "OPENROUTER_API_KEY:/metron/openrouter_api_key:optional" \
   "METRON_ADVISOR_SFT_CAPTURE_ENABLED:/metron/advisor_sft_capture_enabled:optional"; do
   var=${pair%%:*}; rest=${pair#*:}; path=${rest%:*}; crit=${rest##*:}
-  val=$(aws ssm get-parameter --region us-east-1 --name "$path" --with-decryption --query Parameter.Value --output text 2>/dev/null)
+  ERRF=$(mktemp)
+  val=$(aws ssm get-parameter --region us-east-1 --name "$path" --with-decryption --query Parameter.Value --output text 2>"$ERRF")
+  rc=$?
+  err=$(cat "$ERRF"); rm -f "$ERRF"
+  if [ $rc -ne 0 ] && ! printf '%s' "$err" | grep -q "ParameterNotFound"; then
+    # Any AWS error OTHER than "the parameter genuinely doesn't exist" (AccessDenied,
+    # Throttling, network) is not the same fact as "not configured yet" and must never
+    # collapse into that message — a permission regression must not misreport as an
+    # unset value (nous-ergon-ops-I648).
+    echo "SSM hydration FAILED — could not read ${var}(${path}): ${err}"
+    rm -f "$BLOCK"
+    exit 1
+  fi
   if [ -n "$val" ] && [ "$val" != "None" ]; then
     printf '%s=%s\n' "$var" "$val" >> "$BLOCK"
   elif [ "$crit" = "required" ]; then
