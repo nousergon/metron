@@ -7,6 +7,7 @@ and a missing rate excludes the holding from the base total rather than fabricat
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 
 import pytest
@@ -53,6 +54,41 @@ def world(db_session):
 
 
 class TestMultiCurrencyValuation:
+    def test_duplicate_global_security_row_does_not_hijack_currency(self, db_session, world):
+        """metron-ops#274: `securities` is a GLOBAL, cross-tenant table keyed
+        (symbol, currency) — a different tenant can legitimately register a
+        `("1299", "USD")` row for an unrelated instrument sharing the same broker
+        symbol. `_holdings` must resolve THIS tenant's currency from the Security row
+        its own Position actually links to, never from an arbitrary "first row for
+        this symbol text" pick across the whole shared table — a stray same-symbol,
+        different-currency row previously outvoted the real one and rendered a live
+        HKD position as an unconverted, ~7.8x-inflated USD figure."""
+        tid, pid = world
+        # Another tenant's unrelated "1299" security, USD, with a lower sort key than
+        # the real HKD row so the old "first by Security.id" pick would choose it.
+        decoy = models.Security(
+            id=uuid.UUID("00000000-0000-0000-0000-000000000001"), symbol="1299", currency="USD"
+        )
+        db_session.add(decoy)
+        db_session.commit()
+
+        # Prices supplied directly (bypassing refresh_latest_prices, a SEPARATE instance
+        # of the same symbol-text-lookup pattern in prices._securities_by_symbol — see
+        # metron-ops#274 follow-up) to isolate this test to the currency resolution fix
+        # under test.
+        fx.refresh_fx_rates(db_session, ["HKD"], source=_price_source({"HKDUSD=X": 0.128}))
+
+        held = {
+            h.ticker: h
+            for h in analytics.valued_holdings(
+                db_session, tid, pid,
+                prices={"AAPL": ClosePoint(date(2026, 6, 9), 190.0), "1299": ClosePoint(date(2026, 6, 9), 75.0)},
+            )
+        }
+        hk = held["1299"]
+        assert hk.currency == "HKD"
+        assert hk.market_value == pytest.approx(960.0)  # 7500 HKD * 0.128, NOT 7500 raw
+
     def test_foreign_holding_converts_to_base(self, db_session, world):
         tid, pid = world
         price_service.refresh_latest_prices(db_session, ["AAPL", "1299"], source=_price_source({"AAPL": 190.0, "1299.HK": 75.0}))
