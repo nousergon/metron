@@ -413,11 +413,17 @@ def _position_rows(
     account_id: uuid.UUID | None = None,
     account_ids: Collection[uuid.UUID] | None = None,
 ):
-    """Fetch ``(quantity, avg_cost, market_value_local, as_of, ticker)`` for
+    """Fetch ``(quantity, avg_cost, market_value_local, as_of, ticker, currency)`` for
     broker-reported positions in a portfolio (snapshot-sourced accounts: Flex/SnapTrade),
     optionally one account or a SET of accounts. ``market_value_local`` is the broker's
     native value (the foreign-listing valuation fallback) and may be None. ``account_ids``
-    narrows to a set (an empty set yields no rows)."""
+    narrows to a set (an empty set yields no rows). ``currency`` is this row's OWN
+    ``Security.currency`` — the position's actual linked security, not a symbol-text
+    side-lookup — because ``securities`` is a global table keyed ``(symbol, currency)``
+    and the same broker symbol can legitimately have more than one currency variant
+    across tenants (metron-ops#274: a stray duplicate ``1299``/USD row outvoted the
+    real ``1299``/HKD row in ``_currency_by_symbol``'s "first by id" pick, so a live HKD
+    position rendered as an unconverted, 7.8x-inflated USD figure)."""
     stmt = (
         select(
             models.Position.quantity,
@@ -425,6 +431,7 @@ def _position_rows(
             models.Position.market_value_local,
             models.Position.as_of,
             models.Security.symbol,
+            models.Security.currency,
         )
         .join(models.Account, models.Position.account_id == models.Account.id)
         .join(models.Security, models.Position.security_id == models.Security.id)
@@ -729,6 +736,12 @@ def _holdings(
     agg: dict[str, list[float]] = {}
     broker_mv: dict[str, float] = {}
     broker_as_of: dict[str, date] = {}
+    # Currency observed on the ACTUAL held Security row for a ticker (broker-position
+    # side only — see _position_rows). Takes priority over the global symbol-text
+    # lookup below, which cannot distinguish which of possibly several (symbol,
+    # currency) variants in the shared `securities` table this tenant's position
+    # actually points at.
+    held_ccy: dict[str, str] = {}
 
     # Ledger side: only accounts in scope that have NO broker position snapshot. This is
     # what prevents the SnapTrade/Flex "activities + positions" double-count.
@@ -743,7 +756,7 @@ def _holdings(
             agg[ticker][0] += shares
             agg[ticker][1] += shares * avg_cost
 
-    for quantity, avg_cost, mv_local, as_of, ticker in _position_rows(
+    for quantity, avg_cost, mv_local, as_of, ticker, currency in _position_rows(
         session, tenant_id, portfolio_id, account_id, account_ids
     ):
         qty = float(quantity)
@@ -752,6 +765,8 @@ def _holdings(
         agg.setdefault(ticker, [0.0, 0.0])
         agg[ticker][0] += qty
         agg[ticker][1] += qty * float(avg_cost)
+        if currency:
+            held_ccy.setdefault(ticker, currency)
         # Track the OLDEST contributing account's as_of, independent of whether a market
         # value was reported — a ticker held across two accounts is only as fresh as its
         # stalest contributor, and an unpriced snapshot position (no mv_local) must not be
@@ -762,7 +777,9 @@ def _holdings(
         if mv_local is not None:
             broker_mv[ticker] = broker_mv.get(ticker, 0.0) + float(mv_local)
 
-    ccy = _currency_by_symbol(session, list(agg))
+    # Ledger-only tickers (CSV/OFX, no Position row) have no held_ccy entry — fall back
+    # to the global symbol-text lookup only for those.
+    ccy = _currency_by_symbol(session, [t for t in agg if t not in held_ccy])
     out: list[Holding] = []
     for t, (shares, basis) in sorted(agg.items()):
         # Per-share broker price from the summed native market value (qty-weighted).
@@ -773,7 +790,7 @@ def _holdings(
                 quantity=shares,
                 avg_cost=basis / shares if shares else 0.0,
                 cost_basis=basis,
-                currency=ccy.get(t, "USD"),
+                currency=held_ccy.get(t) or ccy.get(t, "USD"),
                 broker_market_price=(bm / shares) if (bm is not None and shares) else None,
                 broker_market_value=bm,
                 broker_as_of=broker_as_of.get(t),
