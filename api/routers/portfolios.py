@@ -1839,7 +1839,8 @@ def refresh_prices(
     _require_external_market_data(x_preview_feed)
     held = analytics.holdings(session, portfolio.tenant_id, portfolio.id)
     symbols = [h.ticker for h in held if h.ticker]
-    updated = price_service.refresh_latest_prices(session, symbols)
+    ccy_by_ticker = {h.ticker: h.currency for h in held if h.ticker}
+    updated = price_service.refresh_latest_prices(session, symbols, currency_by_symbol=ccy_by_ticker)
     # Refresh FX for every non-base currency held, so foreign positions convert into the
     # base-currency NAV/market value instead of being dropped from the totals.
     base = portfolio.base_currency or "USD"
