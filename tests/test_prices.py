@@ -145,3 +145,51 @@ class TestPriceServiceGuards:
         from api.services import prices
 
         assert prices.latest_close_by_symbol(db_session, []) == {}
+
+    def test_refresh_respects_currency_by_symbol_over_a_duplicate(self, db_session):
+        """metron-I399: ``securities`` is a GLOBAL, cross-tenant table keyed
+        (symbol, currency) — two rows can share a symbol under different currencies.
+        With no disambiguation, a same-symbol decoy under a currency with no
+        ``yf_symbol`` would silently swallow the fetch for the real holding
+        (confirmed live 2026-08-17: a decoy blocked a real HKD holding's price refresh
+        entirely). ``currency_by_symbol`` must pick the exact row instead."""
+        from api.db import models
+        from api.services import prices
+
+        decoy = models.Security(symbol="1299", currency="USD")  # no yf_symbol
+        real = models.Security(symbol="1299", currency="HKD", yf_symbol="1299.HK")
+        db_session.add_all([decoy, real])
+        db_session.commit()
+
+        def src(symbols, *, source=None):
+            return {"1299.HK": ClosePoint(bar_date=date(2026, 6, 9), close=75.0)}
+
+        written = prices.refresh_latest_prices(
+            db_session, ["1299"], source=src, currency_by_symbol={"1299": "HKD"}
+        )
+        assert written == 1
+        bar = db_session.query(models.PriceBar).filter(models.PriceBar.security_id == real.id).one()
+        assert bar.close == 75.0
+
+    def test_latest_close_respects_currency_by_symbol_over_a_priced_duplicate(self, db_session):
+        """metron-I399: if BOTH same-symbol securities have price history (a genuine
+        cross-tenant collision, not just an unpriced decoy), ranking by symbol alone
+        could hand one tenant's holding another tenant's price under the shared key.
+        ``currency_by_symbol`` must select the exact currency's price."""
+        from api.db import models
+        from api.services import prices
+
+        decoy = models.Security(symbol="1299", currency="USD")
+        real = models.Security(symbol="1299", currency="HKD", yf_symbol="1299.HK")
+        db_session.add_all([decoy, real])
+        db_session.flush()
+        db_session.add_all(
+            [
+                models.PriceBar(security_id=decoy.id, bar_date=date(2026, 6, 10), close=999.0, currency="USD"),
+                models.PriceBar(security_id=real.id, bar_date=date(2026, 6, 9), close=75.0, currency="HKD"),
+            ]
+        )
+        db_session.commit()
+
+        out = prices.latest_close_by_symbol(db_session, ["1299"], currency_by_symbol={"1299": "HKD"})
+        assert out["1299"].close == 75.0

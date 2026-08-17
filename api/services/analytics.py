@@ -539,20 +539,32 @@ def classify_security_type(asset_class: str | None, ticker: str, name: str | Non
 
 
 def _security_meta_by_symbol(
-    session: Session, symbols: list[str]
+    session: Session, symbols: list[str], *, currency_by_symbol: dict[str, str] | None = None
 ) -> dict[str, tuple[str | None, str | None]]:
-    """``{symbol: (asset_class, name)}`` from the Security master (first row per symbol,
-    mirroring ``_currency_by_symbol``). Drives the holding security-type classification."""
+    """``{symbol: (asset_class, name)}`` from the Security master. Drives the holding
+    security-type classification.
+
+    ``securities`` is a GLOBAL, cross-tenant table keyed ``(symbol, currency)`` — pass
+    ``currency_by_symbol`` (the caller's own resolved currency per ticker, e.g. from
+    ``holdings()``) to match the EXACT row this tenant holds rather than an arbitrary
+    "first row by id" pick across every tenant's securities sharing that symbol text
+    (metron-I399). Without it, falls back to first-by-id."""
     if not symbols:
         return {}
     rows = session.execute(
-        select(models.Security.symbol, models.Security.asset_class, models.Security.name)
+        select(models.Security.symbol, models.Security.currency, models.Security.asset_class, models.Security.name)
         .where(models.Security.symbol.in_(symbols))
         .order_by(models.Security.symbol, models.Security.id)
     ).all()
     out: dict[str, tuple[str | None, str | None]] = {}
-    for symbol, asset_class, name in rows:
-        out.setdefault(symbol, (asset_class, name))
+    currency_by_symbol = currency_by_symbol or {}
+    for symbol, currency, asset_class, name in rows:
+        wanted = currency_by_symbol.get(symbol)
+        if wanted is not None:
+            if currency == wanted:
+                out[symbol] = (asset_class, name)
+        else:
+            out.setdefault(symbol, (asset_class, name))
     return out
 
 
@@ -903,10 +915,11 @@ def valued_holdings(
     if not held:
         return held
     base = _base_currency(session, portfolio_id)
+    ccy_by_ticker = {h.ticker: h.currency for h in held}
     if prices is None:
-        prices = price_service.latest_close_by_symbol(session, [h.ticker for h in held])
+        prices = price_service.latest_close_by_symbol(session, [h.ticker for h in held], currency_by_symbol=ccy_by_ticker)
     fx_rates = fx_service.rates_to_base(session, [h.currency for h in held], base=base)
-    meta = _security_meta_by_symbol(session, [h.ticker for h in held])
+    meta = _security_meta_by_symbol(session, [h.ticker for h in held], currency_by_symbol=ccy_by_ticker)
     user_labels = labels.labels_by_symbol(session, tenant_id, [h.ticker for h in held])
     for h in held:
         _apply_valuation(h, prices, fx_rates)
@@ -941,12 +954,13 @@ def valued_holdings_by_account(
     if not all_held:
         return per_account
     base = _base_currency(session, portfolio_id)
-    prices = price_service.latest_close_by_symbol(session, [h.ticker for h in all_held])
+    ccy_by_ticker = {h.ticker: h.currency for h in all_held}
+    prices = price_service.latest_close_by_symbol(session, [h.ticker for h in all_held], currency_by_symbol=ccy_by_ticker)
     fx_rates = fx_service.rates_to_base(session, [h.currency for h in all_held], base=base)
     # Classify asset class per holding (one meta lookup over the union) so per-account
     # callers can detect FUND legs — the late-fund-NAV provisional/reconcile path needs
     # `security_type` at account grain, matching what `valued_holdings` already stamps.
-    meta = _security_meta_by_symbol(session, [h.ticker for h in all_held])
+    meta = _security_meta_by_symbol(session, [h.ticker for h in all_held], currency_by_symbol=ccy_by_ticker)
     for hs in per_account.values():
         for h in hs:
             _apply_valuation(h, prices, fx_rates)
@@ -998,10 +1012,11 @@ def valued_holdings_by_account_flat(
     if not flat:
         return flat
     base = _base_currency(session, portfolio_id)
+    ccy_by_ticker = {h.ticker: h.currency for h in flat}
     if prices is None:
-        prices = price_service.latest_close_by_symbol(session, [h.ticker for h in flat])
+        prices = price_service.latest_close_by_symbol(session, [h.ticker for h in flat], currency_by_symbol=ccy_by_ticker)
     fx_rates = fx_service.rates_to_base(session, [h.currency for h in flat], base=base)
-    meta = _security_meta_by_symbol(session, [h.ticker for h in flat])
+    meta = _security_meta_by_symbol(session, [h.ticker for h in flat], currency_by_symbol=ccy_by_ticker)
     user_labels = labels.labels_by_symbol(session, tenant_id, [h.ticker for h in flat])
     for h in flat:
         _apply_valuation(h, prices, fx_rates)
@@ -1157,6 +1172,7 @@ def realized_lots_export(
 
     export_lots: list[realized_lots_export_domain.ExportLot] = []
     all_symbols: list[str] = []
+    ccy_by_ticker: dict[str, str] = {}
     # Per account so each lot keeps its source (the account connector); realized() already
     # merges stored + replayed lots and resolves the base-currency figures for that account.
     pending: list[tuple[str, RealizedLot]] = []
@@ -1167,9 +1183,13 @@ def realized_lots_export(
                 continue
             pending.append((source, lot))
             all_symbols.append(lot.ticker)
+            ccy_by_ticker.setdefault(lot.ticker, lot.currency)
 
     asset_class_by_symbol = {
-        sym: ac for sym, (ac, _name) in _security_meta_by_symbol(session, all_symbols).items()
+        sym: ac
+        for sym, (ac, _name) in _security_meta_by_symbol(
+            session, all_symbols, currency_by_symbol=ccy_by_ticker
+        ).items()
     }
     for source, lot in pending:
         proceeds = lot.proceeds_base if lot.proceeds_base is not None else lot.proceeds

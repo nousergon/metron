@@ -27,34 +27,37 @@ from portfolio_analytics.prices import (
 )
 
 
-def _security_ids_by_symbol(session: Session, symbols: list[str]) -> dict[str, uuid.UUID]:
-    """Resolve held symbols to their global security id. A symbol with multiple
-    currency listings collapses to one (personal-tier portfolios are single-currency
-    per ticker in practice); the first by id wins, deterministically."""
-    rows = session.execute(
-        select(models.Security.symbol, models.Security.id)
-        .where(models.Security.symbol.in_(symbols))
-        .order_by(models.Security.symbol, models.Security.id)
-    ).all()
-    out: dict[str, uuid.UUID] = {}
-    for symbol, sec_id in rows:
-        out.setdefault(symbol, sec_id)  # first id per symbol — stable
-    return out
+def _securities_by_symbol(
+    session: Session, symbols: list[str], *, currency_by_symbol: dict[str, str] | None = None
+) -> dict[str, models.Security]:
+    """Resolve held symbols to their global Security row. Carries ``currency`` +
+    ``yf_symbol`` so the fetch can use the yfinance-shaped symbol (``1299`` →
+    ``1299.HK``) and the cached bar can be stamped with the instrument's native currency
+    rather than a USD default.
 
-
-def _securities_by_symbol(session: Session, symbols: list[str]) -> dict[str, models.Security]:
-    """Resolve held symbols to their global Security row (first by id per symbol, like
-    ``_security_ids_by_symbol``). Carries ``currency`` + ``yf_symbol`` so the fetch can
-    use the yfinance-shaped symbol (``1299`` → ``1299.HK``) and the cached bar can be
-    stamped with the instrument's native currency rather than a USD default."""
+    ``securities`` is a GLOBAL, cross-tenant table keyed ``(symbol, currency)`` — the
+    same broker symbol can legitimately have more than one currency variant across
+    tenants. When ``currency_by_symbol`` is given (the caller already knows which
+    currency it holds each symbol under — e.g. from ``analytics.holdings()``), match
+    EXACTLY on that pair, never letting an unrelated duplicate under a different
+    currency win (metron-I399: a stray ``("1299", "USD")`` row previously outvoted a
+    real ``("1299", "HKD")`` holding via an arbitrary "first row by id" pick). Without
+    it, falls back to "first row by id per symbol" — correct when a symbol has only one
+    currency variant in the DB (the common case), ambiguous otherwise."""
     rows = session.scalars(
         select(models.Security)
         .where(models.Security.symbol.in_(symbols))
         .order_by(models.Security.symbol, models.Security.id)
     ).all()
     out: dict[str, models.Security] = {}
+    currency_by_symbol = currency_by_symbol or {}
     for row in rows:
-        out.setdefault(row.symbol, row)  # first row per symbol — stable
+        wanted = currency_by_symbol.get(row.symbol)
+        if wanted is not None:
+            if row.currency == wanted:
+                out[row.symbol] = row  # exact (symbol, currency) match — always wins
+        else:
+            out.setdefault(row.symbol, row)  # no disambiguation available — first wins
     return out
 
 
@@ -64,18 +67,28 @@ def _yf_symbol(sec: models.Security) -> str:
     return sec.yf_symbol or sec.symbol
 
 
-def refresh_latest_prices(session: Session, symbols: list[str], *, source: PriceSource | None = None) -> int:
+def refresh_latest_prices(
+    session: Session,
+    symbols: list[str],
+    *,
+    source: PriceSource | None = None,
+    currency_by_symbol: dict[str, str] | None = None,
+) -> int:
     """Fetch the latest close per symbol and upsert it into ``price_bars``.
 
     Fetches under each security's ``yf_symbol`` (so foreign listings like ``1299.HK``
     resolve), then writes the bar back against the stored symbol's security, stamped
     with that security's native currency. Idempotent on (security_id, bar_date). Only
     symbols that (a) have a ``securities`` row and (b) the source could price are
-    written. Returns the number of bars upserted."""
+    written. Returns the number of bars upserted.
+
+    ``currency_by_symbol``: pass this whenever the caller already knows which currency
+    it holds each symbol under (e.g. from ``analytics.holdings()``) — see
+    ``_securities_by_symbol`` for why this matters (metron-I399)."""
     symbols = [s for s in dict.fromkeys(symbols) if s]
     if not symbols:
         return 0
-    secs = _securities_by_symbol(session, symbols)
+    secs = _securities_by_symbol(session, symbols, currency_by_symbol=currency_by_symbol)
     if not secs:
         return 0
     # yfinance-shaped symbol → Security (collapse duplicates, first wins).
@@ -111,26 +124,36 @@ def refresh_latest_prices(session: Session, symbols: list[str], *, source: Price
     return written
 
 
-def latest_close_by_symbol(session: Session, symbols: list[str]) -> dict[str, ClosePoint]:
+def latest_close_by_symbol(
+    session: Session, symbols: list[str], *, currency_by_symbol: dict[str, str] | None = None
+) -> dict[str, ClosePoint]:
     """Most recent cached close per symbol, read from ``price_bars``.
 
     Absent symbols (never refreshed, or refreshed but unpriceable) are omitted — the
     caller treats absence as "no market value".
 
-    Latest-per-symbol via a window function (``ROW_NUMBER`` partitioned by symbol, newest
-    bar first), so the DB returns ONE row per symbol off the ``(security_id, bar_date)``
-    index — NOT every bar for every symbol pulled across the wire to be deduped in Python
-    (that scanned ~all of ``price_bars`` on every valuation, the dominant page-load cost)."""
+    Latest-per-symbol via a window function (``ROW_NUMBER`` partitioned by
+    ``(symbol, currency)``, newest bar first), so the DB returns ONE row per
+    symbol-currency pair off the ``(security_id, bar_date)`` index — NOT every bar for
+    every symbol pulled across the wire to be deduped in Python (that scanned ~all of
+    ``price_bars`` on every valuation, the dominant page-load cost). Partitioning
+    includes ``currency`` (not just ``symbol``) because ``securities`` is a GLOBAL,
+    cross-tenant table: two Security rows can share a symbol under different
+    currencies, and if BOTH have price history, ranking by symbol alone could return
+    another tenant's price under a shared key (metron-I399). Pass
+    ``currency_by_symbol`` (from ``analytics.holdings()``) to pick the exact currency
+    this caller holds; without it, the currency with the most recent bar wins."""
     symbols = [s for s in dict.fromkeys(symbols) if s]
     if not symbols:
         return {}
     rn = func.row_number().over(
-        partition_by=models.Security.symbol,
+        partition_by=(models.Security.symbol, models.Security.currency),
         order_by=models.PriceBar.bar_date.desc(),
     ).label("rn")
     ranked = (
         select(
             models.Security.symbol.label("symbol"),
+            models.Security.currency.label("currency"),
             models.PriceBar.bar_date.label("bar_date"),
             models.PriceBar.close.label("close"),
             rn,
@@ -140,11 +163,18 @@ def latest_close_by_symbol(session: Session, symbols: list[str]) -> dict[str, Cl
         .subquery()
     )
     rows = session.execute(
-        select(ranked.c.symbol, ranked.c.bar_date, ranked.c.close).where(ranked.c.rn == 1)
+        select(ranked.c.symbol, ranked.c.currency, ranked.c.bar_date, ranked.c.close)
+        .where(ranked.c.rn == 1)
+        .order_by(ranked.c.bar_date.desc())
     ).all()
-    return {
-        symbol: ClosePoint(bar_date=bar_date, close=float(close)) for symbol, bar_date, close in rows
-    }
+    currency_by_symbol = currency_by_symbol or {}
+    out: dict[str, ClosePoint] = {}
+    for symbol, currency, bar_date, close in rows:
+        wanted = currency_by_symbol.get(symbol)
+        if wanted is not None and currency != wanted:
+            continue
+        out.setdefault(symbol, ClosePoint(bar_date=bar_date, close=float(close)))
+    return out
 
 
 def ensure_security(session: Session, symbol: str, *, currency: str = "USD") -> uuid.UUID:

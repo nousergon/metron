@@ -195,6 +195,7 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         )
         held = analytics.holdings(session, p.tenant_id, p.id)
         symbols = [h.ticker for h in held if h.ticker]
+        ccy_by_ticker = {h.ticker: h.currency for h in held if h.ticker}
         if is_reference_rate:
             # The frozen sample sleeve folded into this portfolio (demo.py module
             # docstring) must actually stay frozen — a live refresh here would drift its
@@ -207,7 +208,11 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
             # VOO/etc) — that sleeve's own tickers always still refresh normally.
             sample_only = SAMPLE_SLEEVE_TICKERS - live_sleeve_tickers(session)
             symbols = [s for s in symbols if s not in sample_only]
-        updated = price_service.refresh_latest_prices(session, symbols) if symbols else 0
+        updated = (
+            price_service.refresh_latest_prices(session, symbols, currency_by_symbol=ccy_by_ticker)
+            if symbols
+            else 0
+        )
         # Refresh FX for every non-base currency held, so foreign positions convert into
         # the base-currency NAV instead of being dropped from the total.
         base = p.base_currency or "USD"
