@@ -291,3 +291,92 @@ def test_get_realized_lots_fetch_error_keeps_cache(tmp_path):
     lots, error = get_realized_lots("tok", "qid", file_dir=tmp_path / "none", cache_path=cache, opener=opener)
     assert error is not None and "1012" in error  # surfaced, not swallowed
     assert len(lots) == 2  # cached lots still returned
+
+
+# ── transport retry (metron-ops: the 2026-08-16 reconcile failure) ───────────
+#
+# The nightly `metron-reconcile.service` run of 2026-08-16 died on
+# `IBKR Flex sync failed: The read operation timed out` — one 30s socket timeout,
+# 34s wall, three preceding nightly runs green. `fetch_flex_xml`'s poll loop only
+# ever retried a well-formed 1019 "still generating" response, so a transport
+# failure was terminal on the first occurrence.
+
+
+def _flaky_opener(send: str, statements: list[str], *, fail_first: int, exc: Exception):
+    """Opener whose first ``fail_first`` GetStatement calls raise ``exc``."""
+    box = {"i": 0, "failed": 0}
+
+    def opener(url: str, timeout: int = 30):
+        if "SendRequest" in url:
+            return _FakeResponse(send)
+        if box["failed"] < fail_first:
+            box["failed"] += 1
+            raise exc
+        body = statements[min(box["i"], len(statements) - 1)]
+        box["i"] += 1
+        return _FakeResponse(body)
+
+    return opener
+
+
+def test_a_read_timeout_is_retried_rather_than_ending_the_run():
+    opener = _flaky_opener(SEND_OK, [STATEMENT_XML], fail_first=1, exc=TimeoutError("The read operation timed out"))
+    sleeps: list[float] = []
+    out = fetch_flex_xml("tok", "qid", opener=opener, sleep=sleeps.append)
+    assert "FlexQueryResponse" in out
+    assert sleeps  # it backed off before the retry
+
+
+def test_transport_failure_is_terminal_only_after_the_ladder_is_exhausted():
+    opener = _flaky_opener(SEND_OK, [STATEMENT_XML], fail_first=99, exc=TimeoutError("The read operation timed out"))
+    with pytest.raises(IbkrFlexError, match="after 3 attempts"):
+        fetch_flex_xml("tok", "qid", opener=opener, sleep=lambda *_: None)
+
+
+def test_a_send_request_timeout_is_retried_too():
+    """The retry lives in `_http_get`, so it covers SendRequest and every poll —
+    the chokepoint every Flex call already passes through, not one call site."""
+    box = {"failed": 0}
+
+    def opener(url: str, timeout: int = 30):
+        if "SendRequest" in url and box["failed"] < 1:
+            box["failed"] += 1
+            raise TimeoutError("The read operation timed out")
+        return _FakeResponse(SEND_OK if "SendRequest" in url else STATEMENT_XML)
+
+    out = fetch_flex_xml("tok", "qid", opener=opener, sleep=lambda *_: None)
+    assert "FlexQueryResponse" in out
+    assert box["failed"] == 1
+
+
+def test_a_client_error_is_not_retried():
+    """A bad token fails identically three times; retrying only delays the error
+    reaching a surface."""
+    import urllib.error
+
+    attempts = {"n": 0}
+
+    def opener(url: str, timeout: int = 30):
+        attempts["n"] += 1
+        raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)  # type: ignore[arg-type]
+
+    with pytest.raises(IbkrFlexError, match="403"):
+        fetch_flex_xml("tok", "qid", opener=opener, sleep=lambda *_: None)
+    assert attempts["n"] == 1
+
+
+def test_a_server_error_is_retried():
+    import urllib.error
+
+    box = {"failed": 0}
+
+    def opener(url: str, timeout: int = 30):
+        if "SendRequest" in url:
+            return _FakeResponse(SEND_OK)
+        if box["failed"] < 1:
+            box["failed"] += 1
+            raise urllib.error.HTTPError(url, 503, "Service Unavailable", {}, None)  # type: ignore[arg-type]
+        return _FakeResponse(STATEMENT_XML)
+
+    out = fetch_flex_xml("tok", "qid", opener=opener, sleep=lambda *_: None)
+    assert "FlexQueryResponse" in out

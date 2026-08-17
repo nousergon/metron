@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -43,6 +44,14 @@ FLEX_SEND_REQUEST_URL = "https://ndcdyn.interactivebrokers.com/AccountManagement
 _FLEX_VERSION = "3"
 # IBKR returns ErrorCode 1019 while a statement is still generating — poll on it.
 _GENERATING_CODE = "1019"
+
+# Per-request socket timeout, and the transport retry ladder around it. 30s is
+# unchanged; what is new is that exhausting it once is no longer terminal.
+# Three attempts at 2s then 6s bounds the worst case at ~98s, comfortably inside
+# metron-reconcile.service's runtime and far under its next daily fire.
+_HTTP_TIMEOUT_S = 30
+_TRANSPORT_ATTEMPTS = 3
+_TRANSPORT_BACKOFF_S = (2.0, 6.0)
 
 # Persistent accumulation of all lots ever seen (gitignored cache/, survives deploys).
 LOTS_CACHE_PATH = Path("cache/ibkr_flex_lots.json")
@@ -143,11 +152,51 @@ def parse_realized_lots(xml_text: str) -> list[tuple[str, RealizedGain]]:
     return out
 
 
-def _http_get(url: str, params: dict[str, str], opener=urllib.request.urlopen) -> str:
-    """GET ``url?params`` and return the decoded body. ``opener`` is injectable for tests."""
+def _http_get(url: str, params: dict[str, str], opener=urllib.request.urlopen, *, sleep=time.sleep) -> str:
+    """GET ``url?params`` and return the decoded body. ``opener`` is injectable for tests.
+
+    Retries TRANSPORT failures — a read timeout, a reset connection, a 5xx from
+    IBKR's front end — with bounded backoff. This is a different failure from the
+    statement-not-ready poll in ``fetch_flex_xml``: that loop only ever sees a
+    well-formed 1019 response, so before this retry existed a single slow HTTP
+    read ended the entire run. It did, on 2026-08-16: ``metron-reconcile.service``
+    started 23:15:29 and failed 23:16:03 — one 30s ``timeout=`` plus overhead —
+    with ``IBKR Flex sync failed: The read operation timed out``, leaving the
+    daily custodian reconciliation covering 4 of 8 accounts and the box-health
+    timer red. The three preceding nightly runs all succeeded, which is what a
+    transport hiccup looks like.
+
+    Retrying here rather than at either call site is deliberate: SendRequest and
+    every GetStatement poll go through this one function, so the rule holds for
+    call sites added later. Both are safe to repeat — SendRequest re-issues a
+    reference code for a query IBKR regenerates anyway, and GetStatement is a
+    read.
+
+    A 4xx is NOT retried: a bad token or query id fails the same way three times
+    and the extra minute only delays the error reaching a surface.
+    """
     full = url + "?" + urllib.parse.urlencode(params)
-    with opener(full, timeout=30) as resp:  # noqa: S310 — fixed IBKR https endpoint
-        return resp.read().decode("utf-8")
+    last: Exception | None = None
+    for attempt in range(_TRANSPORT_ATTEMPTS):
+        try:
+            with opener(full, timeout=_HTTP_TIMEOUT_S) as resp:  # noqa: S310 — fixed IBKR https endpoint
+                return resp.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                raise IbkrFlexError(f"Flex HTTP {e.code} from {url.rsplit('/', 1)[-1]}: {e.reason}") from e
+            last = e
+        except (TimeoutError, urllib.error.URLError, OSError) as e:
+            # TimeoutError is what a socket read timeout raises on 3.10+; URLError
+            # wraps DNS/connection failures; OSError catches the rest of the
+            # transport surface. A protocol-level Flex error never lands here —
+            # IBKR reports those as a 200 with an ErrorCode in the XML.
+            last = e
+        if attempt < _TRANSPORT_ATTEMPTS - 1:
+            sleep(_TRANSPORT_BACKOFF_S[attempt])
+    raise IbkrFlexError(
+        f"Flex {url.rsplit('/', 1)[-1]} failed after {_TRANSPORT_ATTEMPTS} attempts "
+        f"({_HTTP_TIMEOUT_S}s each): {last}"
+    ) from last
 
 
 def fetch_flex_xml(
@@ -166,7 +215,7 @@ def fetch_flex_xml(
     ``IbkrFlexError`` on any terminal failure or if it's not ready after
     ``poll_attempts`` — fail-loud so the caller records the error on a surface.
     """
-    send = _http_get(FLEX_SEND_REQUEST_URL, {"t": token, "q": query_id, "v": _FLEX_VERSION}, opener)
+    send = _http_get(FLEX_SEND_REQUEST_URL, {"t": token, "q": query_id, "v": _FLEX_VERSION}, opener, sleep=sleep)
     r1 = ET.fromstring(send)
     if (r1.findtext("Status") or "").strip() != "Success":
         raise IbkrFlexError(f"Flex SendRequest failed: {r1.findtext('ErrorCode')} {r1.findtext('ErrorMessage')}")
@@ -176,7 +225,7 @@ def fetch_flex_xml(
         raise IbkrFlexError("Flex SendRequest returned no reference code / URL")
 
     for attempt in range(poll_attempts):
-        body = _http_get(get_url, {"t": token, "q": reference, "v": _FLEX_VERSION}, opener)
+        body = _http_get(get_url, {"t": token, "q": reference, "v": _FLEX_VERSION}, opener, sleep=sleep)
         root = ET.fromstring(body)
         if root.tag.split("}")[-1] == "FlexQueryResponse":
             return body
