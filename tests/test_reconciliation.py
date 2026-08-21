@@ -9,6 +9,8 @@ network.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from api.db import models
@@ -299,3 +301,105 @@ def test_reconcile_all_covers_every_non_reference_portfolio(db_session, flex_ok)
     total = reconciliation.reconcile_all(db_session)
 
     assert total.portfolios_checked >= 1
+
+
+# ── fetch-status + staleness escalation (metron-ops#274) ─────────────────────
+
+
+def _fail_flex(monkeypatch):
+    monkeypatch.setattr(broker_sync.settings, "flex_token", "tok")
+    monkeypatch.setattr(broker_sync.settings, "flex_query_id", "qid")
+
+    def _boom(*a, **k):
+        raise RuntimeError("IBKR unreachable")
+
+    monkeypatch.setattr("portfolio_analytics.ingestion.ibkr_flex_connector.fetch_flex_xml", _boom)
+
+
+def test_successful_fetch_records_status(db_session, flex_ok):
+    pf = _seed_portfolio(db_session, broker="ibkr_flex")
+    reconciliation.reconcile_portfolio(db_session, pf)
+
+    row = db_session.query(models.ReconciliationFetchStatus).one()
+    assert row.broker == "ibkr_flex"
+    assert row.last_success_at is not None
+    assert row.consecutive_failures == 0
+
+
+def test_first_fetch_failure_alerts_but_does_not_escalate(db_session, monkeypatch):
+    """One bad night is a busy upstream, not a dead detector — alert, don't go red."""
+    _fail_flex(monkeypatch)
+    alerts: list[str] = []
+    monkeypatch.setattr(reconciliation, "send_alert", lambda text: alerts.append(text) or True)
+
+    pf = _seed_portfolio(db_session, broker="ibkr_flex")
+    result = reconciliation.reconcile_portfolio(db_session, pf)
+
+    assert result.fetch_failures  # recorded and alerted
+    assert len(alerts) == 1  # visibility unchanged
+    assert not result.stale_fetches  # but NOT escalated — this is the whole point
+    row = db_session.query(models.ReconciliationFetchStatus).one()
+    assert row.consecutive_failures == 1
+    assert "IBKR unreachable" in row.last_error
+
+
+def test_fetch_failure_escalates_once_the_staleness_window_is_exceeded(db_session, monkeypatch):
+    """Past `reconciliation_stale_hours` with no good fetch, the unit must go red."""
+    _fail_flex(monkeypatch)
+    monkeypatch.setattr(reconciliation, "send_alert", lambda text: True)
+    pf = _seed_portfolio(db_session, broker="ibkr_flex")
+
+    reconciliation.reconcile_portfolio(db_session, pf)  # first failure — creates the row
+    row = db_session.query(models.ReconciliationFetchStatus).one()
+    row.first_seen_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=40)
+    db_session.commit()
+
+    result = reconciliation.reconcile_portfolio(db_session, pf)
+    assert result.stale_fetches
+    assert db_session.query(models.ReconciliationFetchStatus).one().consecutive_failures == 2
+
+
+def test_success_resets_the_staleness_clock(db_session, monkeypatch, flex_ok):
+    """A recovered broker stops being stale immediately, however old the last failure."""
+    pf = _seed_portfolio(db_session, broker="ibkr_flex")
+    db_session.add(
+        models.ReconciliationFetchStatus(
+            tenant_id=pf.tenant_id,
+            portfolio_id=pf.id,
+            broker="ibkr_flex",
+            consecutive_failures=5,
+            first_seen_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=9),
+        )
+    )
+    db_session.commit()
+
+    result = reconciliation.reconcile_portfolio(db_session, pf)
+
+    assert not result.fetch_failures
+    assert not result.stale_fetches
+    row = db_session.query(models.ReconciliationFetchStatus).one()
+    assert row.consecutive_failures == 0
+    assert row.last_success_at is not None
+
+
+def test_never_successful_broker_still_escalates(db_session, monkeypatch):
+    """A broker broken since the day it was wired has a NULL last_success_at; falling
+    back to first_seen_at is what stops that reading as 'not stale' forever."""
+    _fail_flex(monkeypatch)
+    monkeypatch.setattr(reconciliation, "send_alert", lambda text: True)
+    pf = _seed_portfolio(db_session, broker="ibkr_flex")
+    db_session.add(
+        models.ReconciliationFetchStatus(
+            tenant_id=pf.tenant_id,
+            portfolio_id=pf.id,
+            broker="ibkr_flex",
+            first_seen_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=4),
+        )
+    )
+    db_session.commit()
+
+    result = reconciliation.reconcile_portfolio(db_session, pf)
+
+    assert result.stale_fetches
+    row = db_session.query(models.ReconciliationFetchStatus).one()
+    assert row.last_success_at is None

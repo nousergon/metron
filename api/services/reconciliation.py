@@ -66,7 +66,13 @@ class ReconcileResult:
     breaks_open: int = 0
     breaks_new: int = 0
     breaks_resolved: int = 0
+    # Every fetch that failed on THIS run. Alerted individually, always.
     fetch_failures: list[str] = field(default_factory=list)
+    # The subset whose broker has now gone longer than ``reconciliation_stale_hours``
+    # without a successful fetch. This — not ``fetch_failures`` — is what fails the
+    # CLI, so a busy upstream for one night and a reconciliation that has been dead
+    # for a week stop producing the identical CRITICAL page (metron-ops#274).
+    stale_fetches: list[str] = field(default_factory=list)
 
 
 def _diff_snapshot(
@@ -245,6 +251,43 @@ def _alert_text(portfolio: models.Portfolio, rows: list[models.ReconciliationBre
     return "\n".join(lines)
 
 
+def _fetch_status(session: Session, portfolio: models.Portfolio, broker: str) -> models.ReconciliationFetchStatus:
+    """Get-or-create the (portfolio, broker) fetch-status row.
+
+    Created on first attempt whatever the outcome, so ``first_seen_at`` exists to
+    anchor the staleness clock even for a broker that has never once succeeded."""
+    row = session.scalars(
+        select(models.ReconciliationFetchStatus).where(
+            models.ReconciliationFetchStatus.portfolio_id == portfolio.id,
+            models.ReconciliationFetchStatus.broker == broker,
+        )
+    ).first()
+    if row is None:
+        row = models.ReconciliationFetchStatus(
+            tenant_id=portfolio.tenant_id,
+            portfolio_id=portfolio.id,
+            broker=broker,
+            first_seen_at=datetime.now(UTC),
+        )
+        session.add(row)
+        session.flush()
+    return row
+
+
+def _is_stale(row: models.ReconciliationFetchStatus, *, now: datetime) -> bool:
+    """Has this broker gone longer than the configured window without a good fetch?
+
+    Falls back to ``first_seen_at`` when nothing has ever succeeded — a broker that
+    has failed since the day it was wired must still escalate, and a NULL age would
+    otherwise read as "not stale" indefinitely."""
+    since = row.last_success_at or row.first_seen_at
+    if since is None:  # pragma: no cover — server_default guarantees first_seen_at
+        return True
+    if since.tzinfo is None:  # SQLite hands back naive datetimes
+        since = since.replace(tzinfo=UTC)
+    return (now - since).total_seconds() > settings.reconciliation_stale_hours * 3600
+
+
 def reconcile_portfolio(session: Session, portfolio: models.Portfolio, *, today: date | None = None) -> ReconcileResult:
     """Run layer-1 reconciliation for one portfolio: fetch each connected broker fresh
     (no persist), diff against the current DB state, upsert breaks, resolve stale ones,
@@ -261,17 +304,34 @@ def reconcile_portfolio(session: Session, portfolio: models.Portfolio, *, today:
         "ibkr_flex": broker_sync.fetch_flex_snapshot_for_portfolio,
         "snaptrade": broker_sync.fetch_snaptrade_snapshot_for_portfolio,
     }
+    now = datetime.now(UTC)
     for broker in _BROKERS:
         try:
             snapshot = fetchers[broker](session, portfolio)
         except Exception as e:  # noqa: BLE001 — a fetch failure must alert, not crash the run
-            msg = f"reconciliation fetch failed — portfolio={portfolio.id} broker={broker}: {e}"
+            status = _fetch_status(session, portfolio, broker)
+            status.last_failure_at = now
+            status.last_error = str(e)[:500]
+            status.consecutive_failures += 1
+            stale = _is_stale(status, now=now)
+            msg = (
+                f"reconciliation fetch failed — portfolio={portfolio.id} broker={broker}: {e} "
+                f"(consecutive={status.consecutive_failures}, "
+                f"last success={status.last_success_at or 'never'}{', STALE' if stale else ''})"
+            )
             logger.error(msg)
+            # Alerted on EVERY failure regardless of staleness — visibility is not what
+            # metron-ops#274 reduces, only whether the unit goes red (see stale_fetches).
             send_alert(f"⚠️ {msg}")
             result.fetch_failures.append(msg)
+            if stale:
+                result.stale_fetches.append(msg)
             continue
         if snapshot is None:
             continue
+        status = _fetch_status(session, portfolio, broker)
+        status.last_success_at = now
+        status.consecutive_failures = 0
         breaks, covered = _diff_snapshot(session, portfolio, snapshot)
         all_breaks.extend(breaks)
         covered_account_ids |= covered
@@ -313,4 +373,5 @@ def reconcile_all(session: Session) -> ReconcileResult:
         total.breaks_new += r.breaks_new
         total.breaks_resolved += r.breaks_resolved
         total.fetch_failures.extend(r.fetch_failures)
+        total.stale_fetches.extend(r.stale_fetches)
     return total
