@@ -254,6 +254,46 @@ class ReconciliationBreak(Base):
     account: Mapped[Account] = relationship()
 
 
+class ReconciliationFetchStatus(Base):
+    """Per (portfolio, broker) record that a custodian-reconciliation fetch happened —
+    the thing layer-1 reconciliation did not keep (metron-ops#274).
+
+    Before this table, reconciliation persisted only its *breaks*. A run that could not
+    reach a broker at all left no durable trace, so "this broker has not been reconciled
+    since Tuesday" was not a question the system could answer — and the CLI, having no
+    way to tell a one-night blip from a week of silence, exited non-zero on both. That
+    made a busy upstream and a dead detector produce the identical CRITICAL page
+    (2026-08-16 read timeout, 2026-08-20 "statement could not be generated"; both
+    recovered unaided on the next nightly run).
+
+    Deliberately keyed on (portfolio, broker) rather than per-run: what the severity
+    decision needs is the AGE of the last good fetch, not a run log. ``first_seen_at``
+    is the fallback clock so a broker that has never once succeeded still becomes stale
+    on the same schedule as one that used to work — without it, a never-successful
+    broker has a NULL age and reads as "not stale" forever, which is the failure this
+    table exists to prevent, inverted."""
+
+    __tablename__ = "reconciliation_fetch_status"
+    __table_args__ = (UniqueConstraint("portfolio_id", "broker", name="uq_reconciliation_fetch_portfolio_broker"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
+    broker: Mapped[str] = mapped_column(String(30))  # "ibkr_flex" | "snaptrade"
+    # Last fetch that actually returned a snapshot we could diff. NULL until the first
+    # success ever — see first_seen_at.
+    last_success_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_failure_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # Truncated; the full text is already logged and alerted at failure time. Kept so a
+    # stale row says WHY without a journal dig on a box that may have rotated its logs.
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(default=0)
+    # Row birth = the first time this (portfolio, broker) pair was attempted. The
+    # staleness clock falls back to it when last_success_at is NULL.
+    first_seen_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
 class ShadowRecomputeBreak(Base):
     """A detected divergence between the shadow NAV/returns/realized-P&L recompute
     and what production actually served — the layer-3 dashboard-accuracy-verification
