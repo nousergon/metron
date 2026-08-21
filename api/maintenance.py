@@ -575,19 +575,35 @@ def main(argv: list[str] | None = None) -> int:
             session.close()
         logger.info(
             "reconcile done: %d portfolios, %d accounts covered, %d breaks open "
-            "(%d new/reopened, %d resolved), %d fetch failure(s)",
+            "(%d new/reopened, %d resolved), %d fetch failure(s), %d stale",
             r.portfolios_checked,
             r.accounts_covered,
             r.breaks_open,
             r.breaks_new,
             r.breaks_resolved,
             len(r.fetch_failures),
+            len(r.stale_fetches),
         )
         # Fail loud (config: "the job fails loud rather than silently continuing on an
-        # unreconciled account") — a fetch failure already alerted individually above;
-        # the non-zero exit additionally fails the systemd unit so it's visible in
-        # `systemctl status` / journalctl, not just the Telegram channel.
-        return 1 if r.fetch_failures else 0
+        # unreconciled account"), but on the condition that actually means something.
+        #
+        # Every fetch failure still alerts individually inside the service — that is
+        # unchanged and is where visibility lives. What the non-zero exit adds is a red
+        # systemd unit, which box-health maps to a CRITICAL page; escalating on a SINGLE
+        # failure made "IBKR was busy for thirty seconds" and "reconciliation has been
+        # dead for a week" the same severity, twice in five nights (2026-08-16 read
+        # timeout, 2026-08-20 statement-not-generatable — both recovered unaided the
+        # next night). So the unit goes red only once a broker has produced no good
+        # fetch for `reconciliation_stale_hours` (36h = two missed nightly runs), which
+        # is the condition the detector exists to report. metron-ops#274.
+        if r.fetch_failures and not r.stale_fetches:
+            logger.warning(
+                "reconcile: %d transient fetch failure(s), none stale beyond %.0fh — "
+                "alerted, not escalated",
+                len(r.fetch_failures),
+                settings.reconciliation_stale_hours,
+            )
+        return 1 if r.stale_fetches else 0
     if args.cmd == "shadow-recompute":
         create_all()
         session = SessionLocal()

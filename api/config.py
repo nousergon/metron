@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     # $10 position isn't flagged for its own cost basis being $0.02 off.
     reconciliation_cash_tolerance_usd: float = 1.0
     reconciliation_cost_basis_tolerance_bps: float = 5.0
+    # How long a broker may go without a successful reconciliation fetch before the
+    # nightly job exits non-zero and turns the systemd unit (and box-health) red
+    # (metron-ops#274). Every fetch failure still alerts to Telegram immediately,
+    # whatever this is set to — this governs ESCALATION, not visibility. 36h is one
+    # nightly cadence plus headroom: a single missed run is a busy upstream, two in a
+    # row is the detector being down, and only the second is worth a CRITICAL page.
+    reconciliation_stale_hours: float = 36.0
     # Shadow-recompute divergence tolerances (metron-ops#218, dashboard-accuracy layer 3)
     # — NAV/realized-P&L allow a small absolute-or-relative band (broker-rounding /
     # as-of-price-staleness noise between the two independent valuation passes), same

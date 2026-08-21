@@ -31,10 +31,16 @@ from api.services.demo import DEMO_TENANT_ID, REFERENCE_PORTFOLIO_ID
 # zero secret-resolution crash risk; an alert channel is a tracked follow-up.
 # Non-edge wiring (logging) comes from the MIT krepis layer; metron pulls only
 # the AGPL quant core from nousergon-lib.
-_FLOW_DOCTOR_YAML = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "flow-doctor.yaml",
-)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Durable home for flow-doctor's dedupe/rate-limit store (metron-ops#273). Anchored to
+# the repo root, not the CWD, because the yaml is resolved at import and a relative path
+# would follow whatever directory the process happened to start in. Set with the
+# environment able to override it, so a future non-repo layout has a lever; created here
+# because flow-doctor opens the sqlite file immediately and will not make the parent.
+# cache/ is gitignored and survives a deploy's git pull, which is the property this needs.
+os.environ.setdefault("METRON_STATE_DIR", os.path.join(_REPO_ROOT, "cache"))
+os.makedirs(os.environ["METRON_STATE_DIR"], exist_ok=True)
+_FLOW_DOCTOR_YAML = os.path.join(_REPO_ROOT, "flow-doctor.yaml")
 setup_logging("metron", flow_doctor_yaml=_FLOW_DOCTOR_YAML)
 
 
