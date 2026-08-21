@@ -68,6 +68,9 @@ if [ $ALEMBIC_RC -ne 0 ] && ! printf '%s' "$ALEMBIC_ERR" | grep -q "ParameterNot
     echo "  could not read /metron/database_url: ${ALEMBIC_ERR}"
     exit 1
 fi
+# Neon DIRECT endpoint, always — see the NEON ENDPOINT note in the SSM hydration block.
+# Schema changes must not ride a transaction pooler.
+ALEMBIC_DB_URL=$(printf '%s' "$ALEMBIC_DB_URL" | sed 's/-pooler\./\./')
 if [ -z "$ALEMBIC_DB_URL" ] || [ "$ALEMBIC_DB_URL" = "None" ]; then
     echo "  /metron/database_url not in SSM — skipping Alembic (pre-migration)"
 else
@@ -162,6 +165,24 @@ for pair in \
     exit 1
   fi
   if [ -n "$val" ] && [ "$val" != "None" ]; then
+    # NEON ENDPOINT — always the DIRECT host, never the -pooler one, for every service.
+    #
+    # The pooled host is PgBouncer in TRANSACTION mode. psycopg3 promotes a statement to
+    # a server-side prepared statement after prepare_threshold executions, and a
+    # transaction pooler hands the next execution to a backend that has never seen it —
+    # an intermittent failure that appears under load and nowhere else. The Alembic stage
+    # above uses the same parameter, so schema changes rode it too.
+    #
+    # This is a single-user deployment: one gunicorn worker plus a few oneshot timers, a
+    # handful of concurrent connections against a direct-endpoint limit in the hundreds.
+    # Pooling buys nothing here and costs correctness.
+    #
+    # Normalising HERE rather than by re-seeding the parameter is deliberate: the
+    # endpoint variant is a deployment decision, not a credential, so it belongs in
+    # version control with its rationale — and re-seeding the parameter from the Neon
+    # console, which offers the pooled string by default, then cannot silently
+    # reintroduce the pooler. metron-ops#261 carries the measurement.
+    [ "$var" = "DATABASE_URL" ] && val=$(printf '%s' "$val" | sed 's/-pooler\./\./')
     printf '%s=%s\n' "$var" "$val" >> "$BLOCK"
   elif [ "$crit" = "required" ]; then
     MISSING_REQUIRED="${MISSING_REQUIRED} ${var}(${path})"
@@ -227,6 +248,30 @@ for f in "$UNITS_DIR"/*.timer; do
     || { echo "timer $unit installed but NOT active after enable"; exit 1; }
 done
 echo "  all tracked timers enabled + active"
+
+# Retire the hand-made neon.conf drop-ins (metron-ops#261). These predate the SSM
+# hydration above and pinned DATABASE_URL per-service by hand. A drop-in `Environment=`
+# overrides an EnvironmentFile, so they silently won over the hydrated value — different
+# services ended up resolving different endpoints, and nothing that read only SSM could
+# see it. They also exist only on the box, so a rebuild loses them and no detector says
+# so. The hydration block above now guarantees the direct endpoint for every service,
+# which is the whole of what these files were for.
+#
+# Idempotent — a no-op once they are gone.
+NEON_DROPINS_REMOVED=0
+for d in /etc/systemd/system/metron-*.service.d/neon.conf; do
+  [ -e "$d" ] || continue
+  sudo rm -f "$d" || { echo "neon.conf removal FAILED: $d"; exit 1; }
+  sudo rmdir --ignore-fail-on-non-empty "$(dirname "$d")" 2>/dev/null || true
+  NEON_DROPINS_REMOVED=$((NEON_DROPINS_REMOVED + 1))
+  echo "  removed stale drop-in $d"
+done
+if [ "$NEON_DROPINS_REMOVED" -gt 0 ]; then
+  sudo systemctl daemon-reload
+  # The oneshot timers pick the hydrated value up on their next fire; metron-api is
+  # restarted below as part of the normal deploy.
+  echo "  retired ${NEON_DROPINS_REMOVED} neon.conf drop-in(s) — DATABASE_URL comes from SSM alone"
+fi
 
 # One-shot retirement of metron-web.service (:3000, portfolio.nousergon.ai —
 # deprecated 2026-07-22, metron-ops#225). Idempotent — a no-op once the unit is
