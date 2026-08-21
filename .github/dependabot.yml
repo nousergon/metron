@@ -64,7 +64,7 @@ updates:
         update-types:
           - major
     # Deferred to the tracked Next 16 / React 19 / eslint 9 migration
-    # (metron-ops-I243). These five cannot land independently — next 16 requires
+    # (metron-ops-I243). These six cannot land independently — next 16 requires
     # React 19, and eslint-config-next 16 requires eslint 9+ — so Dependabot
     # re-proposing them individually every week is pure queue noise. Narrow by
     # dependency-name ON PURPOSE: a blanket "*" major ignore would also suppress
@@ -80,6 +80,14 @@ updates:
       - dependency-name: "eslint"
         update-types: ["version-update:semver-major"]
       - dependency-name: "eslint-config-next"
+        update-types: ["version-update:semver-major"]
+      # typescript 7 joins the same block for the same reason, measured
+      # 2026-08-21 on metron#405: "TypeScript 7.0.2 is not supported by this
+      # version of Next.js. The TypeScript 7 native compiler does not provide
+      # the JavaScript compiler API that Next.js requires. Install TypeScript 6
+      # ... or upgrade to a Next.js v16.2.11 or later". web/package.json pins
+      # next 15.5.23, so TS7 cannot land until the Next 16 migration does.
+      - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
