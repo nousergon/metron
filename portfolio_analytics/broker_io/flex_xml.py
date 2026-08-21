@@ -194,9 +194,51 @@ def _http_get(url: str, params: dict[str, str], opener=urllib.request.urlopen, *
         if attempt < _TRANSPORT_ATTEMPTS - 1:
             sleep(_TRANSPORT_BACKOFF_S[attempt])
     raise IbkrFlexError(
-        f"Flex {url.rsplit('/', 1)[-1]} failed after {_TRANSPORT_ATTEMPTS} attempts "
-        f"({_HTTP_TIMEOUT_S}s each): {last}"
+        f"Flex {url.rsplit('/', 1)[-1]} failed after {_TRANSPORT_ATTEMPTS} attempts ({_HTTP_TIMEOUT_S}s each): {last}"
     ) from last
+
+
+def _send_request(token: str, query_id: str, *, attempts: int, wait: float, opener, sleep) -> ET.Element:
+    """Ask IBKR to generate the statement, retrying a transient non-Success response.
+
+    This is the PROTOCOL-level sibling of the transport retry in ``_http_get`` — the
+    case that docstring explicitly excludes ("IBKR reports those as a 200 with an
+    ErrorCode in the XML"), and the one that failed the same unit four nights after
+    the transport fix landed. On 2026-08-20 23:15 UTC SendRequest returned
+    ``Status=Warn`` with "Statement could not be generated at this time. Please try
+    again shortly." — IBKR asking to be retried — and the run ended there, covering
+    4 of 8 accounts and paging box-health CRITICAL. The GetStatement poll below has
+    always retried this exact condition; SendRequest never did.
+
+    Retry is keyed on the response not being ``Success``, not on an ErrorCode
+    allowlist: that occurrence carried the literal ErrorCode ``null``, so a
+    code-keyed rule would have missed the very failure it was written for. A
+    permanent failure (expired token, bad query id) still raises — ``attempts``
+    tries later, with the same message. Bounded delay, never a swallow.
+    """
+    last: ET.Element | None = None
+    for attempt in range(attempts):
+        r1 = ET.fromstring(
+            _http_get(FLEX_SEND_REQUEST_URL, {"t": token, "q": query_id, "v": _FLEX_VERSION}, opener, sleep=sleep)
+        )
+        if (r1.findtext("Status") or "").strip() == "Success":
+            return r1
+        last = r1
+        if attempt < attempts - 1:
+            logger.warning(
+                "Flex SendRequest attempt %d/%d not ready (%s %s) — retrying in %.0fs",
+                attempt + 1,
+                attempts,
+                r1.findtext("ErrorCode"),
+                r1.findtext("ErrorMessage"),
+                wait * (2**attempt),
+            )
+            sleep(wait * (2**attempt))
+    assert last is not None  # attempts >= 1, so a non-Success response was always recorded
+    raise IbkrFlexError(
+        f"Flex SendRequest failed after {attempts} attempt(s): "
+        f"{last.findtext('ErrorCode')} {last.findtext('ErrorMessage')}"
+    )
 
 
 def fetch_flex_xml(
@@ -205,20 +247,24 @@ def fetch_flex_xml(
     *,
     poll_attempts: int = 6,
     poll_wait: float = 5.0,
+    send_attempts: int = 4,
+    send_wait: float = 10.0,
     opener=urllib.request.urlopen,
     sleep=time.sleep,
 ) -> str:
     """Run the IBKR Flex Web Service v3 two-step and return the statement XML.
 
-    SendRequest → reference code; then poll GetStatement until the statement is
-    generated (IBKR returns ErrorCode 1019 while still generating). Raises
-    ``IbkrFlexError`` on any terminal failure or if it's not ready after
-    ``poll_attempts`` — fail-loud so the caller records the error on a surface.
+    SendRequest (retried while IBKR reports the statement not yet generatable) →
+    reference code; then poll GetStatement until the statement is generated (IBKR
+    returns ErrorCode 1019 while still generating). Raises ``IbkrFlexError`` on any
+    terminal failure or if it's not ready after ``poll_attempts`` — fail-loud so the
+    caller records the error on a surface.
+
+    Worst-case added wall time is 10+20+40 = 70s. Every caller is a ``Type=oneshot``
+    systemd unit (``TimeoutStartUSec=infinity``, verified on the dashboard box
+    2026-08-20) or a background sync, so no start timeout is at risk.
     """
-    send = _http_get(FLEX_SEND_REQUEST_URL, {"t": token, "q": query_id, "v": _FLEX_VERSION}, opener, sleep=sleep)
-    r1 = ET.fromstring(send)
-    if (r1.findtext("Status") or "").strip() != "Success":
-        raise IbkrFlexError(f"Flex SendRequest failed: {r1.findtext('ErrorCode')} {r1.findtext('ErrorMessage')}")
+    r1 = _send_request(token, query_id, attempts=send_attempts, wait=send_wait, opener=opener, sleep=sleep)
     reference = (r1.findtext("ReferenceCode") or "").strip()
     get_url = (r1.findtext("Url") or "").strip()
     if not reference or not get_url:
