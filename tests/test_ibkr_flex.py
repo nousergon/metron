@@ -53,6 +53,16 @@ SEND_FAIL = (
     "<ErrorCode>1012</ErrorCode><ErrorMessage>Token has expired.</ErrorMessage>"
     "</FlexStatementResponse>"
 )
+# The exact SendRequest body IBKR returned on 2026-08-20 23:15 UTC, which failed
+# metron-reconcile.service. Note the literal ErrorCode "null" — it is why the retry
+# is keyed on Status, not on a code.
+SEND_BUSY = (
+    "<FlexStatementResponse><Status>Warn</Status>"
+    "<ErrorCode>null</ErrorCode>"
+    "<ErrorMessage>Statement could not be generated at this time. Please try again shortly.</ErrorMessage>"
+    "</FlexStatementResponse>"
+)
+
 GENERATING = (
     "<FlexStatementResponse><Status>Warn</Status>"
     "<ErrorCode>1019</ErrorCode><ErrorMessage>Statement generation in progress.</ErrorMessage>"
@@ -74,14 +84,18 @@ class _FakeResponse:
         return self._body.encode("utf-8")
 
 
-def _opener_from(send: str, statements: list[str]):
-    """Build an injectable opener: SendRequest URLs get ``send``; GetStatement URLs
-    return the next item from ``statements`` in order."""
-    box = {"i": 0}
+def _opener_from(send: str | list[str], statements: list[str]):
+    """Build an injectable opener: SendRequest URLs get ``send`` (a single body, or the
+    next item of a list in order, so a retried SendRequest can be exercised);
+    GetStatement URLs return the next item from ``statements`` in order."""
+    sends = [send] if isinstance(send, str) else list(send)
+    box = {"i": 0, "s": 0}
 
     def opener(url: str, timeout: int = 30):
         if "SendRequest" in url:
-            return _FakeResponse(send)
+            body = sends[min(box["s"], len(sends) - 1)]
+            box["s"] += 1
+            return _FakeResponse(body)
         body = statements[min(box["i"], len(statements) - 1)]
         box["i"] += 1
         return _FakeResponse(body)
@@ -197,7 +211,29 @@ def test_fetch_flex_xml_polls_until_ready():
 def test_fetch_flex_xml_send_failure_raises():
     opener = _opener_from(SEND_FAIL, [STATEMENT_XML])
     with pytest.raises(IbkrFlexError, match="1012"):
-        fetch_flex_xml("tok", "qid", opener=opener)
+        fetch_flex_xml("tok", "qid", opener=opener, sleep=lambda *_: None)
+
+
+def test_fetch_flex_xml_retries_send_request_when_statement_not_generatable():
+    """The 2026-08-20 failure: SendRequest says "try again shortly" and the run ended.
+
+    IBKR reports it as a 200 with a non-Success body, so the transport retry in
+    ``_http_get`` never sees it. One retry must carry the run to the statement.
+    """
+    opener = _opener_from([SEND_BUSY, SEND_OK], [STATEMENT_XML])
+    sleeps: list[float] = []
+    out = fetch_flex_xml("tok", "qid", opener=opener, sleep=sleeps.append)
+    assert "FlexQueryResponse" in out
+    assert sleeps[0] == 10.0  # it waited before re-sending
+
+
+def test_fetch_flex_xml_send_retry_backs_off_then_fails_loud():
+    """A SendRequest that never recovers still raises — bounded delay, never a swallow."""
+    opener = _opener_from(SEND_BUSY, [STATEMENT_XML])
+    sleeps: list[float] = []
+    with pytest.raises(IbkrFlexError, match="after 3 attempt"):
+        fetch_flex_xml("tok", "qid", send_attempts=3, opener=opener, sleep=sleeps.append)
+    assert sleeps == [10.0, 20.0]  # exponential, and no sleep after the last attempt
 
 
 def test_fetch_flex_xml_times_out_when_never_ready():
