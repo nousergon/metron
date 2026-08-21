@@ -22,7 +22,20 @@ notify:
     chat_id: ${TELEGRAM_CHAT_ID}
 store:
   type: sqlite
-  path: /tmp/flow_doctor.db
+  # NOT /tmp. This store is what makes dedup_cooldown_minutes and rate_limits
+  # below mean anything — it holds the last-seen time per failure signature and
+  # the running daily alert count. metron-api runs with PrivateTmp=yes (the
+  # box-wide sandboxing drop-in), so a /tmp path lives in a namespace systemd
+  # DESTROYS on every restart: each deploy silently reset the 60-minute dedupe
+  # window and re-armed the full 10-alerts-per-day budget, so an already-deduped
+  # failure paged again. A rate limit that resets whenever you deploy is not a
+  # rate limit. metron-ops#273.
+  #
+  # METRON_STATE_DIR is set in api/main.py before setup_logging(), anchored to the
+  # repo root rather than the process CWD — flow-doctor resolves ${VAR}s eagerly
+  # and strictly at load, so it is set unconditionally there, never expected from
+  # the environment.
+  path: ${METRON_STATE_DIR}/flow_doctor.db
 dedup_cooldown_minutes: 60
 dependencies: []
 rate_limits:
