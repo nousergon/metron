@@ -85,7 +85,7 @@ dependencies = [
     # via conftest's autouse `_no_live_aws_calls`, so no test exercises a real S3 call.
     # `<2` is close to free — boto3 has been on 1.x for its entire life — and it means a
     # major cannot arrive on a routine deploy the way snaptrade 12.x did (metron-ops#260).
-    "boto3>=1.43.76,<2",
+    "boto3>=1.43.81,<2",
     # Postgres driver (prod). SQLite is a dev/test fallback and needs nothing extra.
     "psycopg[binary]>=3.3.4",
 ]
