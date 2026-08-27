@@ -26,7 +26,7 @@ dependencies = [
     "uvicorn[standard]>=0.52.4",
     # Process manager wrapping uvicorn workers (systemd ExecStart). Declared here
     # so no dependency-sync operation can strip it from the prod venv (metron-I333).
-    "gunicorn>=26.1.0",
+    "gunicorn>=26.2.0",
     # Cross-process compute cache backend (metron-ops#234) — diskcache uses SQLite with
     # file-level locking so multiple workers share a single cache store and single-flight
     # lock. Replaces the original in-process ``dict`` + ``threading.Lock``.
