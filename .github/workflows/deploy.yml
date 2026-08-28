@@ -44,7 +44,24 @@ jobs:
           # flock serializes against the metron-ops deploy (GHA concurrency is per-repo, so the
           # two repos' deploys can otherwise overlap → concurrent git resets + npm builds on the
           # shared box). The second deploy waits (≤10m) then runs with the latest code.
-          CMD_BODY="flock -w 600 /tmp/metron-deploy.lock -c 'set -e; sudo -u ec2-user git -C /home/ec2-user/metron fetch origin --quiet && sudo -u ec2-user git -C /home/ec2-user/metron reset --hard ${GITHUB_SHA} --quiet && sudo -u ec2-user git -C /home/ec2-user/metron-ops fetch origin --quiet && sudo -u ec2-user git -C /home/ec2-user/metron-ops reset --hard origin/main --quiet && sudo -u ec2-user bash /home/ec2-user/metron/infrastructure/deploy-on-merge.sh'"
+          #
+          # THE FETCH IS RETRIED, and the commit's presence is then asserted rather than
+          # assumed. flock only serializes the writers that take the lock; anything else on
+          # the box that touches this working copy does not, and a lost ref lock is a
+          # one-line stderr that killed the whole deploy under `set -e`:
+          #
+          #   error: cannot lock ref 'refs/remotes/origin/main': is at 95cd989 but expected 0f2a6b8
+          #
+          # 2026-08-27: that was metron-deploy-drift.timer (fires at *:07) fetching into the
+          # same repo in the same second. The monitor has been made write-free
+          # (api/services/deploy_drift.py), which removes that particular writer — this loop
+          # is the layer that makes the deploy survive the CLASS, including the next writer
+          # nobody has thought of yet. `cat-file -e` is the success predicate: if all five
+          # attempts failed, the object is absent and the deploy dies loudly here instead of
+          # resetting to a stale ref.
+          GIT_M="sudo -u ec2-user git -C /home/ec2-user/metron"
+          GIT_O="sudo -u ec2-user git -C /home/ec2-user/metron-ops"
+          CMD_BODY="flock -w 600 /tmp/metron-deploy.lock -c 'set -e; for a in 1 2 3 4 5; do ${GIT_M} fetch origin --quiet && break || sleep 10; done; ${GIT_M} cat-file -e ${GITHUB_SHA}^{commit}; ${GIT_M} reset --hard ${GITHUB_SHA} --quiet; for a in 1 2 3 4 5; do ${GIT_O} fetch origin --quiet && break || sleep 10; done; ${GIT_O} rev-parse --verify --quiet origin/main >/dev/null; ${GIT_O} reset --hard origin/main --quiet; sudo -u ec2-user bash /home/ec2-user/metron/infrastructure/deploy-on-merge.sh'"
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${METRON_INSTANCE_ID}" \
             --document-name AWS-RunShellScript \

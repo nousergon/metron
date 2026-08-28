@@ -13,6 +13,25 @@ The fleet lesson it applies: **detect the missing effect, never the missing even
 
 A grace window keeps an in-flight deploy from paging: drift is only reported once the
 newest commit on `origin/main` has been sitting there longer than ``grace_minutes``.
+
+**This check never writes ``refs/remotes/origin/*``, and that is load-bearing.** It used
+to open with a plain ``git fetch origin`` in the deployed working copy — the same working
+copy ``deploy.yml`` fetches into over SSM. On 2026-08-27 20:07 UTC the two collided: the
+hourly timer fires at ``*:07`` and the deploy for 95cd989 landed in the same second, so
+the deploy died with
+
+    error: cannot lock ref 'refs/remotes/origin/main': is at 95cd989 but expected 0f2a6b8
+
+before ``deploy-on-merge.sh`` ever started — which also meant the deploy script's own
+failure trap never ran. The commit stayed undeployed for five hours and this check
+faithfully reported the drift **it had itself caused**. A monitor that mutates the state
+it observes is not a monitor; it is a second writer with an alerting side effect.
+
+So the healthy path is now completely write-free (``git ls-remote``, which touches no ref
+and no ``FETCH_HEAD``), and the drifted path — the only one that needs history — fetches
+into the private ref ``refs/deploy-drift/main`` with ``--no-write-fetch-head``. Neither
+takes a lock any other process contends for. Objects are shared, which git already
+handles concurrently.
 """
 
 from __future__ import annotations
@@ -67,16 +86,59 @@ def _git(path: str, *args: str) -> str:
     ).stdout.strip()
 
 
+# Where this check parks the remote tip when it needs history. A ref nothing else on the
+# box reads or writes, so a deploy fetching into refs/remotes/origin/* at the same instant
+# contends with nothing. See the module docstring for the outage that named it.
+DRIFT_REF = "refs/deploy-drift/main"
+
+
+def remote_head(path: str) -> str:
+    """Full SHA at ``origin/main``, read without writing a single ref.
+
+    ``ls-remote`` asks the remote and prints; it updates no ref, no ``FETCH_HEAD``, and
+    takes no lock. That makes the overwhelmingly common case — box is current, nothing to
+    report — entirely side-effect-free, which is what a check running every hour against a
+    live deploy target should always have been.
+    """
+    out = _git(path, "ls-remote", "origin", "refs/heads/main")
+    return out.split()[0] if out else ""
+
+
 def read_state(path: str) -> RepoState:
-    """Fetch and read this repo's deployed-vs-remote position. Raises on a git failure —
-    a check that cannot read the state must not report 'no drift'."""
-    _git(path, "fetch", "origin", "--quiet")
+    """Read this repo's deployed-vs-remote position. Raises on a git failure — a check
+    that cannot read the state must not report 'no drift'."""
+    remote_full = remote_head(path)
+    if not remote_full:
+        # Not "no drift". A remote with no main is a broken premise, and the honest
+        # response is a red unit, not a green one.
+        raise RuntimeError(f"{path}: origin has no refs/heads/main")
+
+    head_full = _git(path, "rev-parse", "HEAD")
     head = _git(path, "rev-parse", "--short", "HEAD")
-    remote = _git(path, "rev-parse", "--short", "origin/main")
-    behind = int(_git(path, "rev-list", "--count", "HEAD..origin/main") or 0)
+    if head_full == remote_full:
+        # Current. Nothing fetched, nothing written, nothing to compute.
+        return RepoState(path=path, head=head, remote=head, remote_age_min=0, behind=0)
+
+    # Behind, ahead, or diverged — all three need the remote commit locally to say which.
+    #
+    # Three flags, each load-bearing, and the third is the one that is easy to miss:
+    #   --no-write-fetch-head  FETCH_HEAD is the other file two concurrent fetches lock.
+    #   --force                the private ref is a scratch pointer, not history.
+    #   --refmap=              WITHOUT THIS THE FIX DOES NOT WORK. Given an explicit
+    #                          refspec, git STILL applies the remote's configured refmap
+    #                          "opportunistically" and updates refs/remotes/origin/main
+    #                          anyway — which is the exact write that broke the deploy.
+    #                          An empty --refmap turns that off. Caught by the real-git
+    #                          test below, which failed on the first version of this fix.
+    _git(
+        path, "fetch", "--quiet", "--no-write-fetch-head", "--force", "--refmap=",
+        "origin", f"refs/heads/main:{DRIFT_REF}",
+    )
+    remote = _git(path, "rev-parse", "--short", DRIFT_REF)
+    behind = int(_git(path, "rev-list", "--count", f"HEAD..{DRIFT_REF}") or 0)
     age_min = 0
     if behind:
-        committed_at = int(_git(path, "log", "-1", "--format=%ct", "origin/main"))
+        committed_at = int(_git(path, "log", "-1", "--format=%ct", DRIFT_REF))
         age_min = max(0, int((time.time() - committed_at) // 60))
     return RepoState(path=path, head=head, remote=remote, remote_age_min=age_min, behind=behind)
 
