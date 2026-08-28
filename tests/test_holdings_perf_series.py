@@ -89,6 +89,53 @@ class TestAccountSeries:
         spy = next(b for b in res.benchmarks if b.symbol == "SPY")
         assert [round(p.g, 4) for p in spy.points] == [1.0, 1.1, 1.21]  # 400/400, 440/400, 484/400
 
+    def test_benchmark_history_bounded_equals_unbounded(self, db_session, tenant, monkeypatch):
+        """metron-ops-I279: the per-account benchmark fetch is now bounded to
+        ``start_date=earliest`` (the earliest reconstructed/forward point across the
+        selected accounts) — exactly matching what ``_benchmark_growth`` already
+        filters the unbounded series to (``bar_date >= start``, no carry-forward), so
+        bounding is provably a no-op on the output. Decoy bars dated well before
+        ``earliest`` (which would shift the normalized base close if the bound were
+        wrong in either direction) are seeded on BOTH runs; scenario A goes through the
+        real bounded fetch, scenario B monkeypatches it back to the pre-I279 unbounded
+        call. Distinct benchmark tickers per run (patched onto ``perf.BENCHMARKS`` for
+        the duration of that run) avoid colliding on the global securities' unique
+        ``(symbol, currency)`` constraint."""
+        from api.services import prices as prices_module
+
+        def _run(benchmarks, *, account_name):
+            monkeypatch.setattr(perf, "BENCHMARKS", benchmarks)
+            pid = uuid.uuid4()
+            a1 = _account(db_session, tenant, pid, account_name)
+            for when, nav in zip(_DATES, [1000.0, 1100.0, 1210.0], strict=True):
+                _asnap(db_session, tenant, pid, a1, when, nav)
+            for sym, _label in benchmarks:
+                _bars(db_session, sym, list(zip(_DATES, [400.0, 440.0, 484.0], strict=True)))
+                sid = price_service.ensure_security(db_session, sym)
+                db_session.add(models.PriceBar(security_id=sid, bar_date=date(2020, 1, 1), close=1.0, currency="USD"))
+            db_session.commit()
+            res = perf.account_performance_series(
+                db_session, uuid.UUID(tenant), pid, today=_DATES[-1], with_benchmarks=True
+            )
+            b = next(x for x in res.benchmarks if x.symbol == benchmarks[0][0])
+            return [(p.when, round(p.g, 8)) for p in b.points]
+
+        bounded = _run(
+            [("SPY", "S&P 500"), ("QQQ", "Nasdaq 100"), ("IWM", "Russell 2000")], account_name="Brokerage-A"
+        )
+
+        real = prices_module.close_history_by_symbol
+
+        def _unbounded(session, symbols, *, start_date=None, end_date=None):
+            return real(session, symbols)  # ignore the bound — the pre-I279 behaviour
+
+        monkeypatch.setattr(prices_module, "close_history_by_symbol", _unbounded)
+        unbounded = _run(
+            [("XSPY", "S&P 500"), ("XQQQ", "Nasdaq 100"), ("XIWM", "Russell 2000")], account_name="Brokerage-B"
+        )
+
+        assert bounded == unbounded
+
     def test_growth_neutralizes_a_contribution(self, db_session, tenant):
         pid = uuid.uuid4()
         a1 = _account(db_session, tenant, pid, "Brokerage")

@@ -35,16 +35,17 @@ def _seed_price_bars(session, symbol: str, start: date, end: date, price_at) -> 
     session.commit()
 
 
-def _seed_dca_lots(session, *, label: str) -> tuple[uuid.UUID, uuid.UUID]:
-    """An ibkr_flex account funded by 12 monthly AAPL lots (12 sh @ $100 = $1,200 each).
-    Pure contributions, no trade feed — the exact shape of the live snapshot accounts."""
+def _seed_dca_lots(session, *, label: str, ticker: str = "AAPL") -> tuple[uuid.UUID, uuid.UUID]:
+    """An ibkr_flex account funded by 12 monthly lots of ``ticker`` (12 sh @ $100 =
+    $1,200 each). Pure contributions, no trade feed — the exact shape of the live
+    snapshot accounts."""
     tenant = models.Tenant(id=uuid.uuid4(), name="t")
     portfolio = models.Portfolio(id=uuid.uuid4(), tenant_id=tenant.id, name="P")
     session.add_all([tenant, portfolio])
     session.commit()
     lots = [
         CanonicalOpenLot(
-            account_number="U1", security_id="EQ:AAPL:USD", ticker="AAPL",
+            account_number="U1", security_id=f"EQ:{ticker}:USD", ticker=ticker,
             quantity=12, open_date=date(2025, m, 5), cost_basis=1200,
         )
         for m in range(1, 13)
@@ -52,7 +53,7 @@ def _seed_dca_lots(session, *, label: str) -> tuple[uuid.UUID, uuid.UUID]:
     snapshot = ConnectorSnapshot(
         source="ibkr_flex",
         accounts=[CanonicalAccount(number="U1", label=label)],
-        securities=[CanonicalSecurity(security_id="EQ:AAPL:USD", ticker="AAPL")],
+        securities=[CanonicalSecurity(security_id=f"EQ:{ticker}:USD", ticker=ticker)],
         open_lots=lots,
     )
     persist_snapshot(session, tenant_id=tenant.id, portfolio_id=portfolio.id, snapshot=snapshot)
@@ -131,3 +132,48 @@ def test_lot_flow_is_nonzero_across_opening_steps(db_session):
     assert all(p.flow == pytest.approx(1200.0, abs=1.0) for p in contributing)
     # Total neutralized flow ≈ the 11 post-base contributions (the first is the g0 base).
     assert sum(p.flow for p in pts[1:]) == pytest.approx(11 * 1200.0, rel=0.05)
+
+
+def test_bounded_history_prefetch_equals_unbounded(db_session, monkeypatch):
+    """metron-ops-I279: ``_account_performance_series``'s close-history prefetch (the
+    ``nav_history`` fetch feeding every account's reconstruction) is now bounded to
+    ``[min(lot open/close date, txn date), today]`` instead of reading the whole
+    ``price_bars`` table — mirroring the SAME ``first`` bound
+    ``_reconstruct_nav_points`` already uses for its own backfill.
+
+    Two structurally-identical scenarios (distinct tickers, so both can share one
+    DB/session without colliding on the securities' ``(symbol, currency)``
+    uniqueness), each seeded with DECOY bars strictly before the earliest lot
+    (2025-01-05) and strictly after ``today`` (2025-12-31), priced so they would
+    visibly move the reconstructed growth series if a bound-computation bug let them
+    leak in or dropped a real one. Scenario A runs through the real (bounded) fetch;
+    scenario B monkeypatches it back to the pre-I279 unbounded call. The reconstructed
+    growth series must come out byte-identical either way."""
+    from api.services import prices as prices_module
+
+    def _run(ticker):
+        tenant_id, portfolio_id = _seed_dca_lots(db_session, label="Dividend Anchor", ticker=ticker)
+        _seed_price_bars(db_session, ticker, date(2025, 1, 1), date(2025, 12, 31), lambda d: 100.0 + d.day * 0.01)
+        sec = db_session.scalars(select(models.Security).where(models.Security.symbol == ticker)).first()
+        db_session.add_all([
+            models.PriceBar(security_id=sec.id, bar_date=date(2024, 12, 1), close=9999.0, currency="USD"),
+            models.PriceBar(security_id=sec.id, bar_date=date(2026, 6, 1), close=0.01, currency="USD"),
+        ])
+        db_session.commit()
+        series = performance.account_performance_series(
+            db_session, tenant_id, portfolio_id, today=date(2025, 12, 31), with_benchmarks=False
+        )
+        assert len(series.accounts) == 1
+        return [(p.when, round(p.g, 8)) for p in series.accounts[0].points]
+
+    bounded = _run("AAPL")
+
+    real = prices_module.close_history_by_symbol
+
+    def _unbounded(session, symbols, *, start_date=None, end_date=None):
+        return real(session, symbols)  # ignore the bound — the pre-I279 behaviour
+
+    monkeypatch.setattr(prices_module, "close_history_by_symbol", _unbounded)
+    unbounded = _run("MSFT")
+
+    assert bounded == unbounded
