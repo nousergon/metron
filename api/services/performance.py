@@ -560,7 +560,26 @@ def reconcile_snapshots(
     }
     if not fund_tickers:
         return 0
-    history = price_service.close_history_by_symbol(session, sorted(fund_tickers))
+    # Bound the fetch (metron-ops-I279): _restate_provisional only ever wants a bar in
+    # (leg's recorded price_date, row.snap_date] — never older, never newer. Every row's
+    # snap_date is already loaded, so the true upper bound is exact. The lower bound is
+    # exact too UNLESS some stale leg has no recorded price_date yet (its match is
+    # unconstrained below) — in that one case leave the fetch unbounded rather than guess.
+    stale_legs = [
+        leg
+        for row in (*port_rows, *acct_rows)
+        if row.composition
+        for leg in row.composition.get("legs", [])
+        if leg.get("stale") and leg.get("is_fund")
+    ]
+    end_date = max(row.snap_date for row in (*port_rows, *acct_rows))
+    if any(not leg.get("price_date") for leg in stale_legs):
+        start_date = None
+    else:
+        start_date = min(date.fromisoformat(leg["price_date"]) for leg in stale_legs)
+    history = price_service.close_history_by_symbol(
+        session, sorted(fund_tickers), start_date=start_date, end_date=end_date
+    )
     restated = sum(_restate_provisional(row, history) for row in (*port_rows, *acct_rows))
     if restated:
         session.commit()
@@ -1477,7 +1496,21 @@ def _account_performance_series(
         | {t for t, *_ in all_closed}
         | {t.ticker for _aid, t in by_account_all if t.ticker}
     )
-    nav_history = price_service.close_history_by_symbol(session, [*union_symbols, "SPY"])
+    # Bound the prefetch (metron-ops-I279): _reconstruct_nav_points never values before
+    # the earliest lot/txn date it itself would compute as `first` (mirrored here from
+    # its own formula, lines ~1814-1819) or after `today` — the same bound its OWN
+    # internal (backfill=True) fetch already uses. No valuation date ever falls outside
+    # [first, today], so nothing before/after it is ever read.
+    _lot_dates = (
+        [od for _t, _q, _cb, od in all_open]
+        + [od for _t, _q, _cb, od, _cd in all_closed]
+        + [cd for _t, _q, _cb, _od, cd in all_closed]
+    )
+    _txn_dates = [t.when for _aid, t in by_account_all]
+    first = min([*_lot_dates, *_txn_dates, today]) if (_lot_dates or _txn_dates) else today
+    nav_history = price_service.close_history_by_symbol(
+        session, [*union_symbols, "SPY"], start_date=first, end_date=today
+    )
 
     result = HoldingsPerfSeries()
     earliest: date | None = None
@@ -1514,7 +1547,10 @@ def _account_performance_series(
     if with_benchmarks and earliest is not None:
         symbols = [s for s, _ in BENCHMARKS]
         _ensure_benchmark_coverage(session, symbols, earliest, today, benchmark_source)
-        history = price_service.close_history_by_symbol(session, symbols)
+        # Bound the fetch (metron-ops-I279): _benchmark_growth filters to `bar_date >=
+        # earliest` with no carry-forward/fallback, so passing that same `earliest` as
+        # start_date reproduces the identical filtered series, not an approximation.
+        history = price_service.close_history_by_symbol(session, symbols, start_date=earliest)
         for sym, label in BENCHMARKS:
             pts = _benchmark_growth(history.get(sym), earliest)
             if pts:
@@ -1825,7 +1861,13 @@ def _reconstruct_nav_points(
         price_service.ensure_security(session, "SPY")
         price_service.backfill_prices(session, [*symbols, "SPY"], first, today, source=source)
     if history is None:
-        history = price_service.close_history_by_symbol(session, [*symbols, "SPY"])
+        # Bound the fetch (metron-ops-I279): `first` above is the exact earliest date
+        # this function will ever value (no lot/txn/flow predates it), and no valuation
+        # date exceeds `today` — the same bound the `backfill` branch above already
+        # uses for its own write.
+        history = price_service.close_history_by_symbol(
+            session, [*symbols, "SPY"], start_date=first, end_date=today
+        )
     spy_series = history.get("SPY")
     held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     current_px = {h.ticker: h.last_price for h in held if h.last_price is not None}

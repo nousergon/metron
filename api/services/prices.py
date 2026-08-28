@@ -243,18 +243,39 @@ def backfill_prices(
     return written
 
 
-def close_history_by_symbol(session: Session, symbols: list[str]) -> dict[str, list[ClosePoint]]:
-    """Full cached close series per symbol, ascending by date — for as-of valuation
-    during reconstruction. Absent symbols are omitted."""
+def close_history_by_symbol(
+    session: Session,
+    symbols: list[str],
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, list[ClosePoint]]:
+    """Cached close series per symbol, ascending by date — for as-of valuation during
+    reconstruction. Absent symbols are omitted.
+
+    ``start_date``/``end_date`` are an OPTIONAL inclusive window (metron-ops-I279): the
+    full-table ``price_bars`` scan this reads is the fleet's dominant Neon egress
+    amplifier (3,068 seq scans / ~2,758 full-table reads off a 161,502-row table), and
+    most callers only ever need a bounded slice. Passing neither reproduces the
+    original unbounded behaviour byte-for-byte — this is additive, never a default
+    change. A caller passes a bound ONLY when it already has an unambiguous one (an
+    earliest-transaction date, an explicit period start, a lookback window); a caller
+    whose correct window isn't already known some other way must keep calling this
+    unbounded rather than guess."""
     symbols = [s for s in dict.fromkeys(symbols) if s]
     if not symbols:
         return {}
-    rows = session.execute(
+    stmt = (
         select(models.Security.symbol, models.PriceBar.bar_date, models.PriceBar.close)
         .join(models.PriceBar, models.PriceBar.security_id == models.Security.id)
         .where(models.Security.symbol.in_(symbols))
-        .order_by(models.Security.symbol, models.PriceBar.bar_date)
-    ).all()
+    )
+    if start_date is not None:
+        stmt = stmt.where(models.PriceBar.bar_date >= start_date)
+    if end_date is not None:
+        stmt = stmt.where(models.PriceBar.bar_date <= end_date)
+    stmt = stmt.order_by(models.Security.symbol, models.PriceBar.bar_date)
+    rows = session.execute(stmt).all()
     out: dict[str, list[ClosePoint]] = {}
     for symbol, bar_date, close in rows:
         out.setdefault(symbol, []).append(ClosePoint(bar_date=bar_date, close=float(close)))

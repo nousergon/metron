@@ -14,6 +14,7 @@ import uuid
 from datetime import date
 
 import pytest
+from sqlalchemy import select
 
 from api.db import models
 from api.services import performance, prices
@@ -115,6 +116,27 @@ class TestBackfill:
         b = prices.ensure_security(db_session, "SPY")
         assert a == b  # idempotent
 
+    def test_close_history_window_defaults_to_unbounded(self, client, db_session, tenant):
+        """metron-ops-I279: ``start_date``/``end_date`` are additive. Calling with
+        neither must reproduce the original unbounded read byte-for-byte."""
+        _seed(client, tenant)  # creates AAPL security
+        prices.backfill_prices(db_session, ["AAPL"], date(2024, 1, 1), date(2024, 4, 1), source=_hist_src)
+        full = prices.close_history_by_symbol(db_session, ["AAPL"])
+        assert full == prices.close_history_by_symbol(db_session, ["AAPL"], start_date=None, end_date=None)
+        assert [p.close for p in full["AAPL"]] == [100.0, 110.0, 120.0]
+
+    def test_close_history_window_filters_inclusive(self, client, db_session, tenant):
+        """The window is inclusive on both ends and additive — it only ever narrows
+        what the unbounded call already returns."""
+        _seed(client, tenant)
+        prices.backfill_prices(db_session, ["AAPL"], date(2024, 1, 1), date(2024, 4, 1), source=_hist_src)
+        windowed = prices.close_history_by_symbol(
+            db_session, ["AAPL"], start_date=date(2024, 1, 15), end_date=date(2024, 2, 1)
+        )
+        assert [p.bar_date for p in windowed["AAPL"]] == [date(2024, 1, 15), date(2024, 2, 1)]
+        only_start = prices.close_history_by_symbol(db_session, ["AAPL"], start_date=date(2024, 2, 1))
+        assert [p.bar_date for p in only_start["AAPL"]] == [date(2024, 2, 1), date(2024, 3, 1)]
+
 
 class TestReconstruct:
     def test_reconstructs_nav_as_of_each_date(self, client, db_session, tenant):
@@ -148,6 +170,47 @@ class TestReconstruct:
             select(func.count()).select_from(models.NavSnapshot).where(models.NavSnapshot.portfolio_id == uuid.UUID(pid))
         )
         assert n == 4  # re-run upserts, not duplicates
+
+    def test_bounded_history_fetch_equals_unbounded(self, client, db_session, tenant, monkeypatch):
+        """metron-ops-I279: ``_reconstruct_nav_points``'s internal close-history fetch
+        (the ``if history is None`` fallback ``reconstruct_snapshots`` hits) is now
+        bounded to the SAME ``first``..``today`` window it already computes for its own
+        ``backfill_prices`` call a few lines up. Decoy bars dated well before the
+        earliest BUY (2024-01-15) and after ``today`` — added once, since ``price_bars``
+        is unscoped global reference data both portfolios read — prove the bound is a
+        no-op: two structurally-identical portfolios (same CSV, different tenants)
+        reconstruct through, respectively, the real bounded fetch and a monkeypatched
+        pre-I279 unbounded one, and their resulting NAV series must match exactly."""
+        pid_a = _seed(client, tenant)
+        tenant2 = str(uuid.uuid4())
+        pid_b = _seed(client, tenant2)
+
+        aapl = db_session.scalars(select(models.Security).where(models.Security.symbol == "AAPL")).first()
+        db_session.add_all([
+            models.PriceBar(security_id=aapl.id, bar_date=date(2023, 1, 1), close=9999.0, currency="USD"),
+            models.PriceBar(security_id=aapl.id, bar_date=date(2025, 1, 1), close=0.01, currency="USD"),
+        ])
+        db_session.commit()
+
+        n_a = performance.reconstruct_snapshots(
+            db_session, uuid.UUID(tenant), uuid.UUID(pid_a), today=date(2024, 3, 20), source=_hist_src
+        )
+        a_points = client.get(f"/portfolios/{pid_a}/performance", headers={"X-Tenant-Id": tenant}).json()["points"]
+
+        real = prices.close_history_by_symbol
+
+        def _unbounded(session, symbols, *, start_date=None, end_date=None):
+            return real(session, symbols)  # ignore the bound — the pre-I279 behaviour
+
+        monkeypatch.setattr(prices, "close_history_by_symbol", _unbounded)
+
+        n_b = performance.reconstruct_snapshots(
+            db_session, uuid.UUID(tenant2), uuid.UUID(pid_b), today=date(2024, 3, 20), source=_hist_src
+        )
+        b_points = client.get(f"/portfolios/{pid_b}/performance", headers={"X-Tenant-Id": tenant2}).json()["points"]
+
+        assert n_a == n_b == 4
+        assert a_points == b_points
 
     def test_endpoint_wires_reconstruction(self, client, tenant, monkeypatch):
         # Endpoint uses date.today(); just verify it wires through and populates history.
