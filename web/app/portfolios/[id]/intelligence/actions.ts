@@ -17,7 +17,7 @@ export async function generateAdvisorAction(portfolioId: string): Promise<Action
     revalidatePath(`/portfolios/${portfolioId}/intelligence`);
     return { ok: true, message: "Generated." };
   } catch (e) {
-    // The backend returns 503 with a reason (e.g. missing ANTHROPIC_API_KEY) — surface it.
+    // The backend returns 503 with a reason (e.g. router edge unreachable) — surface it.
     return { ok: false, message: e instanceof MetronApiError ? e.message : "Generation failed — backend reachable?" };
   }
 }
