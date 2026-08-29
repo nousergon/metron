@@ -101,9 +101,14 @@ npm install --no-audit --no-fund --silent || { echo "npm install FAILED"; exit 1
 # of needing a hand-pasted token/flag (metron-ops#82). Only the marked block is
 # rewritten; hand-set lines are preserved. METRON_ADVISOR_SFT_CAPTURE_ENABLED rides this
 # loop (non-secret, but capture must survive a box rebuild or it silently stops accruing
-# the distillation corpus). OPENROUTER_API_KEY likewise rides it so the advisor's
-# open-weight provider (config#1658) self-heals on a box rebuild instead of needing a
-# hand-pasted key; ANTHROPIC_API_KEY stays hand-set (no /metron/anthropic_api_key param).
+# the distillation corpus). OPENROUTER_API_KEY likewise rides it — it is read only for
+# the router edge's own upstream use, never by the advisor consumer directly.
+#
+# ANTHROPIC_API_KEY is RETIRED (2026-08-29 ruling: direct-Anthropic linkage ends
+# fleet-wide). It is deliberately NOT in this hydration list and metron_ext no longer
+# reads it anywhere (metron-ops-I281) — the advisor resolves a krepis router GROUP
+# only. A hand-pasted ANTHROPIC_API_KEY left over on the box from before this change is
+# inert; remove it from the box's metron-ops/.env at the next opportunity.
 # Values are written straight to the file and NEVER echoed (they'd leak into the GHA log).
 #
 # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID were dropped 2026-08-03: they pointed at
