@@ -1,0 +1,91 @@
+name: alert-message-lint
+
+# alpha-engine-config-I9460, and the metron half of -I9459.
+#
+# WHY THIS FILE IS NOT `alert-class-pr-guard.yml` LIKE THE OTHER TEN.
+# `alpha-engine-config-I9459` names metron as one of eleven alert-emitting
+# repos and prescribes installing the alert-CLASS guard here. Measured
+# 2026-08-31 before doing so: running that guard's scanner over this repo
+# matches ZERO call sites, because metron does not publish onto the fleet
+# alert bus at all. It has its own transport — `api/services/alerting.py`'s
+# `send_alert()`, SNS plus Telegram direct — so no row in
+# `nousergon-data/infrastructure/overseer/playbooks.yaml::alert_classes` could
+# ever describe it, and the drain never sees its events.
+#
+# Installing the class guard here would therefore have produced exactly the
+# failure mode I9459's own text warns about: a guard reporting green having
+# matched nothing, on every CI run it is collected in, forever. The transport
+# gap itself is tracked as alpha-engine-config-I9472; it is a real finding and
+# a green check would have hidden it.
+#
+# MESSAGE SHAPE IS TRANSPORT-INDEPENDENT, so the second half applies in full:
+# "Review and approve if intended" is unactionable whether it arrives over the
+# krepis bus or over Telegram. That is what this workflow runs.
+#
+# WARN-ONLY. See the step comment; alpha-engine-config-I9471 carries the flip.
+#
+# runs-on: ubuntu-latest — metron is PUBLIC (measured 2026-08-31; I9459 called
+# it private), so it gets unlimited free GitHub-hosted minutes and the
+# minutes-posture caveat in that issue does not apply.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  alert-message-lint:
+    name: pr-added alert message must be actionable
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # fetch-depth: 0 -- the lint materializes the PR's BASE commit as a
+      # detached `git worktree` inside this checkout, so the base commit must
+      # actually be present, not just its ref name.
+      #
+      # path: graded -- NOT the workspace root. The lint checkout below lands
+      # inside the workspace, and the lint walks its --repo-root whole.
+      - name: Checkout the repo being graded
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+          path: graded
+
+      - name: Checkout the lint (nousergon-data, public)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          repository: nousergon/nousergon-data
+          ref: main
+          path: registry
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # WARN-ONLY, DELIBERATELY. This step annotates and exits 0. It is
+      # warn-first because the lint is ONE implementation read by eleven repos
+      # from a floating ref, which is the exact shape that reverdicted the
+      # whole fleet's CI in 32 seconds on 2026-08-28 when a reusable workflow
+      # loaded its guard script unpinned. Warn-only removes that blast radius
+      # entirely while the rule earns its enforcement.
+      # `alpha-engine-config-I9471` carries the flip and the predicate.
+      #
+      # A MISSING SCRIPT WARNS RATHER THAN FAILING, FOR NOW. The workflow and
+      # the script land in different repos, and a hard failure would redden
+      # main here for the length of that merge window. The enforcement flip
+      # converts BOTH halves — the miss and the findings — in one commit.
+      - name: A PR-added alert message must be actionable (warn-only)
+        run: |
+          set -euo pipefail
+          s="$GITHUB_WORKSPACE/registry/infrastructure/overseer/alert_message_lint.py"
+          if [ ! -f "$s" ]; then
+            echo "::warning title=alert-message-lint::$s is not on nousergon-data main yet, so the alert-message lint did not run. Warn-only by design while alpha-engine-config-I9460 lands across the fleet; alpha-engine-config-I9471 makes this a hard failure."
+            exit 0
+          fi
+          python3 "$s" --repo "${{ github.event.repository.name }}" --repo-root "$GITHUB_WORKSPACE/graded" --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}" --warn-only
