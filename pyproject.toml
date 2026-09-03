@@ -87,7 +87,7 @@ dependencies = [
     # major cannot arrive on a routine deploy the way snaptrade 12.x did (metron-ops#260).
     "boto3>=1.43.81,<2",
     # Postgres driver (prod). SQLite is a dev/test fallback and needs nothing extra.
-    "psycopg[binary]>=3.3.4",
+    "psycopg[binary]>=3.3.5",
 ]
 
 [project.optional-dependencies]
