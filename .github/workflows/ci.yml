@@ -24,6 +24,11 @@ jobs:
     # cost-I2864.
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # The badge-publish step below writes `coverage.json` on the orphan
+    # `badges` branch through the contents API. Nothing else in this job
+    # writes, and the token is scoped no wider than that.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
@@ -38,6 +43,22 @@ jobs:
         run: ruff check api portfolio_analytics tests
       - name: Pytest (coverage floor 95%)
         run: pytest tests/ -q --cov=api --cov=portfolio_analytics --cov-fail-under=95
+
+      # repository-baseline-policy.md §5.1 — a badge whose value is written by
+      # a human is forbidden: it renders identically to a real one and becomes
+      # false the moment reality moves without anyone editing a file. This
+      # repo carried no coverage badge at all, which the sweep treats the same
+      # way (Tier A must carry one, §5.3). The README badge now renders
+      # whatever this step last published, derived from the same `.coverage`
+      # file the coverage-floor gate above reads.
+      #
+      # Pushes to main only: a pull-request run measures a tree that is not
+      # yet what a reader of the README is looking at.
+      - name: Publish coverage badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/publish_coverage_badge.sh
 
   postgres:
     name: pytest on Postgres (dialect parity gate)

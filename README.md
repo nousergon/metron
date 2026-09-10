@@ -1,5 +1,9 @@
 # Metron
 
+[![CI](https://github.com/nousergon/metron/actions/workflows/ci.yml/badge.svg)](https://github.com/nousergon/metron/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nousergon/metron/badges/coverage.json)](https://github.com/nousergon/metron/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/nousergon/metron)](LICENSE)
+
 **Portfolio analytics, measured.**
 
 Metron is a multi-tenant dashboard for **institutional-grade portfolio analytics on
@@ -45,6 +49,11 @@ uvicorn api.main:app --reload
 
 `DATABASE_URL` defaults to a local SQLite file (zero vendor cost). Point it at Postgres
 (`postgresql+psycopg://…`) for production — no model changes required.
+
+Coverage is measured over the whole `portfolio_analytics` + `api` source and enforced:
+`pytest` exits non-zero below the floor in `.github/workflows/ci.yml`
+(`--cov-fail-under=95`), and the badge above renders the figure CI last measured on
+`main`.
 
 ## Provenance
 
