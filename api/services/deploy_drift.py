@@ -14,6 +14,17 @@ The fleet lesson it applies: **detect the missing effect, never the missing even
 A grace window keeps an in-flight deploy from paging: drift is only reported once the
 newest commit on `origin/main` has been sitting there longer than ``grace_minutes``.
 
+**`ls-remote` retries on failure, and that is load-bearing too.** At 09:07 UTC on
+2026-09-12 the hourly run's `ls-remote` died with exit 128 — a single failed TCP round
+trip to GitHub, nothing to do with the box or the deploy — and the unit went CRITICAL,
+then self-resolved an hour later when the next run's `ls-remote` simply worked. This
+check asks the remote once an hour; treating one failed round trip as a red unit pages
+for network noise, not drift. `remote_head` now retries the read three times with a
+short backoff before letting the error propagate, so a real outage still reddens the
+unit — only the transient case is absorbed. Nothing else retries: `rev-parse` reads the
+box's own state and a retry there would hide a real local-git problem, and the fetch
+path already has its own retry loop in `deploy.yml`.
+
 **This check never writes ``refs/remotes/origin/*``, and that is load-bearing.** It used
 to open with a plain ``git fetch origin`` in the deployed working copy — the same working
 copy ``deploy.yml`` fetches into over SSM. On 2026-08-27 20:07 UTC the two collided: the
@@ -92,16 +103,42 @@ def _git(path: str, *args: str) -> str:
 DRIFT_REF = "refs/deploy-drift/main"
 
 
-def remote_head(path: str) -> str:
+# ls-remote is a network round trip to GitHub; retried before it reddens the unit. See
+# the module docstring for the 2026-09-12 09:07 UTC exit-128 that motivated this.
+REMOTE_HEAD_ATTEMPTS = 3
+REMOTE_HEAD_BACKOFF_SEC = (2.0, 4.0)
+
+
+def remote_head(path: str, *, sleep=time.sleep) -> str:
     """Full SHA at ``origin/main``, read without writing a single ref.
 
     ``ls-remote`` asks the remote and prints; it updates no ref, no ``FETCH_HEAD``, and
     takes no lock. That makes the overwhelmingly common case — box is current, nothing to
     report — entirely side-effect-free, which is what a check running every hour against a
     live deploy target should always have been.
+
+    Retried up to ``REMOTE_HEAD_ATTEMPTS`` times on a subprocess failure — a transient
+    network blip talking to GitHub, not deploy drift — before the error propagates and
+    reddens the unit for real. Only this remote read retries; ``rev-parse`` (local, never
+    flaky) and the fetch path (its own retry loop lives in ``deploy.yml``) do not.
     """
-    out = _git(path, "ls-remote", "origin", "refs/heads/main")
-    return out.split()[0] if out else ""
+    last_exc: Exception | None = None
+    for attempt in range(1, REMOTE_HEAD_ATTEMPTS + 1):
+        try:
+            out = _git(path, "ls-remote", "origin", "refs/heads/main")
+            return out.split()[0] if out else ""
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            last_exc = exc
+            if attempt == REMOTE_HEAD_ATTEMPTS:
+                raise
+            stderr = getattr(exc, "stderr", "") or ""
+            logger.warning(
+                "ls-remote origin refs/heads/main failed for %s (attempt %d/%d), "
+                "retrying: %s",
+                path, attempt, REMOTE_HEAD_ATTEMPTS, stderr.strip() or exc,
+            )
+            sleep(REMOTE_HEAD_BACKOFF_SEC[attempt - 1])
+    raise last_exc  # pragma: no cover — loop always returns or raises above
 
 
 def read_state(path: str) -> RepoState:
