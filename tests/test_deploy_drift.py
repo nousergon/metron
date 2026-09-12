@@ -8,6 +8,8 @@ non-zero CLI exit that makes the systemd unit red.
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from api.services import alerting, deploy_drift
@@ -187,6 +189,94 @@ def test_the_drifted_path_fetches_only_into_the_private_ref(monkeypatch):
         "a trailing bare `origin` means the default refspec — that writes "
         "refs/remotes/origin/* and is exactly the collision this fixes"
     )
+
+
+# ── ls-remote retries a transient network failure (2026-09-12 09:07 UTC exit-128) ──
+#
+# The hourly `ls-remote` died with git exit 128 once, and nothing else that hour was
+# wrong — every other run that day reported healthy. The check paged CRITICAL and
+# self-resolved an hour later. These tests pin: one failure then success stays healthy
+# and touches no fetch; three failures still raise so a real outage reddens the unit;
+# and the retries never reach `rev-parse`.
+
+
+def _cpe(returncode=128, stderr="fatal: unable to access\n"):
+    import subprocess as sp
+
+    return sp.CalledProcessError(returncode, ["git", "ls-remote"], stderr=stderr)
+
+
+def test_remote_head_retries_once_then_succeeds(monkeypatch):
+    sha = "a" * 40
+    calls: list[tuple] = []
+    attempts = iter([_cpe(), f"{sha}\trefs/heads/main"])
+
+    def fake_git(path, *args):
+        calls.append(args)
+        result = next(attempts)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(deploy_drift, "_git", fake_git)
+    sleeps: list[float] = []
+    out = deploy_drift.remote_head("/repo", sleep=sleeps.append)
+
+    assert out == sha
+    assert len(calls) == 2
+    assert sleeps == [deploy_drift.REMOTE_HEAD_BACKOFF_SEC[0]]
+
+
+def test_remote_head_healthy_after_retry_writes_nothing_and_reports_healthy(monkeypatch):
+    """A retried-but-recovered ls-remote must still be the write-free healthy path:
+    exactly the two rev-parse calls it always makes, no fetch."""
+    sha = "a" * 40
+    attempts = iter([_cpe(), f"{sha}\trefs/heads/main"])
+
+    def fake_git(path, *args):
+        if args[:1] == ("ls-remote",):
+            result = next(attempts)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        if args == ("rev-parse", "HEAD"):
+            return sha
+        if args == ("rev-parse", "--short", "HEAD"):
+            return sha[:7]
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr(deploy_drift, "_git", fake_git)
+    monkeypatch.setattr(deploy_drift.time, "sleep", lambda _s: None)
+    state = deploy_drift.read_state("/repo")
+    assert state.behind == 0 and state.head == state.remote
+
+
+def test_remote_head_raises_after_exhausting_all_attempts(monkeypatch):
+    """Three straight failures is a real outage, not noise — the unit must go red."""
+    def fake_git(path, *args):
+        raise _cpe()
+
+    monkeypatch.setattr(deploy_drift, "_git", fake_git)
+    sleeps: list[float] = []
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy_drift.remote_head("/repo", sleep=sleeps.append)
+    assert sleeps == list(deploy_drift.REMOTE_HEAD_BACKOFF_SEC)
+
+
+def test_remote_head_retries_never_reach_rev_parse(monkeypatch):
+    """The retry loop is scoped to ls-remote alone — a failing remote must never cause an
+    extra local `rev-parse` call, retried or otherwise."""
+    calls: list[tuple] = []
+
+    def fake_git(path, *args):
+        calls.append(args)
+        raise _cpe()
+
+    monkeypatch.setattr(deploy_drift, "_git", fake_git)
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy_drift.remote_head("/repo", sleep=lambda _s: None)
+    assert all(c[0] == "ls-remote" for c in calls)
+    assert len(calls) == deploy_drift.REMOTE_HEAD_ATTEMPTS
 
 
 def test_against_real_git_origin_main_is_left_where_the_deploy_put_it(tmp_path):
