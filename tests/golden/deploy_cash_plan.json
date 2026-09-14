@@ -1,0 +1,113 @@
+{
+  "allocated_usd": 4030.0,
+  "amount_usd": 10000.0,
+  "as_of": "2026-09-14",
+  "base_currency": "USD",
+  "champion": "tech_score_desc_v1",
+  "config": {
+    "eligible_labels": [
+      "Buy",
+      "Strong Buy"
+    ],
+    "max_position_weight": 0.1,
+    "max_sector_weight": 0.3,
+    "min_line_usd": 500.0,
+    "whole_shares_only": true
+  },
+  "deployment_basis": 13800.0,
+  "disclaimer": "Ranked by technical attractiveness under your position and sector limits. Describes recent price action; not investment advice.",
+  "lines": [
+    {
+      "constraints_hit": [
+        "max_position_weight"
+      ],
+      "price": 60.0,
+      "price_as_of": "2026-09-13",
+      "reasons": [
+        "Technical rating Strong Buy (score +0.80, intraday basis)",
+        "MA +0.90 \u00b7 oscillator +0.70",
+        "Weight 0.0% \u2192 10.0% (limit 10%)",
+        "Consumer Staples 0.0% \u2192 10.0% (limit 30%)",
+        "on your watchlist, not held",
+        "11 indicator votes"
+      ],
+      "score": 0.8,
+      "shares_est": 23,
+      "technical_label": "Strong Buy",
+      "ticker": "KO",
+      "usd": 1380.0
+    },
+    {
+      "constraints_hit": [
+        "max_position_weight"
+      ],
+      "price": 150.0,
+      "price_as_of": "2026-09-13",
+      "reasons": [
+        "Technical rating Buy (score +0.40, intraday basis)",
+        "MA +0.50 \u00b7 oscillator +0.30",
+        "Weight 0.0% \u2192 9.8% (limit 10%)",
+        "Health Care 0.0% \u2192 9.8% (limit 30%)",
+        "on your watchlist, not held",
+        "11 indicator votes"
+      ],
+      "score": 0.4,
+      "shares_est": 9,
+      "technical_label": "Buy",
+      "ticker": "JNJ",
+      "usd": 1350.0
+    },
+    {
+      "constraints_hit": [
+        "max_position_weight",
+        "max_sector_weight"
+      ],
+      "price": 50.0,
+      "price_as_of": "2026-09-13",
+      "reasons": [
+        "Technical rating Buy (score +0.40, intraday basis)",
+        "MA +0.40 \u00b7 oscillator +0.40",
+        "Weight 0.0% \u2192 9.4% (limit 10%)",
+        "Information Technology 20.3% \u2192 29.7% (limit 30%)",
+        "on your watchlist, not held",
+        "11 indicator votes"
+      ],
+      "score": 0.4,
+      "shares_est": 26,
+      "technical_label": "Buy",
+      "ticker": "NVDA",
+      "usd": 1300.0
+    }
+  ],
+  "portfolio_value": 3800.0,
+  "rating_as_of": "2026-09-14T14:55:00Z",
+  "rating_basis": "intraday",
+  "skipped": [
+    {
+      "detail": "rated Neutral \u2014 only Buy, Strong Buy are eligible",
+      "reason": "label",
+      "ticker": "XOM"
+    },
+    {
+      "detail": "live quotes not applied (unavailable); priced from the last cached close",
+      "reason": "price_basis",
+      "ticker": "*"
+    },
+    {
+      "detail": "already at or above the max position weight limit",
+      "reason": "max_position_weight",
+      "ticker": "AAPL"
+    },
+    {
+      "detail": "one share costs 400.00 \u2014 more than the 40.00 the limits allow",
+      "reason": "min_line_usd",
+      "ticker": "MSFT"
+    }
+  ],
+  "unallocated_reasons": [
+    "candidates rated Neutral / Sell / Strong Sell are not eligible",
+    "the position-weight limit was reached",
+    "the largest line some candidates' limits allow is below the minimum line size"
+  ],
+  "unallocated_usd": 5970.0
+}

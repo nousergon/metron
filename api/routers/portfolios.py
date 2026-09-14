@@ -38,6 +38,7 @@ from api.services import (
     crypto,
     data_spine,
     demo,
+    deploy_cash,
     indices,
     intraday,
     labels,
@@ -287,6 +288,62 @@ class ValuationMediansOut(BaseModel):
     as_of: date | None = None
     by_sector: dict[str, GroupMediansOut] = {}
     by_country: dict[str, GroupMediansOut] = {}
+
+
+class DeployCashConfigOut(BaseModel):
+    """The constraint block the plan was run under, echoed back so the panel renders the
+    limits that actually applied rather than a hardcoded copy of them (metron-ops#300)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    max_position_weight: float
+    max_sector_weight: float
+    min_line_usd: float
+    whole_shares_only: bool
+    eligible_labels: list[str]
+
+
+class DeployCashLineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    usd: float
+    shares_est: float
+    price: float
+    price_as_of: date | None = None
+    technical_label: str
+    score: float
+    reasons: list[str] = []
+    constraints_hit: list[str] = []
+
+
+class DeployCashSkipOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    reason: str
+    detail: str
+
+
+class DeployCashPlanOut(BaseModel):
+    """A ranking under constraints — never a forecast (metron-ops#295: the rating graded
+    IC ~= 0 at 1-20 days). ``disclaimer`` is the verbatim copy the panel must render."""
+    model_config = ConfigDict(from_attributes=True)
+
+    as_of: date
+    amount_usd: float
+    allocated_usd: float
+    unallocated_usd: float
+    unallocated_reasons: list[str] = []
+    lines: list[DeployCashLineOut] = []
+    portfolio_value: float
+    deployment_basis: float
+    base_currency: str
+    rating_as_of: str | None = None
+    rating_basis: str | None = None
+    config: DeployCashConfigOut
+    champion: str
+    disclaimer: str
+    skipped: list[DeployCashSkipOut] = []
 
 
 class RealizedOut(BaseModel):
@@ -2003,6 +2060,33 @@ def get_holdings(
     if settings.feed_entitled:
         metrics_enrichment.enrich_metrics(session, held)
     return held
+
+
+@router.get("/{portfolio_id}/deploy-cash", response_model=DeployCashPlanOut)
+def get_deploy_cash(
+    amount: float = Query(..., gt=0, description="Cash to deploy, in the portfolio's base currency."),
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    session: Session = Depends(get_session),
+) -> deploy_cash.DeployCashPlan:
+    """"If I have $x to spend today, what should I spend it on?" — a ranking of the
+    portfolio's holdings-union-watchlist candidates under the declared position/sector/line
+    limits (metron-ops#300, Brian ruling 2026-09-14).
+
+    Owner (feed-entitled) build only. The no-feed beta gets a **404**, not an empty plan:
+    the whole surface is yfinance-derived (the technical rating and the intraday overlay),
+    so the beta must not learn the panel exists, exactly like every other spine-fed surface
+    (metron-ops#52). 404 rather than 403 because the beta's answer is "there is no such
+    page here", which is also what the web nav renders.
+
+    Whole-portfolio by design — no ``?account_id=`` scoping. A position-weight limit means
+    nothing against a subset of the book, and deploying cash is a whole-book decision.
+    """
+    if not settings.feed_entitled:
+        raise HTTPException(status_code=404, detail="Not found")
+    return deploy_cash.recommend(
+        session, portfolio.tenant_id, portfolio.id, amount,
+        as_of=date.today(), feed_entitled=settings.feed_entitled,
+    )
 
 
 @router.get("/{portfolio_id}/valuation-medians", response_model=ValuationMediansOut)

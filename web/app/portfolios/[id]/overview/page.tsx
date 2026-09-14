@@ -10,6 +10,7 @@ import { PerfTiles } from "@/components/perf-tiles";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { TierSimulator } from "@/components/tier-simulator";
 import { IndexStrip } from "@/components/index-strip";
+import { DeployCashPanel } from "@/components/deploy-cash-panel";
 import { SettledRefresher } from "@/components/settled-refresher";
 import { RenamePortfolio } from "@/components/rename-portfolio";
 import { featureEntitlement, loadEntitlements, previewFromCookies, toFeatureStates } from "@/lib/entitlements";
@@ -167,6 +168,15 @@ export default async function PortfolioPage(
           <StatCard label="Cost basis" value={moneyWhole(summary.total_cost_basis, ccy)} hint={`${summary.n_holdings} holdings`} href={`/portfolios/${id}${navQuery}`} />
         </div>
       )}
+
+      {/* Deploy cash (metron-ops#300): rank a typed amount across holdings ∪ watchlist under
+          the position/sector limits. Feed-gated — the whole surface is spine-derived (the
+          technical rating + the intraday overlay), so the no-feed beta never renders it and
+          the backend 404s independently. `feed_enabled` already reflects the owner tier
+          simulator's feed toggle, so a feed-off preview hides it exactly like the beta.
+          Fails CLOSED when entitlements are unavailable: a gated surface must not appear on
+          a transient error. */}
+      {entitlements?.feed_enabled ? <DeployCashPanel portfolioId={id} /> : null}
 
       {/* Performance over time (moved here from Holdings #113): per-account NAV lines +
           feed-gated benchmark overlays. The trend centerpiece of the dashboard. */}
