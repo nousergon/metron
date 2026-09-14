@@ -1,5 +1,5 @@
 """Technical rating consumer (metron-ops#294) — the reader against both producer artifacts
-(``market_data/technical_ratings/latest.json`` v1 intraday, ``market_data/technicals/latest
+(``market_data/intraday/technical_ratings.json`` v1 intraday, ``market_data/technicals/latest
 .json`` v3 embedded EOD fallback), the Holdings/tearsheet wiring, and the feed-gate. Pure
 unit tests (injected readers — no S3, no network); the artifact does not exist in S3 yet
 (concurrent sibling producer PR), which is exactly the "absent artifact" path these tests
