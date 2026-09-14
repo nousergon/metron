@@ -191,6 +191,20 @@ export type Holding = {
   pct_to_ma_200: number | null; // fraction
   pct_in_52w_range: number | null; // 0-1
   mom_20d: number | null; // fraction
+  // Technical rating (metron-ops#294) — signed [-1, +1] composite MA + oscillator vote,
+  // "Strong Sell" … "Strong Buy". Feed-gated (owner build only); null off a feed-entitled
+  // build or on a coverage gap, never fabricated. basis: "intraday" (~15-min delayed,
+  // fresh) or "eod" (fallback); as_of is that basis's own freshness anchor.
+  tech_rating_score: number | null;
+  tech_rating_label: string | null;
+  tech_rating_basis: "intraday" | "eod" | null;
+  tech_rating_as_of: string | null;
+  tech_rating_ma_score: number | null;
+  tech_rating_osc_score: number | null;
+  tech_rating_n_buy: number | null;
+  tech_rating_n_neutral: number | null;
+  tech_rating_n_sell: number | null;
+  tech_rating_n_votes: number | null;
   // Consensus research + news sentiment (metron-ops#105) — feed-gated, free-source data
   // spine. null off a feed-entitled build or on a coverage gap, never fabricated.
   consensus_rating: string | null; // strongBuy/buy/hold/sell/strongSell
@@ -875,6 +889,17 @@ export type Tearsheet = {
     rsi_14: number | null;
     pct_from_52wk_high: number | null;
     forward_div_yield: number | null;
+    // Technical rating (metron-ops#294) — see Holding.tech_rating_* for the field contract.
+    tech_rating_score: number | null;
+    tech_rating_label: string | null;
+    tech_rating_basis: "intraday" | "eod" | null;
+    tech_rating_as_of: string | null;
+    tech_rating_ma_score: number | null;
+    tech_rating_osc_score: number | null;
+    tech_rating_n_buy: number | null;
+    tech_rating_n_neutral: number | null;
+    tech_rating_n_sell: number | null;
+    tech_rating_n_votes: number | null;
   };
   fundamentals_available: boolean;
   fundamentals_reason: string;
