@@ -8,6 +8,7 @@
 import type { Diagnostics, TargetDriftRow } from "@/lib/api";
 import { accountingPercent, moneyWhole, percent } from "@/lib/format";
 import { Section, StatCard, Table } from "@/components/ui";
+import { RatingTrackRecordCard } from "@/components/rating-track-record-card";
 
 function pct(ratio: number | null): string {
   return ratio != null ? accountingPercent(ratio) : "—";
@@ -163,6 +164,11 @@ export function DiagnosticsCard({ d }: { d: Diagnostics }) {
           </Table>
         </Section>
       ) : null}
+
+      {/* Technical rating track record (metron-ops#298, Brian ruling 2026-09-14) — owner
+          (feed-entitled) build only, same gate as the rating itself. null = off-feed OR the
+          producer artifact hasn't shipped yet; both render nothing, by design. */}
+      {d.rating_performance ? <RatingTrackRecordCard rp={d.rating_performance} /> : null}
     </>
   );
 }

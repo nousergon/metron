@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RatingPerformanceArtifact",
+  "description": "market_data/technicals/rating_performance.json — nousergon-data producer contract v1 (metron-ops#298 / sibling nousergon-data producer issue, Brian ruling 2026-09-14). Pinned here; metron never imports the producer, the versioned schema is the entire coupling.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "as_of_utc", "horizons", "windows", "segments"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "as_of_utc": { "type": "string" },
+    "rating_version": { "type": ["string", "null"] },
+    "horizons": { "type": "array", "items": { "type": "integer" } },
+    "windows": { "type": "array", "items": { "type": "integer" } },
+    "segments": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/WindowMap" }
+    },
+    "ic_series": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/IcPoint" }
+    }
+  },
+  "$defs": {
+    "WindowMap": {
+      "type": "object",
+      "description": "window (JSON string of an integer) -> HorizonMap",
+      "additionalProperties": { "$ref": "#/$defs/HorizonMap" }
+    },
+    "HorizonMap": {
+      "type": "object",
+      "description": "horizon (JSON string of an integer) -> HorizonStats",
+      "additionalProperties": { "$ref": "#/$defs/HorizonStats" }
+    },
+    "HorizonStats": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "buckets": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/Bucket" },
+          "propertyNames": {
+            "enum": ["Strong Sell", "Sell", "Neutral", "Buy", "Strong Buy"]
+          }
+        },
+        "spread_strong_buy_minus_strong_sell": { "type": ["number", "null"] },
+        "ic_mean": { "type": ["number", "null"] },
+        "ic_n_dates": { "type": ["integer", "null"] },
+        "noise_floor_ic": { "type": ["number", "null"] }
+      }
+    },
+    "Bucket": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "n": { "type": ["integer", "null"] },
+        "mean_fwd": { "type": ["number", "null"] },
+        "hit_rate": { "type": ["number", "null"] },
+        "mean_excess": { "type": ["number", "null"] }
+      }
+    },
+    "IcPoint": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["date", "horizon"],
+      "properties": {
+        "date": { "type": "string" },
+        "horizon": { "type": "integer" },
+        "ic": { "type": ["number", "null"] }
+      }
+    }
+  }
+}

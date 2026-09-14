@@ -199,6 +199,111 @@ def test_tearsheet_technical_rating_absent_producer_omits_fields(db_session):
     assert tech.tech_rating_score is None and tech.tech_rating_label is None
 
 
+# ── Technical rating track record (metron-ops#298, Brian ruling 2026-09-14) ────────────
+
+_RATING_PERF_ART = {
+    "schema_version": 1,
+    "as_of_utc": "2026-09-14T05:00:00Z",
+    "rating_version": "v1",
+    "horizons": [1, 5, 20],
+    "windows": [20, 60, 250],
+    "segments": {
+        "all": {
+            "60": {
+                "5": {
+                    "buckets": {
+                        "Buy": {"n": 130, "mean_fwd": 0.0015, "hit_rate": 0.52, "mean_excess": 0.0003},
+                    },
+                    "spread_strong_buy_minus_strong_sell": 0.0019,
+                    "ic_mean": -0.017,
+                    "ic_n_dates": 180,
+                    "noise_floor_ic": 0.02,
+                },
+            },
+        },
+    },
+    "ic_series": [],
+}
+
+
+def test_tearsheet_track_record_populates_for_resolved_rating_label(db_session):
+    """AAPL's own rating resolves to "Buy" (fresh intraday); the track-record line looks
+    up the "Buy" bucket at the fixed 60-session/5d "all" cell."""
+    from datetime import UTC, datetime
+
+    art = {**_RATING_ART_FRESH, "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z")}
+    tenant_id, pid = _seed(db_session)
+    sheet = tearsheet.tearsheet(
+        db_session, tenant_id, pid, "AAPL",
+        feed_enabled=True,
+        technicals_reader=lambda: _TECH_ART_WITH_RATING,
+        rating_reader=lambda: art,
+        rating_performance_reader=lambda: _RATING_PERF_ART,
+    )
+    trr = sheet.technical.rating_track_record
+    assert trr is not None
+    assert trr.label == "Buy" and trr.window == 60 and trr.horizon == 5
+    assert trr.n == 130 and trr.mean_excess == pytest.approx(0.0003) and trr.hit_rate == pytest.approx(0.52)
+    assert trr.as_of_utc == "2026-09-14T05:00:00Z"
+
+
+def test_tearsheet_track_record_omitted_when_cell_not_published(db_session):
+    """AAPL's EOD-fallback rating is "Sell" — the fixture only publishes a "Buy" bucket,
+    so the cell is absent -> omitted, never a fabricated zero row."""
+    tenant_id, pid = _seed(db_session)
+    sheet = tearsheet.tearsheet(
+        db_session, tenant_id, pid, "AAPL",
+        feed_enabled=True,
+        technicals_reader=lambda: _TECH_ART_WITH_RATING,
+        rating_reader=lambda: None,  # -> EOD fallback -> "Sell"
+        rating_performance_reader=lambda: _RATING_PERF_ART,
+    )
+    assert sheet.technical.tech_rating_label == "Sell"
+    assert sheet.technical.rating_track_record is None
+
+
+def test_tearsheet_track_record_omitted_when_producer_artifact_absent(db_session):
+    from datetime import UTC, datetime
+
+    art = {**_RATING_ART_FRESH, "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z")}
+    tenant_id, pid = _seed(db_session)
+    sheet = tearsheet.tearsheet(
+        db_session, tenant_id, pid, "AAPL",
+        feed_enabled=True,
+        technicals_reader=lambda: _TECH_ART_WITH_RATING,
+        rating_reader=lambda: art,
+        rating_performance_reader=lambda: None,
+    )
+    assert sheet.technical.tech_rating_label == "Buy"
+    assert sheet.technical.rating_track_record is None
+
+
+def test_tearsheet_track_record_omitted_off_feed(db_session):
+    tenant_id, pid = _seed(db_session)
+    sheet = tearsheet.tearsheet(db_session, tenant_id, pid, "AAPL", feed_enabled=False)
+    assert sheet.technical.rating_track_record is None
+
+
+def test_tearsheet_track_record_not_read_when_no_rating_resolved(db_session):
+    """No rating at all (both readers empty) -> the track-record reader is never even
+    called (mirrors the "no yfinance calls off-feed" posture, but here it's "no read
+    without a label to look up")."""
+    tenant_id, pid = _seed(db_session)
+
+    def _boom():  # pragma: no cover - fails the test if reached
+        raise AssertionError("rating_performance reader must not be called without a resolved rating")
+
+    sheet = tearsheet.tearsheet(
+        db_session, tenant_id, pid, "AAPL",
+        feed_enabled=True,
+        technicals_reader=lambda: _TECH_ART,  # no embedded rating
+        rating_reader=lambda: None,
+        rating_performance_reader=_boom,
+    )
+    assert sheet.technical.tech_rating_label is None
+    assert sheet.technical.rating_track_record is None
+
+
 _FUND_ART = {
     "as_of": "2026-06-17",
     "fundamentals": {
@@ -249,6 +354,58 @@ def test_tearsheet_endpoint_404_for_unheld(client):
     pid = client.post("/portfolios", json={"name": "P"}, headers={"X-Tenant-Id": tenant}).json()["id"]
     r = client.get(f"/portfolios/{pid}/tearsheet/TSLA", headers={"X-Tenant-Id": tenant})
     assert r.status_code == 404
+
+
+# ── Track record feed-gate on the tearsheet ENDPOINT (metron-ops#298 closes-when) ──────
+
+CSV_AAPL = "date,type,symbol,quantity,price,amount,account\n2024-01-02,BUY,AAPL,10,100,1000,Brokerage\n"
+
+
+def test_tearsheet_endpoint_owner_build_shows_track_record(client, monkeypatch):
+    from datetime import UTC, datetime
+
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "tier_simulator", False)
+    monkeypatch.setattr(settings, "feed_entitled", True)
+    fresh_art = {**_RATING_ART_FRESH, "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z")}
+    monkeypatch.setattr("api.services.technical_rating._default_intraday_reader", lambda: fresh_art)
+    monkeypatch.setattr("api.services.technical_rating_performance._default_reader", lambda: _RATING_PERF_ART)
+
+    tenant = str(uuid.uuid4())
+    pid = client.post("/portfolios", json={"name": "P"}, headers={"X-Tenant-Id": tenant}).json()["id"]
+    assert client.post(
+        f"/portfolios/{pid}/import/csv",
+        files={"file": ("t.csv", CSV_AAPL.encode(), "text/csv")},
+        headers={"X-Tenant-Id": tenant},
+    ).status_code == 200
+    sheet = client.get(f"/portfolios/{pid}/tearsheet/AAPL", headers={"X-Tenant-Id": tenant}).json()
+    trr = sheet["technical"]["rating_track_record"]
+    assert trr is not None
+    assert trr["label"] == "Buy" and trr["n"] == 130 and trr["mean_excess"] == pytest.approx(0.0003)
+
+
+def test_tearsheet_endpoint_beta_build_shows_no_track_record(client, monkeypatch):
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "tier_simulator", False)
+    monkeypatch.setattr(settings, "feed_entitled", False)
+
+    def _boom(*args, **kwargs):  # pragma: no cover - fails the test if reached
+        raise AssertionError("rating_performance reader must not be called off a feed-entitled build")
+
+    monkeypatch.setattr("api.services.technical_rating_performance._default_reader", _boom)
+
+    tenant = str(uuid.uuid4())
+    pid = client.post("/portfolios", json={"name": "P"}, headers={"X-Tenant-Id": tenant}).json()["id"]
+    assert client.post(
+        f"/portfolios/{pid}/import/csv",
+        files={"file": ("t.csv", CSV_AAPL.encode(), "text/csv")},
+        headers={"X-Tenant-Id": tenant},
+    ).status_code == 200
+    sheet = client.get(f"/portfolios/{pid}/tearsheet/AAPL", headers={"X-Tenant-Id": tenant}).json()
+    assert sheet["technical"]["rating_track_record"] is None
+    assert sheet["technical"]["tech_rating_label"] is None
 
 
 def _seed_crwd(session):
