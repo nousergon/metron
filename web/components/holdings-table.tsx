@@ -762,6 +762,22 @@ const METRIC_COLUMNS: MetricColumn[] = [
   { key: "pct_to_ma_200", label: "vs 200d", group: "Technicals", value: (h) => h.pct_to_ma_200, render: (v) => percent(v), signed: true, title: "% above/below the 200-day moving average" },
   { key: "pct_in_52w_range", label: "52w Rng", group: "Technicals", value: (h) => h.pct_in_52w_range, render: (v) => pct1(v), title: "Position within the 52-week low–high range" },
   { key: "mom_20d", label: "Mom 20d", group: "Technicals", value: (h) => h.mom_20d, render: (v) => percent(v), signed: true, title: "20-session price momentum" },
+  // Technical rating (metron-ops#294): composite MA + oscillator vote, "Strong Sell" …
+  // "Strong Buy". Sorts by its signed score (like consensus_rating below) but shows the
+  // label; the basis (intraday ~15-min delayed vs EOD fallback) shows in the hover title
+  // since there's no room for it in the cell itself.
+  {
+    key: "tech_rating",
+    label: "Tech Rating",
+    group: "Technicals",
+    value: (h) => h.tech_rating_score,
+    render: () => "—",
+    text: (h) => h.tech_rating_label,
+    signed: true,
+    title:
+      "Technical rating — describes recent price action; not investment advice. " +
+      "Composite of moving-average + oscillator votes, signed [-1, +1].",
+  },
   // ── Consensus (research + sentiment, free sources — metron-ops#105) ──
   // Confirmed on the metron-ops#162 audit: analyst rating/targets + news_sentiment stay one
   // band on purpose — both are "what do external observers currently think" signals, distinct
@@ -932,6 +948,7 @@ const DEFAULT_COL_WIDTH: Record<string, number> = {
   pct_to_ma_200: 85,
   pct_in_52w_range: 90,
   mom_20d: 90,
+  tech_rating: 100,
   // Consensus.
   consensus_rating: 115,
   price_target_mean: 90,

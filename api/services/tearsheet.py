@@ -24,6 +24,7 @@ from api.services import fundamentals as fundamentals_service
 from api.services import security_perf as security_perf_service
 from api.services import security_performance as performance_service
 from api.services import sentiment as sentiment_service
+from api.services import technical_rating as technical_rating_service
 from api.services import technicals as technicals_service
 
 _FUNDAMENTALS_REASON = "Arrives with the fundamentals feed (alpha-engine-config#1022)."
@@ -63,6 +64,20 @@ class TearsheetTechnical:
     rsi_14: float | None = None
     pct_from_52wk_high: float | None = None
     forward_div_yield: float | None = None   # from fundamentals when feed-enabled
+    # Technical rating (metron-ops#294) — signed [-1, +1] composite MA + oscillator vote,
+    # "Strong Sell" … "Strong Buy". Feed-gated; None off-feed or on a coverage gap, never
+    # fabricated. basis: "intraday" (~15-min delayed, fresh) or "eod" (fallback); as_of is
+    # that basis's own freshness anchor.
+    tech_rating_score: float | None = None
+    tech_rating_label: str | None = None
+    tech_rating_basis: str | None = None
+    tech_rating_as_of: str | None = None
+    tech_rating_ma_score: float | None = None
+    tech_rating_osc_score: float | None = None
+    tech_rating_n_buy: int | None = None
+    tech_rating_n_neutral: int | None = None
+    tech_rating_n_sell: int | None = None
+    tech_rating_n_votes: int | None = None
 
 
 @dataclass
@@ -159,13 +174,28 @@ def _performance_from_spine(
     return perf
 
 
-def _technical_from_spine(row: technicals_service.TickerTechnicals | None) -> TearsheetTechnical:
-    if row is None:
+def _technical_from_spine(
+    row: technicals_service.TickerTechnicals | None,
+    rating: technical_rating_service.TickerRating | None,
+) -> TearsheetTechnical:
+    if row is None and rating is None:
         return TearsheetTechnical()
-    return TearsheetTechnical(
-        rsi_14=row.rsi_14,
-        pct_from_52wk_high=row.pct_from_52wk_high,
+    tech = TearsheetTechnical(
+        rsi_14=row.rsi_14 if row is not None else None,
+        pct_from_52wk_high=row.pct_from_52wk_high if row is not None else None,
     )
+    if rating is not None:
+        tech.tech_rating_score = rating.score
+        tech.tech_rating_label = rating.label
+        tech.tech_rating_basis = rating.basis
+        tech.tech_rating_as_of = rating.as_of
+        tech.tech_rating_ma_score = rating.ma_score
+        tech.tech_rating_osc_score = rating.osc_score
+        tech.tech_rating_n_buy = rating.n_buy
+        tech.tech_rating_n_neutral = rating.n_neutral
+        tech.tech_rating_n_sell = rating.n_sell
+        tech.tech_rating_n_votes = rating.n_votes
+    return tech
 
 
 def _yf_symbol_map(session: Session, symbols: list[str]) -> dict[str, str]:
@@ -191,6 +221,7 @@ def tearsheet(
     sentiment_reader=None,
     performance_reader=None,
     technicals_reader=None,
+    rating_reader=None,
 ) -> Tearsheet | None:
     """Assemble the tearsheet for one held ticker, or None if the portfolio doesn't hold it.
 
@@ -232,8 +263,15 @@ def tearsheet(
         yf = _yf_symbol_map(session, [ticker]).get(ticker, ticker)
         perf_snap = performance_service.load_security_performance(reader=performance_reader)
         tech_snap = technicals_service.load_technicals(reader=technicals_reader)
+        # Technical rating (metron-ops#294) — the SAME intraday-fresh/EOD-fallback reader
+        # Holdings uses; ``technicals_reader`` doubles as the EOD-fallback source (same
+        # underlying artifact key, ``technicals_service.TECHNICALS_KEY`` ==
+        # ``technical_rating_service.TECHNICALS_KEY``).
+        rating_snap = technical_rating_service.load_technical_rating(
+            intraday_reader=rating_reader, technicals_reader=technicals_reader
+        )
         performance = _performance_from_spine(perf_snap.by_symbol.get(yf), holding.unrealized_pct)
-        technical = _technical_from_spine(tech_snap.by_symbol.get(yf))
+        technical = _technical_from_spine(tech_snap.by_symbol.get(yf), rating_snap.by_symbol.get(yf))
     else:
         performance = TearsheetPerformance(return_vs_cost=holding.unrealized_pct)
         technical = TearsheetTechnical()

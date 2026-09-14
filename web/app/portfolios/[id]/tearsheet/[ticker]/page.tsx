@@ -24,6 +24,23 @@ function num(v: number | null, fmt: (n: number) => string): string {
   return v != null ? fmt(v) : "—";
 }
 
+// Technical rating (metron-ops#294) — labels are the producer's exact vocabulary; a signed
+// [-1, +1] score bands the same way (≥ +0.2 constructive, ≤ -0.2 cautious) as the gauge tone.
+const TECH_RATING_DISCLAIMER = "Technical rating — describes recent price action; not investment advice.";
+
+function techRatingTone(score: number): string {
+  return score >= 0.2 ? "text-positive" : score <= -0.2 ? "text-negative" : "";
+}
+
+/** "as of 14:55 UTC" from the artifact's ISO8601 UTC write time — server-rendered, so a
+ *  fixed UTC label (never the viewer's local zone, unlike the client-side intraday poll). */
+function asOfUtc(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.toISOString().slice(11, 16)} UTC`;
+}
+
 export default async function TearsheetPage(props: { params: Promise<{ id: string; ticker: string }> }) {
   const params = await props.params;
   const { id, ticker } = params;
@@ -104,6 +121,50 @@ export default async function TearsheetPage(props: { params: Promise<{ id: strin
           <StatCard label="Forward div yield" value={num(tech.forward_div_yield, percent)} hint="fundamentals" />
         </div>
       </Section>
+
+      {/* 6b — Technical rating (metron-ops#294, owner/feed-entitled build only): a signed
+          [-1, +1] composite of MA + oscillator votes, "Strong Sell" … "Strong Buy". Shown
+          only when a rating resolved (intraday-fresh or EOD fallback) — never a fabricated
+          "Neutral" on a coverage gap. */}
+      {tech.tech_rating_score != null ? (
+        (() => {
+          const score = tech.tech_rating_score!;
+          const pct = Math.max(0, Math.min(100, ((score + 1) / 2) * 100));
+          const tone = techRatingTone(score);
+          const barTone = score >= 0.2 ? "bg-positive" : score <= -0.2 ? "bg-negative" : "bg-muted";
+          const basisLabel =
+            tech.tech_rating_basis === "intraday"
+              ? `intraday · ~15-min delayed${asOfUtc(tech.tech_rating_as_of) ? ` · as of ${asOfUtc(tech.tech_rating_as_of)}` : ""}`
+              : tech.tech_rating_basis === "eod"
+                ? `as of close${tech.tech_rating_as_of ? ` (${tech.tech_rating_as_of})` : ""}`
+                : undefined;
+          return (
+            <Section title="Technical rating" note={basisLabel}>
+              <div className="flex items-center gap-4">
+                <div className={`text-2xl font-semibold tabular-nums ${tone}`}>{tech.tech_rating_label ?? "—"}</div>
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-line">
+                  <div className={`h-full ${barTone}`} style={{ width: `${pct}%` }} />
+                </div>
+                <div className={`text-sm tabular-nums ${tone}`}>{score.toFixed(2)}</div>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <StatCard label="Moving averages" value={num(tech.tech_rating_ma_score, (v) => v.toFixed(2))} />
+                <StatCard label="Oscillators" value={num(tech.tech_rating_osc_score, (v) => v.toFixed(2))} />
+                <StatCard
+                  label="Votes"
+                  value={tech.tech_rating_n_votes != null ? `${tech.tech_rating_n_votes}` : "—"}
+                  hint={
+                    tech.tech_rating_n_buy != null
+                      ? `${tech.tech_rating_n_buy} buy · ${tech.tech_rating_n_neutral ?? 0} neutral · ${tech.tech_rating_n_sell ?? 0} sell`
+                      : undefined
+                  }
+                />
+              </div>
+              <p className="mt-2 text-xs text-muted">{TECH_RATING_DISCLAIMER}</p>
+            </Section>
+          );
+        })()
+      ) : null}
 
       {/* 3–5 — Fundamentals blocks (feed-gated). */}
       {sheet.fundamentals_available && sheet.fundamentals ? (
