@@ -224,6 +224,9 @@ export type Holding = {
   attractiveness_growth: number | null;
   attractiveness_stewardship: number | null;
   attractiveness_defensiveness: number | null;
+  // Factor-profile publish date (P-28) — the "Factor score" retires at v2 phase 4 (R4);
+  // the daily as-of stamp is how a viewer tells it's still updating vs stale.
+  attractiveness_as_of: string | null;
 };
 
 // Sector- / country-level median multiples (SP1500-broad peer benchmark) for the Holdings
@@ -559,6 +562,7 @@ export type WatchlistEntry = {
   attractiveness_growth: number | null;
   attractiveness_stewardship: number | null;
   attractiveness_defensiveness: number | null;
+  attractiveness_as_of: string | null;
 };
 
 export const getWatchlist = (apiAuth: string, id: string) =>
@@ -941,6 +945,7 @@ export type TearsheetAttractiveness = {
   available: boolean;
   score: number | null;
   coverage: number | null;
+  as_of: string | null; // factor-profile publish date (P-28) — retires at v2 phase 4 (R4)
   components: TearsheetAttractivenessComponent[];
 };
 

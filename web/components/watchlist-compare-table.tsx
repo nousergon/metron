@@ -126,6 +126,7 @@ function toShellHolding(e: WatchlistEntry): Holding {
     attractiveness_growth: e.attractiveness_growth,
     attractiveness_stewardship: e.attractiveness_stewardship,
     attractiveness_defensiveness: e.attractiveness_defensiveness,
+    attractiveness_as_of: e.attractiveness_as_of,
   };
 }
 

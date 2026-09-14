@@ -141,7 +141,10 @@ def _publish(session: Session) -> None:
 
 # ── Synced balances (read the producer's crypto/holdings.json) ──────────────────────────
 
-_STALE_AFTER_SECONDS = 60 * 60  # 1h — crypto is 24/7; older than this is a stalled producer
+_STALE_AFTER_SECONDS = 48 * 60 * 60  # 48h (data-collection-plan §7 R2 / P-23). The producer
+# (nousergon-data crypto-balances, D38) is PAUSED (2026-08-07) — see alpha-engine-config-I10748;
+# a 48h buffer also covers a once-daily cadence if it's re-enabled per R2 (a) without flapping
+# stale between two consecutive runs. Never treat the file as current past this age.
 _SNAPSHOT_TTL_S = 60.0
 _cache: dict | None = None
 _cache_fetched_monotonic = -1e9

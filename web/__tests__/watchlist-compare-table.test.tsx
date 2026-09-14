@@ -79,6 +79,7 @@ const EMPTY_METRICS = {
   attractiveness_growth: null,
   attractiveness_stewardship: null,
   attractiveness_defensiveness: null,
+  attractiveness_as_of: null,
 } satisfies Omit<WatchlistEntry, "symbol" | "name" | "sector" | "next_earnings_date" | "held" | "note">;
 
 const entry = (symbol: string, over: Partial<WatchlistEntry> = {}): WatchlistEntry => ({

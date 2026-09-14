@@ -139,7 +139,7 @@ export default async function TearsheetPage(props: { params: Promise<{ id: strin
                 ? `as of close${tech.tech_rating_as_of ? ` (${tech.tech_rating_as_of})` : ""}`
                 : undefined;
           return (
-            <Section title="Technical rating" note={basisLabel}>
+            <Section title="Technical attractiveness" note={basisLabel}>
               <div className="flex items-center gap-4">
                 <div className={`text-2xl font-semibold tabular-nums ${tone}`}>{tech.tech_rating_label ?? "—"}</div>
                 <div className="h-2 flex-1 overflow-hidden rounded-full bg-line">
@@ -257,8 +257,8 @@ export default async function TearsheetPage(props: { params: Promise<{ id: strin
           const barTone = score >= 60 ? "bg-positive" : score <= 40 ? "bg-negative" : "bg-muted";
           return (
             <Section
-              title="Attractiveness"
-              note={`composite · ${a.coverage ?? 0} of ${COMPONENT_LABELS_COUNT} inputs`}
+              title="Factor score"
+              note={`composite · ${a.coverage ?? 0} of ${COMPONENT_LABELS_COUNT} inputs${a.as_of ? ` · as of ${isoDate(a.as_of)}` : ""}`}
             >
               <div className="flex items-center gap-4">
                 <div className={`text-3xl font-semibold tabular-nums ${scoreTone}`}>

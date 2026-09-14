@@ -265,6 +265,7 @@ class HoldingOut(BaseModel):
     attractiveness_growth: float | None = None
     attractiveness_stewardship: float | None = None
     attractiveness_defensiveness: float | None = None
+    attractiveness_as_of: date | None = None
 
 
 class GroupMediansOut(BaseModel):
@@ -840,6 +841,7 @@ class WatchlistEntryOut(BaseModel):
     attractiveness_growth: float | None = None
     attractiveness_stewardship: float | None = None
     attractiveness_defensiveness: float | None = None
+    attractiveness_as_of: date | None = None
 
 
 class WatchlistIn(BaseModel):
@@ -2520,6 +2522,7 @@ class TearsheetAttractivenessOut(BaseModel):
     available: bool = False
     score: float | None = None
     coverage: int | None = None
+    as_of: date | None = None
     components: list[TearsheetAttractivenessComponentOut] = []
 
 

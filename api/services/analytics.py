@@ -204,6 +204,9 @@ class Holding:
     attractiveness_growth: float | None = None
     attractiveness_stewardship: float | None = None
     attractiveness_defensiveness: float | None = None
+    # Factor-profile publish date (P-28: R4 — the factor-pillar "Factor score" retires at v2
+    # phase 4; the daily stamp is what tells a viewer whether it's still updating).
+    attractiveness_as_of: date | None = None
 
 
 @dataclass

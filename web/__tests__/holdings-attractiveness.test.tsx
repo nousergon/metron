@@ -55,7 +55,7 @@ describe("HoldingsTable Attractiveness band", () => {
       />,
     );
     expect(screen.getAllByText("Attractiveness").length).toBeGreaterThan(0);
-    expect(screen.getByText("Score")).toBeInTheDocument();
+    expect(screen.getByText("Factor score")).toBeInTheDocument();
     expect(screen.getByText("72.4")).toBeInTheDocument();
     expect(screen.getByText("90")).toBeInTheDocument();
     expect(screen.getByText("30")).toBeInTheDocument();
@@ -84,5 +84,17 @@ describe("HoldingsTable Attractiveness band", () => {
     );
     expect(screen.getAllByText("Attractiveness").length).toBeGreaterThan(0);
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+
+  it("carries the factor-profile as-of as a per-row hover title (P-28)", () => {
+    render(
+      <HoldingsTable
+        baseCurrency="USD"
+        priced
+        holdings={[h("AAPL", { attractiveness: 72.4, attractiveness_as_of: "2026-09-10" })]}
+        visibleBands={["Attractiveness"]}
+      />,
+    );
+    expect(screen.getByText("72.4").title).toBe("Factor profiles as of 2026-09-10");
   });
 });

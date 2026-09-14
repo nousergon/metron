@@ -66,6 +66,24 @@ describe("HoldingsTable Technicals band — Tech Rating", () => {
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 
+  it("carries the rating's as-of + basis as a per-row hover title (P-28)", () => {
+    render(
+      <HoldingsTable
+        baseCurrency="USD"
+        priced
+        holdings={[
+          h("AAPL", {
+            tech_rating_score: 0.6,
+            tech_rating_label: "Buy",
+            tech_rating_basis: "intraday",
+            tech_rating_as_of: "2026-09-14T15:30:00Z",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("Buy").title).toBe("Intraday as of 2026-09-14T15:30:00Z");
+  });
+
   it("hides the Technicals band (and the rating with it) in the cost-basis-only (unpriced) view", () => {
     render(
       <HoldingsTable

@@ -45,7 +45,7 @@ describe("HoldingsTable visibleBands", () => {
   it("shows only the requested bands (Attractiveness-only hides Valuation/Technicals)", () => {
     render(<HoldingsTable baseCurrency="USD" priced holdings={[h("AAPL")]} visibleBands={["Attractiveness"]} />);
     expect(screen.getAllByText("Attractiveness").length).toBeGreaterThan(0); // band header
-    expect(screen.getByText("Score")).toBeInTheDocument(); // headline column label
+    expect(screen.getByText("Factor score")).toBeInTheDocument(); // headline column label
     expect(screen.queryByText("Valuation")).not.toBeInTheDocument();
     expect(screen.queryByText("Technicals")).not.toBeInTheDocument();
     expect(screen.queryByText("30.2×")).not.toBeInTheDocument(); // P/E (Valuation) hidden

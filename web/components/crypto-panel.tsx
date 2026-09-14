@@ -105,9 +105,25 @@ export function CryptoPanel({ portfolioId, summary }: { portfolioId: string; sum
       <Section
         title="Crypto wallets"
         note={
-          total_usd != null
-            ? `total ${money(total_usd)}${stale ? " · sync delayed" : ""}${asOfLocal ? ` · as of ${asOfLocal}` : ""}`
-            : "balances sync automatically once a wallet is added"
+          asOfLocal ? (
+            <>
+              {total_usd != null ? `total ${money(total_usd)} · ` : ""}
+              {`as of ${asOfLocal}`}
+              {/* P-23 (data-collection-plan §7 R2): the producer is paused — never hide the
+                  panel, never serve a stale artifact as current. Same visual treatment
+                  (amber + ⚠) the Holdings/Valuation stale-price cells use. */}
+              {stale ? (
+                <span
+                  className="ml-1 text-amber-500"
+                  title="The crypto-balances producer hasn't synced recently — values may be out of date"
+                >
+                  <span aria-hidden>⚠</span> <span>STALE</span>
+                </span>
+              ) : null}
+            </>
+          ) : (
+            "balances sync automatically once a wallet is added"
+          )
         }
       >
         {positions.length === 0 ? (
