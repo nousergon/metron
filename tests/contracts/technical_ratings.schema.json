@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "TechnicalRatingsArtifact",
-  "description": "market_data/technical_ratings/latest.json — nousergon-data producer contract v1 (metron-ops#294 / sibling alpha-engine-config issue). Pinned here; metron never imports the producer, the versioned schema is the entire coupling.",
+  "description": "market_data/intraday/technical_ratings.json — nousergon-data producer contract v1 (metron-ops#294 / sibling alpha-engine-config issue). Pinned here; metron never imports the producer, the versioned schema is the entire coupling.",
   "type": "object",
   "additionalProperties": true,
   "required": ["schema_version", "as_of_utc", "ratings"],

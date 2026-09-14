@@ -4,7 +4,7 @@
 Two producer artifacts, read in freshness order — per SYMBOL, not per artifact, so a
 partially-covered intraday snapshot still lets the other held symbols fall back cleanly:
 
-- ``market_data/technical_ratings/latest.json`` (schema v1) — computed off the live
+- ``market_data/intraday/technical_ratings.json`` (schema v1) — computed off the live
   intraday snapshot; basis ``"intraday"``. Used for a symbol only while the artifact's own
   ``as_of_utc`` is within ``intraday.STALE_AFTER_SECONDS`` of "now" — the same freshness
   window the intraday price overlay uses (metron-ops#79) — ~15-min delayed during market
@@ -34,7 +34,7 @@ from api.services import intraday as intraday_service
 
 logger = logging.getLogger(__name__)
 
-TECHNICAL_RATINGS_KEY = "market_data/technical_ratings/latest.json"
+TECHNICAL_RATINGS_KEY = "market_data/intraday/technical_ratings.json"
 # Shared with technicals.py — this module reads the SAME artifact for its embedded EOD
 # ``rating`` object, independently of (and without depending on) technicals.py's own
 # TickerTechnicals parse, which doesn't carry the rating fields.
