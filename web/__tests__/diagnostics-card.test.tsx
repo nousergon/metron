@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 
 import { DiagnosticsCard } from "@/components/diagnostics-card";
-import type { Diagnostics } from "@/lib/api";
+import type { Diagnostics, RatingPerformance } from "@/lib/api";
 
 const base: Diagnostics = {
   computable: true,
@@ -38,6 +38,7 @@ const base: Diagnostics = {
     { bucket: "International", weight: 0.3333, market_value: 500 },
   ],
   target_drift: null,
+  rating_performance: null,
 };
 
 describe("DiagnosticsCard", () => {
@@ -90,5 +91,40 @@ describe("DiagnosticsCard", () => {
     expect(screen.getByText("above your stated max")).toBeInTheDocument();
     expect(screen.getByText("Avoid sector — Energy")).toBeInTheDocument();
     expect(screen.getByText("held: XOM")).toBeInTheDocument();
+  });
+
+  // Technical rating track record (metron-ops#298, Brian ruling 2026-09-14).
+  it("renders NO track-record card when rating_performance is null (off-feed or absent artifact)", () => {
+    render(<DiagnosticsCard d={base} />);
+    expect(screen.queryByText("Technical rating track record")).not.toBeInTheDocument();
+  });
+
+  it("renders the track-record card when rating_performance is present", () => {
+    const rp: RatingPerformance = {
+      schema_version: 1,
+      as_of_utc: "2026-09-14T05:00:00Z",
+      rating_version: "v1",
+      horizons: [1, 5, 20],
+      windows: [20, 60, 250],
+      segments: {
+        all: {
+          "60": {
+            "5": {
+              buckets: {
+                Buy: { n: 130, mean_fwd: 0.0015, hit_rate: 0.52, mean_excess: 0.0003 },
+              },
+              spread_strong_buy_minus_strong_sell: 0.0019,
+              ic_mean: -0.017,
+              ic_n_dates: 180,
+              noise_floor_ic: 0.02,
+            },
+          },
+        },
+      },
+      ic_series: [],
+    };
+    render(<DiagnosticsCard d={{ ...base, rating_performance: rp }} />);
+    expect(screen.getByText("Technical rating track record")).toBeInTheDocument();
+    expect(screen.getByText("Buy")).toBeInTheDocument();
   });
 });

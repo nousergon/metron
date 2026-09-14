@@ -31,6 +31,7 @@ from api.services import analytics
 from api.services import classifications as classifications_service
 from api.services import countries as countries_service
 from api.services import sectors as sectors_service
+from api.services import technical_rating_performance as technical_rating_performance_service
 from portfolio_analytics.domain.diagnostics import (
     ConcentrationMetrics,
     DiagnosticsPosition,
@@ -70,6 +71,12 @@ class DiagnosticsSummary:
     geography: list[GeoRow] = field(default_factory=list)
     # None = the user has authored no targets (the drift section doesn't render).
     target_drift: list[TargetDriftRow] | None = None
+    # Technical rating track record (metron-ops#298, Brian ruling 2026-09-14) — the
+    # rating's realized near-term forward performance from the nousergon-data producer
+    # artifact. None when the deployment isn't feed-entitled (same gate as the rating
+    # itself) OR the artifact is absent/unparseable — the two cases are indistinguishable
+    # on the wire by design, and the UI renders nothing either way.
+    rating_performance: technical_rating_performance_service.RatingPerformance | None = None
 
 
 def compute_portfolio_diagnostics(
@@ -80,14 +87,18 @@ def compute_portfolio_diagnostics(
     base_currency: str = "USD",
     account_ids: Collection[uuid.UUID] | None = None,
     include_benchmark: bool = True,
+    include_rating_performance: bool = False,
     benchmark_source: BenchmarkSource | None = None,
+    rating_performance_reader=None,
     targets_loader=None,
 ) -> DiagnosticsSummary:
     """The diagnostics payload over the SETTLED valuation of the (account-scoped)
     holdings. ``include_benchmark=False`` skips the spine read entirely (the endpoint
     passes the entitlement verdict — an unentitled deployment never touches the
-    benchmark artifact); ``benchmark_source`` / ``targets_loader`` are the injectable
-    test seams, mirroring the attribution service."""
+    benchmark artifact); ``include_rating_performance`` gates the technical-rating
+    track-record read the SAME way (feed-entitled builds only, metron-ops#298).
+    ``benchmark_source`` / ``rating_performance_reader`` / ``targets_loader`` are the
+    injectable test seams, mirroring the attribution service."""
     held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     # Included set: priced, positive, non-cash. Cash has no sector/geography and would
     # only dilute concentration; unpriced/foreign-no-FX rows can't be weighted (their
@@ -144,4 +155,8 @@ def compute_portfolio_diagnostics(
         geography=list(result.geography),
         target_drift=list(result.target_drift) if result.target_drift is not None else None,
     )
+    if include_rating_performance:
+        summary.rating_performance = technical_rating_performance_service.load_rating_performance(
+            reader=rating_performance_reader
+        )
     return summary

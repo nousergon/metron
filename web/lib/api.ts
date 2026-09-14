@@ -900,6 +900,10 @@ export type Tearsheet = {
     tech_rating_n_neutral: number | null;
     tech_rating_n_sell: number | null;
     tech_rating_n_votes: number | null;
+    // Track record (metron-ops#298, Brian ruling 2026-09-14) — fixed 60-session/5d "all"
+    // segment bucket for THIS ticker's own current rating label. null off-feed, no
+    // resolved rating, or the producer hasn't published that cell yet.
+    rating_track_record: RatingTrackRecord | null;
   };
   fundamentals_available: boolean;
   fundamentals_reason: string;
@@ -914,6 +918,16 @@ export type Tearsheet = {
   // Composite attractiveness gauge (metron-ops#106, Phase 2) — feed-gated; available is false
   // off-feed or on a total coverage gap.
   attractiveness: TearsheetAttractiveness;
+};
+
+export type RatingTrackRecord = {
+  label: string;
+  window: number;
+  horizon: number;
+  n: number | null;
+  mean_excess: number | null;
+  hit_rate: number | null;
+  as_of_utc: string | null;
 };
 
 export type TearsheetAttractivenessComponent = {
@@ -1055,6 +1069,39 @@ export type TargetDriftRow = {
   detail: string | null;
 };
 
+// Technical rating track record (metron-ops#298, Brian ruling 2026-09-14). The producer's
+// nested segment -> window -> horizon shape (all JSON string keys) passes through
+// near-verbatim; the interactive picker on the Diagnostics card indexes into it client-side.
+export type RatingBucket = {
+  n: number | null;
+  mean_fwd: number | null;
+  hit_rate: number | null;
+  mean_excess: number | null;
+};
+
+export type RatingHorizonStats = {
+  buckets: Record<string, RatingBucket>; // label -> bucket, only labels the producer published
+  spread_strong_buy_minus_strong_sell: number | null;
+  ic_mean: number | null;
+  ic_n_dates: number | null;
+  noise_floor_ic: number | null; // ALWAYS present alongside ic_mean — render them together
+};
+
+export type RatingIcPoint = { date: string; horizon: number; ic: number | null };
+
+export type RatingPerformance = {
+  schema_version: number;
+  as_of_utc: string | null;
+  rating_version: string | null;
+  horizons: number[]; // e.g. [1, 5, 20]
+  windows: number[]; // e.g. [20, 60, 250]
+  // segment ("live" | "backfill" | "all") -> window (string int) -> horizon (string int).
+  // A segment/window/horizon combination may be entirely absent — render "no data yet",
+  // never a fabricated zero row.
+  segments: Record<string, Record<string, Record<string, RatingHorizonStats>>>;
+  ic_series: RatingIcPoint[];
+};
+
 export type Diagnostics = {
   computable: boolean;
   reason: string | null;
@@ -1071,6 +1118,10 @@ export type Diagnostics = {
   geography: DiagnosticsGeoRow[];
   // null = the user has authored no targets (the drift section doesn't render).
   target_drift: TargetDriftRow[] | null;
+  // Technical rating track record (metron-ops#298) — null off-feed (same gate as the
+  // rating itself) or the producer artifact is absent/unparseable; indistinguishable on
+  // the wire by design, and the card renders nothing either way.
+  rating_performance: RatingPerformance | null;
 };
 
 export const getDiagnostics = (apiAuth: string, id: string, accountIds?: string[]) =>

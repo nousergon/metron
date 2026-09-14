@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getTearsheet, MetronApiError } from "@/lib/api";
-import { isoDate, money, moneyWhole, percent, quantity, signClass, signedMoneyWhole } from "@/lib/format";
+import { accountingPercent, isoDate, money, moneyWhole, percent, quantity, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { requireApiAuth } from "@/lib/session";
 
@@ -161,6 +161,19 @@ export default async function TearsheetPage(props: { params: Promise<{ id: strin
                 />
               </div>
               <p className="mt-2 text-xs text-muted">{TECH_RATING_DISCLAIMER}</p>
+              {/* Track record (metron-ops#298, Brian ruling 2026-09-14) — realized
+                  performance, measured, never a recommendation; the full interactive
+                  breakdown lives on Diagnostics. null = the producer hasn't published this
+                  window/horizon/label cell yet — omitted, not a fabricated zero. */}
+              {tech.rating_track_record ? (
+                <p className="mt-2 text-xs text-muted">
+                  Track record ({tech.rating_track_record.window} sessions, {tech.rating_track_record.horizon}d):{" "}
+                  {tech.rating_track_record.label} names averaged{" "}
+                  {tech.rating_track_record.mean_excess != null ? accountingPercent(tech.rating_track_record.mean_excess) : "—"} vs
+                  universe · hit {tech.rating_track_record.hit_rate != null ? percent(tech.rating_track_record.hit_rate) : "—"}
+                  {tech.rating_track_record.as_of_utc ? ` · as of ${isoDate(tech.rating_track_record.as_of_utc.slice(0, 10))}` : ""}
+                </p>
+              ) : null}
             </Section>
           );
         })()

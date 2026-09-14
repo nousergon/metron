@@ -389,6 +389,83 @@ class TestDiagnosticsEndpoint:
         ).status_code == 404
 
 
+# ── Technical rating track record (metron-ops#298, Brian ruling 2026-09-14) ────────────
+
+_RATING_PERF_ART = {
+    "schema_version": 1,
+    "as_of_utc": "2026-09-14T05:00:00Z",
+    "rating_version": "v1",
+    "horizons": [1, 5, 20],
+    "windows": [20, 60, 250],
+    "segments": {
+        "all": {
+            "60": {
+                "5": {
+                    "buckets": {
+                        "Buy": {"n": 130, "mean_fwd": 0.0015, "hit_rate": 0.52, "mean_excess": 0.0003},
+                    },
+                    "spread_strong_buy_minus_strong_sell": 0.0019,
+                    "ic_mean": -0.017,
+                    "ic_n_dates": 180,
+                    "noise_floor_ic": 0.02,
+                },
+            },
+        },
+    },
+    "ic_series": [{"date": "2026-09-10", "horizon": 5, "ic": -0.01}],
+}
+
+
+class TestDiagnosticsRatingPerformance:
+    def test_owner_feed_entitled_build_shows_rating_performance(self, client, tenant, monkeypatch):
+        monkeypatch.setattr(settings, "feed_entitled", True)
+        pid = _seed(client, tenant)
+        _refresh(client, tenant, pid, monkeypatch)
+        _patch_reference_sources(monkeypatch)
+        monkeypatch.setattr(
+            "api.services.technical_rating_performance._default_reader", lambda: _RATING_PERF_ART
+        )
+        d = client.get(f"/portfolios/{pid}/diagnostics", headers={"X-Tenant-Id": tenant}).json()
+        rp = d["rating_performance"]
+        assert rp is not None
+        assert rp["schema_version"] == 1
+        assert rp["horizons"] == [1, 5, 20] and rp["windows"] == [20, 60, 250]
+        cell = rp["segments"]["all"]["60"]["5"]
+        assert cell["ic_mean"] == pytest.approx(-0.017)
+        assert cell["noise_floor_ic"] == pytest.approx(0.02)  # ALWAYS carried beside ic_mean
+        assert cell["buckets"]["Buy"]["mean_excess"] == pytest.approx(0.0003)
+        assert len(rp["ic_series"]) == 1
+
+    def test_beta_no_feed_build_shows_no_rating_performance(self, client, tenant, monkeypatch):
+        """The no-feed beta never even calls the reader — same posture as the rating
+        itself (test_holdings_technical_rating_gate.py)."""
+        monkeypatch.setattr(settings, "feed_entitled", False)
+        pid = _seed(client, tenant)
+        _refresh_broker_free(client, tenant, pid, monkeypatch)
+        _patch_reference_sources(monkeypatch)
+
+        def _boom(*, reader=None):  # pragma: no cover - fails the test if reached
+            raise AssertionError("rating_performance read attempted while unentitled")
+
+        monkeypatch.setattr("api.services.diagnostics.technical_rating_performance_service.load_rating_performance", _boom)
+        d = client.get(f"/portfolios/{pid}/diagnostics", headers={"X-Tenant-Id": tenant}).json()
+        assert d["rating_performance"] is None
+
+    def test_producer_artifact_absent_omits_field_never_fabricated(self, client, tenant, monkeypatch):
+        monkeypatch.setattr(settings, "feed_entitled", True)
+        pid = _seed(client, tenant)
+        _refresh(client, tenant, pid, monkeypatch)
+        _patch_reference_sources(monkeypatch)
+        # The sibling nousergon-data producer hasn't shipped the artifact yet — the
+        # default S3 reader 404s / raises, and load_rating_performance degrades to None.
+        monkeypatch.setattr(
+            "api.services.technical_rating_performance._default_reader", lambda: None
+        )
+        d = client.get(f"/portfolios/{pid}/diagnostics", headers={"X-Tenant-Id": tenant}).json()
+        assert d["rating_performance"] is None
+        assert d["computable"] is True  # everything else on the card still renders
+
+
 def _refresh_broker_free(client, tenant, pid, monkeypatch):
     """Seed cached closes WITHOUT the feed-gated refresh endpoint (which 403s when
     ``feed_entitled`` is off) — writes the price rows the settled valuation reads."""

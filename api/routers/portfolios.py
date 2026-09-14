@@ -688,6 +688,50 @@ class TargetDriftRowOut(BaseModel):
     detail: str | None
 
 
+# Technical rating track record (metron-ops#298, Brian ruling 2026-09-14) — the producer's
+# nested segment -> window -> horizon shape passes through near-verbatim (M0 contract
+# discipline: the versioned artifact schema IS the coupling; see
+# tests/contracts/rating_performance.schema.json). Window/horizon keys stay JSON strings of
+# integers, exactly as the producer emits them.
+class RatingBucketOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    n: int | None
+    mean_fwd: float | None
+    hit_rate: float | None
+    mean_excess: float | None
+
+
+class RatingHorizonStatsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    buckets: dict[str, RatingBucketOut]
+    spread_strong_buy_minus_strong_sell: float | None
+    ic_mean: float | None
+    ic_n_dates: int | None
+    noise_floor_ic: float | None
+
+
+class RatingIcPointOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    date: str
+    horizon: int
+    ic: float | None
+
+
+class RatingPerformanceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    schema_version: int
+    as_of_utc: str | None
+    rating_version: str | None
+    horizons: list[int]
+    windows: list[int]
+    segments: dict[str, dict[str, dict[str, RatingHorizonStatsOut]]]
+    ic_series: list[RatingIcPointOut]
+
+
 class DiagnosticsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -706,6 +750,9 @@ class DiagnosticsOut(BaseModel):
     geography: list[DiagnosticsGeoRowOut]
     # null = the user has authored no targets (the drift section doesn't render).
     target_drift: list[TargetDriftRowOut] | None
+    # null = off-feed build (same gate as the rating itself) OR the producer artifact is
+    # absent/unparseable — indistinguishable on the wire; the UI renders nothing either way.
+    rating_performance: RatingPerformanceOut | None = None
 
 
 class CalendarEventOut(BaseModel):
@@ -2361,6 +2408,18 @@ class TearsheetPerformanceOut(BaseModel):
     history_from: date | None = None
 
 
+class RatingTrackRecordOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    label: str
+    window: int
+    horizon: int
+    n: int | None
+    mean_excess: float | None
+    hit_rate: float | None
+    as_of_utc: str | None
+
+
 class TearsheetTechnicalOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -2379,6 +2438,9 @@ class TearsheetTechnicalOut(BaseModel):
     tech_rating_n_neutral: int | None = None
     tech_rating_n_sell: int | None = None
     tech_rating_n_votes: int | None = None
+    # Track record (metron-ops#298) — None off-feed, no resolved rating, or the producer
+    # cell isn't published yet.
+    rating_track_record: RatingTrackRecordOut | None = None
 
 
 class TickerFundamentalsOut(BaseModel):
@@ -2629,6 +2691,10 @@ def get_diagnostics(
         base_currency=portfolio.base_currency or "USD",
         account_ids=account_ids,
         include_benchmark=bench_feat["available"],
+        # Technical rating track record (metron-ops#298) — owner (feed-entitled) build
+        # only, the SAME gate as the rating itself (tearsheet/Holdings), never the
+        # `concentration` tier gate this endpoint otherwise uses.
+        include_rating_performance=_external_market_data_allowed(x_preview_feed),
     )
     if not bench_feat["available"]:
         summary.benchmark_reason = bench_feat["reason"]

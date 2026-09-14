@@ -25,9 +25,17 @@ from api.services import security_perf as security_perf_service
 from api.services import security_performance as performance_service
 from api.services import sentiment as sentiment_service
 from api.services import technical_rating as technical_rating_service
+from api.services import technical_rating_performance as technical_rating_performance_service
 from api.services import technicals as technicals_service
 
 _FUNDAMENTALS_REASON = "Arrives with the fundamentals feed (alpha-engine-config#1022)."
+
+# The tearsheet's compact track-record line is fixed at 60 sessions / 5d, pooled across
+# both live and backfill history ("all") — the interactive horizon/window/segment picker
+# lives on the Diagnostics card (metron-ops#298).
+TRACK_RECORD_WINDOW = 60
+TRACK_RECORD_HORIZON = 5
+TRACK_RECORD_SEGMENT = "all"
 
 
 @dataclass
@@ -60,6 +68,17 @@ class TearsheetPerformance:
 
 
 @dataclass
+class RatingTrackRecord:
+    label: str                    # the ticker's own current rating label
+    window: int
+    horizon: int
+    n: int | None
+    mean_excess: float | None
+    hit_rate: float | None
+    as_of_utc: str | None         # the rating_performance artifact's own as_of_utc
+
+
+@dataclass
 class TearsheetTechnical:
     rsi_14: float | None = None
     pct_from_52wk_high: float | None = None
@@ -78,6 +97,12 @@ class TearsheetTechnical:
     tech_rating_n_neutral: int | None = None
     tech_rating_n_sell: int | None = None
     tech_rating_n_votes: int | None = None
+    # Track record (metron-ops#298, Brian ruling 2026-09-14) — the realized forward
+    # performance of THIS ticker's own current rating label, pooled over
+    # TRACK_RECORD_WINDOW sessions / TRACK_RECORD_HORIZON days ("all" segment). None when
+    # off-feed, no rating resolved, or the producer artifact hasn't published this cell yet
+    # — never fabricated.
+    rating_track_record: RatingTrackRecord | None = None
 
 
 @dataclass
@@ -198,6 +223,30 @@ def _technical_from_spine(
     return tech
 
 
+def _track_record_for(
+    rating_perf: technical_rating_performance_service.RatingPerformance | None, label: str | None
+) -> RatingTrackRecord | None:
+    """The fixed 60-session/5d "all"-segment bucket matching this ticker's OWN current
+    rating label — omitted (never zeroed) when the artifact is absent or hasn't published
+    that cell yet (metron-ops#298)."""
+    if rating_perf is None or not label:
+        return None
+    bucket = rating_perf.bucket_for_label(
+        label, segment=TRACK_RECORD_SEGMENT, window=TRACK_RECORD_WINDOW, horizon=TRACK_RECORD_HORIZON
+    )
+    if bucket is None:
+        return None
+    return RatingTrackRecord(
+        label=label,
+        window=TRACK_RECORD_WINDOW,
+        horizon=TRACK_RECORD_HORIZON,
+        n=bucket.n,
+        mean_excess=bucket.mean_excess,
+        hit_rate=bucket.hit_rate,
+        as_of_utc=rating_perf.as_of_utc,
+    )
+
+
 def _yf_symbol_map(session: Session, symbols: list[str]) -> dict[str, str]:
     """ticker → yf_symbol (the fundamentals/intraday artifacts are keyed by yf_symbol).
     Falls back to the bare symbol when no override is set (the US/USD case)."""
@@ -222,6 +271,7 @@ def tearsheet(
     performance_reader=None,
     technicals_reader=None,
     rating_reader=None,
+    rating_performance_reader=None,
 ) -> Tearsheet | None:
     """Assemble the tearsheet for one held ticker, or None if the portfolio doesn't hold it.
 
@@ -272,6 +322,13 @@ def tearsheet(
         )
         performance = _performance_from_spine(perf_snap.by_symbol.get(yf), holding.unrealized_pct)
         technical = _technical_from_spine(tech_snap.by_symbol.get(yf), rating_snap.by_symbol.get(yf))
+        # Track record (metron-ops#298) — same feed gate as the rating itself; only read
+        # once a rating actually resolved for this ticker (no label -> no bucket to look up).
+        if technical.tech_rating_label is not None:
+            rating_perf = technical_rating_performance_service.load_rating_performance(
+                reader=rating_performance_reader
+            )
+            technical.rating_track_record = _track_record_for(rating_perf, technical.tech_rating_label)
     else:
         performance = TearsheetPerformance(return_vs_cost=holding.unrealized_pct)
         technical = TearsheetTechnical()
