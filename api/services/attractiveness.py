@@ -22,6 +22,7 @@ from __future__ import annotations
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import date
 
 from nousergon_lib.quant.attractiveness import (
     PILLAR_ORDER,
@@ -59,6 +60,9 @@ class Attractiveness:
     score: float | None
     coverage: int
     pillars: list[PillarComponent] = field(default_factory=list)
+    # Factor-profile publish date (P-28: R4 — the factor-pillar "Factor score" retires at v2
+    # phase 4, so every consumer gets a daily as-of stamp rather than silently going stale).
+    as_of: date | None = None
 
 
 def _build_result(
@@ -66,6 +70,7 @@ def _build_result(
     profile: dict,
     blended: dict,
     catalog_weights: dict[str, float],
+    as_of: date | None,
 ) -> Attractiveness | None:
     score = blended.get("attractiveness_score")
     contribs = blended.get("pillar_contributions") or {}
@@ -92,6 +97,7 @@ def _build_result(
         score=round(score, 1) if score is not None else None,
         coverage=len(pillars),
         pillars=pillars,
+        as_of=as_of,
     )
 
 
@@ -149,7 +155,7 @@ def _compute_universe_uncached(
     return {
         ticker.upper(): result
         for ticker, rec in blended.items()
-        if (result := _build_result(ticker, snap.by_ticker.get(ticker, {}), rec, catalog_weights))
+        if (result := _build_result(ticker, snap.by_ticker.get(ticker, {}), rec, catalog_weights, snap.as_of))
         is not None
     }
 

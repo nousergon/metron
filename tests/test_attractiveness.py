@@ -56,6 +56,20 @@ def test_lookup_misses_outside_universe():
     assert attractiveness.lookup("ZZZ", universe) is None
 
 
+def test_compute_universe_carries_factor_profile_as_of():
+    # P-28 (data-collection-plan §7 R4): "Factor score" needs a daily as-of stamp — the
+    # publish date is on the wrapped artifact envelope, not on a per-ticker profile.
+    raw = {"as_of": "2026-09-10", "by_ticker": _PROFILES}
+    universe = attractiveness.compute_universe(profiles_reader=lambda: raw)
+    assert universe["AAPL"].as_of == date(2026, 9, 10)
+    assert universe["MSFT"].as_of == date(2026, 9, 10)
+
+
+def test_compute_universe_as_of_none_when_artifact_unwrapped():
+    universe = attractiveness.compute_universe(profiles_reader=lambda: _PROFILES)
+    assert universe["AAPL"].as_of is None
+
+
 def test_enrich_metrics_attaches_sota_attractiveness(db_session, monkeypatch):
     held = [
         analytics.Holding(
@@ -75,7 +89,7 @@ def test_enrich_metrics_attaches_sota_attractiveness(db_session, monkeypatch):
         # load_factor_profiles(reader=...) parses a RAW dict into a snapshot itself —
         # a reader returning an already-built FactorProfilesSnapshot fails its
         # isinstance(raw, dict) check and silently yields an empty universe.
-        return _PROFILES
+        return {"as_of": "2026-09-10", "by_ticker": _PROFILES}
 
     # Directly call the uncached computation with test profiles to avoid cache recursion
     original_compute_universe = attractiveness._compute_universe_uncached
@@ -92,6 +106,7 @@ def test_enrich_metrics_attaches_sota_attractiveness(db_session, monkeypatch):
     assert aapl.attractiveness_coverage == 6
     assert aapl.attractiveness_quality == 90.0
     assert aapl.attractiveness_value == 30.0
+    assert aapl.attractiveness_as_of == date(2026, 9, 10)  # P-28 daily as-of stamp
 
 
 def _seed_aapl(session):
@@ -122,7 +137,7 @@ def test_tearsheet_gauge_populates_when_profiles_available(db_session, monkeypat
         # load_factor_profiles(reader=...) parses a RAW dict into a snapshot itself —
         # a reader returning an already-built FactorProfilesSnapshot fails its
         # isinstance(raw, dict) check and silently yields an empty universe.
-        return _PROFILES
+        return {"as_of": "2026-09-10", "by_ticker": _PROFILES}
 
     # Directly call the uncached computation with test profiles to avoid cache recursion
     original_compute_universe = attractiveness._compute_universe_uncached
@@ -138,6 +153,7 @@ def test_tearsheet_gauge_populates_when_profiles_available(db_session, monkeypat
     assert att.available is True
     assert att.score is not None
     assert att.coverage == 6
+    assert att.as_of == date(2026, 9, 10)  # P-28 daily as-of stamp
     assert {c.key for c in att.components} == {
         "quality", "value", "momentum", "growth", "stewardship", "defensiveness",
     }

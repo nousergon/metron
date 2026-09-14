@@ -120,3 +120,4 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
             h.attractiveness_growth = by_key.get("growth")
             h.attractiveness_stewardship = by_key.get("stewardship")
             h.attractiveness_defensiveness = by_key.get("defensiveness")
+            h.attractiveness_as_of = att.as_of

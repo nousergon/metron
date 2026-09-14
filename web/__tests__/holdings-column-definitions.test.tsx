@@ -72,12 +72,12 @@ describe("column definitions", () => {
     expect(screen.queryByLabelText("What is Ticker?")).not.toBeInTheDocument();
   });
 
-  it("the Score column is defined (attractiveness composite), reachable independent of sort", () => {
+  it("the Factor score column is defined (attractiveness composite), reachable independent of sort", () => {
     render(<HoldingsTable baseCurrency="USD" priced holdings={[h("AAPL")]} />);
-    const score = screen.getByRole("button", { name: /Score/ });
-    expect(score).toHaveAttribute("title", "Sort by Score");
-    const info = screen.getByLabelText("What is Score?");
+    const score = screen.getByRole("button", { name: /Factor score/ });
+    expect(score).toHaveAttribute("title", "Sort by Factor score");
+    const info = screen.getByLabelText("What is Factor score?");
     expect(score.contains(info)).toBe(false);
-    expect(info.closest("details")).toHaveTextContent(/attractiveness/i);
+    expect(info.closest("details")).toHaveTextContent(/factor score/i);
   });
 });

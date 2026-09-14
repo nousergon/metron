@@ -42,7 +42,7 @@ export function StatCard({
   return <div className="rounded-lg border border-line p-4">{body}</div>;
 }
 
-export function Section({ title, children, note }: { title: string; children: ReactNode; note?: string }) {
+export function Section({ title, children, note }: { title: string; children: ReactNode; note?: ReactNode }) {
   return (
     <section className="mt-8">
       <div className="flex items-baseline justify-between">

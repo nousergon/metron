@@ -160,13 +160,27 @@ class TestForPortfolio:
         assert s.total_usd == pytest.approx(2600.0)
 
     def test_stale_artifact_marks_pending(self, db_session):
+        # Pinned clock (never wall-clock-relative — data-collection-plan §7 R2 / P-23):
+        # 50h after the artifact's as_of, past the 48h stale threshold.
         tid, pid = _seed_portfolio(db_session)
         crypto.add_address(db_session, tid, pid, "BTC", _BTC)
         art = _art([{"chain": "BTC", "address": _BTC, "balance": 1.0, "price_usd": 1.0, "value_usd": 1.0}],
-                   as_of="2026-06-29T08:00:00Z")
-        now = datetime(2026, 6, 29, 12, 0, tzinfo=UTC)  # 4h later → stale (>1h)
+                   as_of="2026-06-27T08:00:00Z")
+        now = datetime(2026, 6, 29, 10, 0, tzinfo=UTC)  # +50h → stale (>48h)
         s = crypto.for_portfolio(db_session, tid, pid, reader=lambda: art, now=now)
         assert s.stale is True and s.available is False and s.positions[0].synced is False
+        assert s.as_of_utc == "2026-06-27T08:00:00Z"  # never hidden — the panel still carries as-of
+        assert s.reason == "stale"
+
+    def test_within_48h_not_stale(self, db_session):
+        # A once-daily producer cadence (R2 option (a)) must not flap stale between runs.
+        tid, pid = _seed_portfolio(db_session)
+        crypto.add_address(db_session, tid, pid, "BTC", _BTC)
+        art = _art([{"chain": "BTC", "address": _BTC, "balance": 1.0, "price_usd": 1.0, "value_usd": 1.0}],
+                   as_of="2026-06-28T08:00:00Z")
+        now = datetime(2026, 6, 29, 10, 0, tzinfo=UTC)  # +26h → not stale (<=48h)
+        s = crypto.for_portfolio(db_session, tid, pid, reader=lambda: art, now=now)
+        assert s.stale is False and s.available is True and s.positions[0].synced is True
 
 
 class TestSnapshot:

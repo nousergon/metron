@@ -158,6 +158,7 @@ class TearsheetAttractiveness:
     available: bool = False
     score: float | None = None
     coverage: int | None = None
+    as_of: date | None = None
     components: list[TearsheetAttractivenessComponent] = field(default_factory=list)
 
 
@@ -404,6 +405,7 @@ def tearsheet(
                 available=True,
                 score=att.score,
                 coverage=att.coverage,
+                as_of=att.as_of,
                 components=[
                     TearsheetAttractivenessComponent(
                         key=p.key,

@@ -616,6 +616,9 @@ type MetricColumn = {
    *  bands around its 50 neutral midpoint, not around zero. */
   tone?: (v: number) => string;
   title?: string;
+  /** Per-row hover title override (P-28: a daily as-of stamp per stock) — takes precedence
+   *  over the static `title` above when it returns a string. */
+  rowTitle?: (h: Holding) => string | undefined;
 };
 
 // Consensus-rating bucket → short display label (the artifact carries the camelCase key).
@@ -641,17 +644,22 @@ const pillarTone = (v: number): string =>
 
 const METRIC_COLUMNS: MetricColumn[] = [
   // ── Attractiveness — SOTA 6-pillar cross-sectional score from NE factor profiles. ──
+  // Labeled "Factor score" (not "Attractiveness" — metron-ops P-28, data-collection-plan
+  // §7 R4): this is the factor-pillar score, which retires at v2 phase 4, distinct from the
+  // Technicals band's "Technical attractiveness" (the data-collector product), which survives.
   {
     key: "attractiveness",
-    label: "Score",
+    label: "Factor score",
     group: "Attractiveness",
     value: (h) => h.attractiveness,
     render: (v) => decimal(v, 1),
     tone: attractivenessTone,
     title:
-      "Composite attractiveness (0–100): 6-pillar sector-neutral z-blend ranked across the " +
-      "full scanner universe — same method as the NE console board. " +
-      "Click the ticker for the weighted pillar breakdown.",
+      "Factor score (0–100): 6-pillar sector-neutral z-blend from NE factor profiles, ranked " +
+      "across the full scanner universe — same method as the NE console board. Retires at v2 " +
+      "phase 4 (data-collection-plan §7 R4). Click the ticker for the weighted pillar breakdown.",
+    rowTitle: (h) =>
+      h.attractiveness_as_of ? `Factor profiles as of ${h.attractiveness_as_of}` : undefined,
   },
   {
     key: "attractiveness_quality",
@@ -765,18 +773,26 @@ const METRIC_COLUMNS: MetricColumn[] = [
   // Technical rating (metron-ops#294): composite MA + oscillator vote, "Strong Sell" …
   // "Strong Buy". Sorts by its signed score (like consensus_rating below) but shows the
   // label; the basis (intraday ~15-min delayed vs EOD fallback) shows in the hover title
-  // since there's no room for it in the cell itself.
+  // since there's no room for it in the cell itself. Labeled "Technical attractiveness"
+  // (metron-ops P-28, data-collection-plan §7 R4 constraint): the daily technical-analysis
+  // attractiveness surface — a data-collector product that survives v2 phase 4, distinct
+  // from the Attractiveness band's "Factor score" (crucible-research, which retires).
   {
     key: "tech_rating",
-    label: "Tech Rating",
+    label: "Technical attractiveness",
     group: "Technicals",
     value: (h) => h.tech_rating_score,
     render: () => "—",
     text: (h) => h.tech_rating_label,
     signed: true,
     title:
-      "Technical rating — describes recent price action; not investment advice. " +
-      "Composite of moving-average + oscillator votes, signed [-1, +1].",
+      "Technical attractiveness — describes recent price action; not investment advice. " +
+      "Composite of moving-average + oscillator votes, signed [-1, +1]. Daily technical-" +
+      "analysis attractiveness (data-collection-plan §7 R4) — survives v2 phase 4.",
+    rowTitle: (h) =>
+      h.tech_rating_as_of
+        ? `${h.tech_rating_basis === "intraday" ? "Intraday" : "EOD"} as of ${h.tech_rating_as_of}`
+        : undefined,
   },
   // ── Consensus (research + sentiment, free sources — metron-ops#105) ──
   // Confirmed on the metron-ops#162 audit: analyst rating/targets + news_sentiment stay one
@@ -809,7 +825,12 @@ function metricToColumnDef(c: MetricColumn): ColumnDef {
       // Categorical columns (e.g. the consensus rating) render their own label; numeric
       // columns render from the non-null value.
       const content = c.text ? c.text(h) : v == null ? null : c.render(v, ctx.baseCurrency);
-      return <span className={content == null ? "text-muted" : tone}>{content == null ? "—" : content}</span>;
+      const rowTitle = c.rowTitle?.(h);
+      return (
+        <span className={content == null ? "text-muted" : tone} title={rowTitle}>
+          {content == null ? "—" : content}
+        </span>
+      );
     },
   };
 }
