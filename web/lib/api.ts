@@ -1107,6 +1107,54 @@ export type RatingPerformance = {
   ic_series: RatingIcPoint[];
 };
 
+/** Deploy cash (metron-ops#300) — a RANKING under the user's position/sector limits, never
+ *  a forecast: the technical rating behind it graded IC ~= 0 at 1-20 days (metron-ops#295).
+ *  `disclaimer` is server-owned copy and is rendered verbatim, never re-worded client-side. */
+export type DeployCashConfig = {
+  max_position_weight: number;
+  max_sector_weight: number;
+  min_line_usd: number;
+  whole_shares_only: boolean;
+  eligible_labels: string[];
+};
+
+export type DeployCashLine = {
+  ticker: string;
+  usd: number;
+  shares_est: number;
+  price: number;
+  price_as_of: string | null;
+  technical_label: string;
+  score: number;
+  reasons: string[];
+  constraints_hit: string[];
+};
+
+export type DeployCashSkip = { ticker: string; reason: string; detail: string };
+
+export type DeployCashPlan = {
+  as_of: string;
+  amount_usd: number;
+  allocated_usd: number;
+  unallocated_usd: number;
+  unallocated_reasons: string[];
+  lines: DeployCashLine[];
+  portfolio_value: number;
+  deployment_basis: number;
+  base_currency: string;
+  rating_as_of: string | null;
+  rating_basis: string | null;
+  config: DeployCashConfig;
+  champion: string;
+  disclaimer: string;
+  skipped: DeployCashSkip[];
+};
+
+/** Owner (feed-entitled) build only — the no-feed beta 404s, and the panel is not rendered
+ *  there at all (metron-ops#52). */
+export const getDeployCash = (apiAuth: string, id: string, amount: number) =>
+  get<DeployCashPlan>(apiAuth, `/portfolios/${id}/deploy-cash?amount=${encodeURIComponent(String(amount))}`);
+
 export type Diagnostics = {
   computable: boolean;
   reason: string | null;
