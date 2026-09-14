@@ -168,6 +168,21 @@ class Holding:
     pct_to_ma_200: float | None = None    # fraction
     pct_in_52w_range: float | None = None  # 0-1
     mom_20d: float | None = None          # fraction
+    # Technical rating (metron-ops#294) — signed [-1, +1] composite MA + oscillator vote.
+    # Populated ONLY by the Holdings endpoint on a feed-entitled build (yfinance-derived
+    # data spine → licensed); None off-feed or on a coverage gap, never fabricated.
+    # ``basis`` is "intraday" (fresh ~15-min-delayed snapshot) or "eod" (fallback); ``as_of``
+    # is that basis's own freshness anchor (ISO8601 UTC datetime / ISO date).
+    tech_rating_score: float | None = None
+    tech_rating_label: str | None = None      # "Strong Sell" … "Strong Buy"
+    tech_rating_basis: str | None = None      # "intraday" | "eod"
+    tech_rating_as_of: str | None = None
+    tech_rating_ma_score: float | None = None
+    tech_rating_osc_score: float | None = None
+    tech_rating_n_buy: int | None = None
+    tech_rating_n_neutral: int | None = None
+    tech_rating_n_sell: int | None = None
+    tech_rating_n_votes: int | None = None
     # Consensus research + news sentiment (metron-ops#105, Phase 1). Populated ONLY by the
     # Holdings endpoint on a feed-entitled build (free sources, but licensing-uniform with
     # the rest of the spine → feed-gated); None off-feed or on a coverage gap, never

@@ -233,6 +233,20 @@ class HoldingOut(BaseModel):
     pct_to_ma_200: float | None = None
     pct_in_52w_range: float | None = None
     mom_20d: float | None = None
+    # Technical rating (metron-ops#294) — signed [-1, +1] composite MA + oscillator vote,
+    # "Strong Sell" … "Strong Buy". Feed-gated like the rest of Technicals; None off a
+    # feed-entitled build or on a coverage gap. basis: "intraday" (~15-min delayed, fresh)
+    # or "eod" (fallback); as_of is that basis's own freshness anchor.
+    tech_rating_score: float | None = None
+    tech_rating_label: str | None = None
+    tech_rating_basis: str | None = None
+    tech_rating_as_of: str | None = None
+    tech_rating_ma_score: float | None = None
+    tech_rating_osc_score: float | None = None
+    tech_rating_n_buy: int | None = None
+    tech_rating_n_neutral: int | None = None
+    tech_rating_n_sell: int | None = None
+    tech_rating_n_votes: int | None = None
     # Consensus research + news sentiment (metron-ops#105) — feed-gated (data spine, free
     # sources). None off a feed-entitled build or on a coverage gap, never fabricated.
     consensus_rating: str | None = None
@@ -2353,6 +2367,18 @@ class TearsheetTechnicalOut(BaseModel):
     rsi_14: float | None = None
     pct_from_52wk_high: float | None = None
     forward_div_yield: float | None = None
+    # Technical rating (metron-ops#294) — see analytics.Holding.tech_rating_* for the field
+    # contract; feed-gated, None off-feed or on a coverage gap.
+    tech_rating_score: float | None = None
+    tech_rating_label: str | None = None
+    tech_rating_basis: str | None = None
+    tech_rating_as_of: str | None = None
+    tech_rating_ma_score: float | None = None
+    tech_rating_osc_score: float | None = None
+    tech_rating_n_buy: int | None = None
+    tech_rating_n_neutral: int | None = None
+    tech_rating_n_sell: int | None = None
+    tech_rating_n_votes: int | None = None
 
 
 class TickerFundamentalsOut(BaseModel):

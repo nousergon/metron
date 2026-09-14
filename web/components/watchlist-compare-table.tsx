@@ -96,6 +96,20 @@ function toShellHolding(e: WatchlistEntry): Holding {
     pct_to_ma_200: e.pct_to_ma_200,
     pct_in_52w_range: e.pct_in_52w_range,
     mom_20d: e.mom_20d,
+    // Technical rating (metron-ops#294) — not part of WatchlistEntry (a watchlist entry
+    // has no position; the rating hasn't been wired into the watchlist pipeline, unlike
+    // the rest of Holdings metrics). Hard-coded null like the other Holding-only fields
+    // above, never fabricated.
+    tech_rating_score: null,
+    tech_rating_label: null,
+    tech_rating_basis: null,
+    tech_rating_as_of: null,
+    tech_rating_ma_score: null,
+    tech_rating_osc_score: null,
+    tech_rating_n_buy: null,
+    tech_rating_n_neutral: null,
+    tech_rating_n_sell: null,
+    tech_rating_n_votes: null,
     consensus_rating: e.consensus_rating,
     consensus_score: e.consensus_score,
     price_target_mean: e.price_target_mean,

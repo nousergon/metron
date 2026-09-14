@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TechnicalRatingsArtifact",
+  "description": "market_data/intraday/technical_ratings.json — nousergon-data producer contract v1 (metron-ops#294 / sibling alpha-engine-config issue). Pinned here; metron never imports the producer, the versioned schema is the entire coupling.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "as_of_utc", "ratings"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "as_of_utc": { "type": "string" },
+    "quote_as_of_utc": { "type": ["string", "null"] },
+    "source": { "const": "computed_intraday" },
+    "ratings": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/TickerRating" }
+    }
+  },
+  "$defs": {
+    "TickerRating": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["score", "label"],
+      "properties": {
+        "score": { "type": ["number", "null"], "minimum": -1, "maximum": 1 },
+        "label": {
+          "enum": ["Strong Sell", "Sell", "Neutral", "Buy", "Strong Buy"]
+        },
+        "ma_score": { "type": ["number", "null"] },
+        "osc_score": { "type": ["number", "null"] },
+        "n_buy": { "type": ["integer", "null"] },
+        "n_neutral": { "type": ["integer", "null"] },
+        "n_sell": { "type": ["integer", "null"] },
+        "n_votes": { "type": ["integer", "null"] },
+        "price": { "type": ["number", "null"] },
+        "bar_date": { "type": ["string", "null"] },
+        "basis": { "const": "intraday" }
+      }
+    }
+  }
+}

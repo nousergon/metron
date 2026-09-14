@@ -21,6 +21,7 @@ from api.services import sentiment as sentiment_service
 from api.services import (
     tearsheet as tearsheet_service,
 )
+from api.services import technical_rating as technical_rating_service
 from api.services import technicals as technicals_service
 
 
@@ -32,6 +33,7 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
     yf_map = tearsheet_service._yf_symbol_map(session, [h.ticker for h in held])
     funds = fundamentals_service.load_fundamentals().by_symbol
     techs = technicals_service.load_technicals().by_symbol
+    ratings = technical_rating_service.load_technical_rating().by_symbol
     analysts = analyst_service.load_analyst().by_symbol
     sentiments = sentiment_service.load_sentiment().by_symbol
     universe_att = attractiveness_service.compute_universe()
@@ -79,6 +81,20 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
             h.pct_to_ma_200 = t.pct_to_ma_200
             h.pct_in_52w_range = t.pct_in_52w_range
             h.mom_20d = t.mom_20d
+        # Technical rating (metron-ops#294) — intraday where fresh, EOD fallback otherwise
+        # (decided per symbol by the reader itself).
+        r = ratings.get(yf)
+        if r is not None:
+            h.tech_rating_score = r.score
+            h.tech_rating_label = r.label
+            h.tech_rating_basis = r.basis
+            h.tech_rating_as_of = r.as_of
+            h.tech_rating_ma_score = r.ma_score
+            h.tech_rating_osc_score = r.osc_score
+            h.tech_rating_n_buy = r.n_buy
+            h.tech_rating_n_neutral = r.n_neutral
+            h.tech_rating_n_sell = r.n_sell
+            h.tech_rating_n_votes = r.n_votes
         # Consensus research (metron-ops#105) — price-target upside derived vs the live price.
         a = analysts.get(yf)
         if a is not None:

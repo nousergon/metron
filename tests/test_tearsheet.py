@@ -115,6 +115,88 @@ def test_tearsheet_off_feed_shows_position_only(db_session):
     assert sheet.performance.n_bars == 0
     assert sheet.performance.volatility is None
     assert sheet.technical.rsi_14 is None
+    # Technical rating (metron-ops#294) — off-feed omits it exactly like every other
+    # spine-derived metric.
+    assert sheet.technical.tech_rating_score is None
+    assert sheet.technical.tech_rating_label is None
+
+
+# ── Technical rating (metron-ops#294) ────────────────────────────────────────────────
+
+_RATING_ART_FRESH = {
+    "schema_version": 1,
+    "as_of_utc": "2026-06-26T14:55:00Z",
+    "quote_as_of_utc": "2026-06-26T14:55:00Z",
+    "source": "computed_intraday",
+    "ratings": {
+        "AAPL": {
+            "score": 0.6, "label": "Buy", "ma_score": 0.7, "osc_score": 0.5,
+            "n_buy": 8, "n_neutral": 2, "n_sell": 1, "n_votes": 11,
+            "price": 227.5, "bar_date": "2026-06-26", "basis": "intraday",
+        },
+    },
+}
+
+_TECH_ART_WITH_RATING = {
+    **_TECH_ART,
+    "technicals": {
+        "AAPL": {
+            **_TECH_ART["technicals"]["AAPL"],
+            "rating": {
+                "score": -0.2, "label": "Sell", "ma_score": -0.1, "osc_score": -0.3,
+                "n_buy": 2, "n_neutral": 3, "n_sell": 6, "n_votes": 11,
+            },
+        },
+    },
+}
+
+
+def test_tearsheet_technical_rating_uses_fresh_intraday(db_session):
+    # _RATING_ART_FRESH's as_of_utc is a fixed 2026-06-26 timestamp; the reader is only
+    # "fresh" relative to the real wall clock ``tearsheet()`` uses (now=None), so pin the
+    # artifact's as_of to "now" here rather than depending on when this test runs.
+    from datetime import UTC, datetime
+
+    art = {**_RATING_ART_FRESH, "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z")}
+    tenant_id, pid = _seed(db_session)
+    sheet = tearsheet.tearsheet(
+        db_session, tenant_id, pid, "AAPL",
+        feed_enabled=True,
+        technicals_reader=lambda: _TECH_ART_WITH_RATING,
+        rating_reader=lambda: art,
+    )
+    tech = sheet.technical
+    assert tech.tech_rating_score == 0.6 and tech.tech_rating_label == "Buy"
+    assert tech.tech_rating_basis == "intraday"
+    assert tech.tech_rating_ma_score == 0.7 and tech.tech_rating_osc_score == 0.5
+    assert tech.tech_rating_n_votes == 11
+
+
+def test_tearsheet_technical_rating_falls_back_to_eod(db_session):
+    tenant_id, pid = _seed(db_session)
+    sheet = tearsheet.tearsheet(
+        db_session, tenant_id, pid, "AAPL",
+        feed_enabled=True,
+        technicals_reader=lambda: _TECH_ART_WITH_RATING,
+        rating_reader=lambda: None,  # producer artifact absent (sibling PR not merged yet)
+    )
+    tech = sheet.technical
+    assert tech.tech_rating_score == -0.2 and tech.tech_rating_label == "Sell"
+    assert tech.tech_rating_basis == "eod"
+
+
+def test_tearsheet_technical_rating_absent_producer_omits_fields(db_session):
+    """The sibling producer artifact doesn't exist yet — both readers empty → omitted,
+    never fabricated (metron-ops#294 depends-on)."""
+    tenant_id, pid = _seed(db_session)
+    sheet = tearsheet.tearsheet(
+        db_session, tenant_id, pid, "AAPL",
+        feed_enabled=True,
+        technicals_reader=lambda: _TECH_ART,  # v2-shaped, no embedded rating
+        rating_reader=lambda: None,
+    )
+    tech = sheet.technical
+    assert tech.tech_rating_score is None and tech.tech_rating_label is None
 
 
 _FUND_ART = {
