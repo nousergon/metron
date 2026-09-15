@@ -19,7 +19,7 @@ const TIER_LABEL: Record<string, string> = { personal: "Intelligence" };
 
 // Pages that need the market-data feed to function — HIDDEN (not shown locked/empty) in
 // the no-feed beta (metron-ops#53). They reappear when the feed entitlement is on.
-const FEED_DEPENDENT = new Set(["risk", "attribution", "scenarios", "calendar", "indices"]);
+const FEED_DEPENDENT = new Set(["risk", "attribution", "scenarios", "calendar", "indices", "market_board"]);
 
 export function PortfolioNav({
   portfolioId,
@@ -82,6 +82,7 @@ export function PortfolioNav({
     // Neutral research intel (paid Intelligence tier; nav locks it on the beta). config#1499.
     { label: "Research intel", href: `${base}/research-intel`, feature: "research_intel" },
     { label: "Watchlist", href: `${base}/watchlist` },
+    { label: "Market", href: `${base}/market`, feature: "market_board" },
     { label: "Crypto", href: `${base}/crypto` },
     ...plugins.map((p) => ({ label: p.label, href: `${base}/${p.href}` })),
     { label: "Settings & data", href: `${base}/settings` },
