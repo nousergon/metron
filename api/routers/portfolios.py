@@ -1036,6 +1036,10 @@ def list_portfolios(
     tenant_id: uuid.UUID = Depends(_tenant_id),
     session: Session = Depends(get_session),
 ) -> list[models.Portfolio]:
+    if ent.current_pin() is not None:
+        # External user demo (metron-ops-I310): the viewer sees the demo household only.
+        household = session.get(models.Portfolio, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID)
+        return [household] if household is not None else []
     rows = list(session.scalars(select(models.Portfolio).where(models.Portfolio.tenant_id == tenant_id)).all())
     # The Showcase Portfolio and the ICP-shaped Demo household (metron-ops-I317) are both
     # visible on every real tenant's dashboard (not just the isolated demo tenant, which

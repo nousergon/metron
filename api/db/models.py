@@ -774,3 +774,39 @@ class RetirementGoal(Base):
     # value; the user types their own planned withdrawal rate.
     withdrawal_rate: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+class ExternalDemoInvite(Base):
+    """A single-use invite to the external user demo (metron-ops-I310).
+
+    Operator-level, NOT tenant-scoped (like ``events``): an invite grants a read-only,
+    entitlement-pinned view of the shared demo household, never access to any tenant's
+    data. Only a SHA-256 digest of the code is stored; the plaintext is returned once, at
+    creation. No email or other PII is recorded — the invite is a bearer capability."""
+
+    __tablename__ = "external_demo_invites"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    code_digest: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column()
+    expires_at: Mapped[datetime] = mapped_column()
+    # Set exactly once, by a conditional UPDATE, when the code is redeemed (single use).
+    redeemed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class ExternalDemoSession(Base):
+    """A server-side external-demo session minted by redeeming an invite (metron-ops-I310).
+
+    Opaque bearer token; only its SHA-256 digest is stored, so a database read cannot be
+    replayed as a session. Revocable by deleting the row, and dead for every row whenever
+    ``EXTERNAL_DEMO_RELEASED`` is off."""
+
+    __tablename__ = "external_demo_sessions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    token_digest: Mapped[str] = mapped_column(String(64), unique=True)
+    invite_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("external_demo_invites.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column()
+    expires_at: Mapped[datetime] = mapped_column()

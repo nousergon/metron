@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from krepis.logging import setup_logging
 
+from api import entitlements
 from api.config import settings
 from api.db.session import create_all, engine
 from api.plugins import active_plugins
@@ -33,6 +34,8 @@ from api.routers import (
     portfolios,
     research_intel,
 )
+from api.routers import external_demo as external_demo_router
+from api.services import external_demo
 from api.services.demo import DEMO_TENANT_ID, REFERENCE_PORTFOLIO_ID
 from api.services.demo_household import DEMO_HOUSEHOLD_PORTFOLIO_ID
 
@@ -164,6 +167,24 @@ async def _demo_read_only(request: Request, call_next):
 
 
 @app.middleware("http")
+async def _external_demo_pin(request: Request, call_next):
+    """External user demo (metron-ops-I310): a request carrying ``X-Demo-Session`` is
+    refused unless its route is on the default-deny allowlist, and otherwise resolves every
+    entitlement against the server-side no-advice pin. Presence alone pins (it can only
+    narrow); the token itself is verified by ``identity.require_tenant_id``. Design:
+    ``api/services/external_demo.py``."""
+    if external_demo.SESSION_HEADER not in request.headers:
+        return await call_next(request)
+    if not external_demo.is_route_allowed(request.method, request.url.path):
+        return JSONResponse(status_code=403, content={"detail": "Not available in the demo."})
+    token = entitlements.set_request_pin(external_demo.pin())
+    try:
+        return await call_next(request)
+    finally:
+        entitlements.reset_request_pin(token)
+
+
+@app.middleware("http")
 async def _clear_request_cache(request: Request, call_next):
     """Clear request-scoped caches (e.g., attractiveness universe) at end of each request.
     Prevents stale data leakage across requests while avoiding redundant S3 reads within
@@ -191,6 +212,7 @@ app.include_router(indices.router)
 app.include_router(research_intel.router)
 app.include_router(events.router)
 app.include_router(glance.router)
+app.include_router(external_demo_router.router)
 
 # Mount any out-of-tree premium plugins (metron-ops). Importing them here registers
 # their ORM models on the shared Base *before* lifespan's create_all runs, so a

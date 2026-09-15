@@ -8,6 +8,7 @@
 // fixed demo tenant id, the ONE value the backend still accepts via X-Tenant-Id.
 
 import { DEMO_TENANT_ID } from "@/lib/demo";
+import { externalDemoToken, isExternalDemoCredential } from "@/lib/external-demo";
 
 const API_URL = process.env.METRON_API_URL ?? "http://localhost:8000";
 
@@ -73,7 +74,9 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
  * id (a real session's JWT can never equal it), so this is a deterministic branch on a
  * named constant — not a fallback: any other non-JWT value would go out as a Bearer
  * token and be 401'd by the backend, never silently trusted as a tenant id. */
-function authHeaders(apiAuth: string): Record<string, string> {
+export function authHeaders(apiAuth: string): Record<string, string> {
+  // External user demo (metron-ops-I310): the invite-minted session token.
+  if (isExternalDemoCredential(apiAuth)) return { "X-Demo-Session": externalDemoToken(apiAuth) };
   return apiAuth === DEMO_TENANT_ID ? { "X-Tenant-Id": apiAuth } : { Authorization: `Bearer ${apiAuth}` };
 }
 
@@ -88,6 +91,8 @@ function authHeaders(apiAuth: string): Record<string, string> {
  * signature on every actual data fetch. */
 export function cacheIdentity(apiAuth: string): string {
   if (apiAuth === DEMO_TENANT_ID) return apiAuth;
+  // Every external-demo session sees the same server-pinned view of the same portfolio.
+  if (isExternalDemoCredential(apiAuth)) return "external-demo";
   const payload = apiAuth.split(".")[1];
   if (!payload) throw new Error("cacheIdentity: credential is neither the demo id nor a JWT");
   const { sub } = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string };
@@ -1743,7 +1748,25 @@ export type Entitlements = {
   features: Entitlement[];
   tiers: { key: string; label: string }[];
   simulator: boolean;
+  /** True for an invite-minted external-demo session (metron-ops-I310). */
+  external_demo?: boolean;
 };
+
+// ── External user demo (metron-ops-I310) ────────────────────────────────────
+export type LockedCard = { key: string; name: string; line: string; status: string };
+
+export const getLockedCards = (apiAuth: string) => get<LockedCard[]>(apiAuth, "/external-demo/locked-cards");
+
+/** Count one tap on a locked card (first-party counter; no third-party tracker). */
+export async function recordLockedCardTap(apiAuth: string, card: string): Promise<void> {
+  const res = await apiFetch("/external-demo/taps", {
+    method: "POST",
+    headers: { ...authHeaders(apiAuth), "Content-Type": "application/json" },
+    body: JSON.stringify({ card }),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new MetronApiError(res.status, `POST /external-demo/taps → ${res.status}`);
+}
 
 /** Resolve entitlements; `preview` overrides are honored server-side ONLY when the
  * tier simulator is enabled (owner-only — ignored on the public product). */

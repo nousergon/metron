@@ -31,6 +31,7 @@ from nousergon_lib.quant.attractiveness import (
     normalize_pillar_weights,
 )
 
+from api import entitlements
 from api.services import factor_profiles as factor_profiles_service
 
 _COMPUTE_CACHE_TTL_S = 3600.0  # 1 hour; matches factor profile update cadence
@@ -114,6 +115,10 @@ def compute_universe(
     2. Module-level (1-hour TTL): across requests, reuse computed universe for 1 hour.
 
     When custom readers are supplied (tests), bypass caching entirely."""
+    if entitlements.current_pin() is not None:
+        # External user demo (metron-ops-I310): a Metron-computed per-security score is
+        # withheld from pinned requests, before any cache is read or populated.
+        return {}
     if profiles_reader is not None or weights_reader is not None:
         # Test path: always compute fresh.
         return _compute_universe_uncached(profiles_reader, weights_reader)
