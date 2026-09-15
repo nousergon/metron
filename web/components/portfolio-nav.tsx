@@ -21,6 +21,11 @@ const TIER_LABEL: Record<string, string> = { personal: "Intelligence" };
 // the no-feed beta (metron-ops#53). They reappear when the feed entitlement is on.
 const FEED_DEPENDENT = new Set(["risk", "attribution", "scenarios", "calendar", "indices", "market_board"]);
 
+/** Reserved featureStates key marking an external-demo session (metron-ops-I310). */
+export const EXTERNAL_DEMO_NAV_KEY = "__external_demo";
+// Ungated pages an external viewer can still use (read-only watchlist quotes).
+const EXTERNAL_DEMO_UNGATED = new Set(["Watchlist"]);
+
 export function PortfolioNav({
   portfolioId,
   name,
@@ -60,8 +65,9 @@ export function PortfolioNav({
   }, [open]);
 
   const base = `/portfolios/${portfolioId}`;
+  const externalDemo = featureStates?.[EXTERNAL_DEMO_NAV_KEY] !== undefined;
   // Selection-scoped pages carry navQuery; whole-portfolio pages don't.
-  const pages: NavPage[] = [
+  const allPages: NavPage[] = [
     // Holdings IS the landing page (metron-ops-I156) — the daily-driver live surface.
     // The glance screen (metron-ops#248) — one phone screen, whole-portfolio scope.
     { label: "Glance", href: `${base}/glance`, feature: "glance" },
@@ -92,6 +98,15 @@ export function PortfolioNav({
     ...plugins.map((p) => ({ label: p.label, href: `${base}/${p.href}` })),
     { label: "Settings & data", href: `${base}/settings` },
   ];
+  // External user demo (metron-ops-I310): only what the viewer can use, then the locked cards.
+  const pages: NavPage[] = externalDemo
+    ? [
+        ...allPages.filter((p) =>
+          p.feature ? featureStates?.[p.feature]?.available === true : EXTERNAL_DEMO_UNGATED.has(p.label),
+        ),
+        { label: "In development", href: `${base}/in-development` },
+      ]
+    : allPages;
   const current =
     pages.find((p) => p.href.split("?")[0] === pathname) ??
     (pathname === base ? pages[0] : undefined);

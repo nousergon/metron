@@ -2,6 +2,7 @@ import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 import { DEMO_COOKIE, DEMO_TENANT_ID } from "@/lib/demo";
+import { EXTERNAL_DEMO_COOKIE, EXTERNAL_DEMO_CREDENTIAL_PREFIX } from "@/lib/external-demo";
 
 // Server-side session helpers over the SHARED nousergon-auth identity service
 // (metron-ops#179). Metron no longer runs Better Auth in-process: the shared service
@@ -52,6 +53,11 @@ const SESSION_COOKIE = "__Secure-better-auth.session_token";
  * `metron_demo` cookie (metron-ops#183) — wrong-tenant data is the worst rendering
  * of an auth hiccup. Cached per request render so one page doesn't mint per fetch. */
 export const requireApiAuth = cache(async (): Promise<string> => {
+  // External user demo (metron-ops-I310): an invite-minted session is checked first. It
+  // is the NARROWER credential — the backend pins it to the no-advice set over the demo
+  // household — so preferring it can never widen what a browser sees.
+  const xdemo = (await cookies()).get(EXTERNAL_DEMO_COOKIE)?.value;
+  if (xdemo) return `${EXTERNAL_DEMO_CREDENTIAL_PREFIX}${xdemo}`;
   const hasSessionCookie = (await cookies()).get(SESSION_COOKIE) !== undefined;
   const cookie = (await headers()).get("cookie");
   if (cookie && hasSessionCookie) {

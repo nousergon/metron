@@ -67,6 +67,9 @@ def plugins() -> list[dict]:
     stock public/self-host deploy (no metron-ops) this is always ``[]``, so the
     no-AI / no-advice posture above holds without the frontend knowing about plugins.
     """
+    if entitlements.current_pin() is not None:
+        # An external-demo session (metron-ops-I310) never sees premium plugin surfaces.
+        return []
     return [
         {"id": p.nav.id, "label": p.nav.label, "href": p.nav.href, "tier": p.nav.tier}
         for p in active_plugins()
@@ -100,7 +103,10 @@ def entitlements_endpoint(
         result = entitlements.resolve(tier, feed_enabled=feed)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    result["simulator"] = settings.tier_simulator
+    pinned = entitlements.current_pin() is not None
+    # A pinned external-demo session (metron-ops-I310) is never offered the simulator.
+    result["simulator"] = settings.tier_simulator and not pinned
+    result["external_demo"] = pinned
     return result
 
 

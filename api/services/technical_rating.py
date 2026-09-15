@@ -30,6 +30,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from api import entitlements
 from api.services import intraday as intraday_service
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,11 @@ def load_technical_rating(
     EOD fallback otherwise, decided PER SYMBOL (metron-ops#294). ``intraday_reader`` /
     ``technicals_reader`` (no-arg callables returning the raw artifact dict) and ``now`` are
     injectable for tests; default to the S3 reads / wall clock."""
+    if entitlements.current_pin() is not None:
+        # External user demo (metron-ops-I310): the rating is advice-flavored, so a pinned
+        # request gets no ratings at all. One chokepoint covers every consumer (holdings,
+        # tearsheet, market board, deploy cash, glance).
+        return RatingSnapshot(by_symbol={})
     now = now or datetime.now(UTC)
     by_symbol: dict[str, TickerRating] = {}
 

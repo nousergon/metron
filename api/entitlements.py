@@ -21,6 +21,7 @@ free vs licensed, and why ETF look-through / benchmark are Pro).
 
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
 # ── Data sources a feature can depend on ─────────────────────────────────────
@@ -139,8 +140,58 @@ TIER_BY_KEY: dict[str, Tier] = {t.key: t for t in TIERS}
 TIER_ORDER: list[str] = [t.key for t in TIERS]
 
 
+# ── Per-request pin (external user demo, metron-ops-I310) ────────────────────
+# Advice-flavored features: never available to an external-demo session, whatever the
+# deployment's tier. Deploy cash is not a catalog feature (its router gates it directly),
+# so it is refused by route in api/services/external_demo.py instead.
+ADVICE_FEATURES: frozenset[str] = frozenset({"market_board", "research_intel", "alpha_engine", "ai_advisor", "agentic_research"})
+# Feed-derived L1 features: live for an external-demo session unless the fallback config
+# (``external_demo_feed_features_locked``) re-locks them.
+FEED_DERIVED_FEATURES: frozenset[str] = frozenset(
+    {"benchmark", "risk", "attribution", "scenarios", "calendar", "indices", "etf_lookthrough"}
+)
+PINNED_TIER_KEY = "external_demo"
+
+
+@dataclass(frozen=True)
+class Pin:
+    """A server-side entitlement pin: the exact feature set and feed state a request
+    resolves against, overriding the deployment tier, the feed setting and the simulator."""
+
+    features: frozenset[str]
+    feed_enabled: bool
+
+
+_request_pin: ContextVar[Pin | None] = ContextVar("metron_entitlement_pin", default=None)
+
+
+def external_demo_features(*, feed_features_locked: bool) -> frozenset[str]:
+    """The no-advice feature set: ``_PRO`` minus the advice features, optionally minus the
+    feed-derived ones (the fallback)."""
+    features = _PRO - ADVICE_FEATURES
+    if feed_features_locked:
+        features = features - FEED_DERIVED_FEATURES
+    return frozenset(features)
+
+
+def set_request_pin(pin: Pin | None) -> Token:
+    return _request_pin.set(pin)
+
+
+def reset_request_pin(token: Token) -> None:
+    _request_pin.reset(token)
+
+
+def current_pin() -> Pin | None:
+    return _request_pin.get()
+
+
 def provisioned_sources(feed_enabled: bool) -> frozenset[str]:
-    """The data sources currently available — free always, licensed iff feed on."""
+    """The data sources currently available — free always, licensed iff feed on. A pinned
+    request uses the pin's feed state."""
+    pin = _request_pin.get()
+    if pin is not None:
+        feed_enabled = pin.feed_enabled
     return FREE_SOURCES | (FEED_SOURCES if feed_enabled else frozenset())
 
 
@@ -162,6 +213,11 @@ def effective_axes(
     canonical form of the override mirrored ad-hoc in ``GET /meta/entitlements`` and
     ``portfolios._effective_entitlement``."""
     tier, feed = default_tier, feed_entitled
+    pin = _request_pin.get()
+    if pin is not None:
+        # A pinned session ignores preview headers entirely; ``resolve`` substitutes the
+        # pinned feature set for whichever tier key is passed.
+        return default_tier, pin.feed_enabled
     if simulator:
         if preview_tier is not None:
             tier = preview_tier
@@ -195,10 +251,17 @@ def resolve(tier: str, *, feed_enabled: bool) -> dict:
     ``"tier"`` when the tier doesn't include it (upsell to ``required_tier``), else
     the first missing data source (``"feed"`` / ``"benchmark"`` / ``"etf_vendor"``).
     """
-    if tier not in TIER_BY_KEY:
+    pin = _request_pin.get()
+    if pin is not None:
+        # The single chokepoint for the external-demo pin: every call site (routers, the
+        # insights registry, plugins) resolves through here, so the pinned set wins no
+        # matter which tier or feed the caller derived from settings or headers.
+        tier, feed_enabled, active = PINNED_TIER_KEY, pin.feed_enabled, pin.features
+    elif tier not in TIER_BY_KEY:
         raise ValueError(f"unknown tier {tier!r}; known: {TIER_ORDER}")
+    else:
+        active = TIER_BY_KEY[tier].features
     prov = provisioned_sources(feed_enabled)
-    active = TIER_BY_KEY[tier].features
     features = []
     for f in FEATURES:
         in_tier = f.key in active

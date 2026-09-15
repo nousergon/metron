@@ -9,7 +9,7 @@
 import { cookies, type UnsafeUnwrappedCookies } from "next/headers";
 import { unstable_cache } from "next/cache";
 import { cacheIdentity, getEntitlements, type Entitlement, type Entitlements } from "@/lib/api";
-import type { NavFeatureState } from "@/components/portfolio-nav";
+import { EXTERNAL_DEMO_NAV_KEY, type NavFeatureState } from "@/components/portfolio-nav";
 
 /** Short-TTL revalidation window for the entitlement flags (metron-ops#91 Part 2).
  *  These flags gate UI affordances only — the backend re-checks entitlements on every
@@ -69,9 +69,14 @@ export function toFeatureStates(
   entitlements: Entitlements | null,
 ): Record<string, NavFeatureState> | undefined {
   if (!entitlements) return undefined;
-  return Object.fromEntries(
+  const states: Record<string, NavFeatureState> = Object.fromEntries(
     entitlements.features.map((f) => [f.key, { available: f.available, required_tier: f.required_tier }]),
   );
+  // External user demo (metron-ops-I310): a reserved non-catalog key the nav reads to show
+  // only usable pages plus the locked cards. Every page already passes featureStates, so
+  // no page needs a new prop.
+  if (entitlements.external_demo) states[EXTERNAL_DEMO_NAV_KEY] = { available: true, required_tier: null };
+  return states;
 }
 
 /** Load + map in one call — the nav lock/hide state for PortfolioNav. Every portfolio

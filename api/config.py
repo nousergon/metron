@@ -97,6 +97,28 @@ class Settings(BaseSettings):
     # NEVER enabled on the public multi-tenant product (it would let any caller
     # re-scope their own entitlements). See metron-ops#37.
     tier_simulator: bool = False
+    # External user demo (metron-ops-I310). An invited viewer redeems a single-use invite
+    # code and gets a server-side session pinned to the no-advice feature set over the
+    # demo household (see api/services/external_demo.py).
+    #
+    # RELEASE GATE: while False, invite creation AND redemption return 403 and every
+    # existing external-demo session stops resolving. It flips only after the licensed
+    # display entitlement is confirmed (metron-ops#24); nothing in this repo flips it.
+    external_demo_released: bool = False
+    # Fallback (metron-ops-I310 rescope item 5): True re-locks the feed-derived features
+    # (risk, attribution, benchmark, scenarios, calendar, indices, ETF look-through) for
+    # external-demo sessions and shows them as locked cards — a config change, no code change.
+    external_demo_feed_features_locked: bool = False
+    # Comma-separated verified identity emails allowed to create invites and read the
+    # funnel counters. Empty (the default) means nobody: the owner endpoints fail closed.
+    external_demo_admin_emails: str = ""
+    # Invite and session lifetimes. A session is also dead the moment the release flag is off.
+    external_demo_invite_ttl_hours: int = 14 * 24
+    external_demo_session_ttl_hours: int = 72
+
+    @property
+    def external_demo_admin_email_set(self) -> frozenset[str]:
+        return frozenset(e.strip().lower() for e in self.external_demo_admin_emails.split(",") if e.strip())
 
     @property
     def cors_origin_list(self) -> list[str]:

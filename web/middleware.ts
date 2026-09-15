@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { withBasePath } from "@/lib/base-path";
+import { EXTERNAL_DEMO_COOKIE, EXTERNAL_DEMO_LANDING, isExternalDemoPageAllowed } from "@/lib/external-demo";
 
 // Purge the LEGACY host-only session cookie left over from Metron's embedded
 // better-auth era (pre metron-ops#179 cutover).
@@ -26,6 +28,15 @@ export function hasShadowedSessionCookie(cookieHeader: string | null): boolean {
 }
 
 export function middleware(request: NextRequest) {
+  // External user demo (metron-ops-I310): an invited viewer may open only the demo
+  // household's no-advice pages; anything else goes to the landing page. Navigation only —
+  // the API refuses the same routes server-side for the session regardless.
+  if (
+    request.cookies.get(EXTERNAL_DEMO_COOKIE)?.value &&
+    !isExternalDemoPageAllowed(request.nextUrl.pathname)
+  ) {
+    return new NextResponse(null, { status: 307, headers: { Location: withBasePath(EXTERNAL_DEMO_LANDING) } });
+  }
   const response = NextResponse.next();
   if (hasShadowedSessionCookie(request.headers.get("cookie"))) {
     // Name + Path only, deliberately NO Domain: deletes the host-only legacy

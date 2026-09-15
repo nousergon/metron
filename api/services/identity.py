@@ -116,13 +116,25 @@ def require_tenant_id(
     session: Session = Depends(get_session),
     authorization: str | None = Header(default=None),
     x_tenant_id: str | None = Header(default=None),
+    x_demo_session: str | None = Header(default=None),
 ) -> uuid.UUID:
     """FastAPI dependency: the authenticated caller's tenant id.
 
     Bearer JWT is the primary (and for real users, only) path; ``X-Tenant-Id`` is
     accepted solely for the read-only demo tenant (see module docstring). Everything
     else is 401.
+
+    ``X-Demo-Session`` (external user demo, metron-ops-I310) is checked FIRST and is
+    authoritative when present: a live session resolves to the read-only demo tenant, any
+    other value is 401 — it never falls through to a bearer token sent alongside it.
     """
+    if x_demo_session is not None:
+        from api.services import external_demo
+
+        if external_demo.resolve_session(session, x_demo_session.strip()) is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired demo session")
+        return DEMO_TENANT_ID
+
     if authorization is not None:
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not token.strip():
