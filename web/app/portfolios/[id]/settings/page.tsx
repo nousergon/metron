@@ -1,6 +1,8 @@
 import { getExcludedAccounts, getMeta, getPortfolio, getPreferences, MetronApiError, type ExcludedAccount, type Preferences } from "@/lib/api";
+import { getGoal, EMPTY_GOAL, type Goal } from "@/lib/api-goal";
 import { Empty, Section, Table } from "@/components/ui";
 import { AccountTagRow, BaseCurrencyForm, ExcludedAccountRow, PreferencesForm } from "@/components/settings-forms";
+import { GoalForm } from "@/components/goal-form";
 import { navFeatureStates } from "@/lib/entitlements";
 import { loadAccountsMeta } from "@/lib/account-meta";
 import { requireApiAuth } from "@/lib/session";
@@ -30,6 +32,11 @@ export default async function SettingsPage(props: { params: Promise<{ id: string
     }
     return <Empty>Couldn&apos;t load settings. Is the backend running?</Empty>;
   }
+
+  // Best-effort: a goal-fetch failure degrades to the empty (no-goal) state rather than
+  // failing the whole Settings page — the form still renders and a save recovers it.
+  const goal: Goal = await getGoal(apiAuth, id).catch(() => EMPTY_GOAL);
+
   // A transient meta-cache failure degrades to "no accounts" here (fail-open, like
   // entitlements) rather than a hard page error — the tag table just re-populates on
   // the next successful read.
@@ -85,6 +92,10 @@ export default async function SettingsPage(props: { params: Promise<{ id: string
 
       <Section title="Investor preferences">
         <PreferencesForm portfolioId={id} current={preferences} />
+      </Section>
+
+      <Section title="Retirement goal" note="user-authored — Metron never suggests the number">
+        <GoalForm portfolioId={id} current={goal} />
       </Section>
 
       <Section title="Appearance" note="display theme (saved in this browser)">

@@ -748,3 +748,29 @@ class PlanTarget(Base):
     # A line smaller than this is dropped rather than shrunk, user-set. NULL = no minimum.
     min_line_usd: Mapped[float | None] = mapped_column(nullable=True)
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+class RetirementGoal(Base):
+    """One user-authored retirement goal per portfolio (metron-ops-I316).
+
+    Every column is user-typed and nullable — no defaults, no pre-fill. This is the
+    doctrine layer-2 exemption (``docs/intelligence-doctrine.md``, positioning §3c.2):
+    a user-authored target is not a suitability input, so ``api.services.goal``
+    evaluating the portfolio against these numbers is arithmetic, not advice. Metron
+    never suggests the target amount, the date, or the withdrawal rate — the row
+    exists only after the user has typed at least one value in via ``PUT
+    /portfolios/{id}/goal``."""
+
+    __tablename__ = "retirement_goal"
+    __table_args__ = (UniqueConstraint("tenant_id", "portfolio_id", name="uq_retirement_goal_portfolio"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
+    target_amount_usd: Mapped[float | None] = mapped_column(Numeric(28, 2), nullable=True)
+    target_date: Mapped[date | None] = mapped_column(nullable=True)
+    annual_contribution_usd: Mapped[float | None] = mapped_column(Numeric(28, 2), nullable=True)
+    # A fraction, e.g. 0.04 for "the 4% rule" — never pre-filled with 0.04 or any other
+    # value; the user types their own planned withdrawal rate.
+    withdrawal_rate: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
