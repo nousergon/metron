@@ -719,3 +719,32 @@ class Event(Base):
     # Arbitrary structured payload (referrer, wedge, step, …). JSON so any surface can attach
     # its own context without a schema change; never holds secrets/PII by contract.
     props: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class PlanTarget(Base):
+    """User-authored per-security plan targets (metron-ops-I311) — "the user types the
+    number; Metron does the arithmetic" (intelligence-doctrine layer 2 exemption).
+
+    Deliberately NOT the same object as ``metron_ext``'s advisor-profile
+    ``target_allocation`` (a private, coarse us_equity/international allocation used for
+    suitability-flavored guidance): this table is PUBLIC, per-security, and mechanical —
+    no suitability field reaches it, and nothing here is ever pre-filled or suggested by
+    Metron (a test asserts the empty state carries no default). One row per portfolio.
+    """
+
+    __tablename__ = "plan_targets"
+    __table_args__ = (UniqueConstraint("tenant_id", "portfolio_id", name="uq_plantarget_portfolio"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
+    # [{"symbol": "AAPL", "weight": 0.10}, ...] — the user's own list, in the order they
+    # entered it (rows in every downstream view are ordered by THIS list, never by score).
+    # Weights sum to <= 1 (enforced at the API boundary, not here — the DB stores whatever
+    # was last validated-and-saved).
+    targets: Mapped[list] = mapped_column(JSON, default=list)
+    # Fraction cap on any one position's post-purchase weight, user-set. NULL = no cap.
+    max_single_position: Mapped[float | None] = mapped_column(nullable=True)
+    # A line smaller than this is dropped rather than shrunk, user-set. NULL = no minimum.
+    min_line_usd: Mapped[float | None] = mapped_column(nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

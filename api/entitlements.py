@@ -88,6 +88,11 @@ FEATURES: tuple[Feature, ...] = (
     # read is fail-soft, so availability is a tier decision, not a data-provisioning one —
     # free/Beta sees the quant spine only, never this edge OUTPUT).
     Feature("research_intel", "Research intel (regime · sector ratings · attractiveness)", ()),
+    # New cash to my targets + what-if purchase (metron-ops-I311) — the L1 comparable to
+    # deploy_cash: arithmetic against a table the user typed in, no Metron-chosen names and
+    # no score, so both ship in the base (beta) tier rather than being feed/Pro-gated.
+    Feature("cash_to_targets", "New cash to my targets", ()),
+    Feature("whatif_purchase", "What-if purchase", ()),
 )
 FEATURE_BY_KEY: dict[str, Feature] = {f.key: f for f in FEATURES}
 
@@ -106,6 +111,7 @@ class Tier:
 _BETA = frozenset({
     "overview", "glance", "income", "transactions", "tax",
     "concentration", "performance", "macro", "fundamentals",
+    "cash_to_targets", "whatif_purchase",
 })
 _PRO = _BETA | {
     "auto_sync", "benchmark", "risk", "attribution", "scenarios", "calendar", "etf_lookthrough",

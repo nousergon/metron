@@ -83,6 +83,9 @@ export function PortfolioNav({
     { label: "Calendar", href: `${base}/calendar`, feature: "calendar" },
     // Neutral research intel (paid Intelligence tier; nav locks it on the beta). config#1499.
     { label: "Research intel", href: `${base}/research-intel`, feature: "research_intel" },
+    // New cash to my targets + what-if purchase (metron-ops-I311) — arithmetic against
+    // targets the user typed in; ships in the base beta tier (ungated).
+    { label: "Plan", href: `${base}/plan`, feature: "cash_to_targets" },
     { label: "Watchlist", href: `${base}/watchlist` },
     { label: "Market", href: `${base}/market`, feature: "market_board" },
     { label: "Crypto", href: `${base}/crypto` },
