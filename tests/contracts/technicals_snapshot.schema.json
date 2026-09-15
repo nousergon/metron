@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nousergon-data/contracts/technicals_snapshot.schema.json",
+  "title": "alpha-engine-data market_data/technicals/latest.json -- per-symbol technicals Metron reads (v1)",
+  "description": "Per-symbol field contract for market_data/technicals/latest.json (nousergon-data collectors/metron_market_data.py::collect_technicals, computed via features.feature_engineer._compute_rsi / _compute_macd -- the SAME functions the CATALOG-governed write path uses, though this artifact is a separate JSON namespace with its own field names, not features/registry.py::CATALOG columns; grep-verified 2026-09-14: metron reads NO features/{date}/*.parquet snapshot directly and NO registry.CATALOG-named column. This artifact is the real, measured coupling to nousergon-data's feature computation -- a units/scale drift here (e.g. a fraction silently becoming a percent, the avg_volume_20d shape) is the same defect class, one hop from CATALOG naming rather than through it. Consumer: api.services.technicals.TickerTechnicals / _parse / load_technicals. Pinned copy per the P-07 pattern (metron-PR457, crucible-PR302).",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "rsi_14": {"type": ["number", "null"], "minimum": 0, "maximum": 100, "description": "Wilder RSI(14), 0-100 score"},
+    "macd_hist": {"type": ["number", "null"], "description": "MACD line minus signal line, price units"},
+    "ma_50": {"type": ["number", "null"], "exclusiveMinimum": 0, "description": "50-day moving average, price units"},
+    "ma_200": {"type": ["number", "null"], "exclusiveMinimum": 0, "description": "200-day moving average, price units"},
+    "pct_to_ma_50": {"type": ["number", "null"], "minimum": -1, "maximum": 5, "description": "last/50d-MA - 1, decimal fraction"},
+    "pct_to_ma_200": {"type": ["number", "null"], "minimum": -1, "maximum": 5, "description": "last/200d-MA - 1, decimal fraction"},
+    "high_52w": {"type": ["number", "null"], "exclusiveMinimum": 0, "description": "52-week high, price units"},
+    "low_52w": {"type": ["number", "null"], "exclusiveMinimum": 0, "description": "52-week low, price units"},
+    "pct_in_52w_range": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "(last-low)/(high-low), 0-1 decimal fraction -- NOT a percent"},
+    "pct_from_52wk_high": {"type": ["number", "null"], "minimum": -1, "maximum": 1, "description": "last/high_52w - 1, decimal fraction"},
+    "mom_20d": {"type": ["number", "null"], "minimum": -1, "maximum": 5, "description": "20-session return, decimal fraction"},
+    "mom_60d": {"type": ["number", "null"], "minimum": -1, "maximum": 5, "description": "60-session return, decimal fraction"}
+  }
+}
