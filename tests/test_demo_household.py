@@ -19,6 +19,7 @@ from api.db import models
 from api.services import analytics, demo_household, glance
 from api.services import goal as goal_service
 from api.services import performance as perf
+from api.services import plan_targets as plan_targets_service
 from api.services.analytics import _cash_by_account
 
 DEMO_HEADERS = {"X-Tenant-Id": str(demo_household.DEMO_TENANT_ID)}
@@ -158,6 +159,27 @@ def test_demo_household_is_read_only_patch(client, db_session):
     assert r.status_code == 403
 
 
+def test_demo_household_is_read_only_plan_targets_put(client, db_session):
+    demo_household.ensure_demo_household_seeded(db_session)
+    r = client.put(
+        f"/portfolios/{demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID}/plan/targets",
+        json={"targets": [{"symbol": "TSLA", "weight": 1.0}]},
+        headers=DEMO_HEADERS,
+    )
+    assert r.status_code == 403
+
+
+def test_demo_household_is_read_only_goal_put(client, db_session):
+    demo_household.ensure_demo_household_seeded(db_session)
+    r = client.put(
+        f"/portfolios/{demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID}/goal",
+        json={"target_amount_usd": 1.0, "target_date": "2030-01-01",
+              "annual_contribution_usd": 1.0, "withdrawal_rate": 0.01},
+        headers=DEMO_HEADERS,
+    )
+    assert r.status_code == 403
+
+
 def test_demo_household_visible_on_every_real_tenant(client, db_session):
     demo_household.ensure_demo_household_seeded(db_session)
     import uuid
@@ -204,6 +226,47 @@ def test_no_goal_seeded_for_a_real_portfolio(db_session):
     db_session.add(real_portfolio)
     db_session.commit()
     assert goal_service.get_goal(db_session, real_tenant_id, real_portfolio.id) is None
+
+
+# ── Plan-target inputs (metron-ops-I322 deliverable 3) ───────────────────────
+def test_plan_targets_are_seeded_with_illustrative_values(db_session):
+    demo_household.ensure_demo_household_seeded(db_session)
+    row = plan_targets_service.get_plan_targets(
+        db_session, demo_household.DEMO_TENANT_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID
+    )
+    assert row is not None
+    assert row.targets == [{"symbol": s, "weight": w} for s, w in demo_household.DEMO_HOUSEHOLD_PLAN_TARGETS]
+    assert sum(t["weight"] for t in row.targets) <= 1.0
+    assert row.max_single_position == demo_household.DEMO_HOUSEHOLD_PLAN_MAX_SINGLE_POSITION
+    assert row.min_line_usd == demo_household.DEMO_HOUSEHOLD_PLAN_MIN_LINE_USD
+    # Every symbol is one of the fixture's own DEMO-namespaced holdings.
+    assert {t["symbol"] for t in row.targets} <= set(demo_household.SECURITY_META)
+
+
+def test_plan_targets_seed_is_idempotent_and_never_duplicates_the_row(db_session):
+    demo_household.ensure_demo_household_seeded(db_session)
+    demo_household.ensure_demo_household_seeded(db_session)
+    count = db_session.scalar(
+        select(func.count(models.PlanTarget.id)).where(
+            models.PlanTarget.portfolio_id == demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID
+        )
+    )
+    assert count == 1
+
+
+def test_no_plan_targets_seeded_for_a_real_portfolio(db_session):
+    """The no-default invariant
+    (``tests/test_planning_router.py::TestTargetsRoundTrip::
+    test_get_with_nothing_saved_is_an_empty_no_default_state``) stays true for every
+    real tenant even after the demo household reconciles — seeding is scoped to
+    ``DEMO_HOUSEHOLD_PORTFOLIO_ID`` alone."""
+    demo_household.ensure_demo_household_seeded(db_session)
+    real_tenant_id = __import__("uuid").uuid4()
+    db_session.add(models.Tenant(id=real_tenant_id, name="Real Tenant"))
+    real_portfolio = models.Portfolio(tenant_id=real_tenant_id, name="Real Portfolio", base_currency="USD")
+    db_session.add(real_portfolio)
+    db_session.commit()
+    assert plan_targets_service.get_plan_targets(db_session, real_tenant_id, real_portfolio.id) is None
 
 
 def test_seeded_household_glance_payload_has_a_goal_candidate(db_session):

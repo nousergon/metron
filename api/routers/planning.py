@@ -14,7 +14,6 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api import entitlements as ent
@@ -23,6 +22,7 @@ from api.db import models
 from api.db.session import get_session
 from api.routers.portfolios import _owned_portfolio
 from api.services import cash_to_targets as cash_to_targets_service
+from api.services import plan_targets as plan_targets_service
 from api.services import whatif_purchase as whatif_service
 
 router = APIRouter(prefix="/portfolios/{portfolio_id}/plan", tags=["planning"])
@@ -184,12 +184,7 @@ class WhatIfPlanOut(BaseModel):
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def _get_row(session: Session, portfolio: models.Portfolio) -> models.PlanTarget | None:
-    return session.scalars(
-        select(models.PlanTarget).where(
-            models.PlanTarget.tenant_id == portfolio.tenant_id,
-            models.PlanTarget.portfolio_id == portfolio.id,
-        )
-    ).first()
+    return plan_targets_service.get_plan_targets(session, portfolio.tenant_id, portfolio.id)
 
 
 def _out(row: models.PlanTarget | None) -> PlanTargetsOut:
@@ -225,16 +220,11 @@ def put_targets(
     session: Session = Depends(get_session),
 ) -> PlanTargetsOut:
     """Create or replace the portfolio's plan targets — the user's own list, verbatim."""
-    row = _get_row(session, portfolio)
     payload = [{"symbol": t.symbol.strip().upper(), "weight": t.weight} for t in body.targets]
-    if row is None:
-        row = models.PlanTarget(tenant_id=portfolio.tenant_id, portfolio_id=portfolio.id)
-        session.add(row)
-    row.targets = payload
-    row.max_single_position = body.max_single_position
-    row.min_line_usd = body.min_line_usd
-    session.commit()
-    session.refresh(row)
+    row = plan_targets_service.set_plan_targets(
+        session, portfolio.tenant_id, portfolio.id,
+        targets=payload, max_single_position=body.max_single_position, min_line_usd=body.min_line_usd,
+    )
     return _out(row)
 
 
