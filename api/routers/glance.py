@@ -65,13 +65,17 @@ def get_glance(
     screen = glance_service.compose(session, portfolio, tier=tier, feed_enabled=feed)
     duration_ms = (time.perf_counter() - t0) * 1000.0
     response.headers["Server-Timing"] = f"glance;dur={duration_ms:.1f}"
+    # The tier can originate from the ``X-Preview-Tier`` request header, so only a value
+    # from the closed tier set reaches the log line (log-injection guard, CodeQL
+    # py/log-injection); anything else is logged as the literal "unknown".
+    log_tier = tier if tier in ent.TIER_BY_KEY else "unknown"
     log.info(
         "glance composed portfolio=%s duration_ms=%.1f state=%s tier=%s feed=%s degraded=%d zones_ms=%s",
         portfolio.id,
         duration_ms,
         screen.state,
-        tier,
-        feed,
+        log_tier,
+        bool(feed),
         len(screen.degraded),
         screen.timings_ms,
     )
