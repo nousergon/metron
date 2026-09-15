@@ -51,6 +51,9 @@ class Feature:
 # ── The product feature catalog ──────────────────────────────────────────────
 FEATURES: tuple[Feature, ...] = (
     Feature("overview", "Portfolio", ("broker",)),
+    # The glance screen (metron-ops#248) composes only data each tier may already see;
+    # feed-derived zones degrade to "not available" inside the payload.
+    Feature("glance", "Glance screen", ("broker",)),
     Feature("income", "Income", ("ledger",)),
     Feature("transactions", "Transactions & realized", ("ledger",)),
     Feature("tax", "Tax (cost-basis + realized/unrealized)", ("ledger", "broker")),
@@ -101,7 +104,7 @@ class Tier:
 # _PRO and _AGENTIC stay as internal composition blocks (not selectable) so the catalog's
 # layering is preserved for when packaging re-expands.
 _BETA = frozenset({
-    "overview", "income", "transactions", "tax",
+    "overview", "glance", "income", "transactions", "tax",
     "concentration", "performance", "macro", "fundamentals",
 })
 _PRO = _BETA | {
