@@ -79,6 +79,7 @@ from sqlalchemy.orm import Session
 from api.db import models
 from api.services import goal as goal_service
 from api.services import persistence
+from api.services import plan_targets as plan_targets_service
 from api.services.demo import DEMO_TENANT_ID
 from api.services.performance import record_snapshot
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
@@ -147,6 +148,34 @@ DEMO_HOUSEHOLD_GOAL_TARGET_AMOUNT_USD = 750_000.0
 DEMO_HOUSEHOLD_GOAL_TARGET_DATE = date(2046, 1, 1)
 DEMO_HOUSEHOLD_GOAL_ANNUAL_CONTRIBUTION_USD = 12_000.0
 DEMO_HOUSEHOLD_GOAL_WITHDRAWAL_RATE = 0.04
+
+# Illustrative plan-target inputs (metron-ops-I322 deliverable 3), so "New cash to my
+# targets" has something to compute against on first visit — the same "user typed
+# this in" fiction as the goal inputs above: a real user's ``plan_targets`` row is
+# NEVER defaulted (``goal.set_goal``'s no-default invariant, mirrored here — see
+# ``tests/test_planning_router.py::TestTargetsRoundTrip::
+# test_get_with_nothing_saved_is_an_empty_no_default_state``, which this module never
+# touches for any portfolio but the household). Thirteen of the fixture's own
+# ``DEMO-`` symbols, weights summing to 0.98 (<=1, leaving headroom for "new cash"),
+# a 20% single-position cap (equal to the largest single weight below — a cap, not a
+# floor, so it excludes nothing) and a $250 minimum line.
+DEMO_HOUSEHOLD_PLAN_TARGETS: tuple[tuple[str, float], ...] = (
+    ("DEMO-VTI", 0.20),
+    ("DEMO-VOO", 0.15),
+    ("DEMO-BND", 0.10),
+    ("DEMO-AAPL", 0.08),
+    ("DEMO-MSFT", 0.08),
+    ("DEMO-GOOGL", 0.06),
+    ("DEMO-AMZN", 0.06),
+    ("DEMO-JNJ", 0.05),
+    ("DEMO-JPM", 0.05),
+    ("DEMO-V", 0.05),
+    ("DEMO-NVDA", 0.04),
+    ("DEMO-COST", 0.03),
+    ("DEMO-XOM", 0.03),
+)
+DEMO_HOUSEHOLD_PLAN_MAX_SINGLE_POSITION = 0.20
+DEMO_HOUSEHOLD_PLAN_MIN_LINE_USD = 250.0
 
 # The three accounts (external_id -> (tax_treatment, account_type)) — a taxable
 # brokerage (tax_treatment left None; derives to "Taxable"), a Roth IRA (tax_exempt —
@@ -222,6 +251,7 @@ def _reconcile_and_backfill(session: Session) -> None:
     _apply_account_meta(session)
     _prune_retired_activities(session, result)
     _reconcile_goal(session)
+    _reconcile_plan_targets(session)
     session.commit()
 
 
@@ -240,6 +270,24 @@ def _reconcile_goal(session: Session) -> None:
         target_date=DEMO_HOUSEHOLD_GOAL_TARGET_DATE,
         annual_contribution_usd=DEMO_HOUSEHOLD_GOAL_ANNUAL_CONTRIBUTION_USD,
         withdrawal_rate=DEMO_HOUSEHOLD_GOAL_WITHDRAWAL_RATE,
+    )
+
+
+def _reconcile_plan_targets(session: Session) -> None:
+    """Idempotent upsert of the illustrative plan-target inputs onto the demo
+    household ONLY (metron-ops-I322 deliverable 3) — ``plan_targets.set_plan_targets``
+    is a full-replace upsert (one row per portfolio, create-or-update), so calling it
+    on every reconcile is the same bidirectional-propagation shape as
+    ``_reconcile_goal`` above: a later edit to ``DEMO_HOUSEHOLD_PLAN_TARGETS`` lands on
+    an already-deployed instance the next reconcile, without ever touching any other
+    portfolio's plan-targets row."""
+    plan_targets_service.set_plan_targets(
+        session,
+        DEMO_TENANT_ID,
+        DEMO_HOUSEHOLD_PORTFOLIO_ID,
+        targets=[{"symbol": symbol, "weight": weight} for symbol, weight in DEMO_HOUSEHOLD_PLAN_TARGETS],
+        max_single_position=DEMO_HOUSEHOLD_PLAN_MAX_SINGLE_POSITION,
+        min_line_usd=DEMO_HOUSEHOLD_PLAN_MIN_LINE_USD,
     )
 
 

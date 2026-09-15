@@ -123,6 +123,11 @@ _POST_ALLOWED = frozenset({"/external-demo/taps"})
 _HOUSEHOLD_PATH = re.compile(rf"^/portfolios/{re.escape(str(DEMO_HOUSEHOLD_PORTFOLIO_ID))}(?:/.*)?$")
 # Advice routes under the household path. Refused even though the path matches.
 _ADVICE_SUFFIX = re.compile(r"/(?:market-board|deploy-cash)(?:/|$)")
+# Side-effect-free compute POSTs on the household path (metron-ops-I322): the exact
+# same allowlist as api/main.py::_DEMO_COMPUTE_ALLOWLIST, scoped further here to the
+# demo household — an external-demo viewer never has any other portfolio to POST to.
+# See that constant's docstring for why each of these writes no tenant-scoped row.
+_COMPUTE_SUFFIX = re.compile(r"/plan/(?:cash-to-targets|whatif)$|/(?:risk|attribution)/compute$")
 
 
 def is_route_allowed(method: str, path: str) -> bool:
@@ -131,7 +136,9 @@ def is_route_allowed(method: str, path: str) -> bool:
         if path in _GLOBAL_READS:
             return True
         return bool(_HOUSEHOLD_PATH.match(path)) and not _ADVICE_SUFFIX.search(path)
-    return method == "POST" and path in _POST_ALLOWED
+    if method == "POST" and path in _POST_ALLOWED:
+        return True
+    return method == "POST" and bool(_HOUSEHOLD_PATH.match(path)) and bool(_COMPUTE_SUFFIX.search(path))
 
 
 # ── Invites and sessions ─────────────────────────────────────────────────────

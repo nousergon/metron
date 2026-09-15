@@ -177,7 +177,7 @@ def test_plugins_are_hidden(raw_client, demo_headers):
         ("GET", "/external-demo/counters"),
         ("POST", "/external-demo/invites"),
         ("PUT", f"/portfolios/{HOUSEHOLD}/goal"),
-        ("POST", f"/portfolios/{HOUSEHOLD}/risk/compute"),
+        ("PUT", f"/portfolios/{HOUSEHOLD}/plan/targets"),
     ],
 )
 def test_default_deny_routes(raw_client, demo_headers, method, path):
@@ -188,6 +188,28 @@ def test_route_policy_is_default_deny_for_unknown_paths():
     assert svc.is_route_allowed("GET", f"/portfolios/{HOUSEHOLD}/holdings")
     assert not svc.is_route_allowed("GET", "/a-route-added-later")
     assert not svc.is_route_allowed("DELETE", f"/portfolios/{HOUSEHOLD}/watchlist/AAPL")
+
+
+# ── Side-effect-free compute allowlist (metron-ops-I322) ─────────────────────
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/portfolios/{HOUSEHOLD}/plan/cash-to-targets",
+        f"/portfolios/{HOUSEHOLD}/plan/whatif",
+        f"/portfolios/{HOUSEHOLD}/risk/compute",
+        f"/portfolios/{HOUSEHOLD}/attribution/compute",
+    ],
+)
+def test_compute_routes_are_route_allowed(path):
+    assert svc.is_route_allowed("POST", path)
+
+
+def test_compute_allowlist_does_not_widen_by_method_alone():
+    """The exemption is per (method, path), never "any POST under the household path" —
+    a persisting POST (e.g. a hypothetical future household mutation) stays denied."""
+    assert not svc.is_route_allowed("POST", f"/portfolios/{HOUSEHOLD}/plan/targets")
+    assert not svc.is_route_allowed("PUT", f"/portfolios/{HOUSEHOLD}/plan/cash-to-targets")
+    assert not svc.is_route_allowed("POST", "/portfolios/00000000-0000-0000-0000-00000000de62/plan/cash-to-targets")
 
 
 # ── Locked cards: copy lint ──────────────────────────────────────────────────

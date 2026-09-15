@@ -144,6 +144,44 @@ _REFERENCE_PORTFOLIO_PATH = re.compile(
     rf"^/portfolios/(?:{'|'.join(re.escape(str(pid)) for pid in _DEMO_READ_ONLY_PORTFOLIO_IDS)})(?:/|$)"
 )
 
+# Side-effect-free COMPUTE routes exempt from the read-only guard below
+# (metron-ops-I322) — a demo viewer must be able to run these even though they're
+# POSTs. Named constant, default-deny: a route is exempt only by an EXACT
+# (method, path-template) match here, never by method alone (a wildcard "allow every
+# POST" would also let through PUT/POST writes on other routers sharing the same
+# portfolio-id prefix).
+#
+# Each entry's handler was checked (metron-ops-I322 review) to write no TENANT-SCOPED
+# row for a demo portfolio:
+#   - cash-to-targets / whatif (api/routers/planning.py): pure arithmetic over
+#     already-persisted holdings + the user-authored ``plan_targets`` row — no
+#     ``session.add``/``.commit`` anywhere in ``cash_to_targets.py`` / ``whatif_purchase.py``.
+#   - risk/compute, attribution/compute (api/routers/portfolios.py): ``do_backfill``
+#     writes ONLY into the GLOBAL, cross-tenant ``securities``/``price_bars`` cache
+#     (factor/sector benchmark ETFs — SPY, MTUM/QUAL/USMV/VLUE/SIZE, the SPDR sector
+#     ETFs) via ``api/services/prices.py::backfill_prices`` and
+#     ``api/services/sectors.py::ensure_sectors`` — the SAME cache every real tenant's
+#     own risk/attribution compute already populates. The demo household's own
+#     ``DEMO-`` securities already carry a sector (seeded by
+#     ``demo_household.SECURITY_META``) and have no ``yf_symbol``, so ``ensure_sectors``
+#     skips them and ``backfill_prices``/the data-spine source fail-soft-skips a symbol
+#     it can't resolve — no row for a ``DEMO-`` security is ever written by these
+#     routes. Nothing here touches a tenant-scoped table (``plan_targets``,
+#     ``retirement_goal``, ``transactions``, ``nav_snapshots``, ...).
+# See tests/test_demo_compute_allowlist.py for the row-count-unchanged proof, run
+# under both an owner session and an external-demo session.
+_DEMO_COMPUTE_ALLOWLIST: frozenset[tuple[str, re.Pattern[str]]] = frozenset({
+    ("POST", re.compile(r"^/portfolios/[^/]+/plan/cash-to-targets$")),
+    ("POST", re.compile(r"^/portfolios/[^/]+/plan/whatif$")),
+    ("POST", re.compile(r"^/portfolios/[^/]+/risk/compute$")),
+    ("POST", re.compile(r"^/portfolios/[^/]+/attribution/compute$")),
+})
+
+
+def _demo_compute_allowed(method: str, path: str) -> bool:
+    """Whether ``method path`` is on the side-effect-free compute allowlist above."""
+    return any(method == allowed_method and pattern.match(path) for allowed_method, pattern in _DEMO_COMPUTE_ALLOWLIST)
+
 
 @app.middleware("http")
 async def _demo_read_only(request: Request, call_next):
@@ -152,8 +190,12 @@ async def _demo_read_only(request: Request, call_next):
     but GET/HEAD/OPTIONS) addressed to any of them, so no tenant can ever edit, import
     into, delete, or refresh a shared fixture. One HTTP-layer
     chokepoint covers every mutation route uniformly. The server-side seed/sync runs
-    in-process (not over HTTP), so it is unaffected."""
-    if request.method not in _SAFE_METHODS:
+    in-process (not over HTTP), so it is unaffected.
+
+    EXCEPT the named, side-effect-free compute routes on ``_DEMO_COMPUTE_ALLOWLIST``
+    (metron-ops-I322): cash-to-targets, what-if, and risk/attribution compute persist
+    no tenant-scoped row, so a demo viewer may run them despite the POST method."""
+    if request.method not in _SAFE_METHODS and not _demo_compute_allowed(request.method, request.url.path):
         if _REFERENCE_PORTFOLIO_PATH.match(request.url.path):
             return JSONResponse(status_code=403, content={"detail": "The demo portfolio is read-only."})
         raw = request.headers.get("x-tenant-id")
