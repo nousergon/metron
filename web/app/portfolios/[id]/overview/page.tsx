@@ -1,9 +1,11 @@
 import { Suspense } from "react";
 import { getAccounts, getHoldings, getHoldingsPerformanceSeries, getIndices, getPerformanceTiles, getPlugins, getPortfolio, getSummary, MetronApiError, type Account, type Holding, type HoldingsPerfSeries, type PeriodTiles, type Portfolio, type PluginNav, type Summary } from "@/lib/api";
+import { getGoalFacets, type GoalFacets } from "@/lib/api-goal";
 import { accountingMoneyWhole, moneyWhole, percent, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard } from "@/components/ui";
 import { AccountPanel } from "@/components/account-panel";
 import { AllocationBreakdown } from "@/components/allocation-breakdown";
+import { GoalCard } from "@/components/goal-card";
 import { HoldingsPerfChart } from "@/components/holdings-perf-chart";
 import { TopBottomPerformers } from "@/components/top-bottom-performers";
 import { PerfTiles } from "@/components/perf-tiles";
@@ -169,6 +171,15 @@ export default async function PortfolioPage(
         </div>
       )}
 
+      {/* Retirement goal (metron-ops-I316): progress/trajectory/drag arithmetic against a
+          USER-AUTHORED goal. Streams its own facets fetch; the card itself renders the
+          empty state (link to Settings) when no goal is set — never a pre-filled number. */}
+      <div className="mt-4">
+        <Suspense fallback={<SectionSkeleton rows={2} />}>
+          <GoalSection apiAuth={apiAuth} id={id} ccy={ccy} />
+        </Suspense>
+      </div>
+
       {/* Deploy cash (metron-ops#300): rank a typed amount across holdings ∪ watchlist under
           the position/sector limits. Feed-gated — the whole surface is spine-derived (the
           technical rating + the intraday overlay), so the no-feed beta never renders it and
@@ -283,6 +294,15 @@ function SectionSkeleton({ rows = 3 }: { rows?: number }) {
       </div>
     </section>
   );
+}
+
+/** Retirement-goal card (metron-ops-I316) — best-effort: a facets-fetch failure never
+ * blocks the rest of Overview, it just omits the card for this paint (the next
+ * successful read repopulates it). */
+async function GoalSection({ apiAuth, id, ccy }: { apiAuth: string; id: string; ccy: string }) {
+  const facets: GoalFacets | null = await getGoalFacets(apiAuth, id).catch(() => null);
+  if (!facets) return null;
+  return <GoalCard portfolioId={id} facets={facets} ccy={ccy} />;
 }
 
 async function UnrealizedSplit({

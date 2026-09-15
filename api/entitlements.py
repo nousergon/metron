@@ -93,6 +93,13 @@ FEATURES: tuple[Feature, ...] = (
     # no score, so both ship in the base (beta) tier rather than being feed/Pro-gated.
     Feature("cash_to_targets", "New cash to my targets", ()),
     Feature("whatif_purchase", "What-if purchase", ()),
+    # Retire-early goal facets (metron-ops-I316): progress/trajectory/drag arithmetic
+    # against a USER-AUTHORED goal (target/date/contribution/withdrawal rate). Doctrine
+    # layer-2 exemption — a user-typed number, not a suitability input — so this ships
+    # in the no-feed beta like the other free-source features, not gated behind
+    # ai_advisor/alpha_engine. Requires no data source: the ledger/broker sources it
+    # depends on (performance, tax) are already _BETA-packaged.
+    Feature("goal", "Retire-early goal", ()),
 )
 FEATURE_BY_KEY: dict[str, Feature] = {f.key: f for f in FEATURES}
 
@@ -111,7 +118,7 @@ class Tier:
 _BETA = frozenset({
     "overview", "glance", "income", "transactions", "tax",
     "concentration", "performance", "macro", "fundamentals",
-    "cash_to_targets", "whatif_purchase",
+    "cash_to_targets", "whatif_purchase", "goal",
 })
 _PRO = _BETA | {
     "auto_sync", "benchmark", "risk", "attribution", "scenarios", "calendar", "etf_lookthrough",

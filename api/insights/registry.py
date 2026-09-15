@@ -375,6 +375,76 @@ _BEHAVIOUR: tuple[Facet, ...] = (
     ),
 )
 
+# ── Goal — retire-early goal facets (metron-ops-I316) ────────────────────────
+# Not a positioning §3d family of its own: each row below maps onto an existing
+# §3d row computed against the user's own retirement goal rather than the
+# portfolio in the abstract — B1/K1 (timing cost), B10 (fee drag), A10 (asset
+# location) — so the existing families (performance/behaviour/structure) are
+# reused rather than adding a "goal" family. ``api.services.goal`` computes all
+# six, each deterministic and as-of stamped; every one is arithmetic against a
+# number the user typed (doctrine layer 2 exemption, positioning §3c.2) — Metron
+# never suggests the target, the date, or the withdrawal rate. This registration is
+# the catalog/entitlement half of the contract only — the glance screen
+# (api.services.glance, metron-PR460) additionally needs a producer registered per
+# key; api.services.goal.GOAL_OBSERVATIONS is the producer-shaped function each
+# facet key below maps onto, wired in once both PRs merge.
+_GOAL: tuple[Facet, ...] = (
+    _f(
+        "goal_progress",
+        "performance",
+        "Progress toward your retirement goal",
+        _SNAP,
+        "goal",
+        "overview",
+        notes="value ÷ your own target number, and its change over the period. User-authored — arithmetic, not advice.",
+    ),
+    _f(
+        "goal_trajectory_range",
+        "performance",
+        "Years-to-goal range at your own trailing returns",
+        _SNAP,
+        "goal",
+        "overview",
+        notes="A RANGE from the portfolio's own trailing 1y/3y/since-inception TWR + your contribution. No capital-market assumptions, no Monte Carlo — never a forecast.",
+    ),
+    _f(
+        "goal_timing_cost",
+        "behaviour",
+        "Your timing cost, in years added to the goal",
+        _SNAP,
+        "goal",
+        "overview",
+        notes="K1 — the MWR/TWR gap expressed as years added to the trajectory.",
+    ),
+    _f(
+        "goal_fee_drag",
+        "performance",
+        "Fee drag on your goal, in dollars and years",
+        _BROKER,
+        "goal",
+        "overview",
+        notes="B10 — blended fund expense ratio in $/yr and years added. No expense-ratio source is wired into Metron as of I316, so this ALWAYS degrades to not-available rather than emit a partial number.",
+    ),
+    _f(
+        "goal_asset_location_drag",
+        "structure",
+        "Asset-location tax drag on your goal",
+        _LEDGER_BROKER,
+        "goal",
+        "overview",
+        notes="A10 — dividend/interest income held taxable vs sheltered, in $/yr. Shows income dollars only until a tax-rate input exists (never an invented personal rate).",
+    ),
+    _f(
+        "goal_withdrawal_readiness",
+        "behaviour",
+        "Withdrawal readiness by account type",
+        _LEDGER_BROKER,
+        "goal",
+        "overview",
+        notes="Months covered per account type at the user's own withdrawal rate — income + cash against the monthly draw.",
+    ),
+)
+
 CATALOG: tuple[Facet, ...] = (
     *_STRUCTURE,
     *_PERFORMANCE,
@@ -387,6 +457,7 @@ CATALOG: tuple[Facet, ...] = (
     *_MARKET,
     *_INTEGRITY,
     *_BEHAVIOUR,
+    *_GOAL,
 )
 
 FACET_BY_KEY: dict[str, Facet] = {f.key: f for f in CATALOG}
