@@ -20,7 +20,19 @@ from krepis.logging import setup_logging
 from api.config import settings
 from api.db.session import create_all, engine
 from api.plugins import active_plugins
-from api.routers import events, glance, goal, indices, macro, market_board, me, meta, planning, portfolios, research_intel
+from api.routers import (
+    events,
+    glance,
+    goal,
+    indices,
+    macro,
+    market_board,
+    me,
+    meta,
+    planning,
+    portfolios,
+    research_intel,
+)
 from api.services.demo import DEMO_TENANT_ID, REFERENCE_PORTFOLIO_ID
 
 # Structured logging + flow-doctor. Passing a flow-doctor.yaml attaches a
