@@ -69,6 +69,11 @@ FEATURES: tuple[Feature, ...] = (
     # Major-index intraday strip (SPY/QQQ/IWM proxies) on the Overview — the index/ETF
     # quotes come from the licensed feed, so it's Pro-only and locked in the no-feed beta.
     Feature("indices", "Market indices (intraday)", ("feed",)),
+    # Market board (metron-ops-I304) — technical attractiveness across Held/Watchlist.
+    # Nav-only entry: the router enforces the real gate directly via settings.feed_entitled
+    # (api/routers/market_board.py), mirroring Deploy Cash — this key exists so the nav can
+    # hide/lock the link the same way it does for every other feed-dependent page.
+    Feature("market_board", "Market board (technical attractiveness)", ("feed",)),
     Feature("etf_lookthrough", "ETF look-through", ("etf_vendor",)),
     Feature("agentic_research", "Agentic quant research", ("feed",)),
     Feature("ai_advisor", "Intelligence", ()),
@@ -99,7 +104,10 @@ _BETA = frozenset({
     "overview", "income", "transactions", "tax",
     "concentration", "performance", "macro", "fundamentals",
 })
-_PRO = _BETA | {"auto_sync", "benchmark", "risk", "attribution", "scenarios", "calendar", "etf_lookthrough", "indices"}
+_PRO = _BETA | {
+    "auto_sync", "benchmark", "risk", "attribution", "scenarios", "calendar", "etf_lookthrough",
+    "indices", "market_board",
+}
 _AGENTIC = _PRO | {"agentic_research"}
 _PERSONAL = _AGENTIC | {"ai_advisor", "alpha_engine", "research_intel"}
 
