@@ -38,6 +38,7 @@ from api.services import (
     crypto,
     data_spine,
     demo,
+    demo_household,
     deploy_cash,
     indices,
     intraday,
@@ -1036,14 +1037,18 @@ def list_portfolios(
     session: Session = Depends(get_session),
 ) -> list[models.Portfolio]:
     rows = list(session.scalars(select(models.Portfolio).where(models.Portfolio.tenant_id == tenant_id)).all())
-    # The Showcase Portfolio is visible on every real tenant's dashboard (not just the
-    # isolated demo tenant, which already owns it and gets it via the query above) — lets a
-    # prospect see live product behavior before linking their own accounts. Fail-soft: on a
-    # DB where the daily sync hasn't run yet, `session.get` returns None and we just omit it.
+    # The Showcase Portfolio and the ICP-shaped Demo household (metron-ops-I317) are both
+    # visible on every real tenant's dashboard (not just the isolated demo tenant, which
+    # already owns them and gets them via the query above) — lets a prospect see live
+    # product behavior before linking their own accounts. Fail-soft: on a DB where the
+    # seed hasn't run yet, `session.get` returns None and we just omit it.
     if tenant_id != demo.DEMO_TENANT_ID:
         reference = session.get(models.Portfolio, demo.REFERENCE_PORTFOLIO_ID)
         if reference is not None:
             rows.append(reference)
+        household = session.get(models.Portfolio, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID)
+        if household is not None:
+            rows.append(household)
     return rows
 
 
@@ -1071,13 +1076,17 @@ def _owned_portfolio(
     """Resolve a portfolio the caller's tenant owns, or 404 (never leak cross-tenant
     existence — a portfolio of another tenant is indistinguishable from a missing one).
 
-    ONE explicit exception: the fixed Showcase Portfolio (demo.REFERENCE_PORTFOLIO_ID)
-    resolves for ANY caller tenant, read-only — it's designed to be visible on every real
-    user's dashboard (see list_portfolios). This is a single named-constant carve-out, not
-    a general cross-tenant widening; writes to it are still refused regardless of the
-    caller's tenant by the `_demo_read_only` middleware's path-based check (api/main.py)."""
+    TWO explicit exceptions: the fixed Showcase Portfolio (demo.REFERENCE_PORTFOLIO_ID)
+    and the fixed Demo household (demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID,
+    metron-ops-I317) resolve for ANY caller tenant, read-only — both are designed to be
+    visible on every real user's dashboard (see list_portfolios). This is a
+    named-constant carve-out over exactly those two ids, not a general cross-tenant
+    widening; writes to either are still refused regardless of the caller's tenant by
+    the `_demo_read_only` middleware's path-based check (api/main.py)."""
     if portfolio_id == demo.REFERENCE_PORTFOLIO_ID:
         portfolio = session.get(models.Portfolio, demo.REFERENCE_PORTFOLIO_ID)
+    elif portfolio_id == demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID:
+        portfolio = session.get(models.Portfolio, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID)
     else:
         portfolio = session.scalars(
             select(models.Portfolio).where(

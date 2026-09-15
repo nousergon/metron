@@ -1,0 +1,370 @@
+"""Demo household — the ICP-shaped demo portfolio (metron-ops-I317).
+
+The Showcase Portfolio (``api/services/demo.py``) is Crucible's live single-account
+equity book plus a two-account non-equity sleeve; it doesn't look like the lead
+segment's own portfolio (retire-early / active self-directed US investors —
+build-plan §5.1 A1, ``metron-ops`` build-plan-260915.md §1.5, §5.1). This module
+seeds a SECOND, separate demo portfolio shaped like that segment: three accounts
+across three "brokers" (a taxable brokerage, a Roth IRA, a 401k), ~25 holdings (US
+equities, two index ETFs, one bond fund), a 5-year transaction history with monthly
+contributions, dividends (some reinvested), two realized sales — one a wash-sale
+window (a loss sale followed by a repurchase of the same symbol within 30 days), the
+other straddling the one-year short/long-term boundary in a single FIFO relief — and
+an uninvested cash balance.
+
+Follows the Showcase's ``_reconcile_sample_sleeve`` pattern exactly, at a larger
+scale: the fixture CSV is replayed through the same CSV-import bridge a real upload
+uses on every startup (union-by-source_key ADD, explicit-delete REMOVE), so an
+already-deployed instance self-heals onto a later fixture edit. Two differences from
+the Showcase sleeve:
+
+  * This is a full second **portfolio** (own id, own tenant-visible entry), not a
+    sleeve folded into an existing one — it needs its own realistic performance
+    history, which the Showcase's single frozen price-as-of can't provide.
+  * NAV history is BUILT, not copied from a live artifact. ``_seed_price_history_and_nav``
+    replays the fixture's month-end close fixture (``fixtures/demo_household/closes.csv``)
+    and the real ``performance.record_snapshot`` engine call, one month at a time, in
+    chronological order — the same engine path a real tenant's daily refresh uses.
+    Prices are inserted one month ahead of the matching ``record_snapshot`` call
+    (never all up front) because valuation always reads the GLOBALLY latest cached
+    price bar per symbol (``prices.latest_close_by_symbol``): inserting the whole
+    5-year price history before replay would make every historical snapshot value
+    holdings at the FINAL month's price instead of that month's own. Idempotent per
+    month (skips a month whose ``NavSnapshot`` already exists), so a redeploy is a
+    cheap no-op walk over already-seeded months and a fixture extended with new
+    trailing months only computes the new ones — it must never re-run
+    ``record_snapshot`` for an already-seeded month, since by then the "latest price"
+    for early months is no longer that month's own price.
+
+Prices are a committed, deterministic synthetic walk (base + drift + bounded
+sinusoidal wobble, seeded per symbol) — never fetched from any vendor
+(``test_app_code_never_imports_yfinance``); see ``fixtures/demo_household/closes.csv``.
+
+Every fixture symbol is written under a reserved ``DEMO-`` namespace (``DEMO-AAPL``,
+not ``AAPL``) — see ``DEMO_SYMBOL_PREFIX``. ``securities`` and ``price_bars`` are
+GLOBAL, cross-tenant tables (api/db/models.py); a bare real ticker here would be the
+SAME row a real tenant's real holding in that ticker reads, so a synthetic close or an
+overwritten name/sector would leak into every real tenant's TWR/risk/shadow-recompute/
+market-board series for that symbol (a metron-ops#201-class defect — found and fixed
+in this PR's own review before merge). ``_apply_security_meta`` and
+``_seed_price_bars_for_date`` both hard-refuse (raise) any non-namespaced symbol.
+
+Writes are refused via ``demo.assert_writable`` (same guard, same demo tenant) so the
+household can never be mutated by a visitor. Visible on every real tenant's dashboard
+the same way the Showcase is — see ``api/routers/portfolios.py::list_portfolios`` /
+``_owned_portfolio`` and the ``_demo_read_only`` HTTP-layer guard in ``api/main.py``.
+
+Out of scope here (tracked separately): pre-seeding goal inputs onto this portfolio
+so the goal facets render (metron-ops-I316, a sibling in-flight change to
+``api/services/goal.py`` / ``api/insights/registry.py`` — not touched by this module).
+"""
+
+from __future__ import annotations
+
+import csv
+import os
+import uuid
+from dataclasses import replace
+from datetime import date
+
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
+
+from api.db import models
+from api.services import persistence
+from api.services.demo import DEMO_TENANT_ID
+from api.services.performance import record_snapshot
+from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
+from portfolio_analytics.ingestion.schema import activity_key
+
+# Fixed, well-known id (stable across restarts so links don't break) — distinct from
+# demo.REFERENCE_PORTFOLIO_ID, a second portfolio under the SAME demo tenant.
+DEMO_HOUSEHOLD_PORTFOLIO_ID = uuid.UUID("00000000-0000-0000-0000-00000000de63")
+DEMO_HOUSEHOLD_PORTFOLIO_NAME = "Demo household (illustrative)"
+
+# Distinct connector-source / broker label — every query below scopes to precisely
+# this portfolio's own accounts, never the Showcase's live or sample sleeve.
+_SOURCE = "demo_household"
+
+_FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "demo_household")
+
+# Reserved demo namespace (metron-ops#201-class defect found in PR464 review):
+# ``securities`` and ``price_bars`` are GLOBAL, cross-tenant tables (see their
+# docstrings in api/db/models.py) — a bare "AAPL" row here would be the SAME row a
+# real tenant's real AAPL holding reads. Every fixture symbol is therefore written
+# under this prefix (in the fixture CSVs AND here), so no Security/PriceBar row this
+# module touches can ever be the row a real holding shares. ``_seed_price_bars_for_date``
+# and ``_apply_security_meta`` both hard-refuse (raise) any symbol without this
+# prefix — see their docstrings.
+DEMO_SYMBOL_PREFIX = "DEMO-"
+
+# Per-symbol reference metadata applied after import (the CSV path defaults everything
+# to equity, unnamed). (name, asset_class, sector — sector is None for the ETFs/bond
+# fund, matching how a real fund is excluded from single-GICS-sector attribution).
+# Names carry "(illustrative)" so the fixture never reads as a real quote/listing.
+SECURITY_META: dict[str, tuple[str, str, str | None]] = {
+    "DEMO-VTI": ("Vanguard Total Stock Market ETF (illustrative)", "etf", None),
+    "DEMO-VOO": ("Vanguard S&P 500 ETF (illustrative)", "etf", None),
+    "DEMO-BND": ("Vanguard Total Bond Market ETF (illustrative)", "bond", None),
+    "DEMO-AAPL": ("Apple Inc. (illustrative)", "equity", "Technology"),
+    "DEMO-MSFT": ("Microsoft Corp. (illustrative)", "equity", "Technology"),
+    "DEMO-GOOGL": ("Alphabet Inc. Class A (illustrative)", "equity", "Communication Services"),
+    "DEMO-AMZN": ("Amazon.com Inc. (illustrative)", "equity", "Consumer Cyclical"),
+    "DEMO-JNJ": ("Johnson & Johnson (illustrative)", "equity", "Healthcare"),
+    "DEMO-PG": ("Procter & Gamble Co. (illustrative)", "equity", "Consumer Defensive"),
+    "DEMO-KO": ("Coca-Cola Co. (illustrative)", "equity", "Consumer Defensive"),
+    "DEMO-XOM": ("Exxon Mobil Corp. (illustrative)", "equity", "Energy"),
+    "DEMO-CVX": ("Chevron Corp. (illustrative)", "equity", "Energy"),
+    "DEMO-JPM": ("JPMorgan Chase & Co. (illustrative)", "equity", "Financial Services"),
+    "DEMO-BAC": ("Bank of America Corp. (illustrative)", "equity", "Financial Services"),
+    "DEMO-HD": ("Home Depot Inc. (illustrative)", "equity", "Consumer Cyclical"),
+    "DEMO-WMT": ("Walmart Inc. (illustrative)", "equity", "Consumer Defensive"),
+    "DEMO-DIS": ("Walt Disney Co. (illustrative)", "equity", "Communication Services"),
+    "DEMO-V": ("Visa Inc. (illustrative)", "equity", "Financial Services"),
+    "DEMO-MA": ("Mastercard Inc. (illustrative)", "equity", "Financial Services"),
+    "DEMO-UNH": ("UnitedHealth Group Inc. (illustrative)", "equity", "Healthcare"),
+    "DEMO-COST": ("Costco Wholesale Corp. (illustrative)", "equity", "Consumer Defensive"),
+    "DEMO-PEP": ("PepsiCo Inc. (illustrative)", "equity", "Consumer Defensive"),
+    "DEMO-META": ("Meta Platforms Inc. (illustrative)", "equity", "Communication Services"),
+    "DEMO-NVDA": ("NVIDIA Corp. (illustrative)", "equity", "Technology"),
+    "DEMO-TSLA": ("Tesla Inc. (illustrative)", "equity", "Consumer Cyclical"),
+}
+
+# The three accounts (external_id -> (tax_treatment, account_type)) — a taxable
+# brokerage (tax_treatment left None; derives to "Taxable"), a Roth IRA (tax_exempt —
+# gains never realized for tax purposes), and a 401(k) (tax_deferred — withdrawals
+# taxed as ordinary income). Three distinct "brokers" per the ICP (viability §2:
+# taxable + IRA + 401k across 3+ institutions); each account's own broker string
+# stands in for a distinct institution without naming a real one.
+ACCOUNT_META: dict[str, tuple[str | None, str]] = {
+    "Demo Taxable Brokerage": (None, "Brokerage"),
+    "Demo Roth IRA": ("tax_exempt", "Roth IRA"),
+    "Demo 401k": ("tax_deferred", "401(k)"),
+}
+
+
+def _load_transactions_csv() -> str:
+    with open(os.path.join(_FIXTURE_DIR, "transactions.csv")) as f:
+        return f.read()
+
+
+def _load_monthly_closes() -> dict[date, dict[str, float]]:
+    """``{month_end_date: {symbol: close}}``, sorted read order not guaranteed — callers
+    sort the keys themselves (``sorted(...)`` on a date dict is cheap and explicit)."""
+    out: dict[date, dict[str, float]] = {}
+    with open(os.path.join(_FIXTURE_DIR, "closes.csv")) as f:
+        for row in csv.DictReader(f):
+            d = date.fromisoformat(row["date"])
+            out.setdefault(d, {})[row["symbol"]] = float(row["close"])
+    return out
+
+
+def ensure_demo_household_seeded(session: Session) -> bool:
+    """Idempotently create the Demo household portfolio shell under the demo tenant,
+    then reconcile its transactions and NAV history unconditionally on every call —
+    safe to call on every startup, mirroring ``demo.ensure_reference_seeded``.
+
+    Returns True if it created the portfolio shell this call, False if it already
+    existed."""
+    created = False
+    if session.get(models.Portfolio, DEMO_HOUSEHOLD_PORTFOLIO_ID) is None:
+        if session.get(models.Tenant, DEMO_TENANT_ID) is None:
+            session.add(models.Tenant(id=DEMO_TENANT_ID, name="Demo"))
+        session.add(
+            models.Portfolio(
+                id=DEMO_HOUSEHOLD_PORTFOLIO_ID,
+                tenant_id=DEMO_TENANT_ID,
+                name=DEMO_HOUSEHOLD_PORTFOLIO_NAME,
+                base_currency="USD",
+            )
+        )
+        session.commit()
+        created = True
+    _reconcile_and_backfill(session)
+    return created
+
+
+def _reconcile_and_backfill(session: Session) -> None:
+    """Bidirectional reconcile against the current fixture (ADD via the CSV-import
+    bridge, REMOVE via an explicit prune — mirrors ``demo._reconcile_sample_sleeve``),
+    interleaved MONTH BY MONTH with the price/NAV backfill.
+
+    Transactions cannot be persisted all at once up front the way the Showcase's
+    frozen sample sleeve is: ``analytics.holdings``/``record_snapshot`` always value
+    whatever is CURRENTLY persisted (there is no "as of" filter), so persisting the
+    full 5-year history before replaying month 1 would value month 1's snapshot off
+    5 years of already-bought shares. Instead, each month's activities are persisted
+    only once the replay reaches that month, immediately followed by that month's
+    price bars and its ``record_snapshot`` call — see ``_seed_price_history_and_nav``.
+    """
+    text = _load_transactions_csv()
+    result = parse_transactions_csv(text, source=_SOURCE)
+    _seed_price_history_and_nav(session, result)
+    _apply_security_meta(session)
+    _apply_account_meta(session)
+    _prune_retired_activities(session, result)
+    session.commit()
+
+
+def _apply_security_meta(session: Session) -> None:
+    """Overwrite name/asset_class/sector on this fixture's own securities — GUARDED:
+    ``securities`` is a GLOBAL, cross-tenant table, so writing metadata onto a
+    non-namespaced symbol here would silently overwrite the name/sector of whatever
+    REAL tenant's holding shares that ticker (metron-ops#201-class defect, found in
+    PR464 review). Raises rather than skipping — a symbol reaching this function
+    without the ``DEMO-`` prefix is a fixture-authoring bug that must be fixed, not
+    silently dropped."""
+    for symbol in SECURITY_META:
+        if not symbol.startswith(DEMO_SYMBOL_PREFIX):
+            raise ValueError(
+                f"demo_household.SECURITY_META has a non-namespaced symbol {symbol!r} — "
+                f"every key must start with {DEMO_SYMBOL_PREFIX!r} (global securities table)"
+            )
+    rows = session.scalars(select(models.Security).where(models.Security.symbol.in_(list(SECURITY_META)))).all()
+    for sec in rows:
+        if not sec.symbol.startswith(DEMO_SYMBOL_PREFIX):
+            raise ValueError(
+                f"refusing to write demo metadata onto non-namespaced Security {sec.symbol!r} "
+                f"(id={sec.id}) — it is a GLOBAL row a real tenant's holding may share"
+            )
+        meta = SECURITY_META.get(sec.symbol)
+        if meta:
+            sec.name, sec.asset_class, sec.sector = meta
+
+
+def _apply_account_meta(session: Session) -> None:
+    rows = session.scalars(
+        select(models.Account).where(
+            models.Account.portfolio_id == DEMO_HOUSEHOLD_PORTFOLIO_ID, models.Account.broker == _SOURCE
+        )
+    ).all()
+    for acct in rows:
+        meta = ACCOUNT_META.get(acct.external_id)
+        if meta:
+            acct.tax_treatment, acct.account_type = meta
+
+
+def _prune_retired_activities(session: Session, result) -> None:
+    """Delete any persisted transaction whose ``source_key`` is no longer produced by
+    the current fixture — the REMOVE half of the reconcile (mirrors
+    ``demo._prune_retired_sample_sleeve_holdings``, keyed on the full activity, not
+    just the symbol, since this fixture's identity is transaction-grained)."""
+    account_ids = list(
+        session.scalars(
+            select(models.Account.id).where(
+                models.Account.portfolio_id == DEMO_HOUSEHOLD_PORTFOLIO_ID, models.Account.broker == _SOURCE
+            )
+        ).all()
+    )
+    if not account_ids:
+        return
+    current_keys = {activity_key(act) for act in result.snapshot.activities}
+    if not current_keys:
+        return  # never wipe everything off an empty/unparseable fixture read
+    session.execute(
+        delete(models.Transaction).where(
+            models.Transaction.account_id.in_(account_ids),
+            models.Transaction.source_key.not_in(current_keys),
+        )
+    )
+
+
+# No-op price source injected into ``record_snapshot`` for the SPY comparison close —
+# this seeding path must never reach the data spine / network (the repo-wide "no
+# vendor fetch" rule; app code imports no yfinance at all,
+# ``test_app_code_never_imports_yfinance``). Fail-soft: an absent SPY close just
+# leaves ``NavSnapshot.spy_close`` unset for these historical rows, same as any other
+# symbol the price source can't resolve.
+def _no_spy_source(symbols: list[str]) -> dict:
+    return {}
+
+
+def _seed_price_history_and_nav(session: Session, result) -> None:
+    """Walk the fixture's 60 month-end dates in chronological order. Each month: (1)
+    persist only the activities dated on/before this month that haven't been persisted
+    yet (a growing prefix of the full activity list — the accounts/securities lists
+    stay the FULL fixture set on every call, cheap to re-upsert and needed so an
+    early-month price bar can resolve a security not yet referenced by any activity);
+    (2) upsert that month's price bars; (3) ``record_snapshot`` for that month, unless
+    it's already recorded. This keeps "what's persisted" and "what's priced as latest"
+    in lockstep with "what date we're valuing", which the engine itself has no
+    as-of-date concept to do for us (see ``_reconcile_and_backfill``'s docstring).
+
+    Idempotent per month: a month whose ``NavSnapshot`` already exists is skipped for
+    the ``record_snapshot`` call (price bars and transactions for it still upsert, in
+    case a fixture edit changed their values without adding a new trailing month), so
+    an already-deployed instance never re-derives a historical month's NAV against a
+    since-advanced "latest" price."""
+    monthly_closes = _load_monthly_closes()
+    existing_snapshot_dates = set(
+        session.scalars(
+            select(models.NavSnapshot.snap_date).where(
+                models.NavSnapshot.tenant_id == DEMO_TENANT_ID,
+                models.NavSnapshot.portfolio_id == DEMO_HOUSEHOLD_PORTFOLIO_ID,
+            )
+        ).all()
+    )
+    activities_sorted = sorted(result.snapshot.activities, key=lambda a: a.when)
+    idx = 0
+    n = len(activities_sorted)
+    for d in sorted(monthly_closes):
+        batch = []
+        while idx < n and activities_sorted[idx].when <= d:
+            batch.append(activities_sorted[idx])
+            idx += 1
+        if batch:
+            sub_snapshot = replace(result.snapshot, activities=batch)
+            persistence.persist_snapshot(
+                session, tenant_id=DEMO_TENANT_ID, portfolio_id=DEMO_HOUSEHOLD_PORTFOLIO_ID, snapshot=sub_snapshot
+            )
+        _seed_price_bars_for_date(session, d, monthly_closes[d])
+        if d in existing_snapshot_dates:
+            continue
+        record_snapshot(session, DEMO_TENANT_ID, DEMO_HOUSEHOLD_PORTFOLIO_ID, today=d, source=_no_spy_source)
+    # Any fixture activity dated AFTER the last priced month (shouldn't happen — the
+    # fixture is generated to end before the last month — but persisted here too so a
+    # future fixture edit that adds a late transaction without a matching close still
+    # lands in the ledger rather than being silently dropped).
+    if idx < n:
+        sub_snapshot = replace(result.snapshot, activities=activities_sorted[idx:])
+        persistence.persist_snapshot(
+            session, tenant_id=DEMO_TENANT_ID, portfolio_id=DEMO_HOUSEHOLD_PORTFOLIO_ID, snapshot=sub_snapshot
+        )
+
+
+def _seed_price_bars_for_date(session: Session, d: date, closes: dict[str, float]) -> None:
+    """Upsert one ``PriceBar`` per symbol for ``d`` — skip-if-exists (mirrors
+    ``demo._seed_sample_sleeve_prices``), so a symbol/date pair already written by a
+    prior startup is never re-priced out from under an already-recorded snapshot.
+
+    GUARDED: ``price_bars`` is a GLOBAL, cross-tenant EOD cache keyed on
+    ``security_id`` — every real tenant holding the same underlying ticker reads the
+    SAME row. Writing a synthetic close under a bare "AAPL" here would inject a fake
+    point into every real tenant's TWR/risk/shadow-recompute/market-board series for
+    that symbol (metron-ops#201-class defect, found in PR464 review). Raises rather
+    than skipping any non-``DEMO-``-namespaced symbol — a fixture-authoring bug, not a
+    case to silently degrade."""
+    for symbol in closes:
+        if not symbol.startswith(DEMO_SYMBOL_PREFIX):
+            raise ValueError(
+                f"refusing to seed a price bar for non-namespaced symbol {symbol!r} on {d} — "
+                f"every demo_household fixture symbol must start with {DEMO_SYMBOL_PREFIX!r} "
+                f"(price_bars is a GLOBAL, cross-tenant table)"
+            )
+    secs = {sec.symbol: sec for sec in session.scalars(
+        select(models.Security).where(models.Security.symbol.in_(list(closes)))
+    ).all()}
+    existing = set(
+        session.scalars(
+            select(models.PriceBar.security_id).where(
+                models.PriceBar.security_id.in_([s.id for s in secs.values()]),
+                models.PriceBar.bar_date == d,
+            )
+        ).all()
+    )
+    for symbol, close in closes.items():
+        sec = secs.get(symbol)
+        if sec is None or sec.id in existing:
+            continue
+        session.add(models.PriceBar(security_id=sec.id, bar_date=d, close=close, currency=sec.currency or "USD"))
+    session.commit()

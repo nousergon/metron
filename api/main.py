@@ -34,6 +34,7 @@ from api.routers import (
     research_intel,
 )
 from api.services.demo import DEMO_TENANT_ID, REFERENCE_PORTFOLIO_ID
+from api.services.demo_household import DEMO_HOUSEHOLD_PORTFOLIO_ID
 
 # Structured logging + flow-doctor. Passing a flow-doctor.yaml attaches a
 # FlowDoctorHandler at ERROR (off under pytest), so every log.error() in a
@@ -89,6 +90,19 @@ async def lifespan(app: FastAPI):
                     )
         except Exception:  # noqa: BLE001 - secondary path; must never crash boot
             logging.getLogger("api.demo").warning("demo seed failed — continuing without it", exc_info=True)
+
+        # The ICP-shaped Demo household (metron-ops-I317) — a second, separate demo
+        # portfolio under the same demo tenant. Best-effort like the showcase above;
+        # its own fixture is fully committed (no S3 artifact dependency at all).
+        try:
+            from api.services import demo_household
+
+            with SessionLocal() as session:
+                demo_household.ensure_demo_household_seeded(session)
+        except Exception:  # noqa: BLE001 - secondary path; must never crash boot
+            logging.getLogger("api.demo").warning(
+                "demo household seed failed — continuing without it", exc_info=True
+            )
     yield
 
 
@@ -118,14 +132,22 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # protects the showcase regardless of who's asking. Every mutating route in api/routers/portfolios.py is `/portfolios/{id}/...`
 # with no extra prefix, so a plain anchored match against the fixed id is reliable without
 # needing real path-param parsing (unavailable at this layer, before routing).
-_REFERENCE_PORTFOLIO_PATH = re.compile(rf"^/portfolios/{re.escape(str(REFERENCE_PORTFOLIO_ID))}(?:/|$)")
+#
+# The Demo household (metron-ops-I317) is the SAME carve-out under a second fixed id
+# (api/services/demo_household.py::DEMO_HOUSEHOLD_PORTFOLIO_ID, api/routers/portfolios.py's
+# ``_owned_portfolio``) — one alternation covers both fixed demo portfolio ids.
+_DEMO_READ_ONLY_PORTFOLIO_IDS = (REFERENCE_PORTFOLIO_ID, DEMO_HOUSEHOLD_PORTFOLIO_ID)
+_REFERENCE_PORTFOLIO_PATH = re.compile(
+    rf"^/portfolios/(?:{'|'.join(re.escape(str(pid)) for pid in _DEMO_READ_ONLY_PORTFOLIO_IDS)})(?:/|$)"
+)
 
 
 @app.middleware("http")
 async def _demo_read_only(request: Request, call_next):
-    """The demo portfolio (metron-ops#42) and the Showcase Portfolio are READ-ONLY —
-    refuse any mutating request (anything but GET/HEAD/OPTIONS) addressed to either, so no
-    tenant can ever edit, import into, delete, or refresh a shared fixture. One HTTP-layer
+    """The demo portfolio (metron-ops#42), the Showcase Portfolio, and the Demo
+    household (metron-ops-I317) are READ-ONLY — refuse any mutating request (anything
+    but GET/HEAD/OPTIONS) addressed to any of them, so no tenant can ever edit, import
+    into, delete, or refresh a shared fixture. One HTTP-layer
     chokepoint covers every mutation route uniformly. The server-side seed/sync runs
     in-process (not over HTTP), so it is unaffected."""
     if request.method not in _SAFE_METHODS:
