@@ -31,10 +31,11 @@ the facet reports "not reachable in the modeled horizon" rather than a wild numb
 ``GET /portfolios/{id}/goal/facets`` renders all six via ``compute_facets``. The
 ``goal_observation_<facet_key>`` functions + the ``GOAL_OBSERVATIONS`` registry near
 the bottom of this module are a SEPARATE, narrower contract for the glance screen
-(``api.services.glance``, metron-PR460 — not merged as of this file, so not importable
-here): each returns plain observation dicts a glance producer wraps, rather than a
-typed ``Candidate`` this module can't yet reference. See this module's PR body under
-"Follow-up" for the wiring step once both land.
+(``api.services.glance``): each returns plain observation dicts — rather than a typed
+``Candidate`` this module still doesn't import, to keep the dependency one-directional
+(glance depends on goal, not the reverse) — that ``glance.py`` wraps into one
+``Candidate``-returning producer per key, registered in a loop over
+``GOAL_OBSERVATIONS`` (metron-ops-I320), so a new key here needs no edit there.
 """
 
 from __future__ import annotations
@@ -456,13 +457,13 @@ _VALUE: dict[str, Callable[[dict], float | None]] = {
 
 def _observation(key: str, payload: dict, as_of: str) -> list[dict]:
     """One facet's payload -> zero or one plain observation dict — the producer
-    contract ``api.services.glance`` (metron-PR460, not yet on this branch) reads:
-    ``register_producer(facet_key)`` against a ``Producer = Callable[[GlanceContext],
-    list[Candidate]]``. This module can't import that type yet (its PR hasn't merged),
-    so each producer here returns plain dicts with the fields a ``Candidate`` needs
-    (facet_key/text/value/materiality/as_of/surface) — the parent wires these into
-    real producers once both PRs land (see PR body "Follow-up"). Empty list when the
-    facet has nothing to say (unavailable, or no text template registered)."""
+    contract ``api.services.glance`` reads: ``register_producer(facet_key)`` against a
+    ``Producer = Callable[[GlanceContext], list[Candidate]]``. This module returns
+    plain dicts with the fields a ``Candidate`` needs
+    (facet_key/text/value/materiality/as_of/surface) rather than importing that type
+    directly, to keep the dependency one-directional; ``glance.py`` wraps each dict
+    into a real ``Candidate``. Empty list when the facet has nothing to say
+    (unavailable, or no text template registered) — never a fabricated zero."""
     if not payload.get("available"):
         return []
     text_fn = _TEXT.get(key)
@@ -528,11 +529,11 @@ def goal_observation_goal_withdrawal_readiness(
     return _observation("goal_withdrawal_readiness", payload, as_of)
 
 
-# The registry ``api.services.glance`` (once its PR merges) reads to wire a producer
-# per goal facet key — see this module's docstring and the PR body's "Follow-up".
-GOAL_OBSERVATIONS: dict[
-    str, Callable[[Session, uuid.UUID, uuid.UUID, str], list[dict]]
-] = {
+# The registry ``api.services.glance`` reads to wire one producer per goal facet key
+# (a loop, not a hand-written wrapper per key) — see this module's docstring.
+ObservationFn = Callable[[Session, uuid.UUID, uuid.UUID, str], list[dict]]
+
+GOAL_OBSERVATIONS: dict[str, ObservationFn] = {
     "goal_progress": goal_observation_goal_progress,
     "goal_trajectory_range": goal_observation_goal_trajectory_range,
     "goal_timing_cost": goal_observation_goal_timing_cost,

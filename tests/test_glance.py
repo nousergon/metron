@@ -24,6 +24,7 @@ from api.config import settings
 from api.db import models
 from api.insights import ranker, registry
 from api.services import glance
+from api.services import goal as goal_service
 from portfolio_analytics.prices import ClosePoint
 
 _POST_CLOSE = datetime(2026, 9, 15, 22, 0, tzinfo=UTC)  # Tue 18:00 ET
@@ -257,6 +258,48 @@ def test_a_failing_producer_degrades_its_facet_not_the_screen(db_session, monkey
     assert g.degraded == ["cash_drag"]
     assert g.integrity.text
     assert "glance producer failed facet=cash_drag" in caplog.text
+
+
+# ── goal producers (metron-ops-I320) ────────────────────────────────────────
+
+
+def test_goal_observation_keys_all_have_registered_producers():
+    """Contract test: a key added to ``goal.GOAL_OBSERVATIONS`` without a matching
+    registered glance producer would silently never render — the loop in this module
+    wires one per key at import time (which itself raises immediately via
+    ``register_producer`` for an unregistered facet), so this additionally guards the
+    steady-state invariant after any future edit to either module."""
+    assert set(goal_service.GOAL_OBSERVATIONS) <= set(glance.PRODUCERS)
+
+
+def test_goal_set_shows_goal_progress_with_its_as_of(db_session):
+    p = _portfolio(db_session)
+    goal_service.set_goal(
+        db_session, p.tenant_id, p.id,
+        target_amount_usd=200_000, target_date=None, annual_contribution_usd=10_000, withdrawal_rate=None,
+    )
+    _snap(db_session, p, date(2025, 9, 14), [_leg("AAPL", 800, 100)])  # nav 80,000
+    _snap(db_session, p, date(2026, 9, 15), [_leg("AAPL", 1000, 100)])  # nav 100,000
+
+    g = _compose(db_session, p)
+
+    item = next(i for i in g.insights.items if i.facet_key == "goal_progress")
+    assert item.as_of == "2026-09-15"
+    assert item.surface == "overview"
+    assert item.provenance == glance.PROV_AS_OF_CLOSE
+    assert g.degraded == []
+
+
+def test_no_goal_set_yields_no_goal_candidates_and_nothing_degraded(db_session):
+    p = _portfolio(db_session)
+    _snap(db_session, p, date(2025, 9, 14), [_leg("AAPL", 800, 100)])
+    _snap(db_session, p, date(2026, 9, 15), [_leg("AAPL", 1000, 100)])
+
+    g = _compose(db_session, p)
+
+    all_items = [*g.movers.items, *g.insights.items, *g.ahead.items]
+    assert not any(i.facet_key.startswith("goal_") for i in all_items)
+    assert g.degraded == []
 
 
 # ── endpoint ─────────────────────────────────────────────────────────────────

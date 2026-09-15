@@ -385,9 +385,9 @@ _BEHAVIOUR: tuple[Facet, ...] = (
 # number the user typed (doctrine layer 2 exemption, positioning §3c.2) — Metron
 # never suggests the target, the date, or the withdrawal rate. This registration is
 # the catalog/entitlement half of the contract only — the glance screen
-# (api.services.glance, metron-PR460) additionally needs a producer registered per
-# key; api.services.goal.GOAL_OBSERVATIONS is the producer-shaped function each
-# facet key below maps onto, wired in once both PRs merge.
+# (api.services.glance) additionally needs a producer registered per key;
+# api.services.goal.GOAL_OBSERVATIONS is the producer-shaped function each facet key
+# below maps onto, wired in a loop over that dict (metron-ops-I320).
 _GOAL: tuple[Facet, ...] = (
     _f(
         "goal_progress",
