@@ -50,7 +50,7 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from api.insights import ranker, registry
-from api.services import analytics, calendar, intraday, performance, reconciliation, tax
+from api.services import analytics, calendar, goal, intraday, performance, reconciliation, tax
 from portfolio_analytics.domain.diagnostics import DiagnosticsPosition, compute_diagnostics
 from portfolio_analytics.domain.tax import LONG_TERM_DAYS, SHORT_TERM
 
@@ -539,6 +539,48 @@ def _earnings(ctx: GlanceContext) -> list[Candidate]:
             )
         )
     return out
+
+
+# ── Goal producers (metron-ops-I320) ─────────────────────────────────────────
+#
+# One producer per key in ``goal.GOAL_OBSERVATIONS`` — a loop, not six hand-written
+# wrappers, so a new goal facet (a new key in that dict + a matching registry.Facet)
+# needs no edit here. Each ``goal_observation_<key>`` function already returns the
+# empty list for an unavailable observation (``goal._observation`` filters on
+# ``payload["available"]``) — this adapter never fabricates a zero for one; it simply
+# produces no candidate, the same "nothing" every other producer in this module emits
+# when it has nothing to say. A contract test (``tests/test_glance.py``) fails if a
+# ``GOAL_OBSERVATIONS`` key is ever added without a matching registered facet.
+
+
+def _goal_candidate(row: dict) -> Candidate:
+    """One ``goal_observation_*`` dict -> one ``Candidate``. ``materiality`` maps
+    straight onto the ranker's magnitude input; ``as_of`` and ``surface`` are carried
+    through (``surface`` via the registry ``Facet`` the same as every other producer —
+    every goal facet is registered with ``surface="overview"``, matching what
+    ``goal._observation`` stamps on its own dict, so the two never disagree)."""
+    return Candidate(
+        ranker.Observation(
+            facet_key=row["facet_key"],
+            text=row["text"],
+            as_of=row["as_of"],
+            materiality=row["materiality"],
+        ),
+        provenance=PROV_AS_OF_CLOSE,
+        amount=row["value"] if isinstance(row.get("value"), int | float) else None,
+    )
+
+
+def _make_goal_producer(fn: goal.ObservationFn) -> Producer:
+    def _produce(ctx: GlanceContext) -> list[Candidate]:
+        rows = fn(ctx.session, ctx.portfolio.tenant_id, ctx.portfolio.id, ctx.value_as_of)
+        return [_goal_candidate(row) for row in rows]
+
+    return _produce
+
+
+for _goal_key, _goal_fn in goal.GOAL_OBSERVATIONS.items():
+    register_producer(_goal_key)(_make_goal_producer(_goal_fn))
 
 
 # ── Fixed zones ───────────────────────────────────────────────────────────────

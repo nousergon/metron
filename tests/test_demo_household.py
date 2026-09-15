@@ -13,10 +13,11 @@ import io
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from api.db import models
-from api.services import analytics, demo_household
+from api.services import analytics, demo_household, glance
+from api.services import goal as goal_service
 from api.services import performance as perf
 from api.services.analytics import _cash_by_account
 
@@ -166,6 +167,59 @@ def test_demo_household_visible_on_every_real_tenant(client, db_session):
     assert r.status_code == 200
     ids = {p["id"] for p in r.json()}
     assert str(demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID) in ids
+
+
+# ── Goal inputs (metron-ops-I317 deliverable 4) ───────────────────────────────
+
+
+def test_goal_is_seeded_with_illustrative_values(db_session):
+    demo_household.ensure_demo_household_seeded(db_session)
+    goal = goal_service.get_goal(db_session, demo_household.DEMO_TENANT_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID)
+    assert goal is not None
+    assert float(goal.target_amount_usd) == demo_household.DEMO_HOUSEHOLD_GOAL_TARGET_AMOUNT_USD
+    assert goal.target_date == demo_household.DEMO_HOUSEHOLD_GOAL_TARGET_DATE
+    assert float(goal.annual_contribution_usd) == demo_household.DEMO_HOUSEHOLD_GOAL_ANNUAL_CONTRIBUTION_USD
+    assert float(goal.withdrawal_rate) == demo_household.DEMO_HOUSEHOLD_GOAL_WITHDRAWAL_RATE
+
+
+def test_goal_seed_is_idempotent_and_never_duplicates_the_row(db_session):
+    demo_household.ensure_demo_household_seeded(db_session)
+    demo_household.ensure_demo_household_seeded(db_session)
+    count = db_session.scalar(
+        select(func.count(models.RetirementGoal.id)).where(
+            models.RetirementGoal.portfolio_id == demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID
+        )
+    )
+    assert count == 1
+
+
+def test_no_goal_seeded_for_a_real_portfolio(db_session):
+    """The no-default invariant (``tests/test_goal.py::TestGoalRouter::test_get_before_set_is_empty_no_prefill``)
+    stays true for every real tenant even after the demo household reconciles —
+    seeding is scoped to ``DEMO_HOUSEHOLD_PORTFOLIO_ID`` alone."""
+    demo_household.ensure_demo_household_seeded(db_session)
+    real_tenant_id = __import__("uuid").uuid4()
+    db_session.add(models.Tenant(id=real_tenant_id, name="Real Tenant"))
+    real_portfolio = models.Portfolio(tenant_id=real_tenant_id, name="Real Portfolio", base_currency="USD")
+    db_session.add(real_portfolio)
+    db_session.commit()
+    assert goal_service.get_goal(db_session, real_tenant_id, real_portfolio.id) is None
+
+
+def test_seeded_household_glance_payload_has_a_goal_candidate(db_session):
+    """Closes-when (metron-ops-I320): with a goal set on the demo household, the
+    glance payload carries at least one goal candidate in a ranked zone with its
+    as-of — exercised here on the actual seeded fixture rather than a synthetic
+    portfolio."""
+    demo_household.ensure_demo_household_seeded(db_session)
+    portfolio = db_session.get(models.Portfolio, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID)
+    g = glance.compose(db_session, portfolio, tier="personal", feed_enabled=True)
+    all_items = [*g.movers.items, *g.insights.items, *g.ahead.items]
+    goal_items = [i for i in all_items if i.facet_key.startswith("goal_")]
+    assert goal_items, "expected at least one goal candidate on the seeded demo household"
+    for item in goal_items:
+        assert item.as_of
+    assert g.degraded == []
 
 
 # ── Golden: TWR / MWR, independently re-derived from the persisted NAV series ────

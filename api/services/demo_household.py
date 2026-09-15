@@ -54,9 +54,15 @@ household can never be mutated by a visitor. Visible on every real tenant's dash
 the same way the Showcase is — see ``api/routers/portfolios.py::list_portfolios`` /
 ``_owned_portfolio`` and the ``_demo_read_only`` HTTP-layer guard in ``api/main.py``.
 
-Out of scope here (tracked separately): pre-seeding goal inputs onto this portfolio
-so the goal facets render (metron-ops-I316, a sibling in-flight change to
-``api/services/goal.py`` / ``api/insights/registry.py`` — not touched by this module).
+Goal inputs (metron-ops-I317 deliverable 4): illustrative retirement-goal values
+(target amount, target date, annual contribution, withdrawal rate) are upserted onto
+this portfolio ONLY, on every reconcile, via ``goal.set_goal`` — see
+``_reconcile_goal`` below. A real tenant's portfolio never gets a default: nothing in
+this module ever calls ``set_goal`` for any portfolio id other than
+``DEMO_HOUSEHOLD_PORTFOLIO_ID``, and ``goal.set_goal`` itself defaults nothing (every
+field is exactly what its caller passes) — the invariant
+``tests/test_goal.py::TestGoalRouter::test_get_before_set_is_empty_no_prefill`` guards
+for every other portfolio.
 """
 
 from __future__ import annotations
@@ -71,6 +77,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from api.db import models
+from api.services import goal as goal_service
 from api.services import persistence
 from api.services.demo import DEMO_TENANT_ID
 from api.services.performance import record_snapshot
@@ -129,6 +136,17 @@ SECURITY_META: dict[str, tuple[str, str, str | None]] = {
     "DEMO-NVDA": ("NVIDIA Corp. (illustrative)", "equity", "Technology"),
     "DEMO-TSLA": ("Tesla Inc. (illustrative)", "equity", "Consumer Cyclical"),
 }
+
+# Illustrative retirement-goal inputs (metron-ops-I317 deliverable 4), sized for this
+# fixture: current value is ~$242k (test_golden_attribution_input_sector_weights) —
+# roughly 3x that as the target, a ~19-year horizon, a $12k/yr contribution matching
+# the fixture's own monthly-DCA scale, and the textbook 4% withdrawal rate. Fictional,
+# same as every other number this module seeds — never a suggestion to a real user
+# (see this module's docstring and ``goal.set_goal``'s own no-default invariant).
+DEMO_HOUSEHOLD_GOAL_TARGET_AMOUNT_USD = 750_000.0
+DEMO_HOUSEHOLD_GOAL_TARGET_DATE = date(2046, 1, 1)
+DEMO_HOUSEHOLD_GOAL_ANNUAL_CONTRIBUTION_USD = 12_000.0
+DEMO_HOUSEHOLD_GOAL_WITHDRAWAL_RATE = 0.04
 
 # The three accounts (external_id -> (tax_treatment, account_type)) — a taxable
 # brokerage (tax_treatment left None; derives to "Taxable"), a Roth IRA (tax_exempt —
@@ -203,7 +221,26 @@ def _reconcile_and_backfill(session: Session) -> None:
     _apply_security_meta(session)
     _apply_account_meta(session)
     _prune_retired_activities(session, result)
+    _reconcile_goal(session)
     session.commit()
+
+
+def _reconcile_goal(session: Session) -> None:
+    """Idempotent upsert of the illustrative goal inputs onto the demo household ONLY
+    (metron-ops-I317 deliverable 4) — ``goal.set_goal`` is itself a full-replace
+    upsert (one row per portfolio, create-or-update), so calling it on every reconcile
+    is the same bidirectional-propagation shape as the rest of this module: a later
+    edit to the constants above lands on an already-deployed instance the next time it
+    reconciles, without ever touching any other portfolio's goal row."""
+    goal_service.set_goal(
+        session,
+        DEMO_TENANT_ID,
+        DEMO_HOUSEHOLD_PORTFOLIO_ID,
+        target_amount_usd=DEMO_HOUSEHOLD_GOAL_TARGET_AMOUNT_USD,
+        target_date=DEMO_HOUSEHOLD_GOAL_TARGET_DATE,
+        annual_contribution_usd=DEMO_HOUSEHOLD_GOAL_ANNUAL_CONTRIBUTION_USD,
+        withdrawal_rate=DEMO_HOUSEHOLD_GOAL_WITHDRAWAL_RATE,
+    )
 
 
 def _apply_security_meta(session: Session) -> None:
