@@ -438,7 +438,9 @@ def test_retirement_goal_migration_upgrade_downgrade_are_symmetric():
     versions = pathlib.Path(__file__).resolve().parent.parent / "alembic" / "versions"
     migration = next(versions.glob("c4e8f2a9d6b1_*.py"))
     src = migration.read_text(encoding="utf-8")
-    assert re.search(r"down_revision.*b7d3e91a4c2f", src)
+    # Chained onto the plan_targets migration (metron-PR463); the graph shape itself is
+    # asserted by tests/test_alembic_single_head.py rather than a hardcoded parent id.
+    assert re.search(r"down_revision.*c9e4f27a1b83", src)
     created = set(re.findall(r"op\.create_table\(\s*['\"]([a-z_0-9]+)['\"]", src))
     dropped = set(re.findall(r"op\.drop_table\(\s*['\"]([a-z_0-9]+)['\"]", src))
     assert created == {"retirement_goal"}
