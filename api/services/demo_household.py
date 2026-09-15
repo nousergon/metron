@@ -39,6 +39,16 @@ the Showcase sleeve:
 Prices are a committed, deterministic synthetic walk (base + drift + bounded
 sinusoidal wobble, seeded per symbol) — never fetched from any vendor
 (``test_app_code_never_imports_yfinance``); see ``fixtures/demo_household/closes.csv``.
+
+Every fixture symbol is written under a reserved ``DEMO-`` namespace (``DEMO-AAPL``,
+not ``AAPL``) — see ``DEMO_SYMBOL_PREFIX``. ``securities`` and ``price_bars`` are
+GLOBAL, cross-tenant tables (api/db/models.py); a bare real ticker here would be the
+SAME row a real tenant's real holding in that ticker reads, so a synthetic close or an
+overwritten name/sector would leak into every real tenant's TWR/risk/shadow-recompute/
+market-board series for that symbol (a metron-ops#201-class defect — found and fixed
+in this PR's own review before merge). ``_apply_security_meta`` and
+``_seed_price_bars_for_date`` both hard-refuse (raise) any non-namespaced symbol.
+
 Writes are refused via ``demo.assert_writable`` (same guard, same demo tenant) so the
 household can never be mutated by a visitor. Visible on every real tenant's dashboard
 the same way the Showcase is — see ``api/routers/portfolios.py::list_portfolios`` /
@@ -78,35 +88,46 @@ _SOURCE = "demo_household"
 
 _FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "demo_household")
 
+# Reserved demo namespace (metron-ops#201-class defect found in PR464 review):
+# ``securities`` and ``price_bars`` are GLOBAL, cross-tenant tables (see their
+# docstrings in api/db/models.py) — a bare "AAPL" row here would be the SAME row a
+# real tenant's real AAPL holding reads. Every fixture symbol is therefore written
+# under this prefix (in the fixture CSVs AND here), so no Security/PriceBar row this
+# module touches can ever be the row a real holding shares. ``_seed_price_bars_for_date``
+# and ``_apply_security_meta`` both hard-refuse (raise) any symbol without this
+# prefix — see their docstrings.
+DEMO_SYMBOL_PREFIX = "DEMO-"
+
 # Per-symbol reference metadata applied after import (the CSV path defaults everything
 # to equity, unnamed). (name, asset_class, sector — sector is None for the ETFs/bond
 # fund, matching how a real fund is excluded from single-GICS-sector attribution).
+# Names carry "(illustrative)" so the fixture never reads as a real quote/listing.
 SECURITY_META: dict[str, tuple[str, str, str | None]] = {
-    "VTI": ("Vanguard Total Stock Market ETF", "etf", None),
-    "VOO": ("Vanguard S&P 500 ETF", "etf", None),
-    "BND": ("Vanguard Total Bond Market ETF", "bond", None),
-    "AAPL": ("Apple Inc.", "equity", "Technology"),
-    "MSFT": ("Microsoft Corp.", "equity", "Technology"),
-    "GOOGL": ("Alphabet Inc. Class A", "equity", "Communication Services"),
-    "AMZN": ("Amazon.com Inc.", "equity", "Consumer Cyclical"),
-    "JNJ": ("Johnson & Johnson", "equity", "Healthcare"),
-    "PG": ("Procter & Gamble Co.", "equity", "Consumer Defensive"),
-    "KO": ("Coca-Cola Co.", "equity", "Consumer Defensive"),
-    "XOM": ("Exxon Mobil Corp.", "equity", "Energy"),
-    "CVX": ("Chevron Corp.", "equity", "Energy"),
-    "JPM": ("JPMorgan Chase & Co.", "equity", "Financial Services"),
-    "BAC": ("Bank of America Corp.", "equity", "Financial Services"),
-    "HD": ("Home Depot Inc.", "equity", "Consumer Cyclical"),
-    "WMT": ("Walmart Inc.", "equity", "Consumer Defensive"),
-    "DIS": ("Walt Disney Co.", "equity", "Communication Services"),
-    "V": ("Visa Inc.", "equity", "Financial Services"),
-    "MA": ("Mastercard Inc.", "equity", "Financial Services"),
-    "UNH": ("UnitedHealth Group Inc.", "equity", "Healthcare"),
-    "COST": ("Costco Wholesale Corp.", "equity", "Consumer Defensive"),
-    "PEP": ("PepsiCo Inc.", "equity", "Consumer Defensive"),
-    "META": ("Meta Platforms Inc.", "equity", "Communication Services"),
-    "NVDA": ("NVIDIA Corp.", "equity", "Technology"),
-    "TSLA": ("Tesla Inc.", "equity", "Consumer Cyclical"),
+    "DEMO-VTI": ("Vanguard Total Stock Market ETF (illustrative)", "etf", None),
+    "DEMO-VOO": ("Vanguard S&P 500 ETF (illustrative)", "etf", None),
+    "DEMO-BND": ("Vanguard Total Bond Market ETF (illustrative)", "bond", None),
+    "DEMO-AAPL": ("Apple Inc. (illustrative)", "equity", "Technology"),
+    "DEMO-MSFT": ("Microsoft Corp. (illustrative)", "equity", "Technology"),
+    "DEMO-GOOGL": ("Alphabet Inc. Class A (illustrative)", "equity", "Communication Services"),
+    "DEMO-AMZN": ("Amazon.com Inc. (illustrative)", "equity", "Consumer Cyclical"),
+    "DEMO-JNJ": ("Johnson & Johnson (illustrative)", "equity", "Healthcare"),
+    "DEMO-PG": ("Procter & Gamble Co. (illustrative)", "equity", "Consumer Defensive"),
+    "DEMO-KO": ("Coca-Cola Co. (illustrative)", "equity", "Consumer Defensive"),
+    "DEMO-XOM": ("Exxon Mobil Corp. (illustrative)", "equity", "Energy"),
+    "DEMO-CVX": ("Chevron Corp. (illustrative)", "equity", "Energy"),
+    "DEMO-JPM": ("JPMorgan Chase & Co. (illustrative)", "equity", "Financial Services"),
+    "DEMO-BAC": ("Bank of America Corp. (illustrative)", "equity", "Financial Services"),
+    "DEMO-HD": ("Home Depot Inc. (illustrative)", "equity", "Consumer Cyclical"),
+    "DEMO-WMT": ("Walmart Inc. (illustrative)", "equity", "Consumer Defensive"),
+    "DEMO-DIS": ("Walt Disney Co. (illustrative)", "equity", "Communication Services"),
+    "DEMO-V": ("Visa Inc. (illustrative)", "equity", "Financial Services"),
+    "DEMO-MA": ("Mastercard Inc. (illustrative)", "equity", "Financial Services"),
+    "DEMO-UNH": ("UnitedHealth Group Inc. (illustrative)", "equity", "Healthcare"),
+    "DEMO-COST": ("Costco Wholesale Corp. (illustrative)", "equity", "Consumer Defensive"),
+    "DEMO-PEP": ("PepsiCo Inc. (illustrative)", "equity", "Consumer Defensive"),
+    "DEMO-META": ("Meta Platforms Inc. (illustrative)", "equity", "Communication Services"),
+    "DEMO-NVDA": ("NVIDIA Corp. (illustrative)", "equity", "Technology"),
+    "DEMO-TSLA": ("Tesla Inc. (illustrative)", "equity", "Consumer Cyclical"),
 }
 
 # The three accounts (external_id -> (tax_treatment, account_type)) — a taxable
@@ -186,8 +207,26 @@ def _reconcile_and_backfill(session: Session) -> None:
 
 
 def _apply_security_meta(session: Session) -> None:
+    """Overwrite name/asset_class/sector on this fixture's own securities — GUARDED:
+    ``securities`` is a GLOBAL, cross-tenant table, so writing metadata onto a
+    non-namespaced symbol here would silently overwrite the name/sector of whatever
+    REAL tenant's holding shares that ticker (metron-ops#201-class defect, found in
+    PR464 review). Raises rather than skipping — a symbol reaching this function
+    without the ``DEMO-`` prefix is a fixture-authoring bug that must be fixed, not
+    silently dropped."""
+    for symbol in SECURITY_META:
+        if not symbol.startswith(DEMO_SYMBOL_PREFIX):
+            raise ValueError(
+                f"demo_household.SECURITY_META has a non-namespaced symbol {symbol!r} — "
+                f"every key must start with {DEMO_SYMBOL_PREFIX!r} (global securities table)"
+            )
     rows = session.scalars(select(models.Security).where(models.Security.symbol.in_(list(SECURITY_META)))).all()
     for sec in rows:
+        if not sec.symbol.startswith(DEMO_SYMBOL_PREFIX):
+            raise ValueError(
+                f"refusing to write demo metadata onto non-namespaced Security {sec.symbol!r} "
+                f"(id={sec.id}) — it is a GLOBAL row a real tenant's holding may share"
+            )
         meta = SECURITY_META.get(sec.symbol)
         if meta:
             sec.name, sec.asset_class, sec.sector = meta
@@ -296,7 +335,22 @@ def _seed_price_history_and_nav(session: Session, result) -> None:
 def _seed_price_bars_for_date(session: Session, d: date, closes: dict[str, float]) -> None:
     """Upsert one ``PriceBar`` per symbol for ``d`` — skip-if-exists (mirrors
     ``demo._seed_sample_sleeve_prices``), so a symbol/date pair already written by a
-    prior startup is never re-priced out from under an already-recorded snapshot."""
+    prior startup is never re-priced out from under an already-recorded snapshot.
+
+    GUARDED: ``price_bars`` is a GLOBAL, cross-tenant EOD cache keyed on
+    ``security_id`` — every real tenant holding the same underlying ticker reads the
+    SAME row. Writing a synthetic close under a bare "AAPL" here would inject a fake
+    point into every real tenant's TWR/risk/shadow-recompute/market-board series for
+    that symbol (metron-ops#201-class defect, found in PR464 review). Raises rather
+    than skipping any non-``DEMO-``-namespaced symbol — a fixture-authoring bug, not a
+    case to silently degrade."""
+    for symbol in closes:
+        if not symbol.startswith(DEMO_SYMBOL_PREFIX):
+            raise ValueError(
+                f"refusing to seed a price bar for non-namespaced symbol {symbol!r} on {d} — "
+                f"every demo_household fixture symbol must start with {DEMO_SYMBOL_PREFIX!r} "
+                f"(price_bars is a GLOBAL, cross-tenant table)"
+            )
     secs = {sec.symbol: sec for sec in session.scalars(
         select(models.Security).where(models.Security.symbol.in_(list(closes)))
     ).all()}

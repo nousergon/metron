@@ -223,7 +223,7 @@ def test_golden_holdings_totals_independent_of_the_sale_symbols(db_session):
         h.ticker: h.quantity
         for h in analytics.holdings(db_session, demo_household.DEMO_TENANT_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID)
     }
-    never_sold = [s for s in qty_by_symbol if s not in ("DIS", "AAPL")]
+    never_sold = [s for s in qty_by_symbol if s not in ("DEMO-DIS", "DEMO-AAPL")]
     assert len(never_sold) == 23
     for sym in never_sold:
         assert held[sym] == pytest.approx(qty_by_symbol[sym], rel=1e-6), sym
@@ -265,7 +265,7 @@ def test_golden_wash_sale_window(db_session):
     $1,174.00 exactly; proceeds = 8 * 141.93 = $1,135.44; gain = -$38.56."""
     demo_household.ensure_demo_household_seeded(db_session)
     realized = analytics.realized(db_session, demo_household.DEMO_TENANT_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID)
-    dis_lots = [r for r in realized if r.ticker == "DIS"]
+    dis_lots = [r for r in realized if r.ticker == "DEMO-DIS"]
     assert len(dis_lots) == 1
     lot = dis_lots[0]
     assert lot.quantity == pytest.approx(8.0)
@@ -280,7 +280,7 @@ def test_golden_wash_sale_window(db_session):
     rebuys = db_session.scalars(
         select(models.Transaction)
         .join(models.Security, models.Transaction.security_id == models.Security.id)
-        .where(models.Security.symbol == "DIS", models.Transaction.txn_type == "BUY")
+        .where(models.Security.symbol == "DEMO-DIS", models.Transaction.txn_type == "BUY")
         .order_by(models.Transaction.trade_date)
     ).all()
     window_rebuys = [
@@ -298,7 +298,7 @@ def test_golden_lot_straddling_the_one_year_boundary(db_session):
     short-term) — one sale straddling the one-year ST/LT boundary."""
     demo_household.ensure_demo_household_seeded(db_session)
     realized = analytics.realized(db_session, demo_household.DEMO_TENANT_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID)
-    aapl_lots = sorted((r for r in realized if r.ticker == "AAPL"), key=lambda r: r.open_date)
+    aapl_lots = sorted((r for r in realized if r.ticker == "DEMO-AAPL"), key=lambda r: r.open_date)
     assert len(aapl_lots) == 2
 
     lot1, lot2 = aapl_lots
@@ -353,3 +353,113 @@ def test_golden_attribution_input_sector_weights(db_session):
         if sector is None:
             continue
         assert 0.0 < mv / classified_mv < 0.30, sector  # no single sector dominates
+
+
+# ── Reserved DEMO- namespace: never touch a real tenant's shared Security/PriceBar ──
+#
+# ``securities`` and ``price_bars`` are GLOBAL, cross-tenant tables (see their
+# docstrings in api/db/models.py) — a bare "AAPL" row here would be the SAME row a
+# real tenant's real AAPL holding reads. Found in review of PR464 (a metron-ops#201-
+# class defect) before merge; these three tests are the regression guard.
+
+
+def test_fixture_symbols_are_all_namespaced(db_session):
+    """Every symbol in BOTH committed fixture CSVs (and every ``SECURITY_META`` key)
+    starts with ``DEMO-`` — a fixture-authoring regression here would otherwise write
+    synthetic data straight into a real tenant's shared Security/PriceBar rows."""
+    import csv as _csv
+
+    tx_symbols = {
+        row["symbol"]
+        for row in _csv.DictReader(demo_household._load_transactions_csv().splitlines())
+        if row["symbol"]
+    }
+    assert tx_symbols, "sanity: the transactions fixture must carry at least one security"
+    for sym in tx_symbols:
+        assert sym.startswith(demo_household.DEMO_SYMBOL_PREFIX), sym
+
+    close_symbols = {
+        sym for closes in demo_household._load_monthly_closes().values() for sym in closes
+    }
+    assert close_symbols, "sanity: the closes fixture must carry at least one symbol"
+    for sym in close_symbols:
+        assert sym.startswith(demo_household.DEMO_SYMBOL_PREFIX), sym
+
+    for sym in demo_household.SECURITY_META:
+        assert sym.startswith(demo_household.DEMO_SYMBOL_PREFIX), sym
+
+
+def test_guard_raises_on_non_namespaced_price_bar_write(db_session):
+    with pytest.raises(ValueError, match="DEMO-"):
+        demo_household._seed_price_bars_for_date(db_session, date(2024, 1, 1), {"AAPL": 123.45})
+
+
+def test_guard_raises_on_non_namespaced_security_meta(db_session, monkeypatch):
+    monkeypatch.setitem(demo_household.SECURITY_META, "AAPL", ("Apple Inc.", "equity", "Technology"))
+    try:
+        with pytest.raises(ValueError, match="DEMO-"):
+            demo_household._apply_security_meta(db_session)
+    finally:
+        del demo_household.SECURITY_META["AAPL"]
+
+
+def test_seeding_never_touches_a_real_tenants_shared_security_or_price_bar(db_session):
+    """Seed a real tenant's AAPL holding FIRST (its own Security row, priced on dates
+    the demo household's own fixture also touches), then seed the demo household, and
+    assert the real AAPL row — name/asset_class/sector and every one of its price
+    bars — is byte-identical afterwards, with no bar added to it. This is the actual
+    regression this namespace exists to prevent, exercised end to end through
+    ``ensure_demo_household_seeded`` rather than only through the unit-level guards
+    above."""
+    real_tenant_id = __import__("uuid").uuid4()
+    db_session.add(models.Tenant(id=real_tenant_id, name="Real Tenant"))
+    real_security = models.Security(
+        symbol="AAPL", name="Apple Inc.", currency="USD", asset_class="equity", sector="Technology"
+    )
+    db_session.add(real_security)
+    db_session.commit()
+
+    real_portfolio = models.Portfolio(tenant_id=real_tenant_id, name="Real Portfolio", base_currency="USD")
+    db_session.add(real_portfolio)
+    db_session.commit()
+    real_account = models.Account(
+        tenant_id=real_tenant_id, portfolio_id=real_portfolio.id, broker="manual", external_id="Real Brokerage"
+    )
+    db_session.add(real_account)
+    db_session.commit()
+
+    # Real price bars, on dates the demo household's own fixture ALSO writes a bar for
+    # (the earliest and latest fixture month-end), plus one date the fixture doesn't
+    # touch at all — every one of these must be untouched by seeding the household.
+    fixture_dates = sorted(demo_household._load_monthly_closes())
+    real_bar_dates = [fixture_dates[0], fixture_dates[-1], date(2020, 1, 1)]
+    for d in real_bar_dates:
+        db_session.add(models.PriceBar(security_id=real_security.id, bar_date=d, close=999.99, currency="USD"))
+    db_session.commit()
+
+    before_bars = {
+        (b.bar_date, float(b.close))
+        for b in db_session.scalars(
+            select(models.PriceBar).where(models.PriceBar.security_id == real_security.id)
+        ).all()
+    }
+    before_meta = (real_security.name, real_security.asset_class, real_security.sector)
+
+    demo_household.ensure_demo_household_seeded(db_session)
+
+    real_security_after = db_session.get(models.Security, real_security.id)
+    after_bars = {
+        (b.bar_date, float(b.close))
+        for b in db_session.scalars(
+            select(models.PriceBar).where(models.PriceBar.security_id == real_security.id)
+        ).all()
+    }
+    after_meta = (real_security_after.name, real_security_after.asset_class, real_security_after.sector)
+
+    assert after_meta == before_meta
+    assert after_bars == before_bars  # no bar added, none altered
+
+    # And the household's OWN "AAPL" holding lives under a completely separate
+    # Security row (DEMO-AAPL), never the real one.
+    demo_aapl = db_session.scalars(select(models.Security).where(models.Security.symbol == "DEMO-AAPL")).one()
+    assert demo_aapl.id != real_security.id
