@@ -25,7 +25,7 @@ duplicated here — it lives in the public, MIT-licensed
 
 ## Layout
 
-One codebase, two top-level Python packages (+ a web frontend in PH2):
+One codebase, two top-level Python packages (+ a web frontend):
 
 | Path | What |
 |---|---|
