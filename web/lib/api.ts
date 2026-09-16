@@ -1768,6 +1768,58 @@ export async function recordLockedCardTap(apiAuth: string, card: string): Promis
   if (!res.ok) throw new MetronApiError(res.status, `POST /external-demo/taps → ${res.status}`);
 }
 
+// ── Owner admin surface (metron-ops-I323) ───────────────────────────────────
+// Every call below hits an owner-only backend route (`_require_owner` in
+// api/routers/external_demo.py — a verified identity in EXTERNAL_DEMO_ADMIN_EMAILS).
+// The web tier never holds the admin list itself; a 403 here IS "not an admin" and the
+// Settings page treats it as such (see ExternalDemoInvitesSection).
+
+/** All-time funnel counters: invites created, sessions started, taps per locked card. */
+export type ExternalDemoCounters = {
+  invites_created: number;
+  sessions_started: number;
+  locked_card_taps: Record<string, number>;
+  /** Whether EXTERNAL_DEMO_RELEASED is on — gates "Create invite" and the redeem/session
+   * paths on the backend. Nothing in this repo can flip it. */
+  external_demo_released: boolean;
+};
+
+export const getExternalDemoCounters = (apiAuth: string) =>
+  get<ExternalDemoCounters>(apiAuth, "/external-demo/counters");
+
+export type ExternalDemoInvite = {
+  id: string;
+  created_at: string;
+  expires_at: string;
+  redeemed_at: string | null;
+  live_session_count: number;
+};
+
+export const listExternalDemoInvites = (apiAuth: string) =>
+  get<ExternalDemoInvite[]>(apiAuth, "/external-demo/invites");
+
+/** Mint one invite. The code is returned once, here, and never stored in plaintext —
+ * the caller must show it to the admin immediately; it cannot be fetched again. */
+export async function createExternalDemoInvite(apiAuth: string): Promise<{ code: string; expires_at: string }> {
+  const res = await apiFetch("/external-demo/invites", {
+    method: "POST",
+    headers: authHeaders(apiAuth),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new MetronApiError(res.status, `POST /external-demo/invites → ${res.status}`);
+  return res.json() as Promise<{ code: string; expires_at: string }>;
+}
+
+/** Revoke an invite — deletes it and any session it minted, redeemed or not. */
+export async function revokeExternalDemoInvite(apiAuth: string, inviteId: string): Promise<void> {
+  const res = await apiFetch(`/external-demo/invites/${encodeURIComponent(inviteId)}`, {
+    method: "DELETE",
+    headers: authHeaders(apiAuth),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new MetronApiError(res.status, `DELETE /external-demo/invites/${inviteId} → ${res.status}`);
+}
+
 /** Resolve entitlements; `preview` overrides are honored server-side ONLY when the
  * tier simulator is enabled (owner-only — ignored on the public product). */
 export const getEntitlements = (
