@@ -80,6 +80,30 @@ def test_existing_session_dies_when_flag_is_off(raw_client, demo_headers, monkey
     assert raw_client.get("/me", headers=demo_headers).status_code == 401
 
 
+# ── metron-ops-I326: /meta/status reports the release gate without reading config ──
+def test_meta_status_reports_the_flag_and_gate_state_when_unreleased(raw_client):
+    body = raw_client.get("/meta/status").json()
+    assert body["deployment"]["external_demo_released"] is False
+    assert body["deployment"]["external_demo_release_gate"] == "compliant"
+
+
+def test_meta_status_reports_the_violation_when_released_without_feed_entitlement(
+    raw_client, released, monkeypatch
+):
+    monkeypatch.setattr(settings, "feed_entitled", False)
+    body = raw_client.get("/meta/status").json()
+    assert body["deployment"]["external_demo_released"] is True
+    assert body["deployment"]["external_demo_release_gate"] == "violation"
+
+
+def test_meta_status_stays_compliant_when_released_and_feed_entitled(
+    raw_client, released, monkeypatch
+):
+    monkeypatch.setattr(settings, "feed_entitled", True)
+    body = raw_client.get("/meta/status").json()
+    assert body["deployment"]["external_demo_release_gate"] == "compliant"
+
+
 # ── Invites ──────────────────────────────────────────────────────────────────
 def test_owner_creates_invite_and_viewer_redeems_once(raw_client, released, seeded, owner):
     r = raw_client.post("/external-demo/invites", headers=owner)

@@ -15,7 +15,7 @@ from api.config import settings
 from api.db import models
 from api.db.session import get_session
 from api.plugins import active_plugins
-from api.services import glance_latency
+from api.services import external_demo_release_gate, glance_latency
 
 router = APIRouter(prefix="/meta", tags=["system"])
 
@@ -151,6 +151,11 @@ def system_status(session: Session = Depends(get_session)) -> dict:
             "feed_entitled": settings.feed_entitled,
             "market_data_sync_enabled": settings.market_data_sync_enabled,
             "tier_simulator": settings.tier_simulator,
+            # metron-ops-I326: the flag's value is visible here without reading config,
+            # and "external_demo_release_gate" reports whether serving it is licensed —
+            # see api/services/external_demo_release_gate.py.
+            "external_demo_released": settings.external_demo_released,
+            "external_demo_release_gate": external_demo_release_gate.evaluate().state.value,
         },
         "connectors": {
             "flex_stored": bool(settings.flex_token and settings.flex_query_id),
