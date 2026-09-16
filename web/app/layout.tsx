@@ -4,6 +4,7 @@ import "./globals.css";
 import { UserNav } from "@/components/user-nav";
 import { MobileNav } from "@/components/mobile-nav";
 import { DemoBanner } from "@/components/demo-banner";
+import { DemoMask } from "@/components/demo-mask";
 import { SwrProvider } from "@/components/swr-provider";
 
 export const metadata: Metadata = {
@@ -32,6 +33,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <DemoBanner />
+        {/* Currency mask for the recorded demo, off unless ?demo_mask=1 (metron-ops-I305). */}
+        <DemoMask />
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <header className="flex items-center justify-between border-b border-line py-4 sm:py-5">
             <Link href="/" className="flex items-baseline gap-2 sm:gap-3">

@@ -28,3 +28,7 @@ CLAUDE.md
 # CONTRIBUTING.md. Public repos keep these out of git by default.
 /AGENTS.md
 /CLAUDE.md
+
+# Demo recordings are build artifacts of the commit they were made from, not source
+# (metron-ops-I305 deliverable 2 — web/demo/record.ts writes here).
+web/demo/out/
