@@ -32,7 +32,21 @@ from nousergon_lib.quant.attractiveness import (
 )
 
 from api import entitlements
+from api.config import settings
 from api.services import factor_profiles as factor_profiles_service
+
+# metron-ops-I308 / Brian R4 (2026-09-14): the factor-profile substrate retires at
+# crucible v2 phase 4. Shown to any caller that surfaces a retired/empty result without
+# its own copy — the score column itself is never rendered next to this text.
+RETIRED_MESSAGE = "Factor attractiveness retired — v1 factor substrate discontinued."
+
+
+def retired() -> bool:
+    """Whether the factor-attractiveness substrate is past its v1 cutover (metron-ops-I308).
+
+    Single source of truth for every consumer (this module's own ``compute_universe``,
+    and any other reader) — never re-derive the flag locally."""
+    return settings.retired_v1_surfaces
 
 _COMPUTE_CACHE_TTL_S = 3600.0  # 1 hour; matches factor profile update cadence
 _compute_universe_cache: dict[str, object | None] = {}  # None = empty universe, else dict[str, Attractiveness]
@@ -64,6 +78,10 @@ class Attractiveness:
     # Factor-profile publish date (P-28: R4 — the factor-pillar "Factor score" retires at v2
     # phase 4, so every consumer gets a daily as-of stamp rather than silently going stale).
     as_of: date | None = None
+    # True once ``as_of`` is older than factor_profiles.STALE_AFTER_DAYS (metron-ops-I308) —
+    # the score is still returned (never blanked on staleness alone) but every consumer
+    # MUST render it as stale, not as a current number.
+    stale: bool = False
 
 
 def _build_result(
@@ -99,6 +117,7 @@ def _build_result(
         coverage=len(pillars),
         pillars=pillars,
         as_of=as_of,
+        stale=factor_profiles_service.is_stale(as_of),
     )
 
 
@@ -115,6 +134,11 @@ def compute_universe(
     2. Module-level (1-hour TTL): across requests, reuse computed universe for 1 hour.
 
     When custom readers are supplied (tests), bypass caching entirely."""
+    if retired():
+        # v1 substrate discontinued (metron-ops-I308) — never blend a frozen artifact and
+        # present it as a current score. Consumers see an empty universe (the same "no
+        # score for this ticker" shape they already handle), before any S3 read.
+        return {}
     if entitlements.current_pin() is not None:
         # External user demo (metron-ops-I310): a Metron-computed per-security score is
         # withheld from pinned requests, before any cache is read or populated.

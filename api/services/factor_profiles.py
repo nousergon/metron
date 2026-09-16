@@ -20,6 +20,22 @@ logger = logging.getLogger(__name__)
 FACTOR_PROFILES_KEY = "factors/profiles/latest.json"
 PILLAR_WEIGHTS_KEY = "config/factor_attractiveness_weights.json"
 
+# The producer (crucible-research factor_scoring) publishes weekly; 8 days gives one
+# missed-run buffer before the substrate is flagged STALE (metron-ops-I308, mirrors the
+# same weekly-plus-buffer convention as api.services.research_intel_store).
+STALE_AFTER_DAYS = 8
+
+
+def is_stale(as_of: date | None, *, today: date | None = None) -> bool:
+    """True when ``as_of`` is missing or older than ``STALE_AFTER_DAYS``.
+
+    A missing ``as_of`` (no artifact, or an artifact that never carried one) is treated
+    as stale rather than fresh — never presented as current with no evidence it is."""
+    if as_of is None:
+        return True
+    today = today or date.today()
+    return (today - as_of).days > STALE_AFTER_DAYS
+
 _CACHE_TTL_S = 3600.0  # 1 hour; profiles update weekly
 _profiles_cache: dict[str, object | None] = {}  # None = missing, else FactorProfilesSnapshot
 _profiles_cache_time: float = 0.0

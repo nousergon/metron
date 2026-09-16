@@ -115,6 +115,15 @@ class Settings(BaseSettings):
     # Invite and session lifetimes. A session is also dead the moment the release flag is off.
     external_demo_invite_ttl_hours: int = 14 * 24
     external_demo_session_ttl_hours: int = 72
+    # v1-fed surfaces cutover (metron-ops-I308, Brian R4 2026-09-14): research intel,
+    # factor attractiveness and the Alpha Engine overlay all read v1 crucible-research /
+    # predictor artifacts that stop being written at crucible v2 phase 4. False today —
+    # those surfaces instead render an artifact-age STALE state. Flipping this to True is
+    # done ONLY by the v2 phase-4 cutover PR (never a routine config change); once on,
+    # `api.entitlements.resolve` marks research_intel/alpha_engine `reason="retired"`
+    # (terminal, not an upsell), which cascades to the nav, the routers and the insight
+    # registry's candidate-facet filter without a second flag anywhere.
+    retired_v1_surfaces: bool = False
 
     @property
     def external_demo_admin_email_set(self) -> frozenset[str]:

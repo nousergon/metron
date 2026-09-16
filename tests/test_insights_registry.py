@@ -157,3 +157,26 @@ def test_facets_in_family_preserves_catalog_order():
 
 def test_facets_in_family_is_empty_for_an_unknown_family():
     assert facets_in_family("not-a-family") == ()
+
+
+# ── v1 surface retirement (metron-ops-I308, Brian R4) ─────────────────────────
+
+def test_retirement_drops_research_intel_and_alpha_engine_facets(monkeypatch):
+    """The doctrine's layer-1 rule (no grounding in a dead artifact) is enforced through
+    ``entitlements.resolve``'s ``in_tier`` override — never re-derived here."""
+    from api.config import settings
+
+    before = {f.key for f in candidate_facets("personal", feed_enabled=True, max_level=LEVEL_L2)}
+    assert {"narrative_read", "security_attractiveness", "held_buy_sell_signal"} <= before
+
+    monkeypatch.setattr(settings, "retired_v1_surfaces", True)
+    after = {f.key for f in candidate_facets("personal", feed_enabled=True, max_level=LEVEL_L2)}
+    assert not {"narrative_read", "security_attractiveness", "held_buy_sell_signal"} & after
+    # Every dropped facet was gated on one of the two retired features — nothing on an
+    # unrelated feature got caught by the override.
+    dropped = before - after
+    assert dropped
+    assert all(FACET_BY_KEY[k].feature in entitlements.V1_RETIRED_FEATURES for k in dropped)
+    # Every facet NOT gated on a retired feature still survives.
+    unrelated_before = {f.key for f in CATALOG if f.feature not in entitlements.V1_RETIRED_FEATURES} & before
+    assert unrelated_before <= after
