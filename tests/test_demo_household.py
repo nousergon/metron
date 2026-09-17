@@ -292,9 +292,15 @@ def test_golden_twr_mwr(db_session):
     demo_household.ensure_demo_household_seeded(db_session)
     summary = perf.performance(db_session, demo_household.DEMO_TENANT_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID)
     assert summary.n_snapshots == 60
-    assert summary.twr == pytest.approx(0.4446254377308594, abs=1e-9)
-    assert summary.mwr == pytest.approx(0.507984300992856, abs=1e-6)
-    assert summary.annualized_twr == pytest.approx(0.07766816183674763, abs=1e-6)
+    # Re-pinned by metron-ops-I325 (DEMO-KO's dividends are now reinvested). Was
+    # twr=0.4446254377308594 / mwr=0.507984300992856 / annualized=0.07766816183674763.
+    # The ~5bp drop is real and expected, not drift: the DRP buys tilt the portfolio
+    # further toward DEMO-KO, a laggard over the fixture's window, and TWR is invariant
+    # to the SIZE of a flow but not to the COMPOSITION it buys. The independent
+    # re-derivation below is what actually guards the formula; these are drift pins.
+    assert summary.twr == pytest.approx(0.4441475702250812, abs=1e-9)
+    assert summary.mwr == pytest.approx(0.5073762476211936, abs=1e-6)
+    assert summary.annualized_twr == pytest.approx(0.0775956643522362, abs=1e-6)
 
     # Independent re-derivation from the raw NavSnapshot series (the SAME documented
     # formula ``performance.py`` uses — period return = (nav - flow) / prev_nav - 1,
@@ -331,7 +337,9 @@ def test_golden_holdings_totals_independent_of_the_sale_symbols(db_session):
         if not sym:
             continue
         q = float(row["quantity"])
-        if row["type"] == "BUY":
+        # REINVESTMENT is a BUY (``csv_import._TYPE_SYNONYMS``) — DEMO-KO's dividends
+        # are reinvested (metron-ops-I325), so its shares accrue from both row types.
+        if row["type"] in ("BUY", "REINVESTMENT"):
             qty_by_symbol[sym] = qty_by_symbol.get(sym, 0.0) + q
         elif row["type"] == "SELL":
             qty_by_symbol[sym] = qty_by_symbol.get(sym, 0.0) - q
@@ -350,7 +358,9 @@ def test_golden_cash_balance(db_session):
     """The uninvested emergency-fund deposit ($4,200, month 60) plus the small DCA
     rounding residue leaves the taxable account's cash balance positive — the ICP
     fixture's ``cash balance`` requirement. Pinned + independently re-summed from the
-    raw fixture CSV (Σ DEPOSIT + Σ DIVIDEND + Σ SELL − Σ BUY, taxable account only)."""
+    raw fixture CSV (Σ DEPOSIT + Σ DIVIDEND + Σ SELL − Σ BUY − Σ REINVESTMENT, taxable
+    account only — a reinvested dividend is cash in and immediately cash out again,
+    metron-ops-I325, so it nets to zero here and the balance is unchanged by DRP)."""
     demo_household.ensure_demo_household_seeded(db_session)
     taxable = _taxable_account(db_session)
     cash = _cash_by_account(
@@ -361,12 +371,14 @@ def test_golden_cash_balance(db_session):
     text = demo_household._load_transactions_csv()
     import csv as _csv
 
-    totals = {"DEPOSIT": 0.0, "BUY": 0.0, "SELL": 0.0, "DIVIDEND": 0.0}
+    totals = {"DEPOSIT": 0.0, "BUY": 0.0, "SELL": 0.0, "DIVIDEND": 0.0, "REINVESTMENT": 0.0}
     for row in _csv.DictReader(text.splitlines()):
         if row["account"] != "Demo Taxable Brokerage":
             continue
         totals[row["type"]] = totals.get(row["type"], 0.0) + float(row["amount"])
-    independent_cash = totals["DEPOSIT"] + totals["DIVIDEND"] + totals["SELL"] - totals["BUY"]
+    independent_cash = (
+        totals["DEPOSIT"] + totals["DIVIDEND"] + totals["SELL"] - totals["BUY"] - totals["REINVESTMENT"]
+    )
 
     assert cash == pytest.approx(independent_cash, abs=1e-2)
     assert cash > 0
@@ -447,7 +459,10 @@ def test_golden_attribution_input_sector_weights(db_session):
     assert len(priced) == 25
 
     total_mv = sum(h.market_value for h in priced)
-    assert total_mv == pytest.approx(242383.127166, rel=1e-6)
+    # 242,383.127166 before metron-ops-I325 + DEMO-KO's 6.000164 reinvested shares at
+    # its final fixture close of 67.97 (= 407.831147) — the DRP delta reconciles to the
+    # cent against an independent Σ(net qty × final close) over the two committed CSVs.
+    assert total_mv == pytest.approx(242790.958313, rel=1e-6)
 
     by_sector: dict[str | None, float] = {}
     for h in priced:
@@ -580,3 +595,136 @@ def test_seeding_never_touches_a_real_tenants_shared_security_or_price_bar(db_se
     # Security row (DEMO-AAPL), never the real one.
     demo_aapl = db_session.scalars(select(models.Security).where(models.Security.symbol == "DEMO-AAPL")).one()
     assert demo_aapl.id != real_security.id
+
+
+# ── Dividend reinvestment / DRP parity (metron-ops-I325) ───────────────────────
+
+
+class TestDividendReinvestment:
+    """``DEMO-KO``'s dividends are reinvested: each cash ``DIVIDEND`` row is paired with
+    a same-date ``REINVESTMENT`` row (``csv_import`` maps that onto ``TxnType.BUY``).
+
+    The parity item this pins is the one Sharesight/Navexa advertise — automatic DRP
+    tracking — and the property that makes it correct: the reinvestment buys shares
+    WITHOUT registering as an external contribution, so TWR is unaffected by the
+    reinvestment itself. That falls out of the ledger's internal/external split, not
+    from any DRP special case; these tests hold that split honest.
+    """
+
+    def test_fixture_pairs_every_ko_dividend_with_a_same_date_reinvestment(self):
+        rows = [
+            line.split(",")
+            for line in demo_household._load_transactions_csv().splitlines()[1:]
+            if line.strip()
+        ]
+        dividends = {r[0] for r in rows if r[1] == "DIVIDEND" and r[2] == "DEMO-KO"}
+        reinvestments = {r[0] for r in rows if r[1] == "REINVESTMENT" and r[2] == "DEMO-KO"}
+        assert dividends, "the fixture must carry DEMO-KO dividends at all"
+        assert dividends == reinvestments  # one reinvestment per dividend, same date
+
+    def test_reinvestment_lands_as_a_buy_that_increases_the_share_count(self, db_session):
+        """End to end through the real idempotent ``_reconcile_and_backfill`` path: the
+        reinvested shares are in the persisted ledger and in the rendered holding."""
+        demo_household.ensure_demo_household_seeded(db_session)
+        rows = [
+            line.split(",")
+            for line in demo_household._load_transactions_csv().splitlines()[1:]
+            if line.strip()
+        ]
+        reinvested_shares = sum(float(r[3]) for r in rows if r[1] == "REINVESTMENT" and r[2] == "DEMO-KO")
+        plain_buys = sum(float(r[3]) for r in rows if r[1] == "BUY" and r[2] == "DEMO-KO")
+        assert reinvested_shares > 0
+
+        held = {
+            h.ticker: h
+            for h in analytics.holdings(
+                db_session, demo_household.DEMO_TENANT_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID
+            )
+        }
+        sells = sum(float(r[3]) for r in rows if r[1] == "SELL" and r[2] == "DEMO-KO")
+        assert held["DEMO-KO"].quantity == pytest.approx(plain_buys + reinvested_shares - sells, abs=1e-6)
+        # The reinvested shares are a real, non-trivial part of the position — a
+        # reinvestment silently dropped by the importer would pass a bare ">0" check
+        # on the plain buys alone.
+        assert held["DEMO-KO"].quantity > plain_buys
+
+    def test_reinvestment_is_flow_neutralised_as_a_buy_never_as_a_contribution(self, db_session):
+        """The golden TWR property (metron-ops-I325 deliverable 3).
+
+        MEASURED, and it inverts the naive expectation: Metron's NAV is the market value
+        of HOLDINGS ONLY, with no cash bucket, so ``performance._net_purchases`` defines
+        ``external_flow`` as NET PURCHASES (ΣBUY − ΣSELL) and explicitly NOT as cash
+        deposits — "a reinvested dividend is a buy" (that function's own docstring,
+        metron-ops#44). A DRP buy therefore IS neutralised in the flow series, and that
+        is what makes TWR right rather than wrong: the dividend cash was never inside
+        the valued NAV, so the moment it becomes shares is the moment that capital
+        enters, exactly like any other purchase. What must never happen is the
+        reinvestment being booked as new outside money — a DEPOSIT.
+
+        So this pins the flow series against an independent recomputation from the
+        fixture: every snapshot's ``external_flow`` equals Σ(BUY + REINVESTMENT) − ΣSELL
+        over its own window, with DIVIDEND and DEPOSIT amounts contributing nothing.
+        Route DRP through DEPOSIT/WITHDRAWAL, or drop the reinvestment on import, and
+        this goes red."""
+        demo_household.ensure_demo_household_seeded(db_session)
+        rows = [
+            line.split(",")
+            for line in demo_household._load_transactions_csv().splitlines()[1:]
+            if line.strip()
+        ]
+        reinvest_dates = sorted({date.fromisoformat(r[0]) for r in rows if r[1] == "REINVESTMENT"})
+        assert reinvest_dates
+
+        snap_dates = sorted(
+            db_session.scalars(
+                select(models.NavSnapshot.snap_date).where(
+                    models.NavSnapshot.portfolio_id == demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID
+                )
+            ).all()
+        )
+        assert snap_dates
+        flows = {
+            snap.snap_date: float(snap.external_flow)
+            for snap in db_session.scalars(
+                select(models.NavSnapshot).where(
+                    models.NavSnapshot.portfolio_id == demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID
+                )
+            ).all()
+        }
+
+        def window_flow(after: date | None, through: date) -> float:
+            total = 0.0
+            for r in rows:
+                d = date.fromisoformat(r[0])
+                if d > through or (after is not None and d <= after):
+                    continue
+                if r[1] in ("BUY", "REINVESTMENT"):
+                    total += float(r[5])
+                elif r[1] == "SELL":
+                    total -= float(r[5])
+            return total
+
+        checked = 0
+        for i, d in enumerate(snap_dates):
+            if d not in reinvest_dates:
+                continue
+            after = snap_dates[i - 1] if i else None
+            assert flows[d] == pytest.approx(window_flow(after, d), abs=0.02), d
+            # The DRP row is actually inside this window — otherwise the assertion above
+            # would pass vacuously on a window that happens to contain no reinvestment.
+            assert any(
+                r[1] == "REINVESTMENT" and (after is None or date.fromisoformat(r[0]) > after)
+                and date.fromisoformat(r[0]) <= d
+                for r in rows
+            )
+            checked += 1
+        assert checked >= 5
+
+        # And the reinvestment is never booked as outside money: the deposits in a
+        # reinvestment window do not appear in its flow (they are cash, not purchases).
+        first_reinvest = reinvest_dates[0]
+        deposits_to_date = sum(
+            float(r[5]) for r in rows if r[1] == "DEPOSIT" and date.fromisoformat(r[0]) <= first_reinvest
+        )
+        assert deposits_to_date > 0
+        assert sum(flows[d] for d in snap_dates if d <= first_reinvest) != pytest.approx(deposits_to_date)

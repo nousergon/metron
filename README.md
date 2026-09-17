@@ -4,12 +4,12 @@
 [![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nousergon/metron/badges/coverage.json)](https://github.com/nousergon/metron/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/nousergon/metron)](LICENSE)
 
-**Portfolio analytics, measured.**
+**Portfolio intelligence for people with real brokerage accounts.**
 
 Metron is a multi-tenant dashboard for **institutional-grade portfolio analytics on
 your real accounts** — true returns, attribution, factor risk, scenarios, income, and
-tax clarity. **No AI, no ads/trackers, no advice, read-only.** We compute; we never
-tell you what to trade.
+tax clarity. An intelligence layer surfaces trends and analyses you'd otherwise miss.
+**No ads/trackers, read-only.** We compute; we never tell you what to trade.
 
 A [Nous Ergon](https://nousergon.ai) product, hosted at `metron.nousergon.ai`.
 
@@ -21,17 +21,17 @@ that don't ship in this repo — that's the commercial side; the product itself 
 
 The quant core (factor risk, attribution, returns, VaR/CVaR, riskstats) is **not**
 duplicated here — it lives in the public, MIT-licensed
-[`alpha-engine-lib`](https://pypi.org/project/alpha-engine-lib/) and is imported.
+[`nousergon-lib`](https://pypi.org/project/nousergon-lib/) and is imported.
 
 ## Layout
 
-One codebase, two top-level Python packages (+ a web frontend in PH2):
+One codebase, two top-level Python packages (+ a web frontend):
 
 | Path | What |
 |---|---|
 | `portfolio_analytics/` | The pure engine. `domain/` (ledger, realized income, tax lots, stress), `broker_io/` (IBKR Flex, SnapTrade, transaction tranching), `ingestion/` (FDX canonical schema + bronze/silver store + broker connectors + `CanonicalReader`). No web/cloud coupling; fully unit-tested. |
 | `api/` | FastAPI service + the multi-tenant Postgres schema (`api/db/models.py`) over the engine. Tenant-isolated via Postgres RLS in prod. |
-| `web/` | Next.js + Tremor frontend — **lands in PH2.** |
+| `web/` | Next.js + Tremor frontend — shipped and live. |
 
 Proprietary runtime bits (LLM advisor prompt templates, private signal feeds) are
 **never committed** — they load at runtime from gitignored config, so a self-host
