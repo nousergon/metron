@@ -74,6 +74,35 @@ def test_cli_exits_non_zero_on_drift(monkeypatch):
     text, kwargs = sent[0]
     assert "behind" in text and "old" in text and "new" in text
     assert kwargs["severity"] == "error"
+    assert kwargs["dry_run"] is False
+
+
+def test_dry_run_still_detects_drift_and_exits_non_zero_but_sends_nothing(monkeypatch, capsys):
+    """metron-ops-I340: --dry-run must still check for real and still exit non-zero on
+    drift, and must pass dry_run=True all the way to send_alert so krepis short-circuits
+    before it ever reaches SNS/Telegram."""
+    sent: list[tuple[str, dict]] = []
+    monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append((t, kw)) or True)
+    monkeypatch.setattr(
+        deploy_drift, "check",
+        lambda **kw: [_state(head="old", remote="new", behind=4, age=5760)],
+    )
+    assert deploy_drift.main(["--dry-run"]) == 1
+    text, kwargs = sent[0]
+    assert "behind" in text and "old" in text and "new" in text
+    assert kwargs["severity"] == "error"
+    assert kwargs["dedup_key"] == "metron-deploy-drift"
+    assert kwargs["dry_run"] is True
+    assert "dry-run" in capsys.readouterr().out.lower()
+
+
+def test_dry_run_exits_zero_and_sends_nothing_when_current(monkeypatch, capsys):
+    sent: list[str] = []
+    monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append(t) or True)
+    monkeypatch.setattr(deploy_drift, "check", lambda **kw: [])
+    assert deploy_drift.main(["--dry-run"]) == 0
+    assert sent == []
+    assert "dry-run" in capsys.readouterr().out.lower()
 
 
 def test_cli_exits_zero_and_stays_silent_when_current(monkeypatch):

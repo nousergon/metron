@@ -40,6 +40,7 @@ def send_alert(
     severity: str = "error",
     dedup_key: str | None = None,
     dedup_window_min: int | None = None,
+    dry_run: bool = False,
 ) -> bool:
     """Publish ``text`` to the fleet alert channels. Returns True when at least one
     channel delivered it (or a dedup marker proves an equivalent alert already
@@ -50,11 +51,20 @@ def send_alert(
     within ``dedup_window_min`` (fleet default when unset) — pass one for anything a
     scheduled job re-detects on every run, so a persistent fault pages once rather than
     once per timer fire.
+
+    ``dry_run`` passes straight through to ``krepis.alerts.publish``, which
+    short-circuits before dedup and channel fan-out and returns ``ok=True`` per channel
+    without sending anything (metron-ops-I340). This is the only supported way to
+    exercise a detector's fire path — never force its input condition true against the
+    live transport to "prove" it pages.
     """
     try:
         from krepis import alerts
 
-        kwargs: dict = {"severity": severity, "source": _SOURCE, "dedup_key": dedup_key}
+        kwargs: dict = {
+            "severity": severity, "source": _SOURCE, "dedup_key": dedup_key,
+            "dry_run": dry_run,
+        }
         if dedup_window_min is not None:
             kwargs["dedup_window_min"] = dedup_window_min
         result = alerts.publish(text, **kwargs)

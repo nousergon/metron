@@ -29,6 +29,27 @@ flag would have kept it compliant — a detector structurally blind to the singl
 it exists to catch. `feed_entitled` is still reported alongside the verdict as context; it
 is never what decides it.
 
+**A synthetic verification is a real page** (measured 2026-09-17, metron-ops-I340). To
+prove the corrected predicate above actually fires, someone ran the module against the
+live box with the flag forced true:
+
+    2026-09-17T01:26:47+0000 sudo[82251]: root : PWD=/usr/bin ; USER=ec2-user ;
+    ENV=EXTERNAL_DEMO_RELEASED=true ;
+    COMMAND=/home/ec2-user/metron/.venv/bin/python -m
+    api.services.external_demo_release_gate
+
+`main()` called `report()`, `report()` called the real `send_alert`, and Brian was
+paged CRITICAL about a state that never existed on the box — the flag reads False on
+every one of its 168 recorded runs, and `journalctl` across every unit back to
+2026-09-11 has zero occurrences of the violation text outside that one command. A run
+one second earlier, without the override, is in the same log and reported compliant.
+There was no way to exercise the alerting path without sending a real alert, which
+means the only way to verify a fix to this detector spends the same attention a real
+detection would. **The rule that follows: a detector's fire path is demonstrated with
+`--dry-run` (below), never by forcing its input true against the live alert transport.**
+`--dry-run` still evaluates for real and still exits non-zero on anything but
+COMPLIANT — it only stops the alert from actually sending.
+
 **Never green on missing data.** If either flag cannot be read as a bool off the live
 `Settings` object — an attribute renamed, a monkeypatch that leaves a non-bool, a future
 refactor — this reports UNMEASURABLE, not COMPLIANT. A detector that free-passes on a
@@ -120,13 +141,18 @@ def check() -> GateCheck:
     return result
 
 
-def report() -> GateCheck:
+def report(*, dry_run: bool = False) -> GateCheck:
     """Check and page the operator on VIOLATION or UNMEASURABLE. Returns the check.
 
     Deduped: VIOLATION is a live compliance exposure and pages on a short window so a
     flip is caught within roughly one detection cycle even after the first page.
     UNMEASURABLE dedupes on the longer window shared with deploy-drift — it means the
     check itself needs attention, not that data is actively leaking.
+
+    ``dry_run`` threads straight to ``send_alert``/``krepis.alerts.publish`` (metron-ops-
+    I340): the real predicate is still evaluated and nothing about dedup key, window, or
+    severity changes — only the send is suppressed. This is what `--dry-run` uses to
+    exercise the path without paging.
     """
     from api.services.alerting import send_alert
 
@@ -141,6 +167,7 @@ def report() -> GateCheck:
             severity="critical",
             dedup_key="metron-external-demo-release-gate-violation",
             dedup_window_min=60,
+            dry_run=dry_run,
         )
     elif result.state is GateState.UNMEASURABLE:
         send_alert(
@@ -151,6 +178,7 @@ def report() -> GateCheck:
             severity="error",
             dedup_key="metron-external-demo-release-gate-unmeasurable",
             dedup_window_min=360,
+            dry_run=dry_run,
         )
     return result
 
@@ -158,16 +186,34 @@ def report() -> GateCheck:
 def main(argv: list[str] | None = None) -> int:
     """`python -m api.services.external_demo_release_gate` — the systemd unit's entry
     point. Exits non-zero on anything but COMPLIANT, so the unit itself goes red on
-    both a real violation and a broken read — never silently 0 on either."""
+    both a real violation and a broken read — never silently 0 on either.
+
+    ``--dry-run`` still evaluates for real and still exits non-zero on VIOLATION or
+    UNMEASURABLE — it only suppresses the send, so the fire path can be verified without
+    paging the operator (metron-ops-I340; see the module docstring's "A synthetic
+    verification is a real page")."""
     import argparse
 
     parser = argparse.ArgumentParser(
         prog="python -m api.services.external_demo_release_gate",
         description="Page when EXTERNAL_DEMO_RELEASED is on without a confirmed display licence.",
     )
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="evaluate and print the verdict as usual, but suppress the actual alert send "
+             "(nothing reaches SNS/Telegram) — for verifying the fire path, not a live check",
+    )
+    args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    result = report()
+    result = report(dry_run=args.dry_run)
+    if args.dry_run:
+        print(
+            f"[dry-run] nothing was sent. verdict={result.state.value} "
+            f"external_demo_released={result.external_demo_released} "
+            f"display_licence_confirmed={result.display_licence_confirmed} — "
+            f"a real run in this state would have sent an alert "
+            f"(severity={'critical' if result.state is GateState.VIOLATION else 'error' if result.state is GateState.UNMEASURABLE else 'n/a — COMPLIANT sends nothing'})."
+        )
     return 0 if result.state is GateState.COMPLIANT else 1
 
 
