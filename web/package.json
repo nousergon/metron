@@ -2,7 +2,7 @@
   "name": "metron-web",
   "version": "0.0.1",
   "private": true,
-  "description": "Metron frontend — Next.js App Router UI over the FastAPI backend. Price-free Portfolio + Income pages (PH2).",
+  "description": "Metron frontend \u2014 Next.js App Router UI over the FastAPI backend. Price-free Portfolio + Income pages (PH2).",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -10,7 +10,8 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "demo:record": "tsx demo/record.ts"
   },
   "dependencies": {
     "@tanstack/react-table": "^9.2.4",
@@ -34,8 +35,10 @@
     "eslint": "8.57.1",
     "eslint-config-next": "15.5.25",
     "jsdom": "^30.0.1",
+    "playwright": "^1.56.0",
     "postcss": "8.5.28",
     "tailwindcss": "^4.3.3",
+    "tsx": "^4.20.3",
     "typescript": "6.0.3",
     "vitest": "^5.0.0"
   },
