@@ -48,10 +48,19 @@ def get_glance(
 ) -> glance_service.GlanceScreen:
     """All six glance zones, per-row provenanced, with the render state as a field.
 
-    Emits one ``glance composed`` log line with the server-side duration (and a
-    ``Server-Timing`` header) so the p95 ≤ 1.0 s exit gate is measured, not asserted."""
+    Emits one per-request timing record — a ``glance composed`` (success) or ``glance
+    failed`` (error) log line carrying the server-side duration, portfolio id, tier/feed
+    axes and producer count (metron-ops-I327 O2 exit gate) — plus a ``Server-Timing``
+    header, so the p95 ≤ 1.0 s gate is measured from a durable record, not asserted. The
+    record is emitted on EVERY request, success or failure: a raised exception is logged
+    with its duration before propagating (never swallowed — FastAPI still turns it into
+    a 500), so an elevated error rate cannot hide as missing latency data."""
     t0 = time.perf_counter()
     tier, feed = _axes(x_preview_tier, x_preview_feed)
+    # The tier can originate from the ``X-Preview-Tier`` request header, so only a value
+    # copied from the closed ``TIERS`` tuple (never the request string itself) reaches the log line (log-injection guard, CodeQL
+    # py/log-injection); anything else is logged as the literal "unknown".
+    log_tier = next((t.key for t in ent.TIERS if t.key == tier), "unknown")
     feat = ent.feature_state(
         "glance",
         default_tier=settings.default_tier,
@@ -62,21 +71,26 @@ def get_glance(
     )
     if not feat["available"]:
         raise HTTPException(status_code=403, detail=f"The glance screen is not available on this plan ({feat['reason']}).")
-    screen = glance_service.compose(session, portfolio, tier=tier, feed_enabled=feed)
+    try:
+        screen = glance_service.compose(session, portfolio, tier=tier, feed_enabled=feed)
+    except Exception:
+        duration_ms = (time.perf_counter() - t0) * 1000.0
+        log.error(
+            "glance failed portfolio=%s duration_ms=%.1f tier=%s feed=%s",
+            portfolio.id, duration_ms, log_tier, bool(feed), exc_info=True,
+        )
+        raise
     duration_ms = (time.perf_counter() - t0) * 1000.0
     response.headers["Server-Timing"] = f"glance;dur={duration_ms:.1f}"
-    # The tier can originate from the ``X-Preview-Tier`` request header, so only a value
-    # copied from the closed ``TIERS`` tuple (never the request string itself) reaches the log line (log-injection guard, CodeQL
-    # py/log-injection); anything else is logged as the literal "unknown".
-    log_tier = next((t.key for t in ent.TIERS if t.key == tier), "unknown")
     log.info(
-        "glance composed portfolio=%s duration_ms=%.1f state=%s tier=%s feed=%s degraded=%d zones_ms=%s",
+        "glance composed portfolio=%s duration_ms=%.1f state=%s tier=%s feed=%s degraded=%d producers=%d zones_ms=%s",
         portfolio.id,
         duration_ms,
         screen.state,
         log_tier,
         bool(feed),
         len(screen.degraded),
+        screen.coverage.produced_facets,
         screen.timings_ms,
     )
     return screen
