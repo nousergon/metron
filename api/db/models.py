@@ -810,3 +810,23 @@ class ExternalDemoSession(Base):
     )
     created_at: Mapped[datetime] = mapped_column()
     expires_at: Mapped[datetime] = mapped_column()
+
+
+class GlanceLatencyDaily(Base):
+    """One row per trading day: the glance aggregate endpoint's server-side p95 latency
+    (metron-ops-I327, Stage A exit gate O2 — ``GET /portfolios/{id}/glance`` p95 <= 1.0 s
+    over a trading day). NOT per-request — the per-request record is the router's
+    ``glance composed`` / ``glance failed`` log line; this table is the durably queryable
+    RESULT of running ``scripts/glance_p95.py`` against that log for one trading day, so
+    ``/meta/status`` can surface the number without anyone running an ad-hoc query.
+    Operator-level (not tenant-scoped): the figure is deployment-wide, like every other
+    ``/meta/status`` field. Upserted by the script (one row per ``trading_day``); its
+    absence is the "not-measured" state — never rendered as zero or green."""
+
+    __tablename__ = "glance_latency_daily"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    trading_day: Mapped[date] = mapped_column(unique=True, index=True)
+    p95_ms: Mapped[float] = mapped_column(Numeric(10, 2))
+    n: Mapped[int] = mapped_column()
+    computed_at: Mapped[datetime] = mapped_column(server_default=func.now())

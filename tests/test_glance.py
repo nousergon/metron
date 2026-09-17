@@ -23,11 +23,12 @@ from api import entitlements as ent
 from api.config import settings
 from api.db import models
 from api.insights import ranker, registry
-from api.services import glance
+from api.services import glance, intraday
 from api.services import goal as goal_service
 from portfolio_analytics.prices import ClosePoint
 
 _POST_CLOSE = datetime(2026, 9, 15, 22, 0, tzinfo=UTC)  # Tue 18:00 ET
+_OPEN = datetime(2026, 9, 15, 15, 0, tzinfo=UTC)  # Tue 11:00 ET
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -87,7 +88,61 @@ def test_render_state(now, state):
     assert glance.render_state(now) == state
 
 
-# ── zone composition ─────────────────────────────────────────────────────────
+# ── zone 2: intraday path (metron-ops-I324) ──────────────────────────────────
+
+
+def _live_tv(*, day_gain=45.0, as_of_utc="2026-09-15T15:00:00Z", stale=False, available=True) -> intraday.TodaySummary:
+    return intraday.TodaySummary(available=available, base_currency="USD", as_of_utc=as_of_utc, stale=stale, day_gain=day_gain)
+
+
+def test_open_state_path_carries_a_live_provenanced_intraday_series(db_session, monkeypatch):
+    p = _portfolio(db_session)
+    _snap(db_session, p, date(2026, 9, 11), [_leg("AAPL", 10, 99)])
+    _snap(db_session, p, date(2026, 9, 14), [_leg("AAPL", 10, 100)])
+    monkeypatch.setattr(glance.intraday, "today_view", lambda *a, **k: _live_tv())
+
+    g = _compose(db_session, p, now=_OPEN)
+
+    assert g.state == glance.STATE_OPEN
+    path = g.path
+    assert path.state == glance.STATE_OPEN
+    assert path.provenance == glance.PROV_LIVE
+    assert path.as_of == "2026-09-15T15:00:00Z"
+    assert len(path.intraday_points) == 2
+    assert {pt.nav for pt in path.intraday_points} == {1000.0, 1045.0}
+    # The daily settled history is untouched and stays uniformly settled — the two
+    # arrays are never merged, so neither can mix provenances.
+    assert all(True for _ in path.points)  # PathPoint carries no provenance field at all
+    assert path.points[-1].nav == 1000.0
+
+
+def test_open_state_with_a_stale_intraday_artifact_degrades_to_settled(db_session, monkeypatch):
+    p = _portfolio(db_session)
+    _snap(db_session, p, date(2026, 9, 11), [_leg("AAPL", 10, 99)])
+    _snap(db_session, p, date(2026, 9, 14), [_leg("AAPL", 10, 100)])
+    monkeypatch.setattr(glance.intraday, "today_view", lambda *a, **k: _live_tv(stale=True, available=False))
+
+    g = _compose(db_session, p, now=_OPEN)
+
+    path = g.path
+    assert path.state == glance.STATE_OPEN
+    assert path.provenance == glance.PROV_SETTLED
+    assert path.intraday_points == []
+    assert path.reason and "not available" in path.reason
+    assert path.points[-1].nav == 1000.0  # the settled path itself is still rendered
+
+
+def test_pre_open_and_post_close_never_carry_an_intraday_series(db_session, monkeypatch):
+    p = _portfolio(db_session)
+    _snap(db_session, p, date(2026, 9, 14), [_leg("AAPL", 10, 100)])
+    _snap(db_session, p, date(2026, 9, 15), [_leg("AAPL", 10, 101)])
+    monkeypatch.setattr(glance.intraday, "today_view", lambda *a, **k: _live_tv())  # would be live if consulted
+
+    pre = _compose(db_session, p, now=datetime(2026, 9, 15, 13, 0, tzinfo=UTC))
+    post = _compose(db_session, p, now=_POST_CLOSE)
+
+    assert pre.path.state == glance.STATE_PRE_OPEN and pre.path.intraday_points == [] and pre.path.provenance == glance.PROV_SETTLED
+    assert post.path.state == glance.STATE_POST_CLOSE and post.path.intraday_points == [] and post.path.provenance == glance.PROV_SETTLED
 
 
 def test_movers_rank_by_dollar_contribution_from_settled_snapshots(db_session):
@@ -347,6 +402,44 @@ def test_endpoint_returns_all_zones_in_one_payload(client, monkeypatch, caplog):
     assert g["headline"]["value_as_of"] == "2024-02-19"
     # AAPL is 50% of invested value → the concentration fact clears the floor.
     assert any(i["facet_key"] == "concentration_top_weight" for i in g["insights"]["items"])
+
+
+def test_endpoint_timing_record_carries_the_producer_count(client, monkeypatch, caplog):
+    """metron-ops-I327 deliverable 1: the per-request timing record names portfolio,
+    tier/feed axes and the producer count — not just a bare duration."""
+    tenant, pid = _seed(client, monkeypatch)
+    with caplog.at_level(logging.INFO, logger="api.routers.glance"):
+        r = client.get(f"/portfolios/{pid}/glance", headers={"X-Tenant-Id": tenant})
+    assert r.status_code == 200
+    line = next(rec.message for rec in caplog.records if rec.message.startswith("glance composed"))
+    assert f"portfolio={pid}" in line
+    assert "duration_ms=" in line and "tier=" in line and "feed=" in line and "producers=" in line
+
+
+def test_router_error_path_still_emits_a_timing_record_then_raises(db_session, monkeypatch, caplog):
+    """metron-ops-I327 deliverable 1/4: an exception out of ``compose`` (never swallowed
+    — fail loud) still logs a timing record naming the portfolio and duration before
+    propagating, so an elevated error rate cannot hide as missing latency data. Calls
+    the router function directly (bypassing the TestClient/ASGI stack) to isolate the
+    try/except from unrelated request-lifecycle behavior."""
+    from fastapi import Response
+
+    from api.routers import glance as glance_router
+
+    p = _portfolio(db_session)
+
+    def _boom(*a, **k):
+        raise RuntimeError("compose blew up")
+
+    monkeypatch.setattr(glance_router.glance_service, "compose", _boom)
+    with caplog.at_level(logging.INFO, logger="api.routers.glance"):
+        with pytest.raises(RuntimeError, match="compose blew up"):
+            glance_router.get_glance(
+                Response(), portfolio=p, session=db_session, x_preview_tier=None, x_preview_feed=None,
+            )
+    line = next(rec.message for rec in caplog.records if rec.message.startswith("glance failed"))
+    assert f"portfolio={p.id}" in line and "duration_ms=" in line
+    assert not any(rec.message.startswith("glance composed") for rec in caplog.records)
 
 
 def test_endpoint_is_owner_scoped(client, monkeypatch):

@@ -27,6 +27,7 @@ export type GlanceHeadline = {
 };
 
 export type GlancePathPoint = { date: string; nav: number };
+export type GlanceIntradayPathPoint = { as_of: string; nav: number };
 
 export type GlancePath = {
   available: boolean;
@@ -34,6 +35,11 @@ export type GlancePath = {
   points: GlancePathPoint[];
   as_of: string | null;
   provenance: GlanceProvenance;
+  state: GlanceState;
+  /** Open-state intraday sparkline (metron-ops-I324) — populated only when the render
+   *  state is "open" AND a live series is reachable; every point in it is "live"
+   *  provenance by construction, never mixed with the settled `points` above. */
+  intraday_points: GlanceIntradayPathPoint[];
   surface: string;
 };
 
