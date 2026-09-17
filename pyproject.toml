@@ -38,7 +38,7 @@ dependencies = [
     "pydantic-settings>=2.15.0",
     # Verifies the shared nousergon-auth identity service's EdDSA/Ed25519 JWTs against
     # its JWKS (metron-ops#179) — [crypto] pulls in `cryptography` for the Ed25519 path.
-    "pyjwt[crypto]>=2.13.0",
+    "pyjwt[crypto]>=2.14.0",
     # --- engine tier (portfolio_analytics/) ---
     "pandas>=3.0.5",
     "numpy>=2.4.6",
