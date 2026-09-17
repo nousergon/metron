@@ -30,12 +30,32 @@ import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 SOURCE = "research_intel"
 RESEARCH_INTEL_KEY = "research_intel/latest.json"
+
+# The crucible-research run publishes weekly; 8 days gives one missed-run buffer before
+# the surface is flagged STALE (metron-ops-I308, mirrors api.services.factor_profiles).
+STALE_AFTER_DAYS = 8
+
+
+def is_stale(as_of: str | None, *, today: date | None = None) -> bool:
+    """True when the snapshot's ``date`` field is missing, unparseable, or too old.
+
+    A missing/unparseable date is treated as stale — never presented as current with no
+    evidence it is."""
+    if not as_of:
+        return True
+    try:
+        d = date.fromisoformat(as_of[:10])
+    except ValueError:
+        return True
+    today = today or date.today()
+    return (today - d).days > STALE_AFTER_DAYS
 
 _VALID_REGIMES = frozenset({"bull", "neutral", "bear"})
 _VALID_RATINGS = frozenset({"overweight", "market_weight", "underweight"})

@@ -48,6 +48,22 @@ export default async function ResearchIntelPage(props: { params: Promise<{ id: s
   const entitlements = await loadEntitlements(apiAuth);
   const featureStates = toFeatureStates(entitlements);
   const ent = featureEntitlement(entitlements, "research_intel");
+  if (ent && ent.reason === "retired") {
+    // v1 producer discontinued at crucible v2 phase 4 (Brian R4, metron-ops-I308) —
+    // a distinct terminal state, never the upsell-shaped <Locked/>.
+    return (
+      <div>
+        <PortfolioNav portfolioId={id} navQuery="" featureStates={featureStates} />
+        <div className="mt-3">
+          <h1 className="text-lg font-semibold">Research intel</h1>
+          <div className="mt-4 rounded-md border border-line bg-surface px-4 py-3 text-sm text-muted">
+            Retired — the research-intel data source was discontinued at the crucible v2
+            cutover. The archive is retained internally; this surface no longer publishes.
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (ent && !ent.available) {
     return (
       <div>
@@ -120,6 +136,15 @@ export default async function ResearchIntelPage(props: { params: Promise<{ id: s
         {intel.date ? ` for ${isoDate(intel.date)}` : ""}. Impersonal analysis you apply to your own
         holdings — not personalized buy/sell advice.
       </p>
+      {res.stale ? (
+        // The weekly run missed its cadence by more than 8 days (metron-ops-I308) — the
+        // last-good artifact below is still shown (never blanked), but flagged explicitly
+        // so it is never read as a current number.
+        <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          Stale{intel.date ? ` — data as of ${isoDate(intel.date)}, more than 8 days old` : ""}. Showing the
+          last published run.
+        </div>
+      ) : null}
 
       <Section title="Market regime">
         <div className="px-4 py-3">
