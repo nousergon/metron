@@ -93,6 +93,75 @@ def test_owner_creates_invite_and_viewer_redeems_once(raw_client, released, seed
     assert seeded.query(models.ExternalDemoInvite).filter_by(code_digest=code).count() == 0
 
 
+# ── Owner Settings UI: list / revoke (metron-ops-I323) ────────────────────────
+def test_owner_lists_invites_with_live_session_count(raw_client, seeded, owner, monkeypatch):
+    """Listing works whether or not the demo is released — it's the admin's own
+    management view, not a demo-visitor surface — and reports 0 live sessions for an
+    unredeemed invite and 1 for a redeemed one."""
+    assert settings.external_demo_released is False
+    unredeemed_code, unredeemed = svc.create_invite(seeded)
+    redeemed_code, redeemed = svc.create_invite(seeded)
+    # Redeem while released, matching the real flow, then flip back to unreleased to
+    # prove listing still works off.
+    monkeypatch.setattr(settings, "external_demo_released", True)
+    token, _session_row = svc.redeem_invite(seeded, redeemed_code)
+    monkeypatch.setattr(settings, "external_demo_released", False)
+    assert token
+
+    body = raw_client.get("/external-demo/invites", headers=owner).json()
+    by_id = {row["id"]: row for row in body}
+    assert by_id[str(unredeemed.id)]["redeemed_at"] is None
+    assert by_id[str(unredeemed.id)]["live_session_count"] == 0
+    assert by_id[str(redeemed.id)]["redeemed_at"] is not None
+    assert by_id[str(redeemed.id)]["live_session_count"] == 1
+    # No plaintext code anywhere in the response.
+    assert unredeemed_code not in raw_client.get("/external-demo/invites", headers=owner).text
+
+
+def test_invites_list_is_owner_only(raw_client, seeded):
+    assert raw_client.get("/external-demo/invites").status_code == 401
+
+
+def test_revoke_deletes_invite_and_its_live_session(raw_client, released, seeded, owner):
+    """Binding invariant: revoking an already-redeemed invite must kill the session it
+    minted, not just block future redemption."""
+    code, invite = svc.create_invite(seeded)
+    token, _row = svc.redeem_invite(seeded, code)
+    demo_headers = {"X-Demo-Session": token}
+    assert raw_client.get("/me", headers=demo_headers).status_code == 200
+
+    r = raw_client.delete(f"/external-demo/invites/{invite.id}", headers=owner)
+    assert r.status_code == 204
+
+    # The session is dead.
+    assert raw_client.get("/me", headers=demo_headers).status_code == 401
+    # The invite itself is gone.
+    assert seeded.query(models.ExternalDemoInvite).filter_by(id=invite.id).count() == 0
+    assert seeded.query(models.ExternalDemoSession).count() == 0
+
+
+def test_revoke_unredeemed_invite(raw_client, released, seeded, owner):
+    code, invite = svc.create_invite(seeded)
+    assert raw_client.delete(f"/external-demo/invites/{invite.id}", headers=owner).status_code == 204
+    # The code no longer redeems.
+    assert raw_client.post("/external-demo/sessions", json={"code": code}).status_code == 403
+
+
+def test_revoke_unknown_invite_is_404(raw_client, owner):
+    assert raw_client.delete(f"/external-demo/invites/{uuid.uuid4()}", headers=owner).status_code == 404
+
+
+def test_revoke_is_owner_only(raw_client, seeded):
+    invite_id = svc.create_invite(seeded)[1].id
+    assert raw_client.delete(f"/external-demo/invites/{invite_id}").status_code == 401
+
+
+def test_counters_report_the_release_flag(raw_client, owner, monkeypatch):
+    assert raw_client.get("/external-demo/counters", headers=owner).json()["external_demo_released"] is False
+    monkeypatch.setattr(settings, "external_demo_released", True)
+    assert raw_client.get("/external-demo/counters", headers=owner).json()["external_demo_released"] is True
+
+
 def test_non_owner_cannot_create_invites(raw_client, released, monkeypatch):
     monkeypatch.setattr(settings, "external_demo_admin_emails", OWNER_EMAIL)
     monkeypatch.setattr(router_mod, "verify_identity_token", lambda _t: IdentityClaims(sub="s", email="x@example.test"))
