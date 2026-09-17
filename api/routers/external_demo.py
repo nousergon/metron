@@ -1,6 +1,11 @@
 """External user demo endpoints (metron-ops-I310). Design: ``api/services/external_demo.py``.
 
-- ``POST /external-demo/invites`` — owner only; 403 while ``EXTERNAL_DEMO_RELEASED`` is off.
+- ``POST   /external-demo/invites`` — owner only; 403 while ``EXTERNAL_DEMO_RELEASED`` is off.
+- ``GET    /external-demo/invites`` — owner-only list (no codes), with a live-session count
+  per invite. Always available to the owner, released or not — it's the admin's own
+  management view, not a demo-visitor surface.
+- ``DELETE /external-demo/invites/{id}`` — owner-only revoke: deletes the invite and any
+  session it minted, redeemed or not. Always available, like the list.
 - ``POST /external-demo/sessions`` — redeem a single-use code; 403 while unreleased.
 - ``GET  /external-demo/locked-cards`` — the locked cards (authenticated callers).
 - ``POST /external-demo/taps`` — count a tap on a locked card (live external sessions only).
@@ -63,6 +68,14 @@ class InviteOut(BaseModel):
     expires_at: datetime
 
 
+class InviteListOut(BaseModel):
+    id: uuid.UUID
+    created_at: datetime
+    expires_at: datetime
+    redeemed_at: datetime | None
+    live_session_count: int
+
+
 class RedeemIn(BaseModel):
     code: str = Field(min_length=1, max_length=128)
 
@@ -92,6 +105,34 @@ def create_invite(
 ) -> InviteOut:
     code, invite = svc.create_invite(session)
     return InviteOut(code=code, expires_at=invite.expires_at)
+
+
+@router.get("/invites", response_model=list[InviteListOut])
+def list_invites(
+    _owner: None = Depends(_require_owner),
+    session: Session = Depends(get_session),
+) -> list[InviteListOut]:
+    return [
+        InviteListOut(
+            id=invite.id,
+            created_at=invite.created_at,
+            expires_at=invite.expires_at,
+            redeemed_at=invite.redeemed_at,
+            live_session_count=count,
+        )
+        for invite, count in svc.list_invites(session)
+    ]
+
+
+@router.delete("/invites/{invite_id}", status_code=204)
+def revoke_invite(
+    invite_id: uuid.UUID,
+    _owner: None = Depends(_require_owner),
+    session: Session = Depends(get_session),
+) -> Response:
+    if not svc.revoke_invite(session, invite_id):
+        raise HTTPException(status_code=404, detail="Invite not found.")
+    return Response(status_code=204)
 
 
 @router.post("/sessions", response_model=SessionOut, status_code=201)
@@ -130,4 +171,7 @@ def get_counters(
     _owner: None = Depends(_require_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    return svc.counters(session)
+    # Owner-admin surface (metron-ops-I323): the Settings invites section needs to know
+    # the release state to disable "Create invite" and show why, without a second route —
+    # this endpoint is already owner-only and already the section's one required fetch.
+    return {**svc.counters(session), "external_demo_released": settings.external_demo_released}

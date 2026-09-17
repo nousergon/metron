@@ -38,7 +38,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from api import entitlements as ent
@@ -203,6 +203,54 @@ def redeem_invite(session: Session, code: str) -> tuple[str, models.ExternalDemo
     return token, row
 
 
+def list_invites(session: Session) -> list[tuple[models.ExternalDemoInvite, int]]:
+    """Every invite, newest first, paired with its **live** session count (redemption is
+    single-use, so this is 0 or 1 today, but the query does not assume that — a future
+    multi-session invite shape would just work). Owner-only surface (metron-ops-I323)."""
+    now = _now()
+    invites = list(
+        session.scalars(
+            select(models.ExternalDemoInvite).order_by(models.ExternalDemoInvite.created_at.desc())
+        ).all()
+    )
+    if not invites:
+        return []
+    counts = dict(
+        session.execute(
+            select(models.ExternalDemoSession.invite_id, func.count(models.ExternalDemoSession.id))
+            .where(
+                models.ExternalDemoSession.invite_id.in_([i.id for i in invites]),
+                models.ExternalDemoSession.expires_at > now,
+            )
+            .group_by(models.ExternalDemoSession.invite_id)
+        ).all()
+    )
+    return [(invite, int(counts.get(invite.id, 0))) for invite in invites]
+
+
+def revoke_invite(session: Session, invite_id: uuid.UUID) -> bool:
+    """Delete an invite and every session it ever minted — redeemed or not.
+
+    Deleting a REDEEMED invite must kill its live session too (metron-ops-I323): a
+    session's own life isn't checked against its invite's existence anywhere else, so an
+    admin revoking an invite the viewer already redeemed has to be the thing that ends
+    that viewer's access. Sessions are deleted explicitly rather than relied on to cascade
+    from the FK's ``ondelete="CASCADE"`` — that's a real Postgres-enforced constraint in
+    production, but the test suite's SQLite connections don't turn on
+    ``PRAGMA foreign_keys``, so an app-level delete is what actually protects this
+    invariant under test (and is correct everywhere else regardless).
+
+    Returns False when the invite id doesn't exist (already revoked or never existed).
+    """
+    invite = session.get(models.ExternalDemoInvite, invite_id)
+    if invite is None:
+        return False
+    session.execute(delete(models.ExternalDemoSession).where(models.ExternalDemoSession.invite_id == invite_id))
+    session.delete(invite)
+    session.commit()
+    return True
+
+
 def resolve_session(session: Session, token: str) -> models.ExternalDemoSession | None:
     """The live session for ``token``, or None. Every session is dead while unreleased."""
     if not settings.external_demo_released or not token:
@@ -232,8 +280,6 @@ def record_tap(session: Session, demo_session: models.ExternalDemoSession, card_
 
 def counters(session: Session) -> dict:
     """Invites created, sessions started, and taps per locked card (all-time totals)."""
-    from sqlalchemy import func
-
     rows = dict(
         session.execute(
             select(models.Event.event_name, func.count(models.Event.id))

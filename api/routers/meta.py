@@ -15,6 +15,7 @@ from api.config import settings
 from api.db import models
 from api.db.session import get_session
 from api.plugins import active_plugins
+from api.services import glance_latency
 
 router = APIRouter(prefix="/meta", tags=["system"])
 
@@ -169,5 +170,11 @@ def system_status(session: Session = Depends(get_session)) -> dict:
         "reconciliation": {
             "available": False,
             "note": "Layer 1 (break store) not yet deployed — reconciliation-run and open-break-count fields will be added once metron-ops#210 layer 1 lands.",
+        },
+        # Stage A exit gate O2 (metron-ops-I327): the glance aggregate endpoint's p95
+        # server-side latency over the most recently measured trading day. "not-measured"
+        # (never zero, never green) until `scripts/glance_p95.py --record` has run once.
+        "performance": {
+            "glance_p95": glance_latency.latest(session),
         },
     }

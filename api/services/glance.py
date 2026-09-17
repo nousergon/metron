@@ -149,14 +149,38 @@ class PathPoint:
 
 
 @dataclass
+class IntradayPathPoint:
+    """One point of the OPEN-state intraday sparkline (metron-ops-I324) — always
+    ``PROV_LIVE`` by construction; this array is only ever populated on the live branch,
+    so it can never carry a mixed-provenance point."""
+
+    as_of: str
+    nav: float
+
+
+@dataclass
 class PathZone:
-    """Zone 2 — the settled NAV path. The client cycles the period over these points."""
+    """Zone 2. ``points`` is the settled daily NAV history the client cycles the period
+    over (positioning §3g.4 zone 2, closed states). ``intraday_points`` is the SEPARATE
+    open-state sparkline (metron-ops-I324): non-empty only when the render state is
+    ``open`` AND a live series is reachable, and every point in it is ``PROV_LIVE`` —
+    the two arrays are never merged, so neither can mix provenances. ``state`` mirrors
+    ``GlanceScreen.state`` so the client renders the zone that matches what the screen
+    itself says the moment is (pre_open / open / post_close), never inferring it from
+    the points alone.
+
+    ``provenance``/``as_of`` are the zone-level claim the badge renders: ``PROV_LIVE``
+    with the live as-of when the intraday series is showing, ``PROV_SETTLED`` with the
+    last settled date otherwise — including an open market with no reachable live
+    series, where ``reason`` names why (never a silently mixed or fabricated series)."""
 
     available: bool
     reason: str | None
     points: list[PathPoint]
     as_of: str | None
     provenance: str = PROV_SETTLED
+    state: str = STATE_POST_CLOSE
+    intraday_points: list[IntradayPathPoint] = field(default_factory=list)
     surface: str = "performance"
 
 
@@ -632,10 +656,34 @@ def _path(ctx: GlanceContext) -> PathZone:
         .order_by(models.NavSnapshot.snap_date)
     ).all()
     points = [PathPoint(date=d.isoformat(), nav=float(n)) for d, n in rows]
+    state = render_state(ctx.now)
     if len(points) < 2:
         return PathZone(available=False, reason="Not enough recorded history to draw a path yet.", points=points,
-                        as_of=points[-1].date if points else None)
-    return PathZone(available=True, reason=None, points=points, as_of=points[-1].date)
+                        as_of=points[-1].date if points else None, state=state)
+
+    provenance, as_of, reason, intraday_points = PROV_SETTLED, points[-1].date, None, []
+    if state == STATE_OPEN:
+        # Zone 2, open state (metron-ops-I324): the intraday sparkline is the prior
+        # settled close plus the SAME live day-change the headline already carries
+        # (``intraday.today_view`` — never a second, independently-computed number), so
+        # the two zones can never disagree. Unavailable (no feed, stale artifact, no
+        # decomposable holding) → fall back to the settled path, said so via the
+        # provenance badge (still ``PROV_SETTLED``) with a reason naming why — never a
+        # fabricated or silently mixed-provenance line.
+        tv = ctx.today_view
+        if tv is not None and tv.available and not tv.stale and tv.day_gain is not None and tv.as_of_utc:
+            prior_nav = points[-1].nav
+            intraday_points = [
+                IntradayPathPoint(as_of=points[-1].date, nav=prior_nav),
+                IntradayPathPoint(as_of=tv.as_of_utc, nav=prior_nav + tv.day_gain),
+            ]
+            provenance, as_of = PROV_LIVE, tv.as_of_utc
+        else:
+            reason = "Live intraday path not available; showing the last settled session."
+    return PathZone(
+        available=True, reason=reason, points=points, as_of=as_of, provenance=provenance,
+        state=state, intraday_points=intraday_points,
+    )
 
 
 def _fmt_et(ts: datetime) -> str:

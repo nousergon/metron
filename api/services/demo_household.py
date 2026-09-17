@@ -7,7 +7,7 @@ build-plan §5.1 A1, ``metron-ops`` build-plan-260915.md §1.5, §5.1). This mod
 seeds a SECOND, separate demo portfolio shaped like that segment: three accounts
 across three "brokers" (a taxable brokerage, a Roth IRA, a 401k), ~25 holdings (US
 equities, two index ETFs, one bond fund), a 5-year transaction history with monthly
-contributions, dividends (some reinvested), two realized sales — one a wash-sale
+contributions, dividends (``DEMO-KO``'s are reinvested — see below), two realized sales — one a wash-sale
 window (a loss sale followed by a repurchase of the same symbol within 30 days), the
 other straddling the one-year short/long-term boundary in a single FIFO relief — and
 an uninvested cash balance.
@@ -54,6 +54,29 @@ household can never be mutated by a visitor. Visible on every real tenant's dash
 the same way the Showcase is — see ``api/routers/portfolios.py::list_portfolios`` /
 ``_owned_portfolio`` and the ``_demo_read_only`` HTTP-layer guard in ``api/main.py``.
 
+Dividend reinvestment (DRP, metron-ops-I325). ``DEMO-KO``'s twenty quarterly
+dividends each carry a same-date ``REINVESTMENT`` row in
+``fixtures/demo_household/transactions.csv``, priced at that date's own close from
+``closes.csv``, for ``dividend_amount / close`` fractional shares. That is the
+representation the importer already has: ``csv_import._TYPE_SYNONYMS`` maps
+``reinvestment``/``reinvest shares`` onto ``TxnType.BUY``, so a DRP is a cash
+``DIVIDEND`` followed by a ``BUY`` of the same symbol on the same date.
+
+Its TWR treatment is correct by construction, and not the one the phrase "not an
+external contribution" first suggests: Metron's NAV is the market value of HOLDINGS
+only, with no cash bucket, so ``performance._net_purchases`` defines
+``NavSnapshot.external_flow`` as NET PURCHASES (ΣBUY − ΣSELL) rather than as cash
+deposits — "a reinvested dividend is a buy" (metron-ops#44). The dividend cash was
+never inside the valued NAV, so the reinvestment is the moment that capital enters and
+is neutralised exactly like any other purchase; what must never happen is it being
+booked as new OUTSIDE money (a DEPOSIT).
+``tests/test_demo_household.py::TestDividendReinvestment`` pins the share-count
+increase and recomputes the whole flow series from the fixture to hold that line. What this fixture does NOT yet get is a distinct RENDERING — a reinvestment
+reaches the Transactions view as a plain BUY, because no layer from
+``models.Transaction.txn_type`` up to the web table carries a reinvestment flag
+(metron-ops-I325 deliverable 4, still open: it needs a first-class type through the
+ledger, the model + its migration, the API row and the web table).
+
 Goal inputs (metron-ops-I317 deliverable 4): illustrative retirement-goal values
 (target amount, target date, annual contribution, withdrawal rate) are upserted onto
 this portfolio ONLY, on every reconcile, via ``goal.set_goal`` — see
@@ -81,6 +104,8 @@ from api.services import goal as goal_service
 from api.services import persistence
 from api.services import plan_targets as plan_targets_service
 from api.services.demo import DEMO_TENANT_ID
+from api.services.demo_namespace import DEMO_SYMBOL_PREFIX as _DEMO_SYMBOL_PREFIX
+from api.services.demo_namespace import assert_demo_symbols
 from api.services.performance import record_snapshot
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.ingestion.schema import activity_key
@@ -96,15 +121,14 @@ _SOURCE = "demo_household"
 
 _FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "demo_household")
 
-# Reserved demo namespace (metron-ops#201-class defect found in PR464 review):
-# ``securities`` and ``price_bars`` are GLOBAL, cross-tenant tables (see their
-# docstrings in api/db/models.py) — a bare "AAPL" row here would be the SAME row a
-# real tenant's real AAPL holding reads. Every fixture symbol is therefore written
-# under this prefix (in the fixture CSVs AND here), so no Security/PriceBar row this
-# module touches can ever be the row a real holding shares. ``_seed_price_bars_for_date``
-# and ``_apply_security_meta`` both hard-refuse (raise) any symbol without this
-# prefix — see their docstrings.
-DEMO_SYMBOL_PREFIX = "DEMO-"
+# Reserved demo namespace — the prefix and both guards now live in the one shared
+# module ``api/services/demo_namespace.py`` (second adoption: ``api/services/demo.py``'s
+# Showcase sample sleeve moved under the same namespace in metron-ops-I319, and
+# shared-code-policy says lift rather than copy). Re-exported here because this module's
+# public name for it predates the split and tests/callers address it through this module.
+# ``_seed_price_bars_for_date`` and ``_apply_security_meta`` both hard-refuse (raise) any
+# symbol without the prefix — see their docstrings.
+DEMO_SYMBOL_PREFIX = _DEMO_SYMBOL_PREFIX
 
 # Per-symbol reference metadata applied after import (the CSV path defaults everything
 # to equity, unnamed). (name, asset_class, sector — sector is None for the ETFs/bond
@@ -299,19 +323,12 @@ def _apply_security_meta(session: Session) -> None:
     PR464 review). Raises rather than skipping — a symbol reaching this function
     without the ``DEMO-`` prefix is a fixture-authoring bug that must be fixed, not
     silently dropped."""
-    for symbol in SECURITY_META:
-        if not symbol.startswith(DEMO_SYMBOL_PREFIX):
-            raise ValueError(
-                f"demo_household.SECURITY_META has a non-namespaced symbol {symbol!r} — "
-                f"every key must start with {DEMO_SYMBOL_PREFIX!r} (global securities table)"
-            )
+    assert_demo_symbols(SECURITY_META, context="demo_household.SECURITY_META")
     rows = session.scalars(select(models.Security).where(models.Security.symbol.in_(list(SECURITY_META)))).all()
+    assert_demo_symbols(
+        (sec.symbol for sec in rows), context="demo_household._apply_security_meta (matched Security rows)"
+    )
     for sec in rows:
-        if not sec.symbol.startswith(DEMO_SYMBOL_PREFIX):
-            raise ValueError(
-                f"refusing to write demo metadata onto non-namespaced Security {sec.symbol!r} "
-                f"(id={sec.id}) — it is a GLOBAL row a real tenant's holding may share"
-            )
         meta = SECURITY_META.get(sec.symbol)
         if meta:
             sec.name, sec.asset_class, sec.sector = meta
@@ -429,13 +446,7 @@ def _seed_price_bars_for_date(session: Session, d: date, closes: dict[str, float
     that symbol (metron-ops#201-class defect, found in PR464 review). Raises rather
     than skipping any non-``DEMO-``-namespaced symbol — a fixture-authoring bug, not a
     case to silently degrade."""
-    for symbol in closes:
-        if not symbol.startswith(DEMO_SYMBOL_PREFIX):
-            raise ValueError(
-                f"refusing to seed a price bar for non-namespaced symbol {symbol!r} on {d} — "
-                f"every demo_household fixture symbol must start with {DEMO_SYMBOL_PREFIX!r} "
-                f"(price_bars is a GLOBAL, cross-tenant table)"
-            )
+    assert_demo_symbols(closes, context=f"demo_household._seed_price_bars_for_date({d})")
     secs = {sec.symbol: sec for sec in session.scalars(
         select(models.Security).where(models.Security.symbol.in_(list(closes)))
     ).all()}

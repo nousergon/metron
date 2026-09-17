@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from api.config import settings
 from api.db import models
 from api.services import (
     analytics,
@@ -210,3 +211,39 @@ def test_request_scoped_cache_deduplicates_within_request(monkeypatch):
     attractiveness.clear_cache()
     attractiveness.compute_universe()
     assert call_count == 2  # Incremented after a full cache clear
+
+
+# ── staleness + retirement (metron-ops-I308, Brian R4) ────────────────────────
+
+def test_fresh_as_of_is_not_stale():
+    raw = {"as_of": date.today().isoformat(), "by_ticker": _PROFILES}
+    universe = attractiveness.compute_universe(profiles_reader=lambda: raw)
+    assert universe["AAPL"].stale is False
+
+
+def test_old_as_of_is_stale():
+    from datetime import timedelta
+    old_date = date.today() - timedelta(days=factor_profiles_service.STALE_AFTER_DAYS + 1)
+    raw = {"as_of": old_date.isoformat(), "by_ticker": _PROFILES}
+    universe = attractiveness.compute_universe(profiles_reader=lambda: raw)
+    assert universe["AAPL"].stale is True
+
+
+def test_missing_as_of_is_stale():
+    universe = attractiveness.compute_universe(profiles_reader=lambda: _PROFILES)
+    assert universe["AAPL"].stale is True  # unwrapped artifact carries no as_of
+
+
+def test_retired_returns_empty_universe_without_reading_profiles(monkeypatch):
+    monkeypatch.setattr(settings, "retired_v1_surfaces", True)
+    calls = 0
+
+    def _reader():
+        nonlocal calls
+        calls += 1
+        return _PROFILES
+
+    universe = attractiveness.compute_universe(profiles_reader=_reader)
+    assert universe == {}
+    assert calls == 0  # never reaches the S3 read
+    assert attractiveness.retired() is True

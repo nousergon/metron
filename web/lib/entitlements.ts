@@ -70,7 +70,10 @@ export function toFeatureStates(
 ): Record<string, NavFeatureState> | undefined {
   if (!entitlements) return undefined;
   const states: Record<string, NavFeatureState> = Object.fromEntries(
-    entitlements.features.map((f) => [f.key, { available: f.available, required_tier: f.required_tier }]),
+    entitlements.features.map((f) => [
+      f.key,
+      { available: f.available, required_tier: f.required_tier, reason: f.reason },
+    ]),
   );
   // External user demo (metron-ops-I310): a reserved non-catalog key the nav reads to show
   // only usable pages plus the locked cards. Every page already passes featureStates, so

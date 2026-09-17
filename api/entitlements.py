@@ -24,6 +24,8 @@ from __future__ import annotations
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
+from api.config import settings
+
 # ── Data sources a feature can depend on ─────────────────────────────────────
 # FREE — always provisioned (broker-sourced + self-captured + public-domain):
 FREE_SOURCES: frozenset[str] = frozenset({
@@ -152,6 +154,16 @@ FEED_DERIVED_FEATURES: frozenset[str] = frozenset(
 )
 PINNED_TIER_KEY = "external_demo"
 
+# v1-fed surfaces retired at crucible v2 phase 4 (Brian ruling R4, 2026-09-14;
+# metron-ops-I308). Their producers (`factors/profiles/latest.json`,
+# `research_intel/latest.json`, and the Alpha Engine `signals/`/`predictor/` artifacts)
+# stop being written at phase 4; ``settings.retired_v1_surfaces`` is the one cutover
+# flag flipped by the v2 phase-4 PR (never here — see api/config.py). Factor
+# attractiveness (api/services/attractiveness.py) has no dedicated Feature key — it
+# rides the ``research_intel``/``ai_advisor`` gates below, or degrades honestly to an
+# empty universe via its own settings check.
+V1_RETIRED_FEATURES: frozenset[str] = frozenset({"research_intel", "alpha_engine"})
+
 
 @dataclass(frozen=True)
 class Pin:
@@ -249,7 +261,11 @@ def resolve(tier: str, *, feed_enabled: bool) -> dict:
 
     ``available = in_tier AND computable``. ``reason`` is ``None`` when available,
     ``"tier"`` when the tier doesn't include it (upsell to ``required_tier``), else
-    the first missing data source (``"feed"`` / ``"benchmark"`` / ``"etf_vendor"``).
+    the first missing data source (``"feed"`` / ``"benchmark"`` / ``"etf_vendor"``), or
+    ``"retired"`` for a ``V1_RETIRED_FEATURES`` member once ``settings.retired_v1_surfaces``
+    is on — a terminal state, never an upsell, so ``required_tier`` is ``None`` and
+    ``in_tier`` is forced False (the single chokepoint every ``in_tier``-filtered reader,
+    including ``api.insights.registry.candidate_facets``, drains through).
     """
     pin = _request_pin.get()
     if pin is not None:
@@ -264,11 +280,17 @@ def resolve(tier: str, *, feed_enabled: bool) -> dict:
     prov = provisioned_sources(feed_enabled)
     features = []
     for f in FEATURES:
-        in_tier = f.key in active
+        retired = settings.retired_v1_surfaces and f.key in V1_RETIRED_FEATURES
+        in_tier = f.key in active and not retired
         missing = tuple(r for r in f.requires if r not in prov)
         computable = not missing
         available = in_tier and computable
-        reason = None if available else ("tier" if not in_tier else missing[0])
+        if retired:
+            reason = "retired"
+        elif available:
+            reason = None
+        else:
+            reason = "tier" if not in_tier else missing[0]
         features.append({
             "key": f.key,
             "label": f.label,
@@ -277,7 +299,7 @@ def resolve(tier: str, *, feed_enabled: bool) -> dict:
             "in_tier": in_tier,
             "computable": computable,
             "reason": reason,
-            "required_tier": required_tier(f.key),
+            "required_tier": None if retired else required_tier(f.key),
         })
     return {
         "tier": tier,

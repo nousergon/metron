@@ -37,7 +37,19 @@ export default async function AlphaEnginePage(props: { params: Promise<{ id: str
 
       {!view.available ? (
         <div className="mt-4">
-          <Empty>Alpha Engine signals are unavailable: {view.reason}</Empty>
+          {view.retired ? (
+            <Empty>
+              Retired — the Alpha Engine overlay&apos;s v1 signals and predictions were discontinued
+              at the crucible v2 cutover.
+            </Empty>
+          ) : view.reason === "stale" ? (
+            <Empty>
+              Alpha Engine signals are stale{view.as_of ? ` (last published ${view.as_of})` : ""} —
+              withheld rather than shown as current.
+            </Empty>
+          ) : (
+            <Empty>Alpha Engine signals are unavailable: {view.reason}</Empty>
+          )}
         </div>
       ) : (
         <>
