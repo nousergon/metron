@@ -105,6 +105,15 @@ class Settings(BaseSettings):
     # existing external-demo session stops resolving. It flips only after the licensed
     # display entitlement is confirmed (metron-ops#24); nothing in this repo flips it.
     external_demo_released: bool = False
+    # Display-licence attestation (metron-ops#24, metron-ops-I326). The ONLY observable
+    # that says market data may be DISPLAYED to people outside the account. Deliberately
+    # separate from `feed_entitled` above, which answers a different question — "does this
+    # deployment OFFER the feed-dependent wedge" — and is True on the owner build by
+    # default, so it can never distinguish a licensed deployment from an unlicensed one.
+    # Flipped to True only when metron-ops#24 records the licence purchased and confirmed
+    # in writing; nothing in this repo flips it. `api/services/external_demo_release_gate.py`
+    # pages while `external_demo_released` is on and this is off.
+    display_licence_confirmed: bool = False
     # Fallback (metron-ops-I310 rescope item 5): True re-locks the feed-derived features
     # (risk, attribution, benchmark, scenarios, calendar, indices, ETF look-through) for
     # external-demo sessions and shows them as locked cards — a config change, no code change.
