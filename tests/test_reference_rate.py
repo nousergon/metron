@@ -374,7 +374,7 @@ def test_daily_refresh_never_overwrites_reference_rate_nav(db_session, monkeypat
     assert float(row.nav) == 1_001_593.11 + sample_value
 
 
-_SAMPLE_SLEEVE_TICKERS = {"VOO", "912828YK0", "VMFXX"}
+_SAMPLE_SLEEVE_TICKERS = {"DEMO-VOO", "DEMO-UST-2026", "DEMO-MMF"}
 
 
 def test_holdings_endpoint_serves_reference(client, db_session):

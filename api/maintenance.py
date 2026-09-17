@@ -44,7 +44,8 @@ from api.services import (
 )
 from api.services import calendar as calendar_svc
 from api.services import prices as price_service
-from api.services.demo import REFERENCE_PORTFOLIO_ID, SAMPLE_SLEEVE_TICKERS, live_sleeve_tickers
+from api.services.demo import REFERENCE_PORTFOLIO_ID
+from api.services.demo_namespace import is_demo_symbol
 from portfolio_analytics.prices import fetch_latest_closes
 
 logger = logging.getLogger(__name__)
@@ -196,18 +197,20 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         held = analytics.holdings(session, p.tenant_id, p.id)
         symbols = [h.ticker for h in held if h.ticker]
         ccy_by_ticker = {h.ticker: h.currency for h in held if h.ticker}
-        if is_reference_rate:
-            # The frozen sample sleeve folded into this portfolio (demo.py module
-            # docstring) must actually stay frozen — a live refresh here would drift its
-            # displayed Holdings price away from the constant value that
-            # demo._sample_sleeve_totals bakes into the persisted NavSnapshot series,
-            # producing a growing Holdings-vs-Performance mismatch for no benefit (these
-            # tickers are never read from PriceBar for this sleeve; only from that
-            # module's own hardcoded table). Excluded only if the LIVE sleeve doesn't
-            # also happen to hold the same ticker (Crucible's universe can rotate into
-            # VOO/etc) — that sleeve's own tickers always still refresh normally.
-            sample_only = SAMPLE_SLEEVE_TICKERS - live_sleeve_tickers(session)
-            symbols = [s for s in symbols if s not in sample_only]
+        # Never send a reserved ``DEMO-`` symbol to a live vendor fetch, in ANY
+        # portfolio. These are fixture instruments with no listing to price; their
+        # closes are seeded from committed fixtures (demo._SAMPLE_SLEEVE_PRICES,
+        # demo_household's closes.csv) and must stay exactly what those fixtures say,
+        # or the displayed Holdings price drifts away from the constant the persisted
+        # NavSnapshot series was built from.
+        #
+        # Replaces the pre-metron-ops-I319 ``SAMPLE_SLEEVE_TICKERS`` carve-out, which
+        # existed only because the sample sleeve shared REAL tickers with real tenants
+        # and so needed a per-ticker "is the live sleeve also holding this?" check
+        # before skipping. The sleeve is namespaced now, so the skip is a property of
+        # the symbol itself — one rule covering both demo portfolios, no collision with
+        # any real holding possible, nothing to keep in sync as a fixture changes.
+        symbols = [s for s in symbols if not is_demo_symbol(s)]
         updated = (
             price_service.refresh_latest_prices(session, symbols, currency_by_symbol=ccy_by_ticker)
             if symbols

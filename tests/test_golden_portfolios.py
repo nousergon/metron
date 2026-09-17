@@ -174,6 +174,7 @@ class TestGoldenPortfolioHandVerified:
 # ── Golden fixture 2: Showcase Portfolio sample sleeve (api/services/demo.py) ────
 #
 # The frozen, hand-editable sample-sleeve CSV from the Showcase Portfolio fixture
+# (symbols namespaced under DEMO- by metron-ops-I319 — see api/services/demo_namespace.py)
 # (``_SAMPLE_SLEEVE_CSV`` in api/services/demo.py) — reproduced here as ledger
 # ``Transaction`` objects (bypassing the DB/CSV-import machinery, which needs a live
 # session) and checked against an independently, by-hand computed cost basis. This
@@ -182,29 +183,29 @@ class TestGoldenPortfolioHandVerified:
 # fixture above.
 #
 # Fixture rows (date, type, symbol, quantity, price, amount):
-#   2024-01-08  BUY  VOO        15   440   6600   (price*qty = 6600, matches amount)
-#   2024-02-02  BUY  912828YK0  50    98   4900   (price*qty = 4900, matches amount)
-#   2024-03-15  BUY  VMFXX    2000     1   2000   (price*qty = 2000, matches amount)
-#   2024-06-03  DIVIDEND VOO    0     0     38
+#   2024-01-08  BUY  DEMO-VOO        15   440   6600   (price*qty = 6600, matches amount)
+#   2024-02-02  BUY  DEMO-UST-2026  50    98   4900   (price*qty = 4900, matches amount)
+#   2024-03-15  BUY  DEMO-MMF    2000     1   2000   (price*qty = 2000, matches amount)
+#   2024-06-03  DIVIDEND DEMO-VOO    0     0     38
 #
 # No fees in this fixture and no SELLs, so cost basis is simply qty*price per lot
 # (``_buy`` uses ``price`` when price > 0, which it is for every row here — see
 # ``ledger._buy``): no FIFO relief to reason about, just three untouched open lots.
 #
 # --- Hand computation ---
-#   VOO:       15 sh @ $440.00/sh  -> cost basis = 15*440   = $6,600.00
-#   912828YK0: 50 sh @ $98.00/sh   -> cost basis = 50*98    = $4,900.00
-#   VMFXX:   2000 sh @ $1.00/sh    -> cost basis = 2000*1   = $2,000.00
+#   DEMO-VOO:       15 sh @ $440.00/sh  -> cost basis = 15*440   = $6,600.00
+#   DEMO-UST-2026: 50 sh @ $98.00/sh   -> cost basis = 50*98    = $4,900.00
+#   DEMO-MMF:   2000 sh @ $1.00/sh    -> cost basis = 2000*1   = $2,000.00
 #   Total cost basis across the sleeve                       = $13,500.00
 #   Cash consumed by buys = 6600 + 4900 + 2000                = $13,500.00
-#   Dividend received (VOO)                                   = $38.00
+#   Dividend received (DEMO-VOO)                                   = $38.00
 #   Net cash balance = -13,500.00 + 38.00                     = -$13,462.00
 #
 # Frozen EOD closes as-of 2024-06-28 (``_SAMPLE_SLEEVE_PRICES`` in demo.py):
-#   VOO $490.00, 912828YK0 $99.00, VMFXX $1.00
-#   Unrealized: VOO       = 15*490 - 6600     = 7350 - 6600   = $750.00
-#               912828YK0 = 50*99  - 4900     = 4950 - 4900   = $50.00
-#               VMFXX     = 2000*1 - 2000     = 2000 - 2000   = $0.00
+#   DEMO-VOO $490.00, DEMO-UST-2026 $99.00, DEMO-MMF $1.00
+#   Unrealized: DEMO-VOO       = 15*490 - 6600     = 7350 - 6600   = $750.00
+#               DEMO-UST-2026 = 50*99  - 4900     = 4950 - 4900   = $50.00
+#               DEMO-MMF     = 2000*1 - 2000     = 2000 - 2000   = $0.00
 #   Total unrealized                                           = $800.00
 #   No sells -> total realized gain = $0.00 -> total P&L = $800.00
 
@@ -216,19 +217,19 @@ def _showcase_sample_sleeve_transactions() -> list[Transaction]:
     — a deliberate coupling, not a coincidence, so this golden case tracks the actual
     showcase data rather than drifting into a stale parallel fixture."""
     return [
-        Transaction(date(2024, 1, 8), TxnType.BUY, ticker="VOO", quantity=15, price=440.0),
-        Transaction(date(2024, 2, 2), TxnType.BUY, ticker="912828YK0", quantity=50, price=98.0),
-        Transaction(date(2024, 3, 15), TxnType.BUY, ticker="VMFXX", quantity=2000, price=1.0),
-        Transaction(date(2024, 6, 3), TxnType.DIVIDEND, ticker="VOO", amount=38.0),
+        Transaction(date(2024, 1, 8), TxnType.BUY, ticker="DEMO-VOO", quantity=15, price=440.0),
+        Transaction(date(2024, 2, 2), TxnType.BUY, ticker="DEMO-UST-2026", quantity=50, price=98.0),
+        Transaction(date(2024, 3, 15), TxnType.BUY, ticker="DEMO-MMF", quantity=2000, price=1.0),
+        Transaction(date(2024, 6, 3), TxnType.DIVIDEND, ticker="DEMO-VOO", amount=38.0),
     ]
 
 
 class TestShowcaseSampleSleeveGolden:
     def test_cost_basis_per_ticker(self):
         led = build_ledger(_showcase_sample_sleeve_transactions())
-        assert led.position("VOO") == (pytest.approx(15.0), pytest.approx(440.0))
-        assert led.position("912828YK0") == (pytest.approx(50.0), pytest.approx(98.0))
-        assert led.position("VMFXX") == (pytest.approx(2000.0), pytest.approx(1.0))
+        assert led.position("DEMO-VOO") == (pytest.approx(15.0), pytest.approx(440.0))
+        assert led.position("DEMO-UST-2026") == (pytest.approx(50.0), pytest.approx(98.0))
+        assert led.position("DEMO-MMF") == (pytest.approx(2000.0), pytest.approx(1.0))
 
     def test_cash_balance(self):
         led = build_ledger(_showcase_sample_sleeve_transactions())
@@ -236,11 +237,11 @@ class TestShowcaseSampleSleeveGolden:
 
     def test_unrealized_at_frozen_eod_closes(self):
         led = build_ledger(_showcase_sample_sleeve_transactions())
-        prices = {"VOO": 490.0, "912828YK0": 99.0, "VMFXX": 1.0}
+        prices = {"DEMO-VOO": 490.0, "DEMO-UST-2026": 99.0, "DEMO-MMF": 1.0}
         unrealized = led.unrealized(prices)
-        assert unrealized["VOO"] == pytest.approx(750.0)
-        assert unrealized["912828YK0"] == pytest.approx(50.0)
-        assert unrealized["VMFXX"] == pytest.approx(0.0)
+        assert unrealized["DEMO-VOO"] == pytest.approx(750.0)
+        assert unrealized["DEMO-UST-2026"] == pytest.approx(50.0)
+        assert unrealized["DEMO-MMF"] == pytest.approx(0.0)
         assert sum(unrealized.values()) == pytest.approx(800.0)
         # No sells in this fixture -> realized is empty -> total P&L is pure unrealized.
         assert led.realized == []
