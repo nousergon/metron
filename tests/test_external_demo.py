@@ -87,20 +87,25 @@ def test_meta_status_reports_the_flag_and_gate_state_when_unreleased(raw_client)
     assert body["deployment"]["external_demo_release_gate"] == "compliant"
 
 
-def test_meta_status_reports_the_violation_when_released_without_feed_entitlement(
+def test_meta_status_reports_the_violation_when_released_without_a_confirmed_licence(
     raw_client, released, monkeypatch
 ):
-    monkeypatch.setattr(settings, "feed_entitled", False)
+    """Feed-entitled AND released AND unlicensed is the real exposure — the external demo
+    is built feed-on by design, so feed entitlement must not silence it."""
+    monkeypatch.setattr(settings, "display_licence_confirmed", False)
+    monkeypatch.setattr(settings, "feed_entitled", True)
     body = raw_client.get("/meta/status").json()
     assert body["deployment"]["external_demo_released"] is True
+    assert body["deployment"]["display_licence_confirmed"] is False
     assert body["deployment"]["external_demo_release_gate"] == "violation"
 
 
-def test_meta_status_stays_compliant_when_released_and_feed_entitled(
+def test_meta_status_stays_compliant_when_released_and_licensed(
     raw_client, released, monkeypatch
 ):
-    monkeypatch.setattr(settings, "feed_entitled", True)
+    monkeypatch.setattr(settings, "display_licence_confirmed", True)
     body = raw_client.get("/meta/status").json()
+    assert body["deployment"]["display_licence_confirmed"] is True
     assert body["deployment"]["external_demo_release_gate"] == "compliant"
 
 

@@ -155,6 +155,7 @@ def system_status(session: Session = Depends(get_session)) -> dict:
             # and "external_demo_release_gate" reports whether serving it is licensed —
             # see api/services/external_demo_release_gate.py.
             "external_demo_released": settings.external_demo_released,
+            "display_licence_confirmed": settings.display_licence_confirmed,
             "external_demo_release_gate": external_demo_release_gate.evaluate().state.value,
         },
         "connectors": {
