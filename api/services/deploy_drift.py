@@ -199,11 +199,19 @@ def check(
     return drifted
 
 
-def report(*, grace_minutes: int = DEFAULT_GRACE_MINUTES) -> list[RepoState]:
+def report(*, grace_minutes: int = DEFAULT_GRACE_MINUTES, dry_run: bool = False) -> list[RepoState]:
     """Check for drift and page the operator if there is any. Returns the drifted repos.
 
     Deduped over 6 hours: the timer runs hourly, and a stuck deploy should page a few
     times a day rather than 24.
+
+    ``dry_run`` threads straight to ``send_alert``/``krepis.alerts.publish`` (metron-ops-
+    I340): drift is still detected for real and nothing about dedup key, window, or
+    severity changes — only the send is suppressed. This is what `--dry-run` uses to
+    exercise the path without paging; forcing real drift against the live box to prove
+    the alert fires is the anti-pattern this exists to avoid (see
+    `external_demo_release_gate.py`'s module docstring for the incident that motivated
+    it in this module's sibling check).
     """
     from api.services.alerting import send_alert
 
@@ -223,6 +231,7 @@ def report(*, grace_minutes: int = DEFAULT_GRACE_MINUTES) -> list[RepoState]:
         severity="error",
         dedup_key="metron-deploy-drift",
         dedup_window_min=360,
+        dry_run=dry_run,
     )
     return drifted
 
@@ -239,6 +248,10 @@ def main(argv: list[str] | None = None) -> int:
     anything. The unit's own comment claimed it was DB-free "so it keeps reporting when
     the database is the thing that is broken"; that was aspiration, not architecture.
     This module imports nothing from api.db, which makes the claim true.
+
+    ``--dry-run`` still checks for real and still exits non-zero on drift — it only
+    suppresses the send, so the fire path can be verified without paging the operator
+    (metron-ops-I340).
     """
     import argparse
 
@@ -251,9 +264,24 @@ def main(argv: list[str] | None = None) -> int:
         help="how long a commit may sit on origin/main before an undeployed box is a "
              f"defect rather than a deploy in progress (default: {DEFAULT_GRACE_MINUTES})",
     )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="check for real and print the verdict as usual, but suppress the actual "
+             "alert send (nothing reaches SNS/Telegram) — for verifying the fire path, "
+             "not a live check",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    return 1 if report(grace_minutes=args.grace_minutes) else 0
+    drifted = report(grace_minutes=args.grace_minutes, dry_run=args.dry_run)
+    if args.dry_run:
+        if drifted:
+            print(
+                f"[dry-run] nothing was sent. {len(drifted)} repo(s) drifted — a real run "
+                f"in this state would have sent a severity=error alert."
+            )
+        else:
+            print("[dry-run] nothing was sent. no drift detected — a real run sends nothing here either.")
+    return 1 if drifted else 0
 
 
 if __name__ == "__main__":

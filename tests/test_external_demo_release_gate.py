@@ -103,6 +103,7 @@ def test_cli_exits_non_zero_on_violation(monkeypatch):
     assert "EXTERNAL_DEMO_RELEASED" in text and "DISPLAY_LICENCE_CONFIRMED" in text
     assert kwargs["severity"] == "critical"
     assert kwargs["dedup_key"] == "metron-external-demo-release-gate-violation"
+    assert kwargs["dry_run"] is False
 
 
 def test_cli_exits_non_zero_and_pages_on_unmeasurable(monkeypatch):
@@ -117,6 +118,50 @@ def test_cli_exits_non_zero_and_pages_on_unmeasurable(monkeypatch):
     assert "cannot verify" in text.lower() or "could not read" in text.lower()
     assert kwargs["severity"] == "error"
     assert kwargs["dedup_key"] == "metron-external-demo-release-gate-unmeasurable"
+    assert kwargs["dry_run"] is False
+
+
+def test_dry_run_evaluates_for_real_and_exits_non_zero_on_violation_but_sends_nothing(monkeypatch, capsys):
+    """metron-ops-I340: --dry-run must still evaluate for real and still exit non-zero on
+    VIOLATION, and must pass dry_run=True all the way to send_alert so krepis short-circuits
+    before it ever reaches SNS/Telegram."""
+    sent: list[tuple[str, dict]] = []
+    monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append((t, kw)) or True)
+    monkeypatch.setattr(
+        external_demo_release_gate, "evaluate",
+        lambda: external_demo_release_gate.GateCheck(GateState.VIOLATION, True, False, True),
+    )
+    assert external_demo_release_gate.main(["--dry-run"]) == 1
+    text, kwargs = sent[0]
+    assert "EXTERNAL_DEMO_RELEASED" in text and "DISPLAY_LICENCE_CONFIRMED" in text
+    assert kwargs["severity"] == "critical"
+    assert kwargs["dedup_key"] == "metron-external-demo-release-gate-violation"
+    assert kwargs["dry_run"] is True
+    assert "dry-run" in capsys.readouterr().out.lower()
+
+
+def test_dry_run_evaluates_for_real_and_exits_non_zero_on_unmeasurable_but_sends_nothing(monkeypatch):
+    sent: list[tuple[str, dict]] = []
+    monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append((t, kw)) or True)
+    monkeypatch.setattr(
+        external_demo_release_gate, "evaluate",
+        lambda: external_demo_release_gate.GateCheck(GateState.UNMEASURABLE, None, True, True),
+    )
+    assert external_demo_release_gate.main(["--dry-run"]) == 1
+    _, kwargs = sent[0]
+    assert kwargs["dry_run"] is True
+
+
+def test_dry_run_exits_zero_and_sends_nothing_when_compliant(monkeypatch, capsys):
+    sent: list[str] = []
+    monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append(t) or True)
+    monkeypatch.setattr(
+        external_demo_release_gate, "evaluate",
+        lambda: external_demo_release_gate.GateCheck(GateState.COMPLIANT, False, False, True),
+    )
+    assert external_demo_release_gate.main(["--dry-run"]) == 0
+    assert sent == []
+    assert "dry-run" in capsys.readouterr().out.lower()
 
 
 def test_cli_exits_zero_and_stays_silent_when_compliant(monkeypatch):
