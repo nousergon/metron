@@ -42,10 +42,23 @@ this live showcase for every tenant) — merged into one to cut showcase-portfol
 clutter; ``_retire_legacy_demo_portfolio`` cleans up the old one on any already-deployed
 instance. Writes to the demo tenant are refused (``assert_writable``) so neither sleeve
 can ever be mutated by a visitor.
+
+Every symbol the SAMPLE sleeve writes lives in the reserved ``DEMO-`` namespace
+(``api/services/demo_namespace.py``). Until metron-ops-I319 it carried the real tickers
+VOO / 912828YK0 / VMFXX, and since ``securities`` and ``price_bars`` are GLOBAL,
+cross-tenant tables, seeding wrote a synthetic 2024-06-28 close and overwrote
+``name``/``asset_class`` on the very rows every real tenant holding those symbols reads
+— feeding fake points into their TWR, risk, shadow-recompute and market-board series.
+``_repair_legacy_sample_sleeve`` undoes that automatically on every boot, and both write
+sites now hard-refuse (raise) a non-namespaced symbol. The LIVE sleeve is untouched by
+this: it carries Crucible's real holdings under their real tickers and writes no price
+or metadata of its own (``_apply_reference_sectors`` sets sector from the artifact — real
+data from the real engine, not a fixture).
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 
@@ -54,8 +67,11 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from api.services import analytics, persistence
+from api.services.demo_namespace import assert_demo_symbols, is_demo_symbol
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.ingestion import reference_connector
+
+logger = logging.getLogger(__name__)
 
 # Fixed, well-known ids (stable across restarts so links don't break). The tenant id
 # spells "demo" in its tail; never issued to a real user (auth mints random UUIDs).
@@ -91,19 +107,27 @@ _SAMPLE_SLEEVE_SOURCE = "reference_sample"
 # and dividends — the breadth the live equity/ETF-only sleeve can't demonstrate alone.
 # Deliberately no individual-stock equity rows: the sample sleeve must never add
 # equities beyond what Crucible's live sleeve actually holds (AAPL/MSFT retired).
+#
+# Every symbol is inside the reserved ``DEMO-`` namespace (api/services/demo_namespace.py).
+# Until metron-ops-I319 these rows carried the REAL tickers VOO / 912828YK0 / VMFXX, and
+# because ``securities``/``price_bars`` are global, cross-tenant tables, the seeding below
+# wrote a synthetic 2024-06-28 close and overwrote name/asset_class on the very rows every
+# real tenant holding those symbols reads. ``_repair_legacy_sample_sleeve`` undoes that on
+# an already-deployed instance.
 _SAMPLE_SLEEVE_CSV = """date,type,symbol,quantity,price,amount,account
-2024-01-08,BUY,VOO,15,440,6600,Sample Brokerage
-2024-02-02,BUY,912828YK0,50,98,4900,Sample IRA
-2024-03-15,BUY,VMFXX,2000,1,2000,Sample Brokerage
-2024-06-03,DIVIDEND,VOO,0,0,38,Sample Brokerage
+2024-01-08,BUY,DEMO-VOO,15,440,6600,Sample Brokerage
+2024-02-02,BUY,DEMO-UST-2026,50,98,4900,Sample IRA
+2024-03-15,BUY,DEMO-MMF,2000,1,2000,Sample Brokerage
+2024-06-03,DIVIDEND,DEMO-VOO,0,0,38,Sample Brokerage
 """
 
 # Per-symbol reference metadata applied after import (the CSV path defaults everything to
-# equity): name + the asset_class that drives security-type grouping (#47).
+# equity): name + the asset_class that drives security-type grouping (#47). Names carry
+# "(illustrative)" so the sleeve never reads as a real quote/listing.
 _SAMPLE_SLEEVE_SECURITY_META: dict[str, tuple[str, str]] = {
-    "VOO": ("Vanguard S&P 500 ETF", "etf"),
-    "912828YK0": ("US Treasury Note 4.0% 2026", "bond"),
-    "VMFXX": ("Vanguard Federal Money Market", "cash"),
+    "DEMO-VOO": ("S&P 500 index ETF (illustrative)", "etf"),
+    "DEMO-UST-2026": ("US Treasury Note 4.0% 2026 (illustrative)", "bond"),
+    "DEMO-MMF": ("Federal money market fund (illustrative)", "cash"),
 }
 
 # Frozen EOD closes (as-of date) so holdings value without a live price refresh. Also the
@@ -112,15 +136,34 @@ _SAMPLE_SLEEVE_SECURITY_META: dict[str, tuple[str, str]] = {
 # number that could drift from it.
 _SAMPLE_SLEEVE_PRICE_AS_OF = date(2024, 6, 28)
 _SAMPLE_SLEEVE_PRICES: dict[str, float] = {
-    "VOO": 490.0,
-    "912828YK0": 99.0,
-    "VMFXX": 1.0,
+    "DEMO-VOO": 490.0,
+    "DEMO-UST-2026": 99.0,
+    "DEMO-MMF": 1.0,
 }
 
-# Public — the sleeve's held tickers, so a cross-cutting consumer (api/maintenance.py's
-# daily price-refresh loop) can exclude them from a LIVE fetch without importing the
-# private price table above (which exists only for this module's own seeding/totals math).
-SAMPLE_SLEEVE_TICKERS = frozenset(_SAMPLE_SLEEVE_PRICES)
+# ── metron-ops-I319 repair table ─────────────────────────────────────────────
+# The pre-I319 sleeve's REAL symbols and the exact synthetic close each was seeded
+# with on ``_SAMPLE_SLEEVE_PRICE_AS_OF``, plus the exact (name, asset_class) this
+# module used to overwrite onto their global ``Security`` rows.
+# ``_repair_legacy_sample_sleeve`` uses this — and only this — to identify what to
+# undo on an already-deployed instance. Each entry is matched on EXACT equality
+# before anything is deleted or cleared, so a bar or a name that has since been
+# rewritten by a real data-spine refresh is left strictly alone.
+#
+# Frozen forever: this is a record of what was written to production, not a fixture.
+# Editing the sleeve above must never edit these values.
+_LEGACY_SLEEVE_SYMBOLS: dict[str, str] = {
+    # legacy real symbol -> the namespaced symbol that replaced it
+    "VOO": "DEMO-VOO",
+    "912828YK0": "DEMO-UST-2026",
+    "VMFXX": "DEMO-MMF",
+}
+_LEGACY_SLEEVE_SYNTHETIC_CLOSES: dict[str, float] = {"VOO": 490.0, "912828YK0": 99.0, "VMFXX": 1.0}
+_LEGACY_SLEEVE_SECURITY_META: dict[str, tuple[str, str]] = {
+    "VOO": ("Vanguard S&P 500 ETF", "etf"),
+    "912828YK0": ("US Treasury Note 4.0% 2026", "bond"),
+    "VMFXX": ("Vanguard Federal Money Market", "cash"),
+}
 
 # Account tax treatment — the IRA is tax-deferred so the tax-status grouping (#46) shows
 # both a taxable and a tax-advantaged bucket. (Sample Brokerage derives to Taxable.)
@@ -201,9 +244,9 @@ def _prune_retired_sample_sleeve_holdings(session: Session) -> None:
     if not account_ids:
         return
     current_symbols = list(_SAMPLE_SLEEVE_SECURITY_META)
-    retired_security_ids = list(
-        session.scalars(
-            select(models.Transaction.security_id)
+    retired = list(
+        session.execute(
+            select(models.Transaction.security_id, models.Security.symbol)
             .join(models.Security, models.Transaction.security_id == models.Security.id)
             .where(
                 models.Transaction.account_id.in_(account_ids),
@@ -212,28 +255,195 @@ def _prune_retired_sample_sleeve_holdings(session: Session) -> None:
             .distinct()
         ).all()
     )
-    if not retired_security_ids:
+    if not retired:
         return
+    retired_security_ids = [sid for sid, _symbol in retired]
     session.execute(
         delete(models.Transaction).where(
             models.Transaction.account_id.in_(account_ids),
             models.Transaction.security_id.in_(retired_security_ids),
         )
     )
-    session.execute(
-        delete(models.PriceBar).where(
-            models.PriceBar.security_id.in_(retired_security_ids),
+    # Price bars are deleted ONLY for retired symbols inside the reserved demo
+    # namespace. A retired symbol OUTSIDE it is a pre-metron-ops-I319 real ticker
+    # whose global bar may legitimately have come from a real data-spine refresh;
+    # ``_repair_legacy_sample_sleeve`` handles those, under an exact-close check this
+    # date-only delete cannot make.
+    namespaced_retired_ids = [sid for sid, symbol in retired if is_demo_symbol(symbol)]
+    if namespaced_retired_ids:
+        session.execute(
+            delete(models.PriceBar).where(
+                models.PriceBar.security_id.in_(namespaced_retired_ids),
+                models.PriceBar.bar_date == _SAMPLE_SLEEVE_PRICE_AS_OF,
+            )
+        )
+
+
+def _repair_legacy_sample_sleeve(session: Session) -> dict[str, list[str]]:
+    """Undo, on an already-deployed instance, the global reference data this module
+    wrote under REAL tickers before metron-ops-I319 — automatically, on every boot.
+
+    Runs from ``ensure_reference_seeded`` (api/main.py's startup hook) BEFORE the
+    reconcile, so the deploy that ships the namespaced fixture is also the deploy that
+    cleans up after the old one. There is no operator step: a data repair that needs a
+    human to run a command is a repair that silently never happens
+    (``pull-request-policy`` §4.2).
+
+    Three undos, each keyed on EXACT equality against the frozen
+    ``_LEGACY_SLEEVE_*`` tables above — never on "looks like ours":
+
+      1. **Price bars.** Delete ``(legacy security, _SAMPLE_SLEEVE_PRICE_AS_OF)`` only
+         when its close still equals the exact synthetic value this module seeded. A
+         2024-06-28 VOO bar at any other close came from a real data-spine refresh that
+         has since overwritten ours — it stays.
+      2. **Security metadata.** Clear ``name``/``asset_class`` to NULL only when BOTH
+         still equal the exact pair this module overwrote them with, so the normal
+         lazy classification path (the data spine / ``classify_security_type``)
+         repopulates them from the real source on next touch. A row a real refresh has
+         already renamed is left alone. NULL rather than a guessed restore: this module
+         never knew the pre-overwrite values, and inventing them would be a second
+         fabrication on the same rows.
+      3. **Sleeve ledger rows.** Delete this sleeve's own transactions and positions
+         that point at a legacy security, scoped strictly to the sleeve's OWN accounts
+         — the reconcile immediately after re-imports them against the namespaced
+         securities, which is the "re-point" in practice (transactions carry no
+         updatable identity of their own; their ``source_key`` embeds the symbol).
+
+    All three are gated on an admission check (see below): the repair only ever touches
+    a legacy ``Security`` this sleeve's OWN accounts still hold a transaction against,
+    so on a fresh install — or on any instance where a real tenant simply holds VOO —
+    it reads nothing and changes nothing.
+
+    Idempotent: a second run finds nothing left matching and is a no-op. Returns a
+    per-action list of human-readable before/after lines, also emitted to the log, so
+    the deploy that performed the repair says exactly what it changed.
+    """
+    actions: dict[str, list[str]] = {"price_bars_deleted": [], "metadata_cleared": [], "ledger_rows_deleted": []}
+    account_ids = list(
+        session.scalars(
+            select(models.Account.id).where(
+                models.Account.portfolio_id == REFERENCE_PORTFOLIO_ID,
+                models.Account.broker == _SAMPLE_SLEEVE_SOURCE,
+            )
+        ).all()
+    )
+    if not account_ids:
+        return actions
+    # ADMISSION CHECK, and the thing that keeps this repair from being its own version
+    # of the defect: touch a legacy Security row ONLY on an instance that demonstrably
+    # persisted the pre-I319 sleeve — i.e. one where THIS sleeve's own accounts still
+    # hold a transaction against that security. On a fresh install, or on a database
+    # where a real tenant merely happens to hold VOO, there is no such transaction and
+    # the repair is a strict no-op: it never reads, clears or deletes anything on a
+    # global row it did not itself write. It is also what makes the repair terminate —
+    # the third undo below removes those transactions, so the next boot admits nothing.
+    legacy_secs = session.scalars(
+        select(models.Security)
+        .join(models.Transaction, models.Transaction.security_id == models.Security.id)
+        .where(
+            models.Security.symbol.in_(list(_LEGACY_SLEEVE_SYMBOLS)),
+            models.Transaction.account_id.in_(account_ids),
+        )
+        .distinct()
+    ).all()
+    if not legacy_secs:
+        return actions
+    by_id = {sec.id: sec for sec in legacy_secs}
+
+    # 1 — synthetic price bars, exact-close matched.
+    bars = session.scalars(
+        select(models.PriceBar).where(
+            models.PriceBar.security_id.in_(list(by_id)),
             models.PriceBar.bar_date == _SAMPLE_SLEEVE_PRICE_AS_OF,
         )
-    )
+    ).all()
+    for bar in bars:
+        sec = by_id[bar.security_id]
+        synthetic = _LEGACY_SLEEVE_SYNTHETIC_CLOSES.get(sec.symbol)
+        if synthetic is None or float(bar.close) != synthetic:
+            actions["price_bars_deleted"].append(
+                f"KEPT {sec.symbol} {_SAMPLE_SLEEVE_PRICE_AS_OF} close={float(bar.close)} "
+                f"(≠ synthetic {synthetic}) — a real refresh owns this bar"
+            )
+            continue
+        actions["price_bars_deleted"].append(
+            f"DELETED {sec.symbol} {_SAMPLE_SLEEVE_PRICE_AS_OF} close={float(bar.close)} -> (no bar)"
+        )
+        session.delete(bar)
+
+    # 2 — overwritten global Security metadata, exact-pair matched.
+    for sec in legacy_secs:
+        overwritten = _LEGACY_SLEEVE_SECURITY_META.get(sec.symbol)
+        if overwritten is None or (sec.name, sec.asset_class) != overwritten:
+            continue
+        actions["metadata_cleared"].append(
+            f"CLEARED {sec.symbol} name={sec.name!r} asset_class={sec.asset_class!r} -> (None, None); "
+            f"the classification path repopulates from the real source"
+        )
+        sec.name = None
+        sec.asset_class = None
+
+    # 3 — the sleeve's own ledger rows against the legacy securities.
+    if account_ids:
+        txn_count = len(
+            session.scalars(
+                select(models.Transaction.id).where(
+                    models.Transaction.account_id.in_(account_ids),
+                    models.Transaction.security_id.in_(list(by_id)),
+                )
+            ).all()
+        )
+        pos_count = len(
+            session.scalars(
+                select(models.Position.id).where(
+                    models.Position.account_id.in_(account_ids),
+                    models.Position.security_id.in_(list(by_id)),
+                )
+            ).all()
+        )
+        if txn_count or pos_count:
+            actions["ledger_rows_deleted"].append(
+                f"DELETED {txn_count} transaction(s) and {pos_count} position(s) on the sample "
+                f"sleeve's own accounts pointing at {sorted(sec.symbol for sec in legacy_secs)} -> "
+                f"re-imported this same call under {sorted(_LEGACY_SLEEVE_SYMBOLS.values())}"
+            )
+            session.execute(
+                delete(models.Transaction).where(
+                    models.Transaction.account_id.in_(account_ids),
+                    models.Transaction.security_id.in_(list(by_id)),
+                )
+            )
+            session.execute(
+                delete(models.Position).where(
+                    models.Position.account_id.in_(account_ids),
+                    models.Position.security_id.in_(list(by_id)),
+                )
+            )
+
+    session.commit()
+    for label, lines in actions.items():
+        for line in lines:
+            logger.info("sample-sleeve repair (metron-ops-I319) %s: %s", label, line)
+    return actions
 
 
 def _apply_sample_sleeve_security_meta(session: Session) -> None:
     """Set name + asset_class on the sample sleeve's securities (the CSV path leaves
-    them equity)."""
+    them equity) — GUARDED.
+
+    ``securities`` is a GLOBAL, cross-tenant table, so writing metadata here under a
+    real ticker overwrites the name/asset_class every real tenant holding that symbol
+    reads. That is exactly what this function did until metron-ops-I319. Both the
+    fixture keys and the matched rows are checked, and the guard RAISES — a
+    non-namespaced symbol reaching here is a fixture-authoring bug to fix at the
+    fixture, never a row to skip quietly."""
+    assert_demo_symbols(_SAMPLE_SLEEVE_SECURITY_META, context="demo._SAMPLE_SLEEVE_SECURITY_META")
     rows = session.scalars(
         select(models.Security).where(models.Security.symbol.in_(list(_SAMPLE_SLEEVE_SECURITY_META)))
     ).all()
+    assert_demo_symbols(
+        (sec.symbol for sec in rows), context="demo._apply_sample_sleeve_security_meta (matched Security rows)"
+    )
     for sec in rows:
         meta = _SAMPLE_SLEEVE_SECURITY_META.get(sec.symbol)
         if meta:
@@ -257,10 +467,20 @@ def _seed_sample_sleeve_prices(session: Session) -> None:
     """Frozen EOD close per held symbol so holdings show a market value (no live
     fetch). Idempotent per (security, ``_SAMPLE_SLEEVE_PRICE_AS_OF``) — skips a bar
     that's already there, since this now runs on every startup (not just first-seed)
-    and ``price_bars`` has a unique constraint on (security_id, bar_date)."""
+    and ``price_bars`` has a unique constraint on (security_id, bar_date).
+
+    GUARDED: ``price_bars`` is a GLOBAL, cross-tenant EOD cache keyed on
+    ``security_id`` — a synthetic close written under a real ticker here becomes a
+    fake point in every real tenant's TWR / risk / shadow-recompute / market-board
+    series for that symbol (metron-ops-I319, live in production until that fix).
+    Raises on any symbol outside the reserved demo namespace."""
+    assert_demo_symbols(_SAMPLE_SLEEVE_PRICES, context="demo._SAMPLE_SLEEVE_PRICES")
     secs = session.scalars(
         select(models.Security).where(models.Security.symbol.in_(list(_SAMPLE_SLEEVE_PRICES)))
     ).all()
+    assert_demo_symbols(
+        (sec.symbol for sec in secs), context="demo._seed_sample_sleeve_prices (matched Security rows)"
+    )
     existing_security_ids = set(
         session.scalars(
             select(models.PriceBar.security_id).where(
@@ -283,23 +503,6 @@ def _seed_sample_sleeve_prices(session: Session) -> None:
                 currency=sec.currency or "USD",
             )
         )
-
-
-def live_sleeve_tickers(session: Session) -> frozenset[str]:
-    """The live Crucible-synced sleeve's own held tickers. Used by
-    ``api/maintenance.py``'s daily price-refresh loop so a ticker the live sleeve
-    happens to ALSO hold (Crucible's universe can rotate into AAPL/MSFT/etc) is never
-    skipped just because it collides with ``SAMPLE_SLEEVE_TICKERS``."""
-    rows = session.execute(
-        select(models.Security.symbol)
-        .join(models.Position, models.Position.security_id == models.Security.id)
-        .join(models.Account, models.Position.account_id == models.Account.id)
-        .where(
-            models.Account.portfolio_id == REFERENCE_PORTFOLIO_ID,
-            models.Account.broker != _SAMPLE_SLEEVE_SOURCE,
-        )
-    ).all()
-    return frozenset(symbol for (symbol,) in rows)
 
 
 def _sample_sleeve_totals(session: Session) -> tuple[float, float]:
@@ -373,9 +576,12 @@ def ensure_reference_seeded(session: Session) -> bool:
     Only creates the (possibly empty) portfolio so its link resolves immediately;
     ``sync_reference_holdings`` populates the live sleeve from the artifact (at startup +
     daily). Safe to call on every startup. The sample sleeve, intraday-on preference,
-    display-name, and legacy-portfolio cleanup below all self-heal unconditionally on
-    every call, independent of the create/exists branch, so an already-deployed
-    instance catches up on next startup with no manual migration."""
+    display-name, legacy-portfolio cleanup and the metron-ops-I319 global-data repair
+    below all self-heal unconditionally on every call, independent of the create/exists
+    branch, so an already-deployed instance catches up on next startup with no manual
+    migration. ``_repair_legacy_sample_sleeve`` runs BEFORE the reconcile so the boot
+    that ships the namespaced fixture is the boot that cleans up the real-ticker rows
+    the pre-I319 sleeve wrote into the global tables."""
     created = False
     if session.get(models.Portfolio, REFERENCE_PORTFOLIO_ID) is None:
         if session.get(models.Tenant, DEMO_TENANT_ID) is None:
@@ -392,6 +598,7 @@ def ensure_reference_seeded(session: Session) -> bool:
         created = True
     _ensure_reference_intraday_default_on(session)
     _ensure_reference_display_name_current(session)
+    _repair_legacy_sample_sleeve(session)
     _reconcile_sample_sleeve(session)
     _retire_legacy_demo_portfolio(session)
     return created

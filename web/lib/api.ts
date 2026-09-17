@@ -1250,9 +1250,14 @@ export type ResearchIntel = {
   available: boolean;
   reason: string | null;
   required_tier: string | null;
-  // null until the first weekly artifact is cached (available-but-stale); null intel
-  // when not entitled either — the surface never blanks and never leaks intel.
+  // null when not entitled; true whenever the cached artifact is missing OR older than
+  // 8 days (research_intel_connector.STALE_AFTER_DAYS) — `intel` may still be populated
+  // (last-good) alongside stale=true, and the caller MUST render it as stale, never as
+  // a current number (metron-ops-I308).
   stale: boolean | null;
+  // True once the v1 research-intel producer is retired (crucible v2 phase 4, Brian R4).
+  // Terminal — `reason` is "retired", not an upsell, when this is true.
+  retired: boolean;
   intel: ResearchIntelSnapshot | null;
 };
 
@@ -2097,7 +2102,11 @@ export type AlphaBuyCandidate = { ticker: string; score?: number; [k: string]: u
 
 export type AlphaEngineView = {
   available: boolean;
+  // "stale" (artifact older than 8 days) / "retired" (metron-ops-I308, crucible v2 phase
+  // 4) / an unavailability cause (no creds, missing artifact) / null when available.
   reason: string | null;
+  stale: boolean | null;
+  retired: boolean;
   holdings: AlphaHolding[];
   coverage: AlphaCoverage;
   buy_candidates: AlphaBuyCandidate[];

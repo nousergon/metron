@@ -11,7 +11,7 @@ import { usePathname } from "next/navigation";
 import { REFERENCE_DISCLAIMER, isReferencePortfolio } from "@/lib/demo";
 
 export type NavPage = { label: string; href: string; feature?: string };
-export type NavFeatureState = { available: boolean; required_tier: string | null };
+export type NavFeatureState = { available: boolean; required_tier: string | null; reason?: string | null };
 
 // Short upsell labels for the lock badge (required_tier key → display). Two exposed tiers
 // now (metron-ops): a beta-excluded feature upsells to the full "Intelligence" build.
@@ -151,6 +151,9 @@ export function PortfolioNav({
               const active = p.href.split("?")[0] === pathname;
               const state = p.feature ? featureStates?.[p.feature] : undefined;
               if (state && !state.available) {
+                // A retired v1-fed surface (metron-ops-I308, crucible v2 phase 4) is
+                // HIDDEN, not shown locked — there is no tier that unlocks it back.
+                if (state.reason === "retired") return null;
                 // Feed-dependent pages (Risk / Attribution / Scenarios / Calendar) are
                 // HIDDEN in the no-feed beta rather than shown locked-and-empty — they
                 // can't function without the market-data feed (metron-ops#53). Other

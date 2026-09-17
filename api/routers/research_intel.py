@@ -21,6 +21,7 @@ from fastapi import APIRouter, Header, Query
 
 from api import entitlements
 from api.config import settings
+from portfolio_analytics.ingestion.research_intel_connector import is_stale as _artifact_is_stale
 from portfolio_analytics.ingestion.research_intel_store import load_research_intel
 
 router = APIRouter(prefix="/research-intel", tags=["research-intel"])
@@ -55,11 +56,17 @@ def get_research_intel(
 ) -> dict:
     """Neutral research intel for the active tier.
 
-    Returns ``{available, reason, required_tier, stale, intel}``:
-    - not entitled → ``available=false`` + upsell ``reason``/``required_tier``, ``intel=null``;
+    Returns ``{available, reason, required_tier, stale, retired, intel}``:
+    - not entitled (or retired, metron-ops-I308: ``reason="retired"``) → ``available=false``,
+      ``intel=null``;
     - entitled but no cached artifact yet → ``available=true``, ``stale=true``, ``intel=null``;
-    - entitled + cached → ``available=true``, ``stale=false``, and ``intel`` with the global
-      regime/breadth/sector context plus the (optionally ticker-scoped) attractiveness map.
+    - entitled + cached but the artifact is older than
+      ``research_intel_connector.STALE_AFTER_DAYS`` → ``available=true``, ``stale=true``, and
+      ``intel`` is still returned (last-good, with its own ``date``) so the caller can render
+      it explicitly marked stale rather than either blanking it or presenting it as current;
+    - entitled + cached + fresh → ``available=true``, ``stale=false``, ``retired=false``, and
+      ``intel`` with the global regime/breadth/sector context plus the (optionally
+      ticker-scoped) attractiveness map.
     """
     feat = _feature_state(x_preview_tier, x_preview_feed)
     if not feat["available"]:
@@ -68,12 +75,20 @@ def get_research_intel(
             "reason": feat["reason"],
             "required_tier": feat["required_tier"],
             "stale": None,
+            "retired": feat["reason"] == "retired",
             "intel": None,
         }
 
     snapshot = load_research_intel()
     if snapshot is None:
-        return {"available": True, "reason": None, "required_tier": None, "stale": True, "intel": None}
+        return {
+            "available": True,
+            "reason": None,
+            "required_tier": None,
+            "stale": True,
+            "retired": False,
+            "intel": None,
+        }
 
     wanted = tickers.split(",") if tickers else None
     intel = snapshot.to_dict()
@@ -81,4 +96,11 @@ def get_research_intel(
     # the global regime/sector/breadth context intact.
     intel["attractiveness"] = {k: v.to_dict() for k, v in snapshot.for_tickers(wanted).items()}
     intel.pop("error", None)  # never surface the internal fetch-error field on the read path
-    return {"available": True, "reason": None, "required_tier": None, "stale": False, "intel": intel}
+    return {
+        "available": True,
+        "reason": None,
+        "required_tier": None,
+        "stale": _artifact_is_stale(snapshot.date),
+        "retired": False,
+        "intel": intel,
+    }

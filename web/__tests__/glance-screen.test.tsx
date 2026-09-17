@@ -44,6 +44,8 @@ const base: Glance = {
     ],
     as_of: "2026-09-15",
     provenance: "settled",
+    state: "post_close",
+    intraday_points: [],
     surface: "performance",
   },
   movers: {

@@ -93,6 +93,37 @@ def test_resolve_unknown_tier_raises():
         ent.resolve("enterprise", feed_enabled=True)
 
 
+# ── v1 surface retirement (metron-ops-I308, Brian R4) ────────────────────────
+
+def test_retirement_flag_off_by_default_everything_still_available():
+    assert not settings.retired_v1_surfaces
+    feats = _by_key(ent.resolve("personal", feed_enabled=True))
+    assert feats["research_intel"]["available"]
+    assert feats["alpha_engine"]["available"]
+
+
+def test_retirement_flag_marks_v1_features_retired_not_upsellable(monkeypatch):
+    monkeypatch.setattr(settings, "retired_v1_surfaces", True)
+    feats = _by_key(ent.resolve("personal", feed_enabled=True))
+    for key in ent.V1_RETIRED_FEATURES:
+        assert not feats[key]["available"], key
+        assert not feats[key]["in_tier"], key  # cascades to candidate_facets' in_tier filter
+        assert feats[key]["reason"] == "retired", key
+        assert feats[key]["required_tier"] is None, key  # terminal, never an upsell target
+    # Everything else is unaffected.
+    assert feats["ai_advisor"]["available"]
+    assert feats["overview"]["available"]
+
+
+def test_retirement_wins_over_tier_reason_on_every_tier(monkeypatch):
+    monkeypatch.setattr(settings, "retired_v1_surfaces", True)
+    # Retirement is a global producer fact, independent of packaging — "retired" is the
+    # reason on every tier, including beta (which never packaged these features either).
+    feats = _by_key(ent.resolve("beta", feed_enabled=False))
+    assert feats["research_intel"]["reason"] == "retired"
+    assert feats["alpha_engine"]["reason"] == "retired"
+
+
 # ── endpoint ─────────────────────────────────────────────────────────────────
 
 def test_endpoint_default_ignores_preview_when_simulator_off(client, monkeypatch):
