@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { getPortfolios, MetronApiError, type Portfolio } from "@/lib/api";
 import { requireApiAuth } from "@/lib/session";
 import { Empty } from "@/components/ui";
@@ -16,6 +17,21 @@ export default async function HomePage() {
   } catch (e) {
     const detail = e instanceof MetronApiError ? `(${e.status})` : "";
     return <Empty>Couldn&apos;t reach the Metron API {detail}. Is the backend running at METRON_API_URL?</Empty>;
+  }
+
+  // Post-auth landing route (metron-ops#248 / metron-ops-I328, Brian ruling 2026-07-30): a
+  // tenant holding exactly one portfolio — the common shape ("one personal workspace per
+  // user", PH4 auth) and the shape of the demo household (metron-ops#317) — lands directly
+  // on its glance screen, one tap sooner than the old Holdings landing. Reuses the same
+  // `redirect()` from "next/navigation" `requireApiAuth` already uses above, rather than a
+  // parallel client-side or middleware redirect mechanism. A tenant with zero portfolios
+  // still gets the create flow below (there is nothing to glance at yet — this is the
+  // populated-portfolio-vs-no-connected-accounts split this route has to hold). A tenant
+  // holding more than one portfolio keeps the picker list below: the glance screen is
+  // whole-portfolio scope (metron-ops#248) and has no aggregate to redirect a multi-
+  // portfolio tenant into.
+  if (portfolios.length === 1) {
+    redirect(`/portfolios/${portfolios[0].id}/glance`);
   }
 
   return (

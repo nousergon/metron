@@ -68,8 +68,10 @@ export function PortfolioNav({
   const externalDemo = featureStates?.[EXTERNAL_DEMO_NAV_KEY] !== undefined;
   // Selection-scoped pages carry navQuery; whole-portfolio pages don't.
   const allPages: NavPage[] = [
-    // Holdings IS the landing page (metron-ops-I156) — the daily-driver live surface.
-    // The glance screen (metron-ops#248) — one phone screen, whole-portfolio scope.
+    // The glance screen (metron-ops#248) IS the post-auth landing page for a
+    // single-portfolio tenant (metron-ops-I328) — one phone screen, whole-portfolio
+    // scope. Holdings (formerly the landing page, metron-ops-I156) remains the
+    // daily-driver depth surface for the position-level grid.
     { label: "Glance", href: `${base}/glance`, feature: "glance" },
     { label: "Holdings", href: `${base}${navQuery}`, feature: "overview" },
     // The analytical dashboard (settled tiles / chart / allocation / account management).
