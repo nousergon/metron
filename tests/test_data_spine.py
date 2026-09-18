@@ -12,9 +12,12 @@ from __future__ import annotations
 import json
 from datetime import UTC, date
 
+import pytest
+
 from api import maintenance
 from api.db import models
 from api.services import data_spine
+from api.services.demo import DEMO_TENANT_ID
 
 
 class _FakeS3:
@@ -53,6 +56,61 @@ def _seed_holding(session, *, pf_name, symbol, currency, yf_symbol, qty=10, pric
             market_price=price, market_value_local=qty * price, as_of=date(2024, 6, 3),
         )
     )
+    session.commit()
+    return pf
+
+
+def _seed_demo_holding(session, *, symbol="DEMO-AAPL", currency="USD", yf_symbol=None, qty=10, price=100.0):
+    """A holding under the reserved demo tenant (api/services/demo.py::DEMO_TENANT_ID),
+    the shape `demo.py`/`demo_household.py` actually seed: illustrative fixture data,
+    never a real held position. Must never reach the published contract
+    (metron-ops-I337)."""
+    tenant = session.get(models.Tenant, DEMO_TENANT_ID)
+    if tenant is None:
+        tenant = models.Tenant(id=DEMO_TENANT_ID, name="Demo")
+        session.add(tenant)
+        session.flush()
+    pf = models.Portfolio(tenant_id=DEMO_TENANT_ID, name="Demo Portfolio", base_currency="USD")
+    session.add(pf)
+    session.flush()
+    acct = models.Account(
+        tenant_id=DEMO_TENANT_ID, portfolio_id=pf.id, broker="reference",
+        external_id=f"demo-{symbol}", currency="USD",
+    )
+    session.add(acct)
+    sec = session.query(models.Security).filter_by(symbol=symbol, currency=currency).first()
+    if sec is None:
+        sec = models.Security(symbol=symbol, currency=currency, yf_symbol=yf_symbol or symbol)
+        session.add(sec)
+    session.flush()
+    session.add(
+        models.Position(
+            tenant_id=DEMO_TENANT_ID, account_id=acct.id, security_id=sec.id,
+            quantity=qty, avg_cost=price, currency=currency,
+            market_price=price, market_value_local=qty * price, as_of=date(2024, 6, 3),
+        )
+    )
+    session.commit()
+    return pf
+
+
+def _seed_demo_watchlist(session, *, symbol="DEMO-MU", currency="USD", yf_symbol=None):
+    """A demo-tenant watchlist item — same exclusion requirement as the demo holding
+    above, exercised for `build_watchlist_universe` (metron-ops-I337)."""
+    tenant = session.get(models.Tenant, DEMO_TENANT_ID)
+    if tenant is None:
+        tenant = models.Tenant(id=DEMO_TENANT_ID, name="Demo")
+        session.add(tenant)
+        session.flush()
+    pf = models.Portfolio(tenant_id=DEMO_TENANT_ID, name="Demo Portfolio", base_currency="USD")
+    session.add(pf)
+    session.flush()
+    sec = session.query(models.Security).filter_by(symbol=symbol, currency=currency).first()
+    if sec is None:
+        sec = models.Security(symbol=symbol, currency=currency, yf_symbol=yf_symbol or symbol)
+        session.add(sec)
+        session.flush()
+    session.add(models.WatchlistItem(tenant_id=DEMO_TENANT_ID, portfolio_id=pf.id, symbol=symbol))
     session.commit()
     return pf
 
@@ -114,6 +172,46 @@ class TestBuildUniverse:
         payload = data_spine.build_holdings_universe(db_session, today=date(2024, 6, 3))
 
         assert payload["tickers"] == ["AAPL"]
+
+    def test_excludes_demo_tenant_holdings(self, db_session):
+        """metron-ops-I337: the demo tenant's illustrative fixture holdings (Showcase +
+        demo household, both under DEMO_TENANT_ID, symbols in the reserved ``DEMO-``
+        namespace) must never reach the shared cross-component contract
+        `alpha-engine-data` reads — regardless of how many demo symbols exist."""
+        _seed_holding(db_session, pf_name="P1", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        for sym in ("DEMO-AAPL", "DEMO-VOO", "DEMO-BND"):
+            _seed_demo_holding(db_session, symbol=sym)
+
+        payload = data_spine.build_holdings_universe(db_session, today=date(2024, 6, 3))
+
+        assert payload["tickers"] == ["AAPL"]
+        assert payload["holdings"] == [{"yf_symbol": "AAPL", "currency": "USD"}]
+        assert not any(t.startswith("DEMO-") for t in payload["tickers"])
+        assert not any(h["yf_symbol"].startswith("DEMO-") for h in payload["holdings"])
+
+    def test_demo_only_universe_is_empty_not_contaminated(self, db_session):
+        """A DB with ONLY the demo tenant (e.g. a fresh deploy before any real tenant
+        signs up) must publish an empty universe, never the demo fixture's symbols."""
+        _seed_demo_holding(db_session, symbol="DEMO-AAPL")
+
+        payload = data_spine.build_holdings_universe(db_session, today=date(2024, 6, 3))
+
+        assert payload["holdings"] == []
+        assert payload["tickers"] == []
+
+
+class TestAssertNoDemoSymbols:
+    """Unit coverage of the structural backstop (data_spine._assert_no_demo_symbols):
+    it must fail loud if a demo-namespaced symbol ever reaches the payload builder's
+    output, independent of the tenant-exclusion query that is the primary fix — the
+    guard fleet convention is RAISE, never a silent filter (metron-ops-I337)."""
+
+    def test_raises_on_demo_symbol(self):
+        with pytest.raises(ValueError, match="DEMO-AAPL"):
+            data_spine._assert_no_demo_symbols({"AAPL", "DEMO-AAPL"}, context="test")
+
+    def test_passes_on_real_symbols_only(self):
+        data_spine._assert_no_demo_symbols({"AAPL", "MSFT"}, context="test")  # no raise
 
 
 def _seed_watchlist(session, *, pf_name, symbol, currency="USD", yf_symbol=None):
@@ -179,6 +277,17 @@ class TestBuildWatchlistUniverse:
 
         payload = data_spine.build_watchlist_universe(db_session, today=date(2024, 6, 3))
         assert payload["holdings"] == []
+
+    def test_excludes_demo_tenant_watchlist_items(self, db_session):
+        """metron-ops-I337: same exclusion as the holdings universe, for the watchlist
+        contract."""
+        _seed_watchlist(db_session, pf_name="P1", symbol="MU", currency="USD", yf_symbol="MU")
+        _seed_demo_watchlist(db_session, symbol="DEMO-MU")
+
+        payload = data_spine.build_watchlist_universe(db_session, today=date(2024, 6, 3))
+
+        assert payload["tickers"] == ["MU"]
+        assert not any(t.startswith("DEMO-") for t in payload["tickers"])
 
 
 class TestPublish:

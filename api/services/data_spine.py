@@ -38,6 +38,8 @@ from sqlalchemy.orm import Session
 from api.config import settings
 from api.db import models
 from api.services import analytics
+from api.services.demo import DEMO_TENANT_ID
+from api.services.demo_namespace import is_demo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +133,25 @@ def _write_s3_json(bucket: str, key: str, obj: dict, s3_client=None) -> None:
         raise DataSpineUnavailable(f"Could not write s3://{bucket}/{key}: {e}") from e
 
 
+def _assert_no_demo_symbols(symbols: set[str] | dict[str, str], *, context: str) -> None:
+    """Fail loud if a demo-namespaced symbol reached a payload bound for the shared
+    cross-component contract. This is the structural backstop, not the fix itself — the
+    fix is excluding the demo tenant's portfolios/watchlist items from the aggregation
+    query below, before any symbol is collected. This assertion exists so that if a
+    FUTURE demo tenant, fixture, or query change reintroduces the leak (metron-ops-I337,
+    the class metron-ops-I319 was the write-side instance of), it raises here — loudly,
+    at the producer, before the payload ever reaches S3 — instead of silently reaching
+    `alpha-engine-data` and being rediscovered downstream a second time."""
+    offenders = sorted({s for s in symbols if is_demo_symbol(s)})
+    if offenders:
+        raise ValueError(
+            f"{context}: refusing to publish demo-namespaced symbol(s) {offenders!r} into "
+            "the shared metron/holdings_universe.json contract — the demo tenant's "
+            "holdings must be excluded from this aggregation before symbols are collected "
+            "(metron-ops-I337)"
+        )
+
+
 def _securities_by_symbol(session: Session, symbols: list[str]) -> dict[str, models.Security]:
     """Held symbol → its global Security row (first by id per symbol — stable). Carries
     ``yf_symbol`` (foreign listings → exchange-suffixed) + native ``currency``."""
@@ -160,7 +181,14 @@ def build_holdings_universe(session: Session, *, today: date | None = None) -> d
     by_yf: dict[str, str] = {}  # yf_symbol → native currency
     broker_symbols: set[str] = set()  # deduped broker symbols → the news-universe `tickers`
     skipped_unlisted: set[str] = set()
-    for p in session.scalars(select(models.Portfolio)).all():
+    # The demo tenant (Showcase + demo household, api/services/demo.py) is excluded at
+    # the query root — before any symbol is collected — because it is not a real held
+    # position: it is illustrative fixture data seeded under the reserved ``DEMO-``
+    # namespace (api/services/demo_namespace.py, metron-ops-I319/I337). Excluding by
+    # TENANT here, not by symbol prefix after the fact, means a demo fixture that ever
+    # authored a non-namespaced symbol (a fixture bug the write-side guards already
+    # raise on) still can never reach this published contract.
+    for p in session.scalars(select(models.Portfolio).where(models.Portfolio.tenant_id != DEMO_TENANT_ID)).all():
         held = analytics.holdings(session, p.tenant_id, p.id)
         symbols = [h.ticker for h in held if h.ticker]
         secs = _securities_by_symbol(session, symbols)
@@ -188,6 +216,7 @@ def build_holdings_universe(session: Session, *, today: date | None = None) -> d
             "holdings universe: %d unlisted instrument(s) excluded (broker-snapshot-priced): %s",
             len(skipped_unlisted), ", ".join(sorted(skipped_unlisted)),
         )
+    _assert_no_demo_symbols(set(by_yf) | broker_symbols, context="build_holdings_universe")
     holdings = [{"yf_symbol": yf, "currency": ccy} for yf, ccy in sorted(by_yf.items())]
     currencies = sorted({ccy for ccy in by_yf.values() if ccy and ccy != "USD"})
     tickers = sorted(broker_symbols)
@@ -237,7 +266,9 @@ def build_watchlist_universe(session: Session, *, today: date | None = None) -> 
     by_yf: dict[str, str] = {}  # yf_symbol → native currency
     broker_symbols: set[str] = set()
     symbols: set[str] = set()
-    for row in session.scalars(select(models.WatchlistItem)).all():
+    # Demo tenant excluded at the query root — see build_holdings_universe above.
+    query = select(models.WatchlistItem).where(models.WatchlistItem.tenant_id != DEMO_TENANT_ID)
+    for row in session.scalars(query).all():
         sym = (row.symbol or "").strip().upper()
         if sym:
             symbols.add(sym)
@@ -250,6 +281,7 @@ def build_watchlist_universe(session: Session, *, today: date | None = None) -> 
         by_yf.setdefault(yf, sec.currency or "USD")
         if sec.symbol:
             broker_symbols.add(sec.symbol.strip().upper())
+    _assert_no_demo_symbols(set(by_yf) | broker_symbols, context="build_watchlist_universe")
     holdings = [{"yf_symbol": yf, "currency": ccy} for yf, ccy in sorted(by_yf.items())]
     currencies = sorted({ccy for ccy in by_yf.values() if ccy and ccy != "USD"})
     tickers = sorted(broker_symbols)
