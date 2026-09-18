@@ -27,6 +27,16 @@ Prints one JSON object: ``{"trading_day", "p95_ms", "n", "status"}``. ``status``
 a passing zero. ``--record`` persists a measured result into ``GlanceLatencyDaily``
 (refuses to persist a not-measured day: recording nothing IS the not-measured state).
 Exit code 1 when ``--record`` was requested but the day was not-measured.
+
+``--record`` ALSO appends one row to ``GlanceP95RunLog`` (metron-ops-I341) for every
+outcome — measured, not-measured, or a crash — before this process exits. That is the
+EXECUTION record: it is what lets a caller (``/meta/status``) tell "the scheduled job
+never ran" apart from "it ran and found nothing to measure", which look identical from
+``GlanceLatencyDaily`` alone (a not-measured day is never given a row there, by design).
+A failure while reading input or computing the day's figure still gets logged as an
+``"error"`` run before the exception propagates — this script never swallows a failure
+to keep the run log clean; a clean-looking log on a day that actually crashed would be
+worse than a visibly errored one.
 """
 
 from __future__ import annotations
@@ -60,24 +70,57 @@ def main(argv: list[str] | None = None) -> int:
     # Imported lazily so `--help` works without a configured DATABASE_URL.
     from api.services import glance_latency
 
-    lines = _read_lines(args.log_file)
-    result = glance_latency.compute(lines, trading_day=trading_day)
-    payload = {
-        "trading_day": result.trading_day.isoformat(),
-        "p95_ms": result.p95_ms,
-        "n": result.n,
-        "status": result.status,
-    }
+    if not args.record:
+        # Dry-run path (no DB touched, no run log): used to inspect a day's figure
+        # ad hoc, never by the scheduled unit.
+        lines = _read_lines(args.log_file)
+        result = glance_latency.compute(lines, trading_day=trading_day)
+        payload = {
+            "trading_day": result.trading_day.isoformat(),
+            "p95_ms": result.p95_ms,
+            "n": result.n,
+            "status": result.status,
+        }
+        print(json.dumps(payload))
+        return 0
 
-    if args.record:
+    # --record path: EVERY outcome — measured, not-measured, or a crash — appends one
+    # GlanceP95RunLog row before this process exits (metron-ops-I341). That row is the
+    # execution signal a freshness check reads; a swallowed crash here would look
+    # identical to a healthy quiet day from every surface downstream.
+    from api.db.session import SessionLocal
+
+    with SessionLocal() as session:
+        try:
+            lines = _read_lines(args.log_file)
+            result = glance_latency.compute(lines, trading_day=trading_day)
+        except Exception as exc:
+            glance_latency.record_run(session, target_day=trading_day, status="error", error=str(exc))
+            raise
+
+        payload = {
+            "trading_day": result.trading_day.isoformat(),
+            "p95_ms": result.p95_ms,
+            "n": result.n,
+            "status": result.status,
+        }
+
         if result.p95_ms is None:
+            glance_latency.record_run(session, target_day=trading_day, status="not-measured", n=result.n)
             print(json.dumps(payload))
             print(f"not-measured: 0 matching lines for {trading_day} — refusing to record.", file=sys.stderr)
             return 1
-        from api.db.session import SessionLocal
 
-        with SessionLocal() as session:
+        try:
             glance_latency.record(session, result)
+        except Exception as exc:
+            glance_latency.record_run(
+                session, target_day=trading_day, status="error", n=result.n, error=str(exc)
+            )
+            raise
+        glance_latency.record_run(
+            session, target_day=trading_day, status="measured", n=result.n, p95_ms=result.p95_ms,
+        )
         payload["recorded_at"] = datetime.utcnow().isoformat() + "Z"
 
     print(json.dumps(payload))

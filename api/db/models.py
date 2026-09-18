@@ -830,3 +830,29 @@ class GlanceLatencyDaily(Base):
     p95_ms: Mapped[float] = mapped_column(Numeric(10, 2))
     n: Mapped[int] = mapped_column()
     computed_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class GlanceP95RunLog(Base):
+    """One row per ``scripts/glance_p95.py --record`` invocation (metron-ops-I341) —
+    the EXECUTION record, distinct from ``GlanceLatencyDaily``'s DATA record.
+
+    ``GlanceLatencyDaily`` only ever gains a row when a day is genuinely measured
+    (``glance_latency.record`` refuses to persist a not-measured day by design), so a
+    missing ``GlanceLatencyDaily`` row is ambiguous on its own: it reads identically
+    whether the scheduled timer never fired, or it fired and found zero glance traffic
+    that day. This table removes that ambiguity — every invocation appends a row here
+    regardless of outcome (``measured`` / ``not-measured`` / ``error``), so "the timer
+    didn't run" (no row at all, or the newest row older than the schedule's period) is
+    distinguishable from "it ran and there was nothing to measure" (a fresh
+    ``not-measured`` row). Append-only, never upserted — each invocation is its own
+    fact."""
+
+    __tablename__ = "glance_p95_run_log"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    ran_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
+    target_day: Mapped[date] = mapped_column()
+    status: Mapped[str] = mapped_column(String(16))  # "measured" | "not-measured" | "error"
+    n: Mapped[int | None] = mapped_column(nullable=True)
+    p95_ms: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
