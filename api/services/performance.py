@@ -13,6 +13,7 @@ never a fabricated number.
 from __future__ import annotations
 
 import bisect
+import contextlib
 import logging
 import statistics
 import uuid
@@ -1759,7 +1760,8 @@ def nav_history_estimated(session: Session, tenant_id: uuid.UUID, portfolio_id: 
 
 
 def reconstruct_snapshots(
-    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, today: date, source: HistorySource | None = None
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, today: date,
+    source: HistorySource | None = None, profile=None,
 ) -> int:
     """Seed the historical NAV series from the **lot timeline** + a ledger fallback.
 
@@ -1778,7 +1780,8 @@ def reconstruct_snapshots(
     even for non-lot holdings) overwrites today's reconstructed point. Idempotent. Returns
     the number of snapshots written."""
     points = _reconstruct_nav_points(
-        session, tenant_id, portfolio_id, account_ids=None, today=today, source=source, backfill=True
+        session, tenant_id, portfolio_id, account_ids=None, today=today, source=source,
+        backfill=True, profile=profile,
     )
     written = 0
     for p in points:
@@ -1789,6 +1792,22 @@ def reconstruct_snapshots(
         written += 1
     session.commit()
     return written
+
+
+@contextlib.contextmanager
+def _profiled(profile, label: str):
+    """``profile.block(label)`` when a profile was passed, a no-op recorder otherwise.
+
+    Exists so the instrumented call sites read identically whether or not a profile
+    is in play (metron-ops-I343). A ``if profile is not None:`` around each one is
+    exactly where a block quietly stops being measured, and an unmeasured block is
+    indistinguishable from a cheap one.
+    """
+    if profile is None:
+        yield lambda _rows: None
+        return
+    with profile.block(label) as record:
+        yield record
 
 
 @dataclass
@@ -1813,6 +1832,7 @@ def _reconstruct_nav_points(
     by_account: list | None = None,
     snapshot_account_ids: set[uuid.UUID] | None = None,
     ticker_ccy: dict[str, str] | None = None,
+    profile=None,
 ) -> list[_NavPoint]:
     """The read-only core of NAV reconstruction — the historical valuation series for the
     whole portfolio (``account_ids`` None) or a scoped set of accounts (per-account history,
@@ -1865,9 +1885,17 @@ def _reconstruct_nav_points(
         # this function will ever value (no lot/txn/flow predates it), and no valuation
         # date exceeds `today` — the same bound the `backfill` branch above already
         # uses for its own write.
-        history = price_service.close_history_by_symbol(
-            session, [*symbols, "SPY"], start_date=first, end_date=today
-        )
+        # metron-ops-I343: THE read to watch. `first` is the earliest lot/txn date
+        # that has ever existed for this portfolio, so this pulls every close for
+        # every symbol ever held, from inception, on every run — and `daily-refresh`
+        # fires three times a night. Counted and timed, never changed: this function
+        # sits on the path of metron-ops#74/#87/#88/#89, and narrowing the window
+        # without first knowing it dominates is how a fifth NAV bug gets written.
+        with _profiled(profile, "performance.close_history_by_symbol") as record:
+            history = price_service.close_history_by_symbol(
+                session, [*symbols, "SPY"], start_date=first, end_date=today
+            )
+            record(sum(len(v) for v in history.values()))
     spy_series = history.get("SPY")
     held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     current_px = {h.ticker: h.last_price for h in held if h.last_price is not None}

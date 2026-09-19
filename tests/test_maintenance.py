@@ -353,3 +353,61 @@ def test_cli_backfill_tax_treatment_runs(db_session, monkeypatch):
     monkeypatch.setattr("api.maintenance.SessionLocal", lambda: db_session)
     monkeypatch.setattr(db_session, "close", lambda: None)  # keep session open past the CLI's `finally`
     assert main(["backfill-tax-treatment"]) == 0
+
+
+# ── the run profile is actually wired in (metron-ops-I343) ──────────────────
+#
+# An instrumented call site that nobody passes a profile to is a silent no-op,
+# and a profile whose expensive blocks are missing is worse than none: it names
+# a cheap call as the biggest thing the run did. These hold the wiring, not the
+# profiler (tests/test_db_read_profile.py holds that).
+
+
+def test_daily_refresh_populates_the_run_profile(client, db_session, monkeypatch):
+    from api.services import db_read_profile
+
+    monkeypatch.setattr("api.services.prices.fetch_latest_closes", _price_src)
+    monkeypatch.setattr("api.services.performance.fetch_latest_closes", _spy_src)
+    monkeypatch.setattr("api.maintenance.fetch_latest_closes", _spy_src)
+    _no_derived(monkeypatch)
+    _seed(client, str(uuid.uuid4()), "A")
+
+    profile = db_read_profile.ReadProfile("daily-refresh")
+    daily_refresh(db_session, today=date(2024, 6, 3), profile=profile)
+
+    assert profile.blocks, "daily_refresh recorded nothing — the instrumentation is unwired"
+    assert "analytics.holdings" in profile.blocks
+    assert "prices.refresh_latest_prices" in profile.blocks
+    # The three whole-history re-derivations I343 names go through _best_effort.
+    assert any(k.startswith("best_effort:") for k in profile.blocks)
+
+
+def test_daily_refresh_without_a_profile_is_unchanged(client, db_session, monkeypatch):
+    """Every in-process caller (the API, every other test) must keep working with no
+    profile and no S3 write — the CLI owns publication, not this function."""
+    monkeypatch.setattr("api.services.prices.fetch_latest_closes", _price_src)
+    monkeypatch.setattr("api.services.performance.fetch_latest_closes", _spy_src)
+    monkeypatch.setattr("api.maintenance.fetch_latest_closes", _spy_src)
+    _no_derived(monkeypatch)
+    _seed(client, str(uuid.uuid4()), "A")
+
+    result = daily_refresh(db_session, today=date(2024, 6, 3))
+    assert result.snapshots_recorded == 1
+
+
+def test_the_profile_counts_rows_from_a_best_effort_row_count(client, db_session, monkeypatch):
+    """`_best_effort` records the int a writer returns. A reconstruct that wrote 7
+    snapshots must show 7, not 0 — otherwise the block is timed but uncounted and
+    reads as cheap."""
+    from api.services import db_read_profile
+
+    monkeypatch.setattr("api.services.prices.fetch_latest_closes", _price_src)
+    monkeypatch.setattr("api.services.performance.fetch_latest_closes", _spy_src)
+    monkeypatch.setattr("api.maintenance.fetch_latest_closes", _spy_src)
+    _no_derived(monkeypatch)
+    monkeypatch.setattr("api.maintenance.performance.reconstruct_snapshots", lambda *a, **k: 7)
+    _seed(client, str(uuid.uuid4()), "A")
+
+    profile = db_read_profile.ReadProfile("daily-refresh")
+    daily_refresh(db_session, today=date(2024, 6, 3), profile=profile)
+    assert profile.blocks["best_effort:performance"].rows == 7

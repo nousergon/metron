@@ -36,6 +36,7 @@ from api.services import (
     attribution,
     broker_sync,
     data_spine,
+    db_read_profile,
     fx,
     performance,
     reconciliation,
@@ -97,7 +98,10 @@ class RefreshResult:
     broker_snaptrade_synced: int = 0  # portfolios whose SnapTrade-sourced accounts were re-synced (metron-ops#150)
 
 
-def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResult:
+def daily_refresh(
+    session: Session, *, today: date | None = None,
+    profile: db_read_profile.ReadProfile | None = None,
+) -> RefreshResult:
     """Refresh prices + record a NAV snapshot for every portfolio in the DB.
 
     Per portfolio: fetch the latest close for each held ticker into the global price
@@ -118,6 +122,11 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     shows Metron's own live pricing.
     """
     today = today or date.today()
+    # metron-ops-I343: measure what this command reads, never change what it reads.
+    # An unsupplied profile is a live object that is simply never published, so the
+    # instrumented call sites below are unconditional — a `if profile is not None`
+    # at each one is where a block silently stops being measured.
+    profile = profile or db_read_profile.ReadProfile("daily-refresh")
 
     # Refresh the Showcase Portfolio from the engine's published artifact BEFORE the
     # per-portfolio loop, so its holdings are current when today's NAV snapshot is recorded.
@@ -148,13 +157,24 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
     def _best_effort(label: str, portfolio_id, fn):
         """Run a derived backfill; on failure log a WARN and roll back its partial work
         so the next portfolio (and the already-committed price refresh) is unaffected.
-        Returns the callable's result, or None if it raised."""
-        try:
-            return fn()
-        except Exception as e:  # noqa: BLE001 — best-effort derived analytics, never fatal
-            logger.warning("portfolio %s: %s backfill failed (non-fatal): %s", portfolio_id, label, e)
-            session.rollback()
-            return None
+        Returns the callable's result, or None if it raised.
+
+        Timed into the run profile under ``label`` (metron-ops-I343). The block wraps
+        the call rather than the body so a raising backfill still contributes the cost
+        it already incurred — the expensive read happened whether or not it finished.
+        """
+        with profile.block(f"best_effort:{label}") as record:
+            try:
+                result = fn()
+            except Exception as e:  # noqa: BLE001 — best-effort derived analytics, never fatal
+                logger.warning("portfolio %s: %s backfill failed (non-fatal): %s", portfolio_id, label, e)
+                session.rollback()
+                return None
+            if isinstance(result, int):
+                # reconcile/reconstruct/account-snapshot writers return a row count; the
+                # others return a domain object and legitimately count nothing.
+                record(result)
+            return result
 
     portfolios = session.scalars(select(models.Portfolio)).all()
     total_symbols = total_updated = total_snaps = total_fx = 0
@@ -194,7 +214,9 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
             "broker-sync-snaptrade", p.id,
             lambda p=p: broker_sync.sync_snaptrade_for_portfolio(session, p),
         )
-        held = analytics.holdings(session, p.tenant_id, p.id)
+        with profile.block("analytics.holdings") as record:
+            held = analytics.holdings(session, p.tenant_id, p.id)
+            record(len(held))
         symbols = [h.ticker for h in held if h.ticker]
         ccy_by_ticker = {h.ticker: h.currency for h in held if h.ticker}
         # Never send a reserved ``DEMO-`` symbol to a live vendor fetch, in ANY
@@ -211,11 +233,13 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         # the symbol itself — one rule covering both demo portfolios, no collision with
         # any real holding possible, nothing to keep in sync as a fixture changes.
         symbols = [s for s in symbols if not is_demo_symbol(s)]
-        updated = (
-            price_service.refresh_latest_prices(session, symbols, currency_by_symbol=ccy_by_ticker)
-            if symbols
-            else 0
-        )
+        with profile.block("prices.refresh_latest_prices") as record:
+            updated = (
+                price_service.refresh_latest_prices(session, symbols, currency_by_symbol=ccy_by_ticker)
+                if symbols
+                else 0
+            )
+            record(len(symbols))
         # Refresh FX for every non-base currency held, so foreign positions convert into
         # the base-currency NAV instead of being dropped from the total.
         base = p.base_currency or "USD"
@@ -225,7 +249,12 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         # converts at its as-of-date rate.
         txn_ccys, earliest = analytics.foreign_transaction_currencies(session, p.tenant_id, p.id, base=base)
         if txn_ccys and earliest is not None:
-            fx_updated += fx.backfill_fx_rates(session, txn_ccys, earliest, today, base=base)
+            # Spans `earliest` (the first foreign transaction EVER) to today, on every
+            # run — one of metron-ops-I343's three named whole-history re-derivations.
+            with profile.block("fx.backfill_fx_rates") as record:
+                n_fx = fx.backfill_fx_rates(session, txn_ccys, earliest, today, base=base)
+            record(n_fx)
+            fx_updated += n_fx
 
         # The Showcase Portfolio's NavSnapshot series is sole-sourced from the engine's
         # artifact (demo.sync_reference_holdings, above) — see the single-source-of-truth
@@ -248,7 +277,8 @@ def daily_refresh(session: Session, *, today: date | None = None) -> RefreshResu
         # reverse (the reconstruct-clobbers-live bug, metron-ops#74).
         recon = None if is_reference_rate else _best_effort(
             "performance", p.id,
-            lambda p=p: performance.reconstruct_snapshots(session, p.tenant_id, p.id, today=today),
+            lambda p=p: performance.reconstruct_snapshots(
+                session, p.tenant_id, p.id, today=today, profile=profile),
         )
         snap = (
             performance.record_snapshot(session, p.tenant_id, p.id, today=today)
@@ -535,11 +565,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "daily-refresh":
         create_all()  # ensure the personal/dev SQLite schema exists before operating
         session = SessionLocal()
+        # metron-ops-I343. Created here rather than inside daily_refresh so the CLI —
+        # the thing the systemd timer actually invokes — owns publication, and an
+        # in-process caller (tests, the API) measures without writing to S3.
+        profile = db_read_profile.ReadProfile("daily-refresh")
         try:
-            r = daily_refresh(session)
+            r = daily_refresh(session, profile=profile)
             stale = report_broker_staleness(session)
         finally:
             session.close()
+            db_read_profile.publish(profile, bucket=settings.market_data_bucket)
         logger.info(
             "daily-refresh done: %d portfolios, %d symbols, %d prices, %d snapshots, "
             "%d deferred, %d account-snapshots, %d reconstructed, %d risk, %d attribution, "
