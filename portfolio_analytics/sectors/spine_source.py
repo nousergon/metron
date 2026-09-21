@@ -57,9 +57,14 @@ def spine_countries(yf_symbols: list[str], *, s3=None) -> dict[str, str]:
     return {sym: countries[sym] for sym in yf_symbols if countries.get(sym)}
 
 
-def spine_benchmark_sector_weights(*, s3=None) -> dict[str, float]:
-    """SPY's GICS sector weights (canonical label → fraction) from the spine. ``{}`` if
-    absent → the attribution degrades to not-computable WITH a reason, never fabricated."""
+def spine_benchmark_sector_weights(symbol: str = "SPY", *, s3=None) -> dict[str, float]:
+    """``symbol``'s GICS sector weights (canonical label → fraction) from the spine,
+    keyed ``f"{symbol.lower()}_sector_weights"`` (metron-ops-I346 widened this from a
+    hardcoded SPY read). ``{}`` if absent → the attribution degrades to not-computable
+    WITH a reason, never fabricated — this is also the honest state for any symbol the
+    producer hasn't published a weights map for yet (only ``spy_sector_weights`` exists
+    in the artifact as of this writing; a "QQQ" call fails soft until the producer adds
+    ``qqq_sector_weights``)."""
     art = _read_json(s3 or _s3(), SECTORS_LATEST_KEY) or {}
-    weights = art.get("spy_sector_weights", {})
+    weights = art.get(f"{symbol.lower()}_sector_weights", {})
     return {k: float(v) for k, v in weights.items()}

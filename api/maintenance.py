@@ -34,6 +34,7 @@ from api.services import (
     alerting,
     analytics,
     attribution,
+    benchmark_gap,
     broker_sync,
     data_spine,
     db_read_profile,
@@ -91,6 +92,7 @@ class RefreshResult:
     snapshots_deferred: int = 0     # portfolios whose snapshot was deferred (today's close unpublished)
     risk_computed: int = 0          # portfolios whose factor risk backfilled + fit
     attribution_computed: int = 0   # portfolios whose sector attribution backfilled + ran
+    benchmark_gap_computed: int = 0  # portfolio x index name-level benchmark-gap decompositions that reconciled
     earnings_refreshed: int = 0     # securities whose next earnings date refreshed from the spine
     universe_published: bool = False  # held-ticker universe published to the data spine
     watchlist_universe_published: bool = False  # watchlist-only-ticker universe published (metron-ops#132)
@@ -179,6 +181,7 @@ def daily_refresh(
     portfolios = session.scalars(select(models.Portfolio)).all()
     total_symbols = total_updated = total_snaps = total_fx = 0
     total_recon = total_risk = total_attr = total_acct_snaps = total_earnings = 0
+    total_bench_gap = 0
     total_reconciled = 0
     total_flex_synced = total_snaptrade_synced = 0
 
@@ -312,6 +315,23 @@ def daily_refresh(
             "attribution", p.id,
             lambda p=p: attribution.compute_attribution(session, p.tenant_id, p.id, today=today, do_backfill=True),
         )
+        # Name-level benchmark-gap drivers (metron-ops-I346) — warms the module-level
+        # index-contributions artifact cache and surfaces a non-reconciling decomposition
+        # here (in the operator log) rather than only on a user's first page load.
+        # Idempotent per day: re-running just re-reads the same day's cached artifact.
+        # Best-effort per index — a failure on SPX must never cost NDX or vice versa.
+        bench_gap_ok = 0
+        for _idx in ("SPX", "NDX"):
+            _summary = _best_effort(
+                f"benchmark-gap-{_idx}", p.id,
+                lambda p=p, idx=_idx: benchmark_gap.compute_benchmark_gap(
+                    session, p.tenant_id, p.id, index=idx,
+                    tile=next((t for t in performance.period_tiles(
+                        session, p.tenant_id, p.id, today=today, with_benchmarks=True,
+                    ).tiles if t.period == "today"), None),
+                ),
+            )
+            bench_gap_ok += 1 if (_summary is not None and _summary.computable) else 0
         # Earnings dates for the Calendar page — pulled from the data spine into
         # securities.next_earnings_date. Only the manual "Refresh earnings" button did this
         # before, so the Calendar stayed blank on an untouched deploy (metron-ops#76);
@@ -330,6 +350,7 @@ def daily_refresh(
         total_reconciled += reconciled or 0
         total_risk += 1 if (risk_summary is not None and risk_summary.computable) else 0
         total_attr += 1 if (attr_summary is not None and attr_summary.computable) else 0
+        total_bench_gap += bench_gap_ok
         total_earnings += earnings or 0
         total_flex_synced += 1 if flex_synced is not None else 0
         total_snaptrade_synced += 1 if snaptrade_synced is not None else 0
@@ -376,6 +397,7 @@ def daily_refresh(
         snapshots_deferred=(len(portfolios) if not closes_published else 0),
         risk_computed=total_risk,
         attribution_computed=total_attr,
+        benchmark_gap_computed=total_bench_gap,
         earnings_refreshed=total_earnings,
         universe_published=universe_published,
         watchlist_universe_published=watchlist_universe_published,
@@ -578,7 +600,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info(
             "daily-refresh done: %d portfolios, %d symbols, %d prices, %d snapshots, "
             "%d deferred, %d account-snapshots, %d reconstructed, %d risk, %d attribution, "
-            "universe_published=%s, %d flex-synced, %d snaptrade-synced",
+            "%d benchmark-gap, universe_published=%s, %d flex-synced, %d snaptrade-synced",
             r.portfolios,
             r.symbols,
             r.prices_updated,
@@ -588,6 +610,7 @@ def main(argv: list[str] | None = None) -> int:
             r.snapshots_reconstructed,
             r.risk_computed,
             r.attribution_computed,
+            r.benchmark_gap_computed,
             r.universe_published,
             r.broker_flex_synced,
             r.broker_snaptrade_synced,

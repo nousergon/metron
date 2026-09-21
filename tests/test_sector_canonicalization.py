@@ -96,7 +96,7 @@ class TestBenchmarkWeightsNormalize:
     def test_benchmark_weights_fold_and_sum_collapsed_variants(self):
         # Two drift variants of the same sector collapse onto one canonical key,
         # and their fractions are summed (no double-counted / split benchmark row).
-        source = lambda: {  # noqa: E731
+        source = lambda symbol: {  # noqa: E731
             "Technology": 0.20,
             "Information Technology": 0.10,
             "Health Care": 0.13,

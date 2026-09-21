@@ -22,7 +22,7 @@ from sqlalchemy.pool import StaticPool
 from api.db.session import Base, get_session
 from api.main import app
 from api.services import attractiveness as attractiveness_service
-from api.services import compute_cache, identity
+from api.services import benchmark_gap, compute_cache, identity
 
 
 @pytest.fixture(autouse=True)
@@ -31,9 +31,11 @@ def _clear_compute_cache():
     test's cached result can never bleed into another's isolated in-memory DB."""
     compute_cache.clear()
     attractiveness_service.clear_cache()
+    benchmark_gap.clear_cache()
     yield
     compute_cache.clear()
     attractiveness_service.clear_cache()
+    benchmark_gap.clear_cache()
 
 
 class _NoCredsStubClient:

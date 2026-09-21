@@ -7,6 +7,7 @@ import { NavChart } from "@/components/nav-chart";
 import { AsOfClose } from "@/components/as-of-close";
 import { NavBridge } from "@/components/nav-bridge";
 import { RiskOverTime } from "@/components/risk-over-time";
+import { BenchmarkGapSection } from "@/components/benchmark-gap-table";
 import { TierSimulator } from "@/components/tier-simulator";
 import { loadEntitlements, toFeatureStates } from "@/lib/entitlements";
 import { requireApiAuth } from "@/lib/session";
@@ -214,6 +215,14 @@ export default async function PerformancePage(
           />
         </div>
       ) : null}
+
+      {/* Name-level benchmark-gap drivers (metron-ops-I346) — the "why" behind the alpha
+          shown above: which index names moved it that the portfolio doesn't hold (or
+          holds at a different weight). Owner-only (Stage A, ruling R5) until
+          metron-ops-I24; the component degrades to a quiet reason line when locked or
+          not yet computable rather than breaking the page. */}
+      <BenchmarkGapSection apiAuth={apiAuth} portfolioId={id} index="SPX" accountIds={accountIds} />
+      <BenchmarkGapSection apiAuth={apiAuth} portfolioId={id} index="NDX" accountIds={accountIds} />
 
       {perf.rolling.length >= 2 ? <RiskOverTime rolling={perf.rolling} /> : null}
 

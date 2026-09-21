@@ -1044,6 +1044,48 @@ export type Attribution = {
 export const getAttribution = (apiAuth: string, id: string, accountIds?: string[]) =>
   get<Attribution>(apiAuth, `/portfolios/${id}/attribution${acctParams(accountIds)}`);
 
+// Name-level benchmark-gap drivers (metron-ops-I346) — explains the holdings-vs-index
+// alpha `Attribution`/the Overview tiles already show: which names in the index moved
+// it that the portfolio doesn't hold (or holds at a different weight). Stage A only —
+// factual `earnings` tag, no generated prose (ruling R5).
+export type BenchmarkGapDriver = {
+  symbol: string;
+  classification: "held" | "not_held" | "overweight" | "underweight" | string;
+  port_weight: number;
+  bench_weight: number;
+  active_weight: number;
+  ret: number;
+  port_contribution: number;
+  bench_contribution: number;
+  active_contribution: number;
+  earnings: boolean;
+};
+
+export type BenchmarkGap = {
+  computable: boolean;
+  reason: string | null;
+  required_tier: string | null;
+  index: string | null;
+  index_label: string | null;
+  proxy_symbol: string | null;
+  as_of: string | null;
+  weight_method: string | null;
+  coverage_weight_with_return: number | null;
+  coverage_members: number | null;
+  coverage_members_missing_return: number | null;
+  portfolio_return: number | null;
+  benchmark_return: number | null;
+  active_return: number | null;
+  residual: number | null;
+  within_tolerance: boolean;
+  tolerance: number;
+  missing_returns: string[];
+  drivers: BenchmarkGapDriver[];
+};
+
+export const getBenchmarkGap = (apiAuth: string, id: string, index: "SPX" | "NDX", accountIds?: string[]) =>
+  get<BenchmarkGap>(apiAuth, `/portfolios/${id}/benchmark-gap/${index}${acctParams(accountIds)}`);
+
 // Concentration & diversification diagnostics (metron-ops-I167) — deterministic
 // portfolio-structure FACTS on the settled context. Types mirror DiagnosticsOut.
 export type DiagnosticsSectorRow = {
