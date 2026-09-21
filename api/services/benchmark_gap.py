@@ -273,7 +273,10 @@ def compute_benchmark_gap(
         )
 
     bench_weights = {c.symbol: c.weight_prior_close for c in artifact.constituents}
-    returns = {c.symbol: c.return_pct for c in artifact.constituents}  # already a fraction
+    # .return_fraction, never the raw .return_pct — return_pct is PERCENT (28.8 = +28.8%),
+    # not a fraction (metron-ops-I346 units correction, 2026-09-21). nousergon_lib works
+    # entirely in fractions.
+    returns = {c.symbol: c.return_fraction for c in artifact.constituents}
     for sym, r in port_returns.items():
         returns.setdefault(sym, r)
 

@@ -4,9 +4,14 @@ holdings-vs-index alpha ``performance.period_tiles`` already shows.
 The correctness gate (deliverable 3, the single most important test in the issue) gets
 its own dedicated tests: the decomposition must reconcile to the alpha already on
 screen within tolerance, or the service refuses rather than showing plausible-looking
-drivers. A second dedicated test locks in the percentage-point/fraction unit boundary
-(``portfolio_analytics/index_contributions/source.py``) — the likeliest defect in the
-whole feature.
+drivers. A second dedicated test locks in the unit boundary
+(``portfolio_analytics/index_contributions/source.py``): every artifact field except
+``weight_prior_close`` is on the 100-scale (percent / percentage points) and needs
+``/100`` to reach a fraction — asserted against the identity
+``weight_prior_close * return_pct == contribution_pp``, not a remembered scale, per the
+2026-09-21 units correction (an earlier revision of the issue's worked example was
+internally inconsistent and a first pass at this module reverse-engineered the wrong
+convention from it).
 """
 
 from __future__ import annotations
@@ -77,10 +82,11 @@ _ARTIFACT_RAW = {
     "residual_pp": 0.05,
     "coverage": {"weight_with_return": 0.08, "members": 2, "members_missing_return": 0},
     "constituents": [
-        # weight * return(as a FRACTION) * 100 == contribution_pp (PERCENTAGE POINTS):
-        # 0.07 * 0.02 * 100 = 0.14; 0.01 * 0.288 * 100 = 0.288.
-        {"symbol": "AAPL", "weight_prior_close": 0.07, "return_pct": 0.02, "contribution_pp": 0.14},
-        {"symbol": "APP", "weight_prior_close": 0.01, "return_pct": 0.288, "contribution_pp": 0.288},
+        # weight_prior_close (a FRACTION) * return_pct (PERCENT) == contribution_pp
+        # (PERCENTAGE POINTS): 0.07 * 2.0 = 0.14; 0.01 * 28.8 = 0.288. return_pct is
+        # NOT a fraction despite the name — 2.0 means +2.0%, 28.8 means +28.8%.
+        {"symbol": "AAPL", "weight_prior_close": 0.07, "return_pct": 2.0, "contribution_pp": 0.14},
+        {"symbol": "APP", "weight_prior_close": 0.01, "return_pct": 28.8, "contribution_pp": 0.288},
     ],
 }
 
@@ -151,19 +157,32 @@ class TestReconciliationGate:
 
 
 class TestUnitBoundary:
-    """portfolio_analytics/index_contributions — the percentage-point/fraction
-    boundary the issue flags as the likeliest defect in the whole feature."""
+    """portfolio_analytics/index_contributions — the unit boundary the issue flags as
+    the likeliest defect in the whole feature. Assert the IDENTITY
+    (``weight_prior_close * return_pct == contribution_pp``), not a remembered scale —
+    a test that just encodes a number is exactly what let the original (wrong) reading
+    pass in the first place."""
 
-    def test_return_pct_is_a_fraction_not_percentage_points(self):
+    def test_identity_weight_times_return_pct_equals_contribution_pp(self):
+        """The artifact's own internal-consistency check, in RAW (as-published) units:
+        weight_prior_close (a fraction) x return_pct (PERCENT) == contribution_pp
+        (PERCENTAGE POINTS). This is what pins down that return_pct is percent, not a
+        fraction — the two cannot both be fractions and also satisfy this identity."""
         artifact = fetch_index_contributions("SPX", _END, source=_source)
         assert artifact is not None
+        for c in artifact.constituents:
+            assert c.weight_prior_close * c.return_pct == pytest.approx(c.contribution_pp)
+
+    def test_return_pct_is_percent_not_a_fraction(self):
+        artifact = fetch_index_contributions("SPX", _END, source=_source)
         app = next(c for c in artifact.constituents if c.symbol == "APP")
-        # return_pct used AS-IS (never divided by 100): 0.288 means +28.8%.
-        assert app.return_pct == pytest.approx(0.288)
-        # contribution_pp IS percentage points: divide by 100 for the fraction that
-        # cross-checks against weight * return.
+        # return_pct is PERCENT (28.8 means +28.8%) — NOT already a fraction.
+        assert app.return_pct == pytest.approx(28.8)
+        assert app.return_fraction == pytest.approx(0.288)
         assert app.contribution_fraction == pytest.approx(0.00288)
-        assert app.contribution_fraction == pytest.approx(app.weight_prior_close * app.return_pct)
+        # The fraction-domain identity holds too, once BOTH sides are converted:
+        # weight (already a fraction) x return_fraction == contribution_fraction.
+        assert app.weight_prior_close * app.return_fraction == pytest.approx(app.contribution_fraction)
 
     def test_index_return_pct_and_residual_pp_convert_to_fractions(self):
         artifact = fetch_index_contributions("SPX", _END, source=_source)
@@ -172,10 +191,12 @@ class TestUnitBoundary:
 
     def test_security_contributions_bench_leg_matches_artifact_contribution_pp(self):
         """The library's own bench_contribution for a constituent must equal the
-        artifact's contribution_pp/100 — the cross-check the module docstring promises."""
+        artifact's contribution_pp/100 — the cross-check the module docstring promises.
+        The library works entirely in fractions, so it's fed ``return_fraction``, never
+        the raw (percent) ``return_pct``."""
         artifact = fetch_index_contributions("SPX", _END, source=_source)
         bench_weights = {c.symbol: c.weight_prior_close for c in artifact.constituents}
-        returns = {c.symbol: c.return_pct for c in artifact.constituents}
+        returns = {c.symbol: c.return_fraction for c in artifact.constituents}
         result = security_contributions({}, bench_weights, returns)
         by_symbol = {c.symbol: c for c in result.contributions}
         for c in artifact.constituents:

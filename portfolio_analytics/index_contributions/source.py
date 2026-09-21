@@ -6,24 +6,25 @@ direct market-data call for the name-level index decomposition either. The artif
 produced by the collector (``alpha-engine-config-I11297``) — Metron reads it, never
 computes membership/weights/per-name returns itself.
 
-**Unit boundary (read this before touching any number here):** the artifact mixes
-percentage-point and return-fraction fields, and getting the mix wrong is the likeliest
-defect in the whole feature.
+**Unit boundary (read this before touching any number here — corrected metron-ops-I346,
+2026-09-21; an earlier revision of the issue's worked example was internally
+inconsistent and a first pass at this module reverse-engineered the wrong convention
+from it):** ONE rule, no field-by-field exception. ``weight_prior_close`` is the ONLY
+fraction in the artifact (0.0121 = 1.21% of the index). Every OTHER number — the
+per-constituent ``return_pct``, ``contribution_pp``, and the artifact-level
+``index_return_pct`` / ``residual_pp`` — is on the 100-scale (percent and percentage
+points are the same numeric scale) and divides by 100 to reach a fraction. That
+includes ``return_pct`` despite the name suggesting otherwise: it is PERCENT
+(28.8 means +28.8%), not already a fraction.
 
-  - ``IndexConstituent.weight_prior_close`` — already a fraction of the index (0.0121 =
-    1.21%). Used as-is.
-  - ``IndexConstituent.return_pct`` — despite the name, already a return FRACTION
-    (0.288 = +28.8%), consistent with how ``nousergon_lib.quant.attribution`` treats
-    every return. Used as-is, never divided by 100. (Verified against the worked
-    example in the producer contract: 0.0121 weight x 0.288 return = 0.00348512, which
-    matches ``contribution_pp`` of 0.348 only once ``contribution_pp`` is read as
-    PERCENTAGE POINTS — i.e. divided by 100. If ``return_pct`` were also percentage
-    points the two would disagree by two orders of magnitude.)
-  - ``IndexConstituent.contribution_pp`` and the artifact-level ``index_return_pct`` /
-    ``residual_pp`` — genuinely in PERCENTAGE POINTS. Divide by 100 for a fraction
-    (see the ``*_fraction`` properties below). These are never fed into
-    ``nousergon_lib``'s per-security math directly — they exist for cross-checking and
-    display; the fraction properties do that conversion once, at the boundary.
+The identity that pins this down: ``weight_prior_close * return_pct == contribution_pp``
+— e.g. 0.0121 * 28.8 == 0.348. A fraction (weight) times a percent (return) yields a
+percentage-point result directly, with no additional scaling on either side of that
+multiplication; only the CONSUMER (``nousergon_lib.quant.attribution``, which works
+entirely in fractions) needs the ``/100`` conversion, applied once here via the
+``*_fraction`` properties below. Never feed a raw ``return_pct`` / ``contribution_pp`` /
+``index_return_pct`` / ``residual_pp`` to that library — always go through the matching
+``*_fraction`` property.
 """
 
 from __future__ import annotations
@@ -39,9 +40,13 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class IndexConstituent:
     symbol: str
-    weight_prior_close: float  # fraction of the index, as published
-    return_pct: float  # a return FRACTION despite the name — see module docstring
+    weight_prior_close: float  # fraction of the index, as published — the ONLY fraction here
+    return_pct: float  # PERCENT despite the name (28.8 = +28.8%) — see ``return_fraction``
     contribution_pp: float  # PERCENTAGE POINTS — see ``contribution_fraction``
+
+    @property
+    def return_fraction(self) -> float:
+        return self.return_pct / 100.0
 
     @property
     def contribution_fraction(self) -> float:
