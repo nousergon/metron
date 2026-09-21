@@ -40,7 +40,12 @@ from portfolio_analytics.sectors import (
     fetch_benchmark_sector_weights,
 )
 
-BENCHMARK = "SPY"
+# metron-ops-I346: sector-level Brinson-Fachler now runs against either proxy — SPY (the
+# S&P 500) or QQQ (the Nasdaq-100), matching the two indexes the name-level benchmark-gap
+# feature covers (api/services/benchmark_gap.py) — the two levels compose: sector
+# allocation/selection here, name-level active contribution there.
+BENCHMARKS: dict[str, str] = {"SPY": "S&P 500", "QQQ": "Nasdaq 100"}
+BENCHMARK = "SPY"  # default, kept for backward compatibility
 
 
 @dataclass
@@ -149,18 +154,24 @@ def compute_attribution(
     sector_source: SectorSource | None = None,
     benchmark_source: BenchmarkSource | None = None,
     account_ids: Collection[uuid.UUID] | None = None,
+    benchmark: str = BENCHMARK,
 ) -> AttributionSummary:
     """Brinson-Fachler sector attribution of the market-value-weighted portfolio vs
-    SPY over the trailing ``lookback_days``. ``do_backfill`` (the POST path) first
-    resolves holding sectors and backfills the held + SPDR-ETF history over the window;
-    the GET path computes from whatever's already cached. ``account_ids`` scopes the
-    holdings (portfolio sector weights/returns) to the selected accounts; None = whole
-    portfolio (the SPY benchmark + SPDR history stay global)."""
+    ``benchmark`` (SPY or QQQ — see ``BENCHMARKS``) over the trailing ``lookback_days``.
+    ``do_backfill`` (the POST path) first resolves holding sectors and backfills the held
+    + SPDR-ETF history over the window; the GET path computes from whatever's already
+    cached. ``account_ids`` scopes the holdings (portfolio sector weights/returns) to the
+    selected accounts; None = whole portfolio (the benchmark + SPDR history stay global).
+    """
+    if benchmark not in BENCHMARKS:
+        raise ValueError(f"unknown benchmark {benchmark!r}; known: {sorted(BENCHMARKS)}")
     start = today - timedelta(days=lookback_days)
     held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     priced = [h for h in held if h.market_value and h.market_value > 0]
     if not priced:
-        return AttributionSummary(False, reason="No priced holdings — refresh prices first.", lookback_days=lookback_days)
+        return AttributionSummary(
+            False, benchmark=benchmark, reason="No priced holdings — refresh prices first.", lookback_days=lookback_days
+        )
     tickers = [h.ticker for h in priced]
     etfs = list(SECTOR_ETF.values())
 
@@ -170,11 +181,12 @@ def compute_attribution(
             price_service.ensure_security(session, etf)
         price_service.backfill_prices(session, [*tickers, *etfs], start, today, source=price_source)
 
-    raw_bench = fetch_benchmark_sector_weights(source=benchmark_source)
+    raw_bench = fetch_benchmark_sector_weights(benchmark, source=benchmark_source)
     w_b = _normalize_benchmark_weights(raw_bench)
     if not w_b:
         return AttributionSummary(
             False,
+            benchmark=benchmark,
             reason="Benchmark sector weights unavailable — compute attribution to fetch them.",
             lookback_days=lookback_days,
         )
@@ -187,6 +199,7 @@ def compute_attribution(
     if not w_p:
         return AttributionSummary(
             False,
+            benchmark=benchmark,
             reason="No holdings map to a GICS sector yet — compute attribution to classify them.",
             lookback_days=lookback_days,
         )
@@ -194,6 +207,7 @@ def compute_attribution(
     if not r_p or not r_b:
         return AttributionSummary(
             False,
+            benchmark=benchmark,
             reason="Not enough price history yet — compute attribution to backfill it.",
             lookback_days=lookback_days,
         )
@@ -224,6 +238,7 @@ def compute_attribution(
     effects.sort(key=lambda e: e.total)  # biggest detractors first → read at a glance
     return AttributionSummary(
         computable=True,
+        benchmark=benchmark,
         as_of=data_through,
         start_date=start,
         lookback_days=lookback_days,

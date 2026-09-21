@@ -54,7 +54,7 @@ def _sectors(symbols, *, source=None):
     return {s: _SECTORS[s] for s in symbols if s in _SECTORS}
 
 
-def _bench(*, source=None):
+def _bench(symbol="SPY", *, source=None):
     return dict(_BENCH)
 
 
@@ -113,7 +113,7 @@ class TestComputeAttribution:
         a = attribution.compute_attribution(
             db_session, uuid.UUID(tenant), uuid.UUID(pid),
             today=date(2024, 2, 20), do_backfill=True,
-            price_source=_full_hist, sector_source=_sectors, benchmark_source=lambda *, source=None: {},
+            price_source=_full_hist, sector_source=_sectors, benchmark_source=lambda symbol="SPY", *, source=None: {},
         )
         assert a.computable is False and "benchmark" in a.reason.lower()
 

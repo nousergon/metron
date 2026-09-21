@@ -33,7 +33,8 @@ def _s3_with(objects: dict[str, dict | None]) -> MagicMock:
 _SECTORS = {"schema_version": 2, "as_of": "2026-06-11",
             "sectors": {"AAPL": "Technology", "1299.HK": "Financial Services"},
             "countries": {"AAPL": "United States", "1299.HK": "Hong Kong"},
-            "spy_sector_weights": {"Technology": 0.30, "Financial Services": 0.13}}
+            "spy_sector_weights": {"Technology": 0.30, "Financial Services": 0.13},
+            "qqq_sector_weights": {"Technology": 0.55, "Financial Services": 0.02}}
 _EARNINGS = {"schema_version": 1, "as_of": "2026-06-11", "earnings": {"AAPL": "2026-07-30"}}
 
 
@@ -45,6 +46,19 @@ class TestSectors:
         weights = sec_spine.spine_benchmark_sector_weights(s3=s3)
         assert weights == {"Technology": 0.30, "Financial Services": 0.13}
 
+    def test_benchmark_weights_widened_to_qqq(self):
+        """metron-ops-I346: the benchmark source is keyed by symbol, not hardcoded SPY."""
+        s3 = _s3_with({sec_spine.SECTORS_LATEST_KEY: _SECTORS})
+        assert sec_spine.spine_benchmark_sector_weights("QQQ", s3=s3) == {
+            "Technology": 0.55, "Financial Services": 0.02
+        }
+
+    def test_benchmark_weights_unpublished_symbol_fails_soft(self):
+        """A symbol the producer hasn't published a weights map for yet (e.g. IWM) degrades
+        to {} — never fabricated, never a fallback to a different symbol's weights."""
+        s3 = _s3_with({sec_spine.SECTORS_LATEST_KEY: _SECTORS})
+        assert sec_spine.spine_benchmark_sector_weights("IWM", s3=s3) == {}
+
     def test_missing_artifact_fail_soft(self):
         s3 = _s3_with({sec_spine.SECTORS_LATEST_KEY: None})
         assert sec_spine.spine_sectors(["AAPL"], s3=s3) == {}
@@ -55,8 +69,19 @@ class TestSectors:
         assert fetch_sectors(["AAPL", "AAPL", ""]) == {"AAPL": "Technology"}
 
     def test_fetch_benchmark_defaults_to_spine(self, monkeypatch):
-        monkeypatch.setattr(sec_spine, "spine_benchmark_sector_weights", lambda **k: {"Technology": 0.3})
+        monkeypatch.setattr(sec_spine, "spine_benchmark_sector_weights", lambda sym, **k: {"Technology": 0.3})
         assert fetch_benchmark_sector_weights() == {"Technology": 0.3}
+
+    def test_fetch_benchmark_passes_symbol_through(self, monkeypatch):
+        seen = {}
+
+        def _capture(sym, **k):
+            seen["symbol"] = sym
+            return {"Technology": 0.55}
+
+        monkeypatch.setattr(sec_spine, "spine_benchmark_sector_weights", _capture)
+        assert fetch_benchmark_sector_weights("QQQ") == {"Technology": 0.55}
+        assert seen["symbol"] == "QQQ"
 
 
 class TestCountries:

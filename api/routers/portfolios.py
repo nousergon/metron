@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict
@@ -34,6 +35,7 @@ from api.services import (
     account_meta,
     analytics,
     attribution,
+    benchmark_gap,
     calendar,
     crypto,
     data_spine,
@@ -704,6 +706,45 @@ class AttributionOut(BaseModel):
     selection: float | None
     interaction: float | None
     sectors: list[SectorEffectOut]
+
+
+class GapDriverOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    classification: str
+    port_weight: float
+    bench_weight: float
+    active_weight: float
+    ret: float
+    port_contribution: float
+    bench_contribution: float
+    active_contribution: float
+    earnings: bool = False
+
+
+class BenchmarkGapOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    computable: bool
+    reason: str | None = None
+    required_tier: str | None = None
+    index: str | None = None
+    index_label: str | None = None
+    proxy_symbol: str | None = None
+    trading_day: date | None = None
+    weight_method: str | None = None
+    coverage_weight_with_return: float | None = None
+    coverage_members: int | None = None
+    coverage_members_missing_return: int | None = None
+    portfolio_return: float | None = None
+    benchmark_return: float | None = None
+    active_return: float | None = None
+    residual: float | None = None
+    within_tolerance: bool = False
+    tolerance: float = benchmark_gap.DEFAULT_TOLERANCE
+    missing_returns: list[str] = []
+    drivers: list[GapDriverOut] = []
 
 
 class DiagnosticsSectorRowOut(BaseModel):
@@ -2708,24 +2749,27 @@ def compute_risk(
 
 @router.get("/{portfolio_id}/attribution", response_model=AttributionOut)
 def get_attribution(
+    benchmark: Literal["SPY", "QQQ"] = Query(default="SPY"),
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
     session: Session = Depends(get_session),
     x_preview_tier: str | None = Header(default=None),
     x_preview_feed: str | None = Header(default=None),
 ) -> attribution.AttributionSummary:
-    """Brinson-Fachler sector attribution vs SPY, from already-cached prices + sectors.
-    Marked not-computable (with a reason) when the cache lacks history or holding
-    sectors — POST .../attribution/compute to source them. ``?account_id=`` scopes the
-    holdings. Feed-dependent — gated by the entitlement matrix (returns
-    ``computable=false`` + ``required_tier`` when the active tier / feed excludes it)."""
+    """Brinson-Fachler sector attribution vs ``?benchmark=`` (SPY — the default, S&P 500 —
+    or QQQ, Nasdaq-100; metron-ops-I346), from already-cached prices + sectors. Marked
+    not-computable (with a reason) when the cache lacks history or holding sectors —
+    POST .../attribution/compute to source them. ``?account_id=`` scopes the holdings.
+    Feed-dependent — gated by the entitlement matrix (returns ``computable=false`` +
+    ``required_tier`` when the active tier / feed excludes it)."""
     feat = _effective_entitlement("attribution", x_preview_tier, x_preview_feed)
     if not feat["available"]:
         return attribution.AttributionSummary(
-            computable=False, reason=feat["reason"], required_tier=feat["required_tier"]
+            computable=False, benchmark=benchmark, reason=feat["reason"], required_tier=feat["required_tier"]
         )
     result = attribution.compute_attribution(
-        session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=False, account_ids=account_ids
+        session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=False,
+        account_ids=account_ids, benchmark=benchmark,
     )
     # Layer-2 invariant checks (metron-ops#217) — Brinson effects sum
     if result.computable and result.allocation is not None:
@@ -2742,6 +2786,7 @@ def get_attribution(
 
 @router.post("/{portfolio_id}/attribution/compute", response_model=AttributionOut)
 def compute_attribution(
+    benchmark: Literal["SPY", "QQQ"] = Query(default="SPY"),
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
     session: Session = Depends(get_session),
@@ -2749,16 +2794,65 @@ def compute_attribution(
     x_preview_feed: str | None = Header(default=None),
 ) -> attribution.AttributionSummary:
     """Resolve holding sectors + backfill held and SPDR-ETF history over the window,
-    then run the attribution. The heavier (network) path behind the GET. ``?account_id=``
-    scopes the holdings. Feed-dependent — gated by the entitlement matrix (see GET
-    .../attribution)."""
+    then run the attribution vs ``?benchmark=`` (SPY or QQQ; metron-ops-I346). The
+    heavier (network) path behind the GET. ``?account_id=`` scopes the holdings.
+    Feed-dependent — gated by the entitlement matrix (see GET .../attribution)."""
     feat = _effective_entitlement("attribution", x_preview_tier, x_preview_feed)
     if not feat["available"]:
         return attribution.AttributionSummary(
-            computable=False, reason=feat["reason"], required_tier=feat["required_tier"]
+            computable=False, benchmark=benchmark, reason=feat["reason"], required_tier=feat["required_tier"]
         )
     return attribution.compute_attribution(
-        session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=True, account_ids=account_ids
+        session, portfolio.tenant_id, portfolio.id, today=date.today(), do_backfill=True,
+        account_ids=account_ids, benchmark=benchmark,
+    )
+
+
+@router.get("/{portfolio_id}/benchmark-gap/{index}", response_model=BenchmarkGapOut)
+def get_benchmark_gap(
+    index: Literal["SPX", "NDX"],
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
+    session: Session = Depends(get_session),
+    x_preview_tier: str | None = Header(default=None),
+    x_preview_feed: str | None = Header(default=None),
+) -> benchmark_gap.BenchmarkGapSummary:
+    """Name-level drivers explaining today's holdings-vs-``index`` return gap
+    (metron-ops-I346) — "you +1.8%, Nasdaq-100 +2.0%, because AppLovin (in the index,
+    not held) beat and jumped 28.8%." ``index`` is "SPX" (S&P 500, proxy SPY) or "NDX"
+    (Nasdaq-100, proxy QQQ). Reconciles against the SAME alpha the Overview tile already
+    shows (``performance.period_tiles``'s TODAY ``BenchmarkReturn``, built the identical
+    way — live index-strip quote when the session is settled, else the price-bars cache);
+    a decomposition that doesn't tie within tolerance REFUSES rather than showing
+    plausible-looking drivers (the correctness gate — see ``benchmark_gap`` module doc).
+
+    Behind the same feed gate as ``GET /indices/intraday`` — owner-only (Stage A, ruling
+    R5) until metron-ops-I24. ``?account_id=`` scoping is not yet supported (whole-portfolio
+    only) and degrades honestly rather than mixing composition legs across accounts."""
+    feat = _effective_entitlement("benchmark_gap", x_preview_tier, x_preview_feed)
+    if not feat["available"]:
+        return benchmark_gap.BenchmarkGapSummary(
+            computable=False, reason=feat["reason"], required_tier=feat["required_tier"]
+        )
+    today_bench: dict[str, tuple[float | None, float | None]] = {}
+    idx_snap = indices.load_indices()
+    if idx_snap.available:
+        today_bench = {
+            q.symbol: (q.last, q.prev_close) for q in idx_snap.indices if q.change_pct is not None
+        }
+    tiles = performance.period_tiles(
+        session,
+        portfolio.tenant_id,
+        portfolio.id,
+        today=date.today(),
+        account_ids=account_ids,
+        with_benchmarks=True,
+        today_bench=today_bench,
+        now=datetime.now(UTC),
+    )
+    tile = next((t for t in tiles.tiles if t.period == "today"), None)
+    return benchmark_gap.compute_benchmark_gap(
+        session, portfolio.tenant_id, portfolio.id, index=index, tile=tile, account_ids=account_ids,
     )
 
 

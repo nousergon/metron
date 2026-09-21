@@ -75,6 +75,11 @@ FEATURES: tuple[Feature, ...] = (
     # Major-index intraday strip (SPY/QQQ/IWM proxies) on the Overview — the index/ETF
     # quotes come from the licensed feed, so it's Pro-only and locked in the no-feed beta.
     Feature("indices", "Market indices (intraday)", ("feed",)),
+    # Name-level benchmark-gap drivers (metron-ops-I346) — explains the holdings-vs-index
+    # alpha already shown by `performance.period_tiles`. Reads the same licensed index
+    # decomposition artifact `indices` does, so it rides the identical feed gate; owner-only
+    # (Stage A, ruling R5) until metron-ops-I24 widens it to every entitled tenant.
+    Feature("benchmark_gap", "Benchmark gap drivers (name-level)", ("feed",)),
     # Market board (metron-ops-I304) — technical attractiveness across Held/Watchlist.
     # Nav-only entry: the router enforces the real gate directly via settings.feed_entitled
     # (api/routers/market_board.py), mirroring Deploy Cash — this key exists so the nav can
@@ -125,7 +130,7 @@ _BETA = frozenset({
 })
 _PRO = _BETA | {
     "auto_sync", "benchmark", "risk", "attribution", "scenarios", "calendar", "etf_lookthrough",
-    "indices", "market_board",
+    "indices", "market_board", "benchmark_gap",
 }
 _AGENTIC = _PRO | {"agentic_research"}
 _PERSONAL = _AGENTIC | {"ai_advisor", "alpha_engine", "research_intel"}
@@ -150,7 +155,7 @@ ADVICE_FEATURES: frozenset[str] = frozenset({"market_board", "research_intel", "
 # Feed-derived L1 features: live for an external-demo session unless the fallback config
 # (``external_demo_feed_features_locked``) re-locks them.
 FEED_DERIVED_FEATURES: frozenset[str] = frozenset(
-    {"benchmark", "risk", "attribution", "scenarios", "calendar", "indices", "etf_lookthrough"}
+    {"benchmark", "risk", "attribution", "scenarios", "calendar", "indices", "etf_lookthrough", "benchmark_gap"}
 )
 PINNED_TIER_KEY = "external_demo"
 

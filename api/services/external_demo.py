@@ -84,6 +84,7 @@ FEED_CARDS: tuple[LockedCard, ...] = (
     LockedCard("calendar", "Calendar", "Upcoming earnings dates for held securities.", FEED_STATUS),
     LockedCard("indices", "Market indices", "Intraday moves of the major index proxies.", FEED_STATUS),
     LockedCard("etf_lookthrough", "ETF look-through", "Underlying exposures of held funds.", FEED_STATUS),
+    LockedCard("benchmark_gap", "Benchmark gap", "Name-level drivers of the return gap vs a benchmark index.", FEED_STATUS),
 )
 if {c.key for c in FEED_CARDS} != ent.FEED_DERIVED_FEATURES:
     raise ValueError("FEED_CARDS must cover exactly entitlements.FEED_DERIVED_FEATURES")

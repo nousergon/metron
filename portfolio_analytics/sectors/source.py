@@ -99,8 +99,8 @@ def canonical_sector(label: str | None) -> str | None:
 SectorSource = Callable[[list[str]], dict[str, str]]
 # A country source maps symbols → each symbol's country of domicile. Default = data spine.
 CountrySource = Callable[[list[str]], dict[str, str]]
-# A benchmark source returns the benchmark's GICS sector weights (canonical → fraction).
-BenchmarkSource = Callable[[], dict[str, float]]
+# A benchmark source returns a benchmark symbol's GICS sector weights (canonical → fraction).
+BenchmarkSource = Callable[[str], dict[str, float]]
 
 
 def fetch_sectors(symbols: Iterable[str], *, source: SectorSource | None = None) -> dict[str, str]:
@@ -136,8 +136,11 @@ def fetch_countries(symbols: Iterable[str], *, source: CountrySource | None = No
     return source(unique)
 
 
-def fetch_benchmark_sector_weights(*, source: BenchmarkSource | None = None) -> dict[str, float]:
-    """The benchmark's GICS sector weights (canonical label → raw fraction).
+def fetch_benchmark_sector_weights(
+    symbol: str = "SPY", *, source: BenchmarkSource | None = None
+) -> dict[str, float]:
+    """``symbol``'s GICS sector weights (canonical label → raw fraction) — "SPY" (S&P
+    500) or "QQQ" (Nasdaq-100, metron-ops-I346).
 
     Returns ``{}`` on any failure — the caller then can't build a benchmark and the
     attribution degrades to not-computable WITH a reason, never to a fabricated split.
@@ -148,7 +151,7 @@ def fetch_benchmark_sector_weights(*, source: BenchmarkSource | None = None) -> 
         from portfolio_analytics.sectors.spine_source import spine_benchmark_sector_weights
         source = spine_benchmark_sector_weights
     out: dict[str, float] = {}
-    for label, weight in source().items():
+    for label, weight in source(symbol).items():
         canonical = canonical_sector(label)
         if canonical:
             out[canonical] = out.get(canonical, 0.0) + weight
