@@ -86,7 +86,8 @@ class BenchmarkGapSummary:
     index: str | None = None
     index_label: str | None = None
     proxy_symbol: str | None = None
-    as_of: date | None = None
+    trading_day: date | None = None  # the artifact's own session field — see
+    # IndexContributionsArtifact.trading_day for why it isn't named `as_of`
     weight_method: str | None = None
     coverage_weight_with_return: float | None = None
     coverage_members: int | None = None
@@ -248,7 +249,7 @@ def compute_benchmark_gap(
         return BenchmarkGapSummary(
             computable=False,
             reason=f"{artifact.proxy_symbol} benchmark return unavailable for today — refresh prices first.",
-            index=index, index_label=label, proxy_symbol=artifact.proxy_symbol, as_of=artifact.as_of,
+            index=index, index_label=label, proxy_symbol=artifact.proxy_symbol, trading_day=artifact.trading_day,
         )
 
     port = _portfolio_prior_close_weights_and_returns(
@@ -258,7 +259,7 @@ def compute_benchmark_gap(
         return BenchmarkGapSummary(
             computable=False,
             reason="Portfolio composition unavailable for today's window.",
-            index=index, index_label=label, proxy_symbol=artifact.proxy_symbol, as_of=artifact.as_of,
+            index=index, index_label=label, proxy_symbol=artifact.proxy_symbol, trading_day=artifact.trading_day,
         )
     port_weights, port_returns = port
     if account_ids is not None:
@@ -269,7 +270,7 @@ def compute_benchmark_gap(
         return BenchmarkGapSummary(
             computable=False,
             reason="Name-level benchmark-gap drivers are whole-portfolio only (account selection not yet supported).",
-            index=index, index_label=label, proxy_symbol=artifact.proxy_symbol, as_of=artifact.as_of,
+            index=index, index_label=label, proxy_symbol=artifact.proxy_symbol, trading_day=artifact.trading_day,
         )
 
     bench_weights = {c.symbol: c.weight_prior_close for c in artifact.constituents}
@@ -285,7 +286,7 @@ def compute_benchmark_gap(
 
     base = BenchmarkGapSummary(
         computable=False,
-        index=index, index_label=label, proxy_symbol=artifact.proxy_symbol, as_of=artifact.as_of,
+        index=index, index_label=label, proxy_symbol=artifact.proxy_symbol, trading_day=artifact.trading_day,
         weight_method=artifact.weight_method,
         coverage_weight_with_return=artifact.coverage_weight_with_return,
         coverage_members=artifact.coverage_members,

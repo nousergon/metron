@@ -48,6 +48,8 @@ def spine_index_contributions(index: str, as_of: date, *, s3=None) -> dict | Non
         return art
     latest_key = f"market_data/index_contributions/{index}/latest.json"
     art = _read_json(client, latest_key)
-    if art is not None and art.get("as_of") == as_of.isoformat():
+    # `trading_day`, not `as_of` — the artifact's own session field (metron-ops-I346);
+    # see IndexContributionsArtifact.trading_day for why it isn't named `as_of`.
+    if art is not None and art.get("trading_day") == as_of.isoformat():
         return art
     return None

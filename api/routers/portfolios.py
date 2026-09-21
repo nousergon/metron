@@ -732,7 +732,7 @@ class BenchmarkGapOut(BaseModel):
     index: str | None = None
     index_label: str | None = None
     proxy_symbol: str | None = None
-    as_of: date | None = None
+    trading_day: date | None = None
     weight_method: str | None = None
     coverage_weight_with_return: float | None = None
     coverage_members: int | None = None

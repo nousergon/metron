@@ -75,7 +75,7 @@ _ARTIFACT_RAW = {
     "schema_version": 1,
     "index": "SPX",
     "proxy_symbol": "SPY",
-    "as_of": _END.isoformat(),
+    "trading_day": _END.isoformat(),
     "prior_close_date": _START.isoformat(),
     "index_return_pct": 1.2,
     "weight_method": "official",
@@ -201,6 +201,23 @@ class TestUnitBoundary:
         by_symbol = {c.symbol: c for c in result.contributions}
         for c in artifact.constituents:
             assert by_symbol[c.symbol].bench_contribution == pytest.approx(c.contribution_fraction)
+
+    def test_missing_trading_day_is_rejected_not_silently_null(self):
+        """A payload carrying only the RETIRED ``as_of`` key, or missing the session
+        field entirely, must not parse as a valid artifact with a null date — a null
+        ``trading_day`` would let the service reconcile a decomposition against the
+        WRONG day's alpha, the one failure mode the reconciliation gate can't catch on
+        its own (it only checks that the numbers tie, never that they're tied to the
+        right day). ``_parse`` reads ``raw["trading_day"]`` (not ``.get``), so either
+        payload raises ``KeyError`` internally and the artifact comes back None."""
+        stale_key_payload = dict(_ARTIFACT_RAW)
+        del stale_key_payload["trading_day"]
+        stale_key_payload["as_of"] = _END.isoformat()  # the retired field name
+        assert fetch_index_contributions("SPX", _END, source=lambda index, as_of: stale_key_payload) is None
+
+        missing_entirely = dict(_ARTIFACT_RAW)
+        del missing_entirely["trading_day"]
+        assert fetch_index_contributions("SPX", _END, source=lambda index, as_of: missing_entirely) is None
 
     def test_missing_artifact_renders_unexplained_never_no_drivers(self, db_session):
         p = _seed_portfolio(db_session)

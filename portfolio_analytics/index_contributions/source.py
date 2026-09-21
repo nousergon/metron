@@ -58,7 +58,16 @@ class IndexContributionsArtifact:
     schema_version: int
     index: str
     proxy_symbol: str
-    as_of: date
+    # Named `trading_day`, deliberately NOT `as_of` (metron-ops-I346, 2026-09-21) — the
+    # fleet's run-timestamp-provenance convention (nousergon-data's
+    # test_run_timestamp_fields_are_declared_provenance_where_a_contract_declares_them)
+    # treats `as_of` as a member of the run-timestamp class and requires it be marked
+    # `x-provenance: true`, which would have been WRONG here: this is the trading
+    # SESSION the decomposition describes, a DATA value — reproducing 2026-09-21 must
+    # yield 2026-09-21, and a shadow run that decomposed the wrong day has to be FLAGGED,
+    # not excluded from parity comparison the way a provenance field would be. Do not
+    # rename this back to `as_of` to match other contracts; the mismatch is intentional.
+    trading_day: date
     prior_close_date: date
     index_return_pct: float  # PERCENTAGE POINTS — see ``index_return_fraction``
     weight_method: str
@@ -85,7 +94,15 @@ IndexContributionsSource = Callable[[str, date], dict | None]
 def _parse(raw: dict) -> IndexContributionsArtifact | None:
     """Parse the raw artifact dict, applying the unit-boundary conversions described in
     the module docstring. Malformed input degrades to None (fail-soft, like every other
-    spine reader) rather than raising into a request handler."""
+    spine reader) rather than raising into a request handler.
+
+    ``raw["trading_day"]`` is REQUIRED — a payload carrying only the old `as_of` key (or
+    missing the field entirely) is malformed, not a hit with a null date: ``raw["trading_day"]``
+    (not ``.get``) raises ``KeyError`` on a missing key, which the ``except`` below turns
+    into an honest ``None`` rather than a silently-null session date. A null trading day
+    would let the caller reconcile a decomposition against the wrong day's alpha — the
+    one failure mode the reconciliation gate can't catch on its own, since it only checks
+    that the numbers tie, not that they're tied to the right day."""
     try:
         coverage = raw.get("coverage") or {}
         constituents = [
@@ -101,7 +118,7 @@ def _parse(raw: dict) -> IndexContributionsArtifact | None:
             schema_version=int(raw["schema_version"]),
             index=str(raw["index"]),
             proxy_symbol=str(raw["proxy_symbol"]),
-            as_of=date.fromisoformat(raw["as_of"]),
+            trading_day=date.fromisoformat(raw["trading_day"]),
             prior_close_date=date.fromisoformat(raw["prior_close_date"]),
             index_return_pct=float(raw["index_return_pct"]),
             weight_method=str(raw.get("weight_method", "unknown")),
@@ -130,10 +147,10 @@ def fetch_index_contributions(
     if not raw:
         return None
     art = _parse(raw)
-    if art is not None and art.as_of != as_of:
+    if art is not None and art.trading_day != as_of:
         # Defensive: a source (e.g. a stale `latest.json` fallback) returning a
         # different day's decomposition than asked for is a mismatch, not a hit — never
         # silently substitute one day's story for another's.
-        logger.warning("index-contributions artifact for %s dated %s, expected %s", index, art.as_of, as_of)
+        logger.warning("index-contributions artifact for %s dated %s, expected %s", index, art.trading_day, as_of)
         return None
     return art

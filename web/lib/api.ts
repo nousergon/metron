@@ -1068,7 +1068,10 @@ export type BenchmarkGap = {
   index: string | null;
   index_label: string | null;
   proxy_symbol: string | null;
-  as_of: string | null;
+  // The trading session the decomposition describes — deliberately `trading_day`, not
+  // `as_of` (metron-ops-I346): it's a DATA value (the day being explained), not a
+  // run-timestamp/provenance field.
+  trading_day: string | null;
   weight_method: string | null;
   coverage_weight_with_return: number | null;
   coverage_members: number | null;
