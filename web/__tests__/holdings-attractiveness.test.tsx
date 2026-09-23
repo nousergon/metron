@@ -98,3 +98,95 @@ describe("HoldingsTable Attractiveness band", () => {
     expect(screen.getByText("72.4").title).toBe("Factor profiles as of 2026-09-10");
   });
 });
+
+// metron-ops-I334 — the factor-profile substrate's stale/retired states render explicitly,
+// and both stay visually distinct from a per-ticker coverage gap ("—").
+describe("HoldingsTable Attractiveness band — stale / retired substrate", () => {
+  const attractivenessCells = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll("[data-factor-state]"));
+
+  it("tags a stale score with a muted 'stale' marker rather than the bare number", () => {
+    render(
+      <HoldingsTable
+        baseCurrency="USD"
+        priced
+        holdings={[
+          h("AAPL", {
+            attractiveness: 72.4,
+            attractiveness_quality: 90,
+            attractiveness_as_of: "2026-09-01",
+            attractiveness_stale: true,
+            attractiveness_retired: false,
+          }),
+        ]}
+        visibleBands={["Attractiveness"]}
+      />,
+    );
+    const score = screen.getByText("72.4");
+    expect(score.nextElementSibling?.textContent).toBe("stale");
+    expect(screen.getAllByText("stale").length).toBeGreaterThanOrEqual(2); // headline + Qual pillar
+    expect(screen.queryByText("retired")).not.toBeInTheDocument();
+  });
+
+  it("renders a fresh score with no stale tag", () => {
+    render(
+      <HoldingsTable
+        baseCurrency="USD"
+        priced
+        holdings={[h("AAPL", { attractiveness: 72.4, attractiveness_stale: false, attractiveness_retired: false })]}
+        visibleBands={["Attractiveness"]}
+      />,
+    );
+    expect(screen.getByText("72.4")).toBeInTheDocument();
+    expect(screen.queryByText("stale")).not.toBeInTheDocument();
+  });
+
+  it("reads 'retired' in every Attractiveness column once the substrate is retired — never blank or —", () => {
+    const { container } = render(
+      <HoldingsTable
+        baseCurrency="USD"
+        priced
+        holdings={[h("AAPL", { attractiveness: null, attractiveness_stale: false, attractiveness_retired: true })]}
+        visibleBands={["Attractiveness"]}
+      />,
+    );
+    const retired = screen.getAllByText("retired");
+    expect(retired).toHaveLength(7); // Factor score + six pillars
+    expect(retired[0].title).toMatch(/retired/i);
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
+    expect(attractivenessCells(container).every((el) => el.getAttribute("data-factor-state") === "retired")).toBe(true);
+  });
+
+  it("keeps a coverage gap as — with neither a stale nor a retired marker", () => {
+    const { container } = render(
+      <HoldingsTable
+        baseCurrency="USD"
+        priced
+        holdings={[h("ZZZ", { attractiveness: null, attractiveness_stale: false, attractiveness_retired: false })]}
+        visibleBands={["Attractiveness"]}
+      />,
+    );
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    expect(attractivenessCells(container)).toHaveLength(0);
+  });
+
+  it("leaves the Technical attractiveness column untouched when the factor substrate is retired", () => {
+    render(
+      <HoldingsTable
+        baseCurrency="USD"
+        priced
+        holdings={[
+          h("AAPL", {
+            attractiveness: null,
+            attractiveness_retired: true,
+            tech_rating_score: 0.8,
+            tech_rating_label: "Strong Buy",
+          }),
+        ]}
+        visibleBands={["Technicals"]}
+      />,
+    );
+    expect(screen.getByText("Strong Buy")).toBeInTheDocument();
+    expect(screen.queryByText("retired")).not.toBeInTheDocument();
+  });
+});

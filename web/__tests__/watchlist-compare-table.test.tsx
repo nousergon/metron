@@ -80,6 +80,8 @@ const EMPTY_METRICS = {
   attractiveness_stewardship: null,
   attractiveness_defensiveness: null,
   attractiveness_as_of: null,
+  attractiveness_stale: false,
+  attractiveness_retired: false,
 } satisfies Omit<WatchlistEntry, "symbol" | "name" | "sector" | "next_earnings_date" | "held" | "note">;
 
 const entry = (symbol: string, over: Partial<WatchlistEntry> = {}): WatchlistEntry => ({
@@ -191,5 +193,36 @@ describe("WatchlistCompareTable", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() => expect(screen.getByText("The demo portfolio is read-only.")).toBeInTheDocument());
     expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+});
+
+// metron-ops-I334 — the watchlist carries the same factor-substrate state as Holdings, so a
+// stale or retired score reads explicitly instead of as a coverage gap.
+describe("WatchlistCompareTable — stale / retired factor score", () => {
+  const renderAttractiveness = (entries: WatchlistEntry[]) =>
+    render(
+      <ColumnBandsProvider initialBands={["Attractiveness"]}>
+        <WatchlistCompareTable portfolioId="p" baseCurrency="USD" entries={entries} />
+      </ColumnBandsProvider>,
+    );
+
+  it("tags a stale score 'stale' beside the number", () => {
+    renderAttractiveness([entry("NVDA", { attractiveness: 72.5, attractiveness_stale: true })]);
+    expect(screen.getByText("72.5").nextElementSibling?.textContent).toBe("stale");
+    expect(screen.queryByText("retired")).not.toBeInTheDocument();
+  });
+
+  it("reads 'retired' once the substrate is retired, distinct from a coverage-gap row", () => {
+    const { container } = renderAttractiveness([
+      entry("NVDA", { attractiveness_retired: true }),
+    ]);
+    expect(screen.getAllByText("retired").length).toBe(7);
+    expect(container.querySelectorAll('[data-factor-state="stale"]')).toHaveLength(0);
+  });
+
+  it("keeps an uncovered ticker as — (no stale/retired marker)", () => {
+    const { container } = renderAttractiveness([entry("ZZZ")]);
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll("[data-factor-state]")).toHaveLength(0);
   });
 });

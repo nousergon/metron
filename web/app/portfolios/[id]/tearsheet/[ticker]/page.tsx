@@ -3,22 +3,11 @@ import { getTearsheet, MetronApiError } from "@/lib/api";
 import { accountingPercent, isoDate, money, moneyWhole, percent, quantity, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { requireApiAuth } from "@/lib/session";
+import { TearsheetFactorScore } from "@/components/tearsheet-factor-score";
 
 export const dynamic = "force-dynamic";
 
 const PERIODS = ["1Y", "3Y", "5Y", "10Y"];
-
-// Attractiveness component keys → human labels for the inspectable gauge breakdown
-// (metron-ops#106). The count is the catalog size — the gauge note reads "N of M inputs".
-const ATTRACTIVENESS_COMPONENT_LABELS: Record<string, string> = {
-  quality: "Quality",
-  value: "Value",
-  momentum: "Momentum",
-  growth: "Growth",
-  stewardship: "Stewardship",
-  defensiveness: "Defensiveness",
-};
-const COMPONENT_LABELS_COUNT = Object.keys(ATTRACTIVENESS_COMPONENT_LABELS).length;
 
 function num(v: number | null, fmt: (n: number) => string): string {
   return v != null ? fmt(v) : "—";
@@ -247,44 +236,9 @@ export default async function TearsheetPage(props: { params: Promise<{ id: strin
       )}
 
       {/* 7 — Composite attractiveness gauge (metron-ops#106, Phase 2). A transparent 0–100
-          blend; the breakdown surfaces each component's weight + sub-score so it's never a
-          black box. Feed-gated; shown only when at least one component is present. */}
-      {sheet.attractiveness.available && sheet.attractiveness.score != null ? (
-        (() => {
-          const a = sheet.attractiveness;
-          const score = a.score ?? 0;
-          const scoreTone = score >= 60 ? "text-positive" : score <= 40 ? "text-negative" : "";
-          const barTone = score >= 60 ? "bg-positive" : score <= 40 ? "bg-negative" : "bg-muted";
-          return (
-            <Section
-              title="Factor score"
-              note={`composite · ${a.coverage ?? 0} of ${COMPONENT_LABELS_COUNT} inputs${a.as_of ? ` · as of ${isoDate(a.as_of)}` : ""}`}
-            >
-              <div className="flex items-center gap-4">
-                <div className={`text-3xl font-semibold tabular-nums ${scoreTone}`}>
-                  {score.toFixed(1)}
-                  <span className="ml-1 text-sm text-muted">/ 100</span>
-                </div>
-                <div className="h-2 flex-1 overflow-hidden rounded-full bg-line">
-                  <div className={`h-full ${barTone}`} style={{ width: `${Math.max(0, Math.min(100, score))}%` }} />
-                </div>
-              </div>
-              {/* Inspectable weighting — the deliberate "not a black box" deliverable. */}
-              <div className="mt-4">
-                <Table head={["Pillar", "Weight", "Score"]}>
-                  {a.components.map((c) => (
-                    <tr key={c.key} className="border-b border-line last:border-0">
-                      <td className="px-4 py-2">{ATTRACTIVENESS_COMPONENT_LABELS[c.key] ?? c.key}</td>
-                      <td className="px-4 py-2 text-right tabular-nums">{percent(c.weight)}</td>
-                      <td className="px-4 py-2 text-right tabular-nums">{c.score.toFixed(0)}</td>
-                    </tr>
-                  ))}
-                </Table>
-              </div>
-            </Section>
-          );
-        })()
-      ) : null}
+          blend with an inspectable pillar breakdown; renders an explicit stale tag / retired
+          state (metron-ops-I334), and nothing on a coverage gap or off-feed. */}
+      <TearsheetFactorScore attractiveness={sheet.attractiveness} />
 
       {/* 8 — Consensus research + news sentiment (metron-ops#105, free sources, feed-gated). */}
       {sheet.consensus_available ? (

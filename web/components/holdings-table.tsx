@@ -38,6 +38,7 @@ import {
 } from "@/lib/format";
 import { setSecurityClassificationAction, setSecurityLabelAction } from "@/app/portfolios/[id]/actions";
 import { useLiveValuation } from "@/components/live-valuation-context";
+import { FactorRetiredLabel, FactorStaleTag, factorScoreState, type FactorScoreState } from "@/components/factor-score-state";
 
 // Canonical option lists for the inline classification override (matches the data-spine
 // vocabulary: yfinance Title-Case sectors + their SPDR ETFs, plus the "Broad Market / Index"
@@ -619,6 +620,10 @@ type MetricColumn = {
   /** Per-row hover title override (P-28: a daily as-of stamp per stock) — takes precedence
    *  over the static `title` above when it returns a string. */
   rowTitle?: (h: Holding) => string | undefined;
+  /** Substrate state (metron-ops-I334): "retired" replaces the cell with an explicit label;
+   *  "stale" keeps the value but tags it, so it never reads as a current number. Neither is
+   *  ever set for a per-ticker coverage gap, which keeps rendering "—". */
+  state?: (h: Holding) => FactorScoreState;
 };
 
 // Consensus-rating bucket → short display label (the artifact carries the camelCase key).
@@ -642,6 +647,11 @@ const attractivenessTone = (v: number): string =>
 const pillarTone = (v: number): string =>
   v >= 60 ? "text-positive" : v <= 40 ? "text-negative" : "";
 
+// Every Attractiveness-band column reads the same factor-profile substrate, so they share
+// its stale/retired state (metron-ops-I334).
+const factorState = (h: Holding): FactorScoreState =>
+  factorScoreState({ stale: h.attractiveness_stale, retired: h.attractiveness_retired });
+
 const METRIC_COLUMNS: MetricColumn[] = [
   // ── Attractiveness — SOTA 6-pillar cross-sectional score from NE factor profiles. ──
   // Labeled "Factor score" (not "Attractiveness" — metron-ops P-28, data-collection-plan
@@ -651,6 +661,7 @@ const METRIC_COLUMNS: MetricColumn[] = [
     key: "attractiveness",
     label: "Factor score",
     group: "Attractiveness",
+    state: factorState,
     value: (h) => h.attractiveness,
     render: (v) => decimal(v, 1),
     tone: attractivenessTone,
@@ -665,6 +676,7 @@ const METRIC_COLUMNS: MetricColumn[] = [
     key: "attractiveness_quality",
     label: "Qual",
     group: "Attractiveness",
+    state: factorState,
     value: (h) => h.attractiveness_quality,
     render: (v) => decimal(v, 0),
     tone: pillarTone,
@@ -674,6 +686,7 @@ const METRIC_COLUMNS: MetricColumn[] = [
     key: "attractiveness_value",
     label: "Val",
     group: "Attractiveness",
+    state: factorState,
     value: (h) => h.attractiveness_value,
     render: (v) => decimal(v, 0),
     tone: pillarTone,
@@ -683,6 +696,7 @@ const METRIC_COLUMNS: MetricColumn[] = [
     key: "attractiveness_momentum",
     label: "Mom",
     group: "Attractiveness",
+    state: factorState,
     value: (h) => h.attractiveness_momentum,
     render: (v) => decimal(v, 0),
     tone: pillarTone,
@@ -692,6 +706,7 @@ const METRIC_COLUMNS: MetricColumn[] = [
     key: "attractiveness_growth",
     label: "Gro",
     group: "Attractiveness",
+    state: factorState,
     value: (h) => h.attractiveness_growth,
     render: (v) => decimal(v, 0),
     tone: pillarTone,
@@ -701,6 +716,7 @@ const METRIC_COLUMNS: MetricColumn[] = [
     key: "attractiveness_stewardship",
     label: "Stew",
     group: "Attractiveness",
+    state: factorState,
     value: (h) => h.attractiveness_stewardship,
     render: (v) => decimal(v, 0),
     tone: pillarTone,
@@ -710,6 +726,7 @@ const METRIC_COLUMNS: MetricColumn[] = [
     key: "attractiveness_defensiveness",
     label: "Def",
     group: "Attractiveness",
+    state: factorState,
     value: (h) => h.attractiveness_defensiveness,
     render: (v) => decimal(v, 0),
     tone: pillarTone,
@@ -826,10 +843,15 @@ function metricToColumnDef(c: MetricColumn): ColumnDef {
       // columns render from the non-null value.
       const content = c.text ? c.text(h) : v == null ? null : c.render(v, ctx.baseCurrency);
       const rowTitle = c.rowTitle?.(h);
+      const state = c.state?.(h) ?? null;
+      if (state === "retired") return <FactorRetiredLabel />;
       return (
-        <span className={content == null ? "text-muted" : tone} title={rowTitle}>
-          {content == null ? "—" : content}
-        </span>
+        <>
+          <span className={content == null ? "text-muted" : tone} title={rowTitle}>
+            {content == null ? "—" : content}
+          </span>
+          {state === "stale" && content != null ? <FactorStaleTag /> : null}
+        </>
       );
     },
   };

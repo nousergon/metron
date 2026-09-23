@@ -87,6 +87,16 @@ class WatchlistEntry:
     news_articles: int | None = None
     attractiveness: float | None = None
     attractiveness_coverage: int | None = None
+    attractiveness_quality: float | None = None
+    attractiveness_value: float | None = None
+    attractiveness_momentum: float | None = None
+    attractiveness_growth: float | None = None
+    attractiveness_stewardship: float | None = None
+    attractiveness_defensiveness: float | None = None
+    attractiveness_as_of: date | None = None
+    # metron-ops-I334 — see analytics.Holding.attractiveness_stale / _retired.
+    attractiveness_stale: bool = False
+    attractiveness_retired: bool = False
 
 
 def _norm(symbol: str) -> str:
@@ -200,6 +210,15 @@ def list_watchlist(
                 news_articles=h.news_articles,
                 attractiveness=h.attractiveness,
                 attractiveness_coverage=h.attractiveness_coverage,
+                attractiveness_quality=h.attractiveness_quality,
+                attractiveness_value=h.attractiveness_value,
+                attractiveness_momentum=h.attractiveness_momentum,
+                attractiveness_growth=h.attractiveness_growth,
+                attractiveness_stewardship=h.attractiveness_stewardship,
+                attractiveness_defensiveness=h.attractiveness_defensiveness,
+                attractiveness_as_of=h.attractiveness_as_of,
+                attractiveness_stale=h.attractiveness_stale,
+                attractiveness_retired=h.attractiveness_retired,
             )
         )
     return out
