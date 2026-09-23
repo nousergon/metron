@@ -1,8 +1,8 @@
 # Metron web
 
 Next.js (App Router) frontend over the FastAPI backend in `../api`. Server Components
-fetch the price-free read models and render them with Tailwind. Read-only; no AI, no
-trackers.
+fetch the price-free read models and render them with Tailwind. Read-only; no ads or
+trackers, and no advice.
 
 ## Pages (PH2)
 

@@ -112,7 +112,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Metron",
     version="0.0.1",
-    summary="Portfolio analytics, measured — no AI, no ads, no advice, read-only (public tier).",
+    summary="Portfolio analytics, measured — no ads, no advice, read-only. We compute; we never tell you what to trade.",
     lifespan=lifespan,
 )
 

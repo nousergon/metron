@@ -5,7 +5,8 @@ feature, the Alpha Engine signal integration) live in the private ``metron-ops``
 companion package and register through the ``metron.plugins`` entry-point group.
 When that package is not installed — the default for any public / self-host
 deploy — discovery returns nothing and Metron stays a pure, descriptive,
-no-AI / no-advice product. The open-core boundary is structural: no prompt, no
+no-advice product with no intelligence surface (``GET /meta`` reports ``posture.ai``
+false). The open-core boundary is structural: no prompt, no
 signal logic, and no premium flag default ever lives in this file.
 
 A plugin contributes (a) a FastAPI router (mounted under ``/ext/...``) and

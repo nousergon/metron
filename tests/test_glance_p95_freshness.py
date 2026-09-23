@@ -93,3 +93,32 @@ def test_report_dry_run_detects_for_real_but_suppresses_the_send(db_session, mon
     finding = freshness.report(db_session, now=now, dry_run=True)
     assert finding is not None  # detection still ran for real
     assert calls == [True]  # but the send call was told to suppress
+
+
+def test_unhealthy_when_trading_days_run_but_nothing_was_ever_measured(db_session):
+    # metron-ops-I344: a not-measured run now exits 0, so this monitor is where a run of
+    # silent trading days is graded. Nothing measured + two quiet trading days = finding.
+    gl.record_run(db_session, target_day=date(2026, 9, 21), status="not-measured", n=0)  # Mon
+    gl.record_run(db_session, target_day=date(2026, 9, 22), status="not-measured", n=0)  # Tue
+    finding = freshness.check(db_session, now=datetime(2026, 9, 23, 12, 0, tzinfo=_NY))
+    assert finding is not None
+    assert any("no trading day has ever been measured" in r for r in finding["reasons"])
+
+
+def test_quiet_weekend_never_pages_when_nothing_was_ever_measured(db_session):
+    # Saturday and Sunday are not trading days; one quiet trading day is tolerated.
+    gl.record_run(db_session, target_day=date(2026, 9, 18), status="not-measured", n=0)  # Fri
+    gl.record_run(db_session, target_day=date(2026, 9, 19), status="not-measured", n=0)  # Sat
+    gl.record_run(db_session, target_day=date(2026, 9, 20), status="not-measured", n=0)  # Sun
+    assert freshness.check(db_session, now=datetime(2026, 9, 21, 12, 0, tzinfo=_NY)) is None
+
+
+def test_quiet_trading_days_do_not_add_a_finding_once_a_day_was_measured(db_session):
+    # Once a day has been measured, the stale check owns cadence; this condition is only
+    # for the never-measured case, so it must not double-report.
+    day = date(2026, 9, 22)
+    gl.record(db_session, gl.compute([SUCCESS_LINE], trading_day=day))
+    gl.record_run(db_session, target_day=date(2026, 9, 18), status="not-measured", n=0)
+    gl.record_run(db_session, target_day=date(2026, 9, 21), status="not-measured", n=0)
+    gl.record_run(db_session, target_day=day, status="measured", n=1, p95_ms=812.3)
+    assert freshness.check(db_session, now=datetime(2026, 9, 23, 12, 0, tzinfo=_NY)) is None

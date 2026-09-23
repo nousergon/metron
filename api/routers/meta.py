@@ -31,7 +31,11 @@ def _engine_version() -> str:
 def meta() -> dict:
     """Report the engine version and the descriptive analytics this product offers.
 
-    The trust posture is part of the contract: no AI, no ads/trackers, no advice.
+    The trust posture is part of the contract: no ads/trackers, read-only, and no
+    advice: we compute; we never tell you what to trade. ``posture.ai`` reports whether
+    an intelligence surface is active for this caller. It is false on a stock public or
+    self-host deploy, where no plugin is installed, and true where an out-of-tree plugin
+    (the hosted intelligence overlay) is installed and enabled (metron-ops-I339).
     """
     return {
         "engine": "portfolio-analytics",
@@ -45,7 +49,7 @@ def meta() -> dict:
             "tax",              # realized/unrealized lots, ST/LT, loss-harvest info
         ],
         "posture": {
-            "ai": False,
+            "ai": bool(_visible_plugins()),
             "ads_or_trackers": False,
             "advice": False,
             "read_only": True,
@@ -65,16 +69,20 @@ def plugins() -> list[dict]:
 
     The web reads this to render premium nav links + gate premium pages — a surface
     appears only when its plugin is installed AND its ``enabled()`` gate is on. On a
-    stock public/self-host deploy (no metron-ops) this is always ``[]``, so the
-    no-AI / no-advice posture above holds without the frontend knowing about plugins.
+    stock public/self-host deploy (no metron-ops) this is always ``[]``.
     """
+    return [
+        {"id": p.nav.id, "label": p.nav.label, "href": p.nav.href, "tier": p.nav.tier}
+        for p in _visible_plugins()
+    ]
+
+
+def _visible_plugins() -> list:
+    """The active plugins this caller may see: none for an external-demo session."""
     if entitlements.current_pin() is not None:
         # An external-demo session (metron-ops-I310) never sees premium plugin surfaces.
         return []
-    return [
-        {"id": p.nav.id, "label": p.nav.label, "href": p.nav.href, "tier": p.nav.tier}
-        for p in active_plugins()
-    ]
+    return active_plugins()
 
 
 @router.get("/entitlements")

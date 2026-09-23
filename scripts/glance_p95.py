@@ -26,7 +26,15 @@ Prints one JSON object: ``{"trading_day", "p95_ms", "n", "status"}``. ``status``
 ``"not-measured"`` (``p95_ms`` null) when zero timing lines matched — never rendered as
 a passing zero. ``--record`` persists a measured result into ``GlanceLatencyDaily``
 (refuses to persist a not-measured day: recording nothing IS the not-measured state).
-Exit code 1 when ``--record`` was requested but the day was not-measured.
+
+Exit codes (metron-ops-I344): 0 whenever the run itself worked — including a
+not-measured day, which is a successful run with a null result (a weekend, a holiday, a
+day nobody opened the app), recorded as ``status="not-measured"`` in ``GlanceP95RunLog``.
+Non-zero only when the check itself broke: unreadable input, a failed computation, or a
+failed write — those raise. A quiet day used to exit 1, which left the scheduled unit
+``failed`` every weekend by design and taught every reader of the box's failed set to
+discount it. Grading a run of not-measured days that SHOULD have had traffic is the
+dead-man monitor's job (``api.services.glance_p95_freshness``), not this exit code's.
 
 ``--record`` ALSO appends one row to ``GlanceP95RunLog`` (metron-ops-I341) for every
 outcome — measured, not-measured, or a crash — before this process exits. That is the
@@ -109,7 +117,8 @@ def main(argv: list[str] | None = None) -> int:
             glance_latency.record_run(session, target_day=trading_day, status="not-measured", n=result.n)
             print(json.dumps(payload))
             print(f"not-measured: 0 matching lines for {trading_day} — refusing to record.", file=sys.stderr)
-            return 1
+            # A successful run with a null result, not a broken one (metron-ops-I344).
+            return 0
 
         try:
             glance_latency.record(session, result)

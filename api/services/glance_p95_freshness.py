@@ -29,13 +29,25 @@ logger = logging.getLogger(__name__)
 # a reboot without paging on ordinary timing.
 _NO_RUN_GRACE_DAYS = 2
 
+# How many distinct TRADING days the job may report ``not-measured`` before "no day has
+# ever been measured" is a finding rather than a fresh deployment (metron-ops-I344). Same
+# tolerance as ``glance_latency._FRESHNESS_GRACE_TRADING_DAYS``: one quiet trading day is
+# ordinary, two in a row with nothing ever measured is not. Weekends and holidays never
+# count, so a quiet Saturday cannot page.
+_NEVER_MEASURED_TRADING_DAYS = 2
+
 
 def check(session, *, now: datetime | None = None) -> dict | None:
     """Return a finding dict when the glance p95 surface is unhealthy, else ``None``.
 
-    Two independent conditions, either of which is a defect on its own:
+    Three independent conditions, any of which is a defect on its own:
       - ``latest()["status"] == "stale"`` — a day WAS measured once, but the newest
         measured day has fallen behind the daily cadence (glance_latency._is_stale).
+      - no day has EVER been measured, yet the job has run and reported ``not-measured``
+        for ``_NEVER_MEASURED_TRADING_DAYS`` or more trading days (metron-ops-I344). Since
+        a not-measured run exits 0, this check — not a failed systemd unit — is where a
+        run of silent trading days gets graded; without it, a deployment whose glance
+        log line never matched would read healthy forever.
       - the last GlanceP95RunLog entry (any outcome) is older than
         ``_NO_RUN_GRACE_DAYS`` — the job hasn't even ATTEMPTED a run recently, which
         ``latest()``'s "not-measured" status alone cannot distinguish from "never
@@ -51,6 +63,15 @@ def check(session, *, now: datetime | None = None) -> dict | None:
             f"the last measured trading day ({latest['trading_day']}) has fallen behind "
             "the daily cadence -- the p95 figure /meta/status serves is stale, not current"
         )
+
+    if latest["status"] == "not-measured":
+        quiet = _not_measured_trading_days(session)
+        if len(quiet) >= _NEVER_MEASURED_TRADING_DAYS:
+            reasons.append(
+                f"no trading day has ever been measured, and the job has reported "
+                f"not-measured for {len(quiet)} trading day(s) (latest {quiet[-1]}) -- "
+                "either nobody opened the glance screen or its timing line no longer matches"
+            )
 
     last_run = latest["last_run"]
     ref = (now or datetime.utcnow())
@@ -73,6 +94,22 @@ def check(session, *, now: datetime | None = None) -> dict | None:
     if not reasons:
         return None
     return {"reasons": reasons, "latest": latest, "last_run": last_run}
+
+
+def _not_measured_trading_days(session) -> list[str]:
+    """Distinct trading days (ISO, ascending) the run log recorded as ``not-measured``.
+    Non-trading target days are dropped: an empty Saturday is not evidence of anything."""
+    from krepis.trading_calendar import is_trading_day
+    from sqlalchemy import select
+
+    from api.db import models
+
+    days = session.scalars(
+        select(models.GlanceP95RunLog.target_day)
+        .where(models.GlanceP95RunLog.status == "not-measured")
+        .distinct()
+    ).all()
+    return sorted(d.isoformat() for d in days if is_trading_day(d))
 
 
 def report(session, *, now: datetime | None = None, dry_run: bool = False) -> dict | None:
