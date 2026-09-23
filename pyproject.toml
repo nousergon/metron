@@ -1,7 +1,7 @@
 # Metron — public, multi-tenant portfolio-analytics SaaS. Nous Ergon product at
 # metron.nousergon.ai. "Portfolio analytics, measured." AGPL-3.0 (self-hostable;
-# the hosted service + proprietary data feeds are the commercial moat). No AI, no
-# ads/trackers, no advice, read-only.
+# the hosted service + proprietary data feeds are the commercial moat). No
+# ads/trackers, no advice, read-only: we compute; we never tell you what to trade.
 #
 # One codebase, two top-level packages:
 #   portfolio_analytics/  — the pure engine (domain math + broker ingestion), built
@@ -16,7 +16,7 @@ build-backend = "hatchling.build"
 [project]
 name = "metron"
 version = "0.0.1"
-description = "Metron — multi-tenant portfolio-analytics SaaS. Engine + FastAPI backend. No AI, no ads, no advice, read-only."
+description = "Metron — multi-tenant portfolio-analytics SaaS. Engine + FastAPI backend. No ads, no advice, read-only."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }

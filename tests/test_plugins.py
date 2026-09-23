@@ -87,3 +87,19 @@ def test_meta_plugins_endpoint_advertises_active_nav(client, monkeypatch):
     resp = client.get("/meta/plugins")
     assert resp.status_code == 200
     assert resp.json() == [{"id": "advisor", "label": "Advisor", "href": "advisor", "tier": "personal"}]
+
+
+def test_meta_posture_ai_is_false_with_no_plugins(client, monkeypatch):
+    # metron-ops-I339: the public tier has no intelligence surface, and says so.
+    _patch_entry_points(monkeypatch, [])
+    assert client.get("/meta").json()["posture"]["ai"] is False
+
+
+def test_meta_posture_ai_is_true_when_an_intelligence_plugin_is_active(client, monkeypatch):
+    # metron-ops-I339: "no AI" stopped being true once the hosted overlay shipped. The
+    # posture now reports what this deployment actually serves instead of a constant.
+    advisor = _make("advisor", on=True)
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("advisor", lambda: advisor)])
+    body = client.get("/meta").json()
+    assert body["posture"]["ai"] is True
+    assert body["posture"]["advice"] is False

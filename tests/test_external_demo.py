@@ -260,6 +260,8 @@ def test_portfolio_list_is_the_household_only(raw_client, demo_headers):
 
 def test_plugins_are_hidden(raw_client, demo_headers):
     assert raw_client.get("/meta/plugins", headers=demo_headers).json() == []
+    # metron-ops-I339: posture.ai follows what the caller can see, so it is false here.
+    assert raw_client.get("/meta", headers=demo_headers).json()["posture"]["ai"] is False
 
 
 @pytest.mark.parametrize(

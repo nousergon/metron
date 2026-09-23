@@ -10,7 +10,7 @@ import { SwrProvider } from "@/components/swr-provider";
 export const metadata: Metadata = {
   title: "Metron — portfolio analytics, measured",
   description:
-    "Multi-tenant portfolio analytics. No AI, no ads, no advice, read-only. True returns, attribution, income, tax clarity.",
+    "Multi-tenant portfolio analytics. No ads, no advice, read-only. True returns, attribution, income, tax clarity.",
   icons: {
     icon: [
       { url: "/favicon-32.png", sizes: "32x32", type: "image/png" },

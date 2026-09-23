@@ -212,10 +212,33 @@ def cli_db_env(tmp_path):
     return env
 
 
-def test_cli_empty_input_is_not_measured_and_record_exits_nonzero(cli_db_env):
+def test_cli_empty_input_is_not_measured_and_record_exits_zero(cli_db_env):
+    # metron-ops-I344: a zero-sample day is a successful run with a null result. It
+    # still refuses to persist a figure, and says so, but it must not fail the unit.
     proc = _run_cli("--date", "2026-09-16", "--record", input_text=UNRELATED_LINE, env=cli_db_env)
-    assert proc.returncode == 1, proc.stderr
+    assert proc.returncode == 0, proc.stderr
     assert '"status": "not-measured"' in proc.stdout
+    assert '"p95_ms": null' in proc.stdout
+    assert '"n": 0' in proc.stdout
+    assert "refusing to record" in proc.stderr
+
+
+def test_cli_record_exits_nonzero_when_the_input_is_unreadable(cli_db_env, tmp_path):
+    # The genuinely broken case keeps a non-zero exit AND an "error" run-log row.
+    missing = tmp_path / "does-not-exist.log"
+    proc = _run_cli("--date", "2026-09-16", "--record", "--log-file", str(missing), env=cli_db_env)
+    assert proc.returncode != 0
+
+    engine = create_engine(cli_db_env["DATABASE_URL"])
+    session = sessionmaker(bind=engine)()
+    try:
+        from api.services import glance_latency as gl2
+
+        run = gl2.last_run(session)
+        assert run is not None
+        assert run["status"] == "error"
+    finally:
+        session.close()
 
 
 def test_cli_record_appends_a_run_log_row_on_a_measured_day(cli_db_env):
@@ -239,7 +262,7 @@ def test_cli_record_appends_a_run_log_row_on_a_measured_day(cli_db_env):
 
 def test_cli_record_appends_a_not_measured_run_log_row(cli_db_env):
     proc = _run_cli("--date", "2026-09-16", "--record", input_text=UNRELATED_LINE, env=cli_db_env)
-    assert proc.returncode == 1, proc.stderr
+    assert proc.returncode == 0, proc.stderr
 
     engine = create_engine(cli_db_env["DATABASE_URL"])
     session = sessionmaker(bind=engine)()
