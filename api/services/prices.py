@@ -210,37 +210,74 @@ def backfill_prices(
     history = fetch_close_history(list(fetch_targets), start, end, source=source)
     if not history:
         return 0
-    # Preload existing (security, day) bars so the backfill is one query + plain
-    # inserts/updates, not a select-per-day. Preload ALL dates for the securities (not
-    # just [start, end]): a source may return points outside the requested window.
-    sec_ids = [sec.id for sec in fetch_targets.values()]
-    existing_rows = session.execute(
-        select(models.PriceBar).where(models.PriceBar.security_id.in_(sec_ids))
-    ).scalars().all()
-    by_key: dict[tuple[uuid.UUID, date], models.PriceBar] = {
-        (row.security_id, row.bar_date): row for row in existing_rows
-    }
-    written = 0
+    # One row per (security, day), last point wins — what the old per-row loop did when
+    # a source repeated a day. Postgres refuses to touch the same row twice in one
+    # INSERT ... ON CONFLICT, so the dedupe is required, not cosmetic.
+    rows: dict[tuple[uuid.UUID, date], dict] = {}
     for yf_sym, series in history.items():
         sec = fetch_targets.get(yf_sym)
         if sec is None:
             continue
         for point in series:
-            key = (sec.id, point.bar_date)
-            row = by_key.get(key)
-            if row is None:
-                row = models.PriceBar(
-                    security_id=sec.id, bar_date=point.bar_date, close=point.close, currency=sec.currency
-                )
-                session.add(row)
-                by_key[key] = row
-                written += 1
-            elif float(row.close) != float(point.close):
-                row.close = point.close
-                row.currency = sec.currency
-                written += 1
+            rows[(sec.id, point.bar_date)] = {
+                "id": uuid.uuid4(),
+                "security_id": sec.id,
+                "bar_date": point.bar_date,
+                "close": point.close,
+                "currency": sec.currency,
+            }
+    if not rows:
+        return 0
+    # Upsert in the database instead of preloading every existing bar to diff in Python
+    # (metron-ops-I343). The preload read ALL dates for every symbol, as full ORM rows,
+    # on every call: three calls per portfolio per daily-refresh (reconstruct, risk,
+    # attribution) and three refreshes a night. That is a read of most of price_bars,
+    # repeatedly, to decide what to write; now nothing is read back. Behaviour is the
+    # same: a missing bar is inserted, a bar whose close differs is overwritten (with
+    # its currency restamped), an identical bar is left alone and not counted.
+    written = 0
+    for chunk in _chunks(list(rows.values()), _upsert_chunk_size(session)):
+        written += _upsert_price_bars(session, chunk)
     session.commit()
+    # The upsert bypasses the ORM, and sessions here run with expire_on_commit=False, so
+    # a PriceBar this session already loaded (refresh_latest_prices loads today's) would
+    # keep serving its pre-upsert close. Expire just those, so the next access reloads.
+    for obj in list(session.identity_map.values()):
+        if isinstance(obj, models.PriceBar):
+            session.expire(obj)
     return written
+
+
+def _upsert_chunk_size(session: Session) -> int:
+    # Five bind parameters per row. SQLite's default variable cap is 32,766 (999 before
+    # 3.32); Postgres allows 65,535 per statement. Both sizes stay well under either.
+    return 150 if session.get_bind().dialect.name == "sqlite" else 2000
+
+
+def _chunks(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _upsert_price_bars(session: Session, chunk: list[dict]) -> int:
+    """INSERT the chunk, and on a (security_id, bar_date) collision overwrite close and
+    currency only where the close actually differs. Returns rows inserted or changed:
+    a conflicting row whose close is unchanged fails the WHERE and is not counted."""
+    table = models.PriceBar.__table__
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    elif dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+    else:  # pragma: no cover - Metron runs on Postgres (prod) and SQLite (dev/test) only
+        raise NotImplementedError(f"backfill_prices has no upsert for dialect {dialect!r}")
+    stmt = dialect_insert(table).values(chunk)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[table.c.security_id, table.c.bar_date],
+        set_={"close": stmt.excluded.close, "currency": stmt.excluded.currency},
+        where=table.c.close.is_distinct_from(stmt.excluded.close),
+    )
+    return session.execute(stmt).rowcount
 
 
 def close_history_by_symbol(

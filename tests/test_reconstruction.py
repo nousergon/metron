@@ -111,6 +111,51 @@ class TestBackfill:
         assert hist["AAPL"][0].close == pytest.approx(126.36)
         assert hist["AAPL"][-1].close == pytest.approx(193.98)
 
+    def test_backfill_repeated_day_last_point_wins(self, client, db_session, tenant):
+        """metron-ops-I343: the upsert dedupes a day a source repeats (Postgres refuses to
+        touch one row twice in a single ON CONFLICT statement); the last point wins, as
+        it did under the old per-row loop."""
+        _seed(client, tenant)
+
+        def dup_src(symbols, start, end, *, source=None):
+            return {"AAPL": [ClosePoint(date(2024, 1, 2), 100.0), ClosePoint(date(2024, 1, 2), 101.5)]}
+
+        n = prices.backfill_prices(db_session, ["AAPL"], date(2024, 1, 1), date(2024, 1, 5), source=dup_src)
+        assert n == 1
+        assert [p.close for p in prices.close_history_by_symbol(db_session, ["AAPL"])["AAPL"]] == [101.5]
+
+    def test_backfill_leaves_bars_outside_the_source_untouched(self, client, db_session, tenant):
+        """metron-ops-I343: the old preload read every existing bar for the symbol; the
+        upsert reads none. A cached bar the source does not return must survive as is."""
+        _seed(client, tenant)
+        db_session.add(
+            models.PriceBar(
+                security_id=prices.ensure_security(db_session, "AAPL"),
+                bar_date=date(2019, 6, 3), close=42.0, currency="USD",
+            )
+        )
+        db_session.commit()
+        prices.backfill_prices(db_session, ["AAPL"], date(2024, 1, 1), date(2024, 4, 1), source=_hist_src)
+        hist = prices.close_history_by_symbol(db_session, ["AAPL"])["AAPL"]
+        assert (hist[0].bar_date, hist[0].close) == (date(2019, 6, 3), 42.0)
+        assert len(hist) == 4
+
+    def test_backfill_refreshes_a_bar_this_session_already_loaded(self, client, db_session, tenant):
+        """metron-ops-I343: the upsert bypasses the ORM and sessions don't expire on
+        commit, so an already-loaded PriceBar must not keep its pre-upsert close."""
+        _seed(client, tenant)
+        sec_id = prices.ensure_security(db_session, "AAPL")
+        bar = models.PriceBar(security_id=sec_id, bar_date=date(2025, 7, 7), close=518.0, currency="USD")
+        db_session.add(bar)
+        db_session.commit()
+        assert float(bar.close) == 518.0
+
+        def corrected_src(symbols, start, end, *, source=None):
+            return {"AAPL": [ClosePoint(date(2025, 7, 7), 126.36)]}
+
+        assert prices.backfill_prices(db_session, ["AAPL"], date(2025, 1, 1), date(2025, 12, 31), source=corrected_src) == 1
+        assert float(bar.close) == pytest.approx(126.36)
+
     def test_ensure_security_get_or_create(self, db_session):
         a = prices.ensure_security(db_session, "SPY")
         b = prices.ensure_security(db_session, "SPY")
