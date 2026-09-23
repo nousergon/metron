@@ -37,6 +37,9 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
     analysts = analyst_service.load_analyst().by_symbol
     sentiments = sentiment_service.load_sentiment().by_symbol
     universe_att = attractiveness_service.compute_universe()
+    # metron-ops-I334: once retired, compute_universe() is {} — stamp the substrate state on
+    # every row so the UI renders "retired" rather than a blank that reads as a coverage gap.
+    att_retired = attractiveness_service.retired()
     for h in held:
         yf = yf_map.get(h.ticker, h.ticker)
         f = funds.get(yf)
@@ -121,3 +124,5 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
             h.attractiveness_stewardship = by_key.get("stewardship")
             h.attractiveness_defensiveness = by_key.get("defensiveness")
             h.attractiveness_as_of = att.as_of
+            h.attractiveness_stale = att.stale
+        h.attractiveness_retired = att_retired

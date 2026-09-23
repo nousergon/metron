@@ -127,4 +127,19 @@ describe("DeployCashPanel", () => {
     await submit();
     await waitFor(() => expect(screen.getByText(/No candidate cleared the limits/)).toBeTruthy());
   });
+
+  // metron-ops-I334: plan lines rank by the live technical rating, not the factor-
+  // attractiveness score whose v1 substrate goes stale/retires — so a line carries no factor
+  // field and the panel never renders a factor stale/retired state.
+  it("carries no factor-attractiveness score, so never renders a factor stale/retired state", async () => {
+    for (const line of PLAN.lines) {
+      expect(Object.keys(line).some((k) => k.startsWith("attractiveness"))).toBe(false);
+    }
+    mocks.fetchDeployCashAction.mockResolvedValue({ ok: true, plan: PLAN });
+    const { container } = render(<DeployCashPanel portfolioId="p1" />);
+    await submit();
+    await waitFor(() => expect(screen.getByText("KO")).toBeTruthy());
+    expect(container.querySelector("[data-factor-state]")).toBeNull();
+    expect(screen.queryByText("Factor score")).toBeNull();
+  });
 });

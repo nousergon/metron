@@ -207,6 +207,14 @@ class Holding:
     # Factor-profile publish date (P-28: R4 — the factor-pillar "Factor score" retires at v2
     # phase 4; the daily stamp is what tells a viewer whether it's still updating).
     attractiveness_as_of: date | None = None
+    # metron-ops-I334: the two substrate states a blank score cell cannot express. ``stale``
+    # mirrors ``attractiveness.Attractiveness.stale`` (factor profiles older than
+    # factor_profiles.STALE_AFTER_DAYS — the score is kept but must render as stale);
+    # ``retired`` is ``attractiveness.retired()`` stamped on every enriched row, so an empty
+    # score once ``settings.retired_v1_surfaces`` is on reads "retired", distinct from an
+    # honest per-ticker coverage gap (score None, retired False).
+    attractiveness_stale: bool = False
+    attractiveness_retired: bool = False
 
 
 @dataclass

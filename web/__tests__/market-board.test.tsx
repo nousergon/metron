@@ -103,4 +103,16 @@ describe("MarketBoardPanel", () => {
       screen.getByText(/Describes recent price action; graded IC ≈ 0 at 1–20 days \(metron-ops#295\)\. Not a forecast, not investment advice\./),
     ).toBeTruthy();
   });
+
+  // metron-ops-I334: the board's score is the live, collector-fed technical rating — not the
+  // factor-attractiveness score whose v1 substrate goes stale/retires — so it carries no
+  // factor field and must never render a factor stale/retired state.
+  it("carries no factor-attractiveness score, so never renders a factor stale/retired state", () => {
+    for (const row of HELD_BOARD.rows) {
+      expect(Object.keys(row).some((k) => k.startsWith("attractiveness"))).toBe(false);
+    }
+    const { container } = render(<MarketBoardPanel portfolioId="p1" initialScope="held" initialBoard={HELD_BOARD} />);
+    expect(container.querySelector("[data-factor-state]")).toBeNull();
+    expect(screen.queryByText("Factor score")).toBeNull();
+  });
 });

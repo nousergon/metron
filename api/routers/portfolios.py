@@ -270,6 +270,9 @@ class HoldingOut(BaseModel):
     attractiveness_stewardship: float | None = None
     attractiveness_defensiveness: float | None = None
     attractiveness_as_of: date | None = None
+    # metron-ops-I334 — see analytics.Holding.attractiveness_stale / _retired.
+    attractiveness_stale: bool = False
+    attractiveness_retired: bool = False
 
 
 class GroupMediansOut(BaseModel):
@@ -941,6 +944,9 @@ class WatchlistEntryOut(BaseModel):
     attractiveness_stewardship: float | None = None
     attractiveness_defensiveness: float | None = None
     attractiveness_as_of: date | None = None
+    # metron-ops-I334 — see analytics.Holding.attractiveness_stale / _retired.
+    attractiveness_stale: bool = False
+    attractiveness_retired: bool = False
 
 
 class WatchlistIn(BaseModel):
@@ -2662,6 +2668,8 @@ class TearsheetAttractivenessOut(BaseModel):
     coverage: int | None = None
     as_of: date | None = None
     components: list[TearsheetAttractivenessComponentOut] = []
+    stale: bool = False    # metron-ops-I334 — factor profiles past STALE_AFTER_DAYS
+    retired: bool = False  # metron-ops-I334 — settings.retired_v1_surfaces is on
 
 
 class TearsheetOut(BaseModel):

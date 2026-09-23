@@ -232,6 +232,12 @@ export type Holding = {
   // Factor-profile publish date (P-28) — the "Factor score" retires at v2 phase 4 (R4);
   // the daily as-of stamp is how a viewer tells it's still updating vs stale.
   attractiveness_as_of: string | null;
+  // metron-ops-I334 — the substrate states a blank cell can't express. `stale`: the score is
+  // kept but the factor profiles are past their 8-day cadence (render a stale tag, never a
+  // bare current-looking number). `retired`: the v1 substrate is discontinued, so every row
+  // reads "retired" — distinct from a per-ticker coverage gap (score null, retired false).
+  attractiveness_stale: boolean;
+  attractiveness_retired: boolean;
 };
 
 // Sector- / country-level median multiples (SP1500-broad peer benchmark) for the Holdings
@@ -568,6 +574,8 @@ export type WatchlistEntry = {
   attractiveness_stewardship: number | null;
   attractiveness_defensiveness: number | null;
   attractiveness_as_of: string | null;
+  attractiveness_stale: boolean; // metron-ops-I334 — see Holding.attractiveness_stale
+  attractiveness_retired: boolean; // metron-ops-I334 — see Holding.attractiveness_retired
 };
 
 export const getWatchlist = (apiAuth: string, id: string) =>
@@ -952,6 +960,8 @@ export type TearsheetAttractiveness = {
   coverage: number | null;
   as_of: string | null; // factor-profile publish date (P-28) — retires at v2 phase 4 (R4)
   components: TearsheetAttractivenessComponent[];
+  stale: boolean; // metron-ops-I334 — profiles past their 8-day cadence; score kept, shown stale
+  retired: boolean; // metron-ops-I334 — v1 substrate discontinued; gauge reads "retired"
 };
 
 export type TearsheetConsensus = {

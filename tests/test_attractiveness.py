@@ -247,3 +247,163 @@ def test_retired_returns_empty_universe_without_reading_profiles(monkeypatch):
     assert universe == {}
     assert calls == 0  # never reaches the S3 read
     assert attractiveness.retired() is True
+
+
+# ── stale / retired reach the payload (metron-ops-I334) ───────────────────────
+# The widgets that render the factor score inline must be able to tell three states apart
+# from the payload alone: a per-ticker coverage gap (score None, not retired), a stale
+# substrate (score kept, stale True), and a retired substrate (score None, retired True).
+
+
+def _stub_enrichment_spine(monkeypatch, symbols):
+    empty = lambda: type("S", (), {"by_symbol": {}})()  # noqa: E731
+    monkeypatch.setattr(
+        metrics_enrichment.tearsheet_service, "_yf_symbol_map", lambda s, t: {x: x for x in symbols},
+    )
+    monkeypatch.setattr(metrics_enrichment.fundamentals_service, "load_fundamentals", empty)
+    monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals", empty)
+    monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst", empty)
+    monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment", empty)
+
+
+def _universe_as_of(as_of: date | None):
+    raw = {"as_of": as_of.isoformat(), "by_ticker": _PROFILES} if as_of else _PROFILES
+    return attractiveness.compute_universe(profiles_reader=lambda: raw)
+
+
+def _holding(ticker: str) -> analytics.Holding:
+    return analytics.Holding(ticker=ticker, quantity=1.0, avg_cost=1.0, cost_basis=1.0)
+
+
+def test_enrich_metrics_marks_stale_score_and_leaves_coverage_gap_plain(db_session, monkeypatch):
+    from datetime import timedelta
+
+    old = date.today() - timedelta(days=factor_profiles_service.STALE_AFTER_DAYS + 1)
+    universe = _universe_as_of(old)
+    _stub_enrichment_spine(monkeypatch, ["AAPL", "ZZZ"])
+    monkeypatch.setattr(attractiveness, "compute_universe", lambda: universe)
+
+    held = [_holding("AAPL"), _holding("ZZZ")]
+    metrics_enrichment.enrich_metrics(db_session, held)
+    aapl, zzz = held
+    assert aapl.attractiveness is not None
+    assert aapl.attractiveness_stale is True
+    assert aapl.attractiveness_retired is False
+    # Outside the scanner universe: an honest coverage gap, never flagged stale/retired.
+    assert zzz.attractiveness is None
+    assert zzz.attractiveness_stale is False
+    assert zzz.attractiveness_retired is False
+
+
+def test_enrich_metrics_fresh_score_is_not_stale(db_session, monkeypatch):
+    universe = _universe_as_of(date.today())
+    _stub_enrichment_spine(monkeypatch, ["AAPL"])
+    monkeypatch.setattr(attractiveness, "compute_universe", lambda: universe)
+
+    held = [_holding("AAPL")]
+    metrics_enrichment.enrich_metrics(db_session, held)
+    assert held[0].attractiveness is not None
+    assert held[0].attractiveness_stale is False
+    assert held[0].attractiveness_retired is False
+
+
+def test_enrich_metrics_marks_every_row_retired_once_cut_over(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "retired_v1_surfaces", True)
+    _stub_enrichment_spine(monkeypatch, ["AAPL", "ZZZ"])
+
+    held = [_holding("AAPL"), _holding("ZZZ")]
+    metrics_enrichment.enrich_metrics(db_session, held)
+    for h in held:
+        assert h.attractiveness is None
+        assert h.attractiveness_retired is True
+        assert h.attractiveness_stale is False
+
+
+def test_holding_payload_carries_stale_and_retired():
+    from api.routers.portfolios import HoldingOut, WatchlistEntryOut
+
+    h = _holding("AAPL")
+    h.attractiveness = 72.4
+    h.attractiveness_stale = True
+    out = HoldingOut.model_validate(h, from_attributes=True).model_dump()
+    assert out["attractiveness_stale"] is True
+    assert out["attractiveness_retired"] is False
+
+    h.attractiveness = None
+    h.attractiveness_stale = False
+    h.attractiveness_retired = True
+    out = HoldingOut.model_validate(h, from_attributes=True).model_dump()
+    assert out["attractiveness_retired"] is True
+
+    assert {"attractiveness_stale", "attractiveness_retired"} <= set(WatchlistEntryOut.model_fields)
+
+
+def test_watchlist_entry_carries_stale_retired_and_pillars(db_session, monkeypatch):
+    from datetime import timedelta
+
+    from api.services import watchlist
+
+    tenant = models.Tenant(name="t")
+    db_session.add(tenant)
+    db_session.flush()
+    pf = models.Portfolio(tenant_id=tenant.id, name="P", base_currency="USD")
+    db_session.add(pf)
+    db_session.flush()
+    watchlist.add_to_watchlist(db_session, tenant.id, pf.id, "AAPL")
+
+    old = date.today() - timedelta(days=factor_profiles_service.STALE_AFTER_DAYS + 1)
+    universe = _universe_as_of(old)
+    real_compute_universe = attractiveness.compute_universe
+    _stub_enrichment_spine(monkeypatch, ["AAPL"])
+    monkeypatch.setattr(attractiveness, "compute_universe", lambda: universe)
+
+    (e,) = watchlist.list_watchlist(db_session, tenant.id, pf.id, feed_entitled=True)
+    assert e.attractiveness is not None
+    assert e.attractiveness_stale is True
+    assert e.attractiveness_retired is False
+    assert e.attractiveness_quality == 90.0
+    assert e.attractiveness_as_of == old
+
+    # The real service returns {} once retired, before any S3 read.
+    monkeypatch.setattr(attractiveness, "compute_universe", real_compute_universe)
+    monkeypatch.setattr(settings, "retired_v1_surfaces", True)
+    (e,) = watchlist.list_watchlist(db_session, tenant.id, pf.id, feed_entitled=True)
+    assert e.attractiveness is None
+    assert e.attractiveness_retired is True
+
+
+def test_tearsheet_gauge_carries_stale(db_session, monkeypatch):
+    from datetime import timedelta
+
+    tenant_id, pid = _seed_aapl(db_session)
+    old = date.today() - timedelta(days=factor_profiles_service.STALE_AFTER_DAYS + 1)
+    universe = _universe_as_of(old)
+    monkeypatch.setattr(attractiveness, "compute_universe", lambda: universe)
+
+    att = tearsheet.tearsheet(db_session, tenant_id, pid, "AAPL", feed_enabled=True).attractiveness
+    assert att.available is True
+    assert att.score is not None
+    assert att.stale is True
+    assert att.retired is False
+
+
+def test_tearsheet_gauge_retired_once_cut_over(db_session, monkeypatch):
+    from api.routers.portfolios import TearsheetAttractivenessOut
+
+    tenant_id, pid = _seed_aapl(db_session)
+    monkeypatch.setattr(settings, "retired_v1_surfaces", True)
+
+    att = tearsheet.tearsheet(db_session, tenant_id, pid, "AAPL", feed_enabled=True).attractiveness
+    assert att.retired is True
+    assert att.available is False
+    assert att.score is None
+    out = TearsheetAttractivenessOut.model_validate(att, from_attributes=True).model_dump()
+    assert out["retired"] is True and out["stale"] is False
+
+
+def test_tearsheet_gauge_retired_not_claimed_off_feed(db_session, monkeypatch):
+    # Off-feed the gauge is gated (not entitled), which is not the same claim as retired.
+    tenant_id, pid = _seed_aapl(db_session)
+    monkeypatch.setattr(settings, "retired_v1_surfaces", True)
+    att = tearsheet.tearsheet(db_session, tenant_id, pid, "AAPL", feed_enabled=False).attractiveness
+    assert att.retired is False

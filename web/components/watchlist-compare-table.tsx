@@ -127,6 +127,10 @@ function toShellHolding(e: WatchlistEntry): Holding {
     attractiveness_stewardship: e.attractiveness_stewardship,
     attractiveness_defensiveness: e.attractiveness_defensiveness,
     attractiveness_as_of: e.attractiveness_as_of,
+    // metron-ops-I334 — carried through so a stale/retired factor score renders the same
+    // explicit state here as on Holdings (never a blank that reads as a coverage gap).
+    attractiveness_stale: e.attractiveness_stale,
+    attractiveness_retired: e.attractiveness_retired,
   };
 }
 

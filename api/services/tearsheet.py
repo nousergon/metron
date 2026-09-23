@@ -160,6 +160,11 @@ class TearsheetAttractiveness:
     coverage: int | None = None
     as_of: date | None = None
     components: list[TearsheetAttractivenessComponent] = field(default_factory=list)
+    # metron-ops-I334: ``stale`` mirrors ``Attractiveness.stale`` (score kept, rendered as
+    # stale); ``retired`` is ``attractiveness.retired()`` — the substrate is discontinued, so
+    # the gauge renders an explicit retired state instead of vanishing like a coverage gap.
+    stale: bool = False
+    retired: bool = False
 
 
 @dataclass
@@ -400,12 +405,15 @@ def tearsheet(
 
         yf = _yf_symbol_map(session, [ticker.upper()]).get(ticker.upper(), ticker.upper())
         att = attractiveness_service.lookup(yf, attractiveness_service.compute_universe())
-        if att is not None and att.score is not None:
+        if attractiveness_service.retired():
+            sheet.attractiveness = TearsheetAttractiveness(retired=True)
+        elif att is not None and att.score is not None:
             sheet.attractiveness = TearsheetAttractiveness(
                 available=True,
                 score=att.score,
                 coverage=att.coverage,
                 as_of=att.as_of,
+                stale=att.stale,
                 components=[
                     TearsheetAttractivenessComponent(
                         key=p.key,
