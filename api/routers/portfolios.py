@@ -1002,6 +1002,9 @@ class ImportOut(BaseModel):
     transactions_skipped: int
     positions_imported: int = 0
     errors: list[SkipOut]
+    # Ingestion schema-contract findings (metron-ops#219) — FLAG MODE: the import above
+    # persisted every row regardless; these say what in the file looked wrong.
+    data_quality_findings: list[str] = []
 
 
 class FlexImportIn(BaseModel):
@@ -1590,6 +1593,7 @@ def _summarize(snapshot, persisted: persistence.PersistResult, *, parsed: int, s
         transactions_skipped=persisted.transactions_skipped,
         positions_imported=persisted.positions_imported,
         errors=[SkipOut(ref=e.ref, reason=e.reason) for e in errors[:_MAX_ERROR_DETAIL]],
+        data_quality_findings=[f.render() for f in persisted.data_quality_findings[:_MAX_ERROR_DETAIL]],
     )
 
 

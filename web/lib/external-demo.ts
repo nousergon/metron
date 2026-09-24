@@ -40,6 +40,9 @@ const ALLOWED_SEGMENTS = new Set([
 /** Whether an external-demo viewer may open `pathname` (basePath already stripped). */
 export function isExternalDemoPageAllowed(pathname: string): boolean {
   if (pathname === "/invite") return true;
+  // Static measurement documentation (metron-ops-I205) — no data, no advice; the analytics
+  // pages' "How this is measured" links land here.
+  if (pathname === "/methodology") return true;
   const base = `/portfolios/${DEMO_HOUSEHOLD_PORTFOLIO_ID}`;
   if (pathname === base) return true;
   if (!pathname.startsWith(`${base}/`)) return false;
