@@ -33,7 +33,14 @@ from api.services import compute_cache, labels
 from api.services import fx as fx_service
 from api.services import prices as price_service
 from portfolio_analytics.domain import realized_lots_export as realized_lots_export_domain
-from portfolio_analytics.domain.ledger import Ledger, RealizedGain, Transaction, TxnType, build_ledger
+from portfolio_analytics.domain.ledger import (
+    PURCHASE_TYPES,
+    Ledger,
+    RealizedGain,
+    Transaction,
+    TxnType,
+    build_ledger,
+)
 from portfolio_analytics.domain.realized import YearlyIncome, summarize_income_by_year
 from portfolio_analytics.ingestion.base import SNAPSHOT_SOURCES
 from portfolio_analytics.prices import ClosePoint
@@ -239,7 +246,7 @@ class RealizedLot:
 @dataclass
 class TransactionRow:
     trade_date: date
-    txn_type: str
+    txn_type: str  # a ``TxnType.value`` — REINVESTMENT is distinct from BUY (metron-ops#335)
     ticker: str
     quantity: float
     price: float
@@ -294,10 +301,15 @@ def _portfolio_rows(
     return session.execute(stmt).all()
 
 
+# Stored ``txn_type`` values that carry a quantity × price trade: every purchase type
+# (BUY and a dividend REINVESTMENT, which is a buy — metron-ops#335) plus SELL.
+_TRADE_TYPE_VALUES = frozenset({t.value for t in PURCHASE_TYPES} | {TxnType.SELL.value})
+
+
 def _normalize_bond_quantity(txn_type: str, quantity: float, price: float, amount: float) -> float:
     r"""Normalize a fixed-income trade's quantity to the per-$100-par unit (metron-ops#74).
 
-    SnapTrade records a bond/CD/treasury BUY/SELL with ``quantity`` = FACE value (e.g.
+    SnapTrade records a bond/CD/treasury BUY/SELL (or REINVESTMENT) with ``quantity`` = FACE value (e.g.
     10000) but ``price`` = percent of par (e.g. 97.0147, per \$100), so ``quantity*price``
     overstates the cash ~100x — while the broker's POSITION section uses ``quantity`` =
     face/100 (e.g. 100). Replaying the raw transaction therefore inflates the ledger cost
@@ -306,7 +318,7 @@ def _normalize_bond_quantity(txn_type: str, quantity: float, price: float, amoun
     ``quantity*price ≈ 100*amount``; when detected, divide quantity by 100 so
     ``quantity*price ≈ amount`` AND it matches the position unit. Equity trades
     (``quantity*price ≈ amount``) are far outside this band and pass through unchanged."""
-    if txn_type in (TxnType.BUY.value, TxnType.SELL.value) and quantity > 0 and price > 0 and amount > 0:
+    if txn_type in _TRADE_TYPE_VALUES and quantity > 0 and price > 0 and amount > 0:
         ratio = (quantity * price) / (100.0 * amount)
         if 0.8 <= ratio <= 1.25:
             return quantity / 100.0

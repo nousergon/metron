@@ -19,6 +19,7 @@ from portfolio_analytics.ingestion.schema import (
     CanonicalHolding,
     CanonicalSecurity,
     activity_key,
+    legacy_activity_key,
     lot_key,
     synth_security_id,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "CanonicalHolding",
     "CanonicalSecurity",
     "activity_key",
+    "legacy_activity_key",
     "lot_key",
     "synth_security_id",
     "SnapTradeConnector",

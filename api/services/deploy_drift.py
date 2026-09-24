@@ -43,14 +43,39 @@ and no ``FETCH_HEAD``), and the drifted path — the only one that needs history
 into the private ref ``refs/deploy-drift/main`` with ``--no-write-fetch-head``. Neither
 takes a lock any other process contends for. Objects are shared, which git already
 handles concurrently.
+
+**Could-not-measure is its own outcome, not drift and not a crash** (metron-ops#288,
+#291). On 2026-09-06 and again on 2026-09-09 a failed ``ls-remote`` left the journal
+with nothing but ``CalledProcessError ... exit status 128`` — git's stderr was captured
+and thrown away, so auth, DNS, rate limit and a transient 5xx all read identically, and
+box-health paged ``timer job failing`` exactly as it would for a deploy that had not
+landed. Now every failed git call raises ``GitError`` carrying argv, exit code and git's
+own stderr tail (URL userinfo and token shapes redacted — the credential helper's token
+can appear in a ``fatal: unable to access`` line), and a repo whose state cannot be read
+is reported as ``deploy drift: could not measure <repo> (<reason>)`` with a
+``severity=warning`` alert under its own dedup key. It still reddens the unit: a check
+that cannot read the state must never report "no drift".
+
+**Exit codes** (the systemd unit and box-health's driver classifier key on these):
+
+- ``0`` — every repo measured, none drifted.
+- ``1`` — drift: at least one repo is behind origin/main past the grace window. Drift
+  wins over could-not-measure when both happen in one run, because it is the stronger,
+  paged finding; the could-not-measure warning is still sent.
+- ``3`` — could not measure: no drift was found, but at least one repo's state could not
+  be read (a git call failed, or origin has no ``refs/heads/main``).
+
+Anything else escaping ``main()`` is an unhandled crash and exits ``1`` with a traceback,
+as Python does; ``2`` is argparse's usage error.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +87,11 @@ DEFAULT_GRACE_MINUTES = 30
 # Both repos the box serves from — a merge to EITHER triggers a deploy of BOTH, so either
 # one lagging means deploys are not landing.
 REPOS = ("/home/ec2-user/metron", "/home/ec2-user/metron-ops")
+
+# Exit codes — documented in the module docstring; keep the two in step.
+EXIT_OK = 0
+EXIT_DRIFT = 1
+EXIT_UNMEASURABLE = 3
 
 
 @dataclass(frozen=True)
@@ -91,10 +121,57 @@ def is_drifted(state: RepoState, *, grace_minutes: int = DEFAULT_GRACE_MINUTES) 
     return state.remote_age_min > grace_minutes
 
 
+class Unmeasurable(RuntimeError):
+    """This repo's deployed-vs-remote position could not be read. Not drift, not "in
+    sync" — ``check()`` reports it as its own outcome (exit 3)."""
+
+
+class GitError(Unmeasurable):
+    """A git call failed. The message carries argv, exit code and git's own stderr tail,
+    because ``exit status 128`` alone names nothing (metron-ops#291)."""
+
+
+# git's fatal line is the last one, so keep the tail. Long enough for a proxy or TLS
+# error, short enough to stay one readable journal line and one alert.
+STDERR_TAIL_CHARS = 400
+
+# `https://x-access-token:<token>@github.com/...` is exactly what a credential-helper
+# failure can echo back. Redact the userinfo of any URL, and GitHub token shapes anywhere.
+_URL_USERINFO = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@")
+_GITHUB_TOKEN = re.compile(r"\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]+")
+
+
+def _redact(text: str) -> str:
+    text = _URL_USERINFO.sub(r"\g<scheme>***@", text)
+    return _GITHUB_TOKEN.sub("***", text)
+
+
+def _stderr_tail(stderr: str | bytes | None) -> str:
+    """git's stderr as one redacted, truncated line (the journal is read line by line)."""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    flat = " | ".join(line.strip() for line in (stderr or "").splitlines() if line.strip())
+    flat = _redact(flat)
+    if len(flat) > STDERR_TAIL_CHARS:
+        flat = "…" + flat[-STDERR_TAIL_CHARS:]
+    return flat or "no stderr"
+
+
 def _git(path: str, *args: str) -> str:
-    return subprocess.run(
-        ["git", "-C", path, *args], capture_output=True, text=True, check=True, timeout=120
-    ).stdout.strip()
+    try:
+        return subprocess.run(
+            ["git", "-C", path, *args], capture_output=True, text=True, check=True, timeout=120
+        ).stdout.strip()
+    except subprocess.CalledProcessError as exc:
+        raise GitError(
+            f"git {' '.join(args)} in {path} failed (exit {exc.returncode}): "
+            f"{_stderr_tail(exc.stderr)}"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(
+            f"git {' '.join(args)} in {path} timed out after {exc.timeout:g}s: "
+            f"{_stderr_tail(exc.stderr)}"
+        ) from exc
 
 
 # Where this check parks the remote tip when it needs history. A ref nothing else on the
@@ -117,38 +194,37 @@ def remote_head(path: str, *, sleep=time.sleep) -> str:
     report — entirely side-effect-free, which is what a check running every hour against a
     live deploy target should always have been.
 
-    Retried up to ``REMOTE_HEAD_ATTEMPTS`` times on a subprocess failure — a transient
-    network blip talking to GitHub, not deploy drift — before the error propagates and
-    reddens the unit for real. Only this remote read retries; ``rev-parse`` (local, never
-    flaky) and the fetch path (its own retry loop lives in ``deploy.yml``) do not.
+    Retried up to ``REMOTE_HEAD_ATTEMPTS`` times on a git failure — a transient network
+    blip talking to GitHub, not deploy drift — before the ``GitError`` propagates and the
+    run reports could-not-measure. Only this remote read retries; ``rev-parse`` (local,
+    never flaky) and the fetch path (its own retry loop lives in ``deploy.yml``) do not.
     """
     last_exc: Exception | None = None
     for attempt in range(1, REMOTE_HEAD_ATTEMPTS + 1):
         try:
             out = _git(path, "ls-remote", "origin", "refs/heads/main")
             return out.split()[0] if out else ""
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        except GitError as exc:
             last_exc = exc
             if attempt == REMOTE_HEAD_ATTEMPTS:
                 raise
-            stderr = getattr(exc, "stderr", "") or ""
             logger.warning(
-                "ls-remote origin refs/heads/main failed for %s (attempt %d/%d), "
-                "retrying: %s",
-                path, attempt, REMOTE_HEAD_ATTEMPTS, stderr.strip() or exc,
+                "ls-remote failed for %s (attempt %d/%d), retrying: %s",
+                path, attempt, REMOTE_HEAD_ATTEMPTS, exc,
             )
             sleep(REMOTE_HEAD_BACKOFF_SEC[attempt - 1])
     raise last_exc  # pragma: no cover — loop always returns or raises above
 
 
 def read_state(path: str) -> RepoState:
-    """Read this repo's deployed-vs-remote position. Raises on a git failure — a check
-    that cannot read the state must not report 'no drift'."""
+    """Read this repo's deployed-vs-remote position. Raises ``Unmeasurable`` (a
+    ``GitError`` for a failed git call) — a check that cannot read the state must not
+    report 'no drift'."""
     remote_full = remote_head(path)
     if not remote_full:
         # Not "no drift". A remote with no main is a broken premise, and the honest
         # response is a red unit, not a green one.
-        raise RuntimeError(f"{path}: origin has no refs/heads/main")
+        raise Unmeasurable("origin has no refs/heads/main")
 
     head_full = _git(path, "rev-parse", "HEAD")
     head = _git(path, "rev-parse", "--short", "HEAD")
@@ -180,15 +256,48 @@ def read_state(path: str) -> RepoState:
     return RepoState(path=path, head=head, remote=remote, remote_age_min=age_min, behind=behind)
 
 
+@dataclass(frozen=True)
+class Unmeasured:
+    path: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class Verdict:
+    drifted: list[RepoState] = field(default_factory=list)
+    unmeasured: list[Unmeasured] = field(default_factory=list)
+
+    @property
+    def exit_code(self) -> int:
+        if self.drifted:
+            return EXIT_DRIFT
+        if self.unmeasured:
+            return EXIT_UNMEASURABLE
+        return EXIT_OK
+
+
 def check(
     repos: tuple[str, ...] = REPOS, *, grace_minutes: int = DEFAULT_GRACE_MINUTES
-) -> list[RepoState]:
-    """Report every repo whose deployed code is behind origin/main past the grace window.
+) -> Verdict:
+    """Report every repo whose deployed code is behind origin/main past the grace window,
+    and every repo whose position could not be read at all.
 
-    Returns the drifted repos (empty = healthy). Alerting and the exit code are the
-    caller's (``api.maintenance``), matching how the broker-staleness check is wired.
+    One unreadable repo does not stop the others being measured — a flaky remote for
+    metron-ops must not hide real drift on metron. Only ``Unmeasurable`` is caught; any
+    other exception is a bug and propagates as a crash. Alerting and the exit code are
+    the caller's (``report``/``main``).
     """
-    drifted = [s for s in (read_state(p) for p in repos) if is_drifted(s, grace_minutes=grace_minutes)]
+    drifted: list[RepoState] = []
+    unmeasured: list[Unmeasured] = []
+    for path in repos:
+        try:
+            state = read_state(path)
+        except Unmeasurable as exc:
+            logger.error("deploy drift: could not measure %s (%s)", path, exc)
+            unmeasured.append(Unmeasured(path=path, reason=str(exc)))
+            continue
+        if is_drifted(state, grace_minutes=grace_minutes):
+            drifted.append(state)
     for s in drifted:
         logger.error(
             "deploy drift: %s is running %s but origin/main is %s (%d commit(s) behind, "
@@ -196,14 +305,19 @@ def check(
             "serving the OLD code will keep health-checking green",
             s.path, s.head, s.remote, s.behind, s.remote_age_min,
         )
-    return drifted
+    return Verdict(drifted=drifted, unmeasured=unmeasured)
 
 
-def report(*, grace_minutes: int = DEFAULT_GRACE_MINUTES, dry_run: bool = False) -> list[RepoState]:
-    """Check for drift and page the operator if there is any. Returns the drifted repos.
+def report(*, grace_minutes: int = DEFAULT_GRACE_MINUTES, dry_run: bool = False) -> Verdict:
+    """Check for drift and page the operator if there is any. Returns the verdict.
 
     Deduped over 6 hours: the timer runs hourly, and a stuck deploy should page a few
     times a day rather than 24.
+
+    Could-not-measure sends a SEPARATE ``severity=warning`` alert under its own dedup
+    key (metron-ops#288): it is not a deploy that failed to land, so it must neither
+    borrow the drift page nor share its dedup window — a flaky hour must not suppress
+    the drift page that follows it.
 
     ``dry_run`` threads straight to ``send_alert``/``krepis.alerts.publish`` (metron-ops-
     I340): drift is still detected for real and nothing about dedup key, window, or
@@ -215,10 +329,22 @@ def report(*, grace_minutes: int = DEFAULT_GRACE_MINUTES, dry_run: bool = False)
     """
     from api.services.alerting import send_alert
 
-    drifted = check(grace_minutes=grace_minutes)
+    verdict = check(grace_minutes=grace_minutes)
+    if verdict.unmeasured:
+        detail = "\n".join(f"  - {u.path}: {u.reason}" for u in verdict.unmeasured)
+        send_alert(
+            f"Metron: the deploy-drift check could not measure the box — this is NOT "
+            f"drift, and nothing is known either way about these repos:\n{detail}",
+            severity="warning",
+            dedup_key="metron-deploy-drift-unmeasurable",
+            dedup_window_min=360,
+            dry_run=dry_run,
+        )
+    drifted = verdict.drifted
     if not drifted:
-        logger.info("deploy-drift check: box is at origin/main for every repo")
-        return []
+        if not verdict.unmeasured:
+            logger.info("deploy-drift check: box is at origin/main for every repo")
+        return verdict
     detail = "\n".join(
         f"  - {s.path}: running {s.head}, origin/main is {s.remote} "
         f"({s.behind} commit(s) behind, newest waiting {s.remote_age_min} min)"
@@ -233,7 +359,7 @@ def report(*, grace_minutes: int = DEFAULT_GRACE_MINUTES, dry_run: bool = False)
         dedup_window_min=360,
         dry_run=dry_run,
     )
-    return drifted
+    return verdict
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -249,9 +375,9 @@ def main(argv: list[str] | None = None) -> int:
     the database is the thing that is broken"; that was aspiration, not architecture.
     This module imports nothing from api.db, which makes the claim true.
 
-    ``--dry-run`` still checks for real and still exits non-zero on drift — it only
-    suppresses the send, so the fire path can be verified without paging the operator
-    (metron-ops-I340).
+    ``--dry-run`` still checks for real and still exits non-zero on drift or
+    could-not-measure — it only suppresses the send, so the fire path can be verified
+    without paging the operator (metron-ops-I340). Exit codes: see the module docstring.
     """
     import argparse
 
@@ -272,16 +398,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    drifted = report(grace_minutes=args.grace_minutes, dry_run=args.dry_run)
+    verdict = report(grace_minutes=args.grace_minutes, dry_run=args.dry_run)
     if args.dry_run:
-        if drifted:
+        if verdict.drifted:
             print(
-                f"[dry-run] nothing was sent. {len(drifted)} repo(s) drifted — a real run "
-                f"in this state would have sent a severity=error alert."
+                f"[dry-run] nothing was sent. {len(verdict.drifted)} repo(s) drifted — a "
+                f"real run in this state would have sent a severity=error alert."
             )
-        else:
+        if verdict.unmeasured:
+            print(
+                f"[dry-run] nothing was sent. {len(verdict.unmeasured)} repo(s) could not "
+                f"be measured — a real run would have sent a severity=warning alert."
+            )
+        if not verdict.drifted and not verdict.unmeasured:
             print("[dry-run] nothing was sent. no drift detected — a real run sends nothing here either.")
-    return 1 if drifted else 0
+    return verdict.exit_code
 
 
 if __name__ == "__main__":
