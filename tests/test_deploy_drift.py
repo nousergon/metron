@@ -13,7 +13,7 @@ import subprocess
 import pytest
 
 from api.services import alerting, deploy_drift
-from api.services.deploy_drift import RepoState, is_drifted
+from api.services.deploy_drift import GitError, RepoState, Unmeasured, Verdict, is_drifted
 
 
 def _state(head="aaa", remote="bbb", behind=1, age=120) -> RepoState:
@@ -49,14 +49,16 @@ def test_check_reports_only_the_drifted_repos(monkeypatch):
     }
     monkeypatch.setattr(deploy_drift, "read_state", lambda p: states[p])
     out = deploy_drift.check(("/repo/fresh", "/repo/stale"))
-    assert [s.behind for s in out] == [3]
+    assert [s.behind for s in out.drifted] == [3]
+    assert out.unmeasured == [] and out.exit_code == deploy_drift.EXIT_DRIFT
 
 
-def test_a_git_failure_is_not_reported_as_healthy(monkeypatch):
-    """The dangerous failure mode for any detector: erroring into 'all clear'. read_state
-    raises, and check() must let it propagate so the unit goes red."""
+def test_an_unexpected_error_is_not_reported_as_healthy(monkeypatch):
+    """The dangerous failure mode for any detector: erroring into 'all clear'. Anything
+    that is not a named could-not-measure is a bug, and check() must let it propagate so
+    the unit goes red with a traceback."""
     def boom(_path):
-        raise RuntimeError("git fetch failed")
+        raise RuntimeError("unexpected")
 
     monkeypatch.setattr(deploy_drift, "read_state", boom)
     with pytest.raises(RuntimeError):
@@ -68,7 +70,7 @@ def test_cli_exits_non_zero_on_drift(monkeypatch):
     monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append((t, kw)) or True)
     monkeypatch.setattr(
         deploy_drift, "check",
-        lambda **kw: [_state(head="old", remote="new", behind=4, age=5760)],
+        lambda **kw: Verdict(drifted=[_state(head="old", remote="new", behind=4, age=5760)]),
     )
     assert deploy_drift.main([]) == 1
     text, kwargs = sent[0]
@@ -85,7 +87,7 @@ def test_dry_run_still_detects_drift_and_exits_non_zero_but_sends_nothing(monkey
     monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append((t, kw)) or True)
     monkeypatch.setattr(
         deploy_drift, "check",
-        lambda **kw: [_state(head="old", remote="new", behind=4, age=5760)],
+        lambda **kw: Verdict(drifted=[_state(head="old", remote="new", behind=4, age=5760)]),
     )
     assert deploy_drift.main(["--dry-run"]) == 1
     text, kwargs = sent[0]
@@ -99,7 +101,7 @@ def test_dry_run_still_detects_drift_and_exits_non_zero_but_sends_nothing(monkey
 def test_dry_run_exits_zero_and_sends_nothing_when_current(monkeypatch, capsys):
     sent: list[str] = []
     monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append(t) or True)
-    monkeypatch.setattr(deploy_drift, "check", lambda **kw: [])
+    monkeypatch.setattr(deploy_drift, "check", lambda **kw: Verdict())
     assert deploy_drift.main(["--dry-run"]) == 0
     assert sent == []
     assert "dry-run" in capsys.readouterr().out.lower()
@@ -108,7 +110,7 @@ def test_dry_run_exits_zero_and_sends_nothing_when_current(monkeypatch, capsys):
 def test_cli_exits_zero_and_stays_silent_when_current(monkeypatch):
     sent: list[str] = []
     monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append(t) or True)
-    monkeypatch.setattr(deploy_drift, "check", lambda **kw: [])
+    monkeypatch.setattr(deploy_drift, "check", lambda **kw: Verdict())
     assert deploy_drift.main([]) == 0
     assert sent == []
 
@@ -117,7 +119,7 @@ def test_cli_grace_minutes_reaches_the_check(monkeypatch):
     """A flag that silently fails to reach the predicate is the same class of defect as a
     detector wired to a channel that does not exist."""
     seen: dict = {}
-    monkeypatch.setattr(deploy_drift, "check", lambda **kw: seen.update(kw) or [])
+    monkeypatch.setattr(deploy_drift, "check", lambda **kw: seen.update(kw) or Verdict())
     deploy_drift.main(["--grace-minutes", "5"])
     assert seen["grace_minutes"] == 5
 
@@ -229,10 +231,9 @@ def test_the_drifted_path_fetches_only_into_the_private_ref(monkeypatch):
 # and the retries never reach `rev-parse`.
 
 
-def _cpe(returncode=128, stderr="fatal: unable to access\n"):
-    import subprocess as sp
-
-    return sp.CalledProcessError(returncode, ["git", "ls-remote"], stderr=stderr)
+def _cpe(stderr="fatal: unable to access"):
+    """What `_git` raises on a failed call — the shape remote_head retries on."""
+    return GitError(f"git ls-remote origin refs/heads/main in /repo failed (exit 128): {stderr}")
 
 
 def test_remote_head_retries_once_then_succeeds(monkeypatch):
@@ -287,7 +288,7 @@ def test_remote_head_raises_after_exhausting_all_attempts(monkeypatch):
 
     monkeypatch.setattr(deploy_drift, "_git", fake_git)
     sleeps: list[float] = []
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(GitError):
         deploy_drift.remote_head("/repo", sleep=sleeps.append)
     assert sleeps == list(deploy_drift.REMOTE_HEAD_BACKOFF_SEC)
 
@@ -302,7 +303,7 @@ def test_remote_head_retries_never_reach_rev_parse(monkeypatch):
         raise _cpe()
 
     monkeypatch.setattr(deploy_drift, "_git", fake_git)
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(GitError):
         deploy_drift.remote_head("/repo", sleep=lambda _s: None)
     assert all(c[0] == "ls-remote" for c in calls)
     assert len(calls) == deploy_drift.REMOTE_HEAD_ATTEMPTS
@@ -348,3 +349,176 @@ def test_against_real_git_origin_main_is_left_where_the_deploy_put_it(tmp_path):
         "deploy loses, and losing it strands the commit the deploy was landing"
     )
     assert git(box, "rev-parse", deploy_drift.DRIFT_REF) == git(author, "rev-parse", "HEAD")
+
+
+# ── Could-not-measure is its own outcome (metron-ops#288, #291) ──
+#
+# 2026-09-06 and 2026-09-09: a failed `ls-remote` put only `CalledProcessError ... exit
+# status 128` in the journal — git's stderr was captured and discarded — and box-health
+# paged it exactly like drift. These tests pin: git's stderr reaches the error (redacted,
+# one line), an unreadable repo is reported as could-not-measure with its own warning
+# alert and exit 3, and neither in-sync (0) nor drift (1) changed.
+
+
+def _raising_run(exc):
+    def run(*_a, **_kw):
+        raise exc
+    return run
+
+
+def test_git_failure_carries_git_stderr(monkeypatch):
+    err = subprocess.CalledProcessError(
+        128, ["git"], stderr="remote: Repository not found.\nfatal: repository not found\n",
+    )
+    monkeypatch.setattr(deploy_drift.subprocess, "run", _raising_run(err))
+    with pytest.raises(GitError) as ei:
+        deploy_drift._git("/repo", "ls-remote", "origin", "refs/heads/main")
+    msg = str(ei.value)
+    assert "git ls-remote origin refs/heads/main in /repo failed (exit 128)" in msg
+    assert "remote: Repository not found. | fatal: repository not found" in msg
+    assert "\n" not in msg, "the journal is read line by line"
+    assert isinstance(ei.value, deploy_drift.Unmeasurable)
+    assert ei.value.__cause__ is err
+
+
+def test_git_failure_redacts_credentials(monkeypatch):
+    """The credential helper's token can come back in git's own `unable to access` line."""
+    err = subprocess.CalledProcessError(128, ["git"], stderr=(
+        "fatal: unable to access 'https://x-access-token:ghs_S3cr3tT0ken@github.com/"
+        "nousergon/metron.git/': The requested URL returned error: 403\n"
+        "hint: token ghp_AnotherSecret was rejected\n"
+    ))
+    monkeypatch.setattr(deploy_drift.subprocess, "run", _raising_run(err))
+    with pytest.raises(GitError) as ei:
+        deploy_drift._git("/repo", "fetch", "origin")
+    msg = str(ei.value)
+    assert "S3cr3t" not in msg and "AnotherSecret" not in msg and "x-access-token" not in msg
+    assert "https://***@github.com/nousergon/metron.git/" in msg
+    assert "error: 403" in msg
+
+
+def test_git_failure_keeps_the_tail_of_long_stderr(monkeypatch):
+    """git's fatal line comes last, so truncation keeps the end, not the start."""
+    noise = "\n".join(f"warning: noise line {i}" for i in range(200))
+    err = subprocess.CalledProcessError(128, ["git"], stderr=noise + "\nfatal: the real reason\n")
+    monkeypatch.setattr(deploy_drift.subprocess, "run", _raising_run(err))
+    with pytest.raises(GitError) as ei:
+        deploy_drift._git("/repo", "rev-parse", "HEAD")
+    msg = str(ei.value)
+    assert msg.endswith("fatal: the real reason")
+    assert "noise line 0 " not in msg
+    assert len(msg) < deploy_drift.STDERR_TAIL_CHARS + 100
+
+
+def test_git_failure_with_empty_stderr_says_so(monkeypatch):
+    err = subprocess.CalledProcessError(1, ["git"], stderr=None)
+    monkeypatch.setattr(deploy_drift.subprocess, "run", _raising_run(err))
+    with pytest.raises(GitError, match=r"\(exit 1\): no stderr$"):
+        deploy_drift._git("/repo", "rev-parse", "HEAD")
+
+
+def test_git_timeout_is_a_git_error_with_stderr(monkeypatch):
+    """TimeoutExpired carries bytes even under text=True — still decoded and folded in."""
+    err = subprocess.TimeoutExpired(["git"], 120, stderr=b"fatal: stalled\n")
+    monkeypatch.setattr(deploy_drift.subprocess, "run", _raising_run(err))
+    with pytest.raises(GitError, match=r"timed out after 120s: fatal: stalled$"):
+        deploy_drift._git("/repo", "ls-remote", "origin", "refs/heads/main")
+
+
+def test_origin_without_main_is_unmeasurable(monkeypatch):
+    _record_git(monkeypatch, {("ls-remote",): ""})
+    with pytest.raises(deploy_drift.Unmeasurable, match="origin has no refs/heads/main"):
+        deploy_drift.read_state("/repo")
+
+
+def test_check_names_an_unreadable_repo_and_still_measures_the_rest(monkeypatch, caplog):
+    """One flaky remote must not hide real drift on the other repo, and the log line is
+    the one box-health's classifier reads."""
+    def read(path):
+        if path == "/repo/flaky":
+            raise GitError("git ls-remote origin refs/heads/main in /repo/flaky failed "
+                           "(exit 128): fatal: unable to access")
+        return _state(head="old", remote="new", behind=2, age=600)
+
+    monkeypatch.setattr(deploy_drift, "read_state", read)
+    with caplog.at_level("ERROR", logger=deploy_drift.__name__):
+        out = deploy_drift.check(("/repo/flaky", "/repo/stale"))
+    assert [s.behind for s in out.drifted] == [2]
+    assert [u.path for u in out.unmeasured] == ["/repo/flaky"]
+    assert "fatal: unable to access" in out.unmeasured[0].reason
+    assert "deploy drift: could not measure /repo/flaky (git ls-remote" in caplog.text
+    assert out.exit_code == deploy_drift.EXIT_DRIFT, "drift outranks could-not-measure"
+
+
+def test_check_with_only_unreadable_repos_exits_3(monkeypatch):
+    def read(path):
+        raise GitError("boom")
+
+    monkeypatch.setattr(deploy_drift, "read_state", read)
+    out = deploy_drift.check(("/a", "/b"))
+    assert out.drifted == [] and len(out.unmeasured) == 2
+    assert out.exit_code == deploy_drift.EXIT_UNMEASURABLE == 3
+
+
+def test_verdict_exit_codes_for_in_sync_and_drift_are_unchanged():
+    assert Verdict().exit_code == 0
+    assert Verdict(drifted=[_state()]).exit_code == 1
+
+
+def test_cli_unmeasurable_exits_3_with_its_own_warning_alert(monkeypatch):
+    """Not the drift page: its own severity and its own dedup key, so a flaky hour neither
+    buzzes the phone nor suppresses a real drift page inside the drift dedup window."""
+    sent: list[tuple[str, dict]] = []
+    monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append((t, kw)) or True)
+    monkeypatch.setattr(deploy_drift, "check", lambda **kw: Verdict(unmeasured=[
+        Unmeasured(path="/repo/ops", reason="git ls-remote ... (exit 128): fatal: 403"),
+    ]))
+    assert deploy_drift.main([]) == 3
+    assert len(sent) == 1
+    text, kwargs = sent[0]
+    assert "could not measure" in text and "/repo/ops" in text and "fatal: 403" in text
+    assert kwargs["severity"] == "warning"
+    assert kwargs["dedup_key"] == "metron-deploy-drift-unmeasurable"
+    assert kwargs["dedup_key"] != "metron-deploy-drift"
+    assert kwargs["dry_run"] is False
+
+
+def test_cli_drift_and_unmeasurable_sends_both_and_exits_1(monkeypatch):
+    sent: list[tuple[str, dict]] = []
+    monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append((t, kw)) or True)
+    monkeypatch.setattr(deploy_drift, "check", lambda **kw: Verdict(
+        drifted=[_state(head="old", remote="new", behind=4, age=5760)],
+        unmeasured=[Unmeasured(path="/repo/ops", reason="boom")],
+    ))
+    assert deploy_drift.main([]) == 1
+    assert sorted(kw["dedup_key"] for _t, kw in sent) == [
+        "metron-deploy-drift", "metron-deploy-drift-unmeasurable",
+    ]
+
+
+def test_dry_run_unmeasurable_exits_3_and_sends_nothing_real(monkeypatch, capsys):
+    sent: list[tuple[str, dict]] = []
+    monkeypatch.setattr(alerting, "send_alert", lambda t, **kw: sent.append((t, kw)) or True)
+    monkeypatch.setattr(deploy_drift, "check", lambda **kw: Verdict(
+        unmeasured=[Unmeasured(path="/repo/ops", reason="boom")],
+    ))
+    assert deploy_drift.main(["--dry-run"]) == 3
+    assert [kw["dry_run"] for _t, kw in sent] == [True]
+    assert "could not be measured" in capsys.readouterr().out
+
+
+def test_against_real_git_an_unreachable_origin_carries_gits_stderr(tmp_path, monkeypatch):
+    """The closes-when of metron-ops#288, against git itself: a forced ls-remote failure
+    produces could-not-measure, exit 3, and git's own stderr in the reason."""
+    box = tmp_path / "box"
+    subprocess.run(["git", "init", "--quiet", str(box)], check=True)
+    subprocess.run(
+        ["git", "-C", str(box), "remote", "add", "origin", str(tmp_path / "missing.git")],
+        check=True,
+    )
+    monkeypatch.setattr(deploy_drift.time, "sleep", lambda _s: None)
+    out = deploy_drift.check((str(box),))
+    assert out.exit_code == 3
+    reason = out.unmeasured[0].reason
+    assert "ls-remote" in reason and "(exit 128)" in reason
+    assert "does not appear to be a git repository" in reason or "missing.git" in reason
