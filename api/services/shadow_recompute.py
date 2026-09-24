@@ -128,10 +128,10 @@ def _position_market_value(
 
 def _txn_flow(txn: Transaction) -> float:
     """Net external-to-holdings flow for one transaction — mirrors
-    ``performance._purchase_flow``'s BUY(+)/SELL(-) convention, applied to one
+    ``performance._purchase_flow``'s BUY/REINVESTMENT(+)/SELL(-) convention, applied to one
     ``Transaction`` instead of a batch of DB rows (this module works entirely off
     engine objects, never a second SQL round-trip for the flow)."""
-    if txn.type is TxnType.BUY:
+    if txn.type.is_purchase:  # BUY or a dividend REINVESTMENT (metron-ops#335)
         return txn.quantity * txn.price if txn.price > 0 else txn.amount
     if txn.type is TxnType.SELL:
         return -(txn.quantity * txn.price)

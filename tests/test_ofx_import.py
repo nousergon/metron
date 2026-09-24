@@ -118,14 +118,16 @@ class TestIncomeAndCashTypes:
 
 
 class TestReinvestAndUnsupported:
-    def test_reinvested_dividend_is_a_buy(self):
-        # A reinvested dividend buys shares → canonical BUY (so the lot/cost basis grows).
+    def test_reinvested_dividend_is_a_reinvestment(self):
+        # A reinvested dividend buys shares → canonical REINVESTMENT (metron-ops#335), a
+        # purchase type, so the lot/cost basis grows exactly as for a BUY.
         txn = ("<REINVEST><INVTRAN><FITID>R1<DTTRADE>20240315120000</INVTRAN>"
                "<SECID><UNIQUEID>037833100<UNIQUEIDTYPE>CUSIP</SECID>"
                "<INCOMETYPE>DIV<TOTAL>-50.00<SUBACCTSEC>CASH<UNITS>0.3<UNITPRICE>165.00</REINVEST>")
         r = parse_ofx(_ofx(txns=txn))
         act = r.snapshot.activities[0]
-        assert act.type == TxnType.BUY and act.quantity == pytest.approx(0.3) and act.price == 165
+        assert act.type == TxnType.REINVESTMENT and act.type.is_purchase
+        assert act.quantity == pytest.approx(0.3) and act.price == 165
 
     def test_unsupported_transaction_is_skipped_not_fatal(self):
         # A TRANSFER isn't modeled → recorded as a skip (with its fitid), not dropped silently.
