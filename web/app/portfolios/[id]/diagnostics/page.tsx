@@ -2,6 +2,7 @@ import { acctParams, getDiagnostics, MetronApiError } from "@/lib/api";
 import { Empty, Locked } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { AsOfClose } from "@/components/as-of-close";
+import { MethodologyLink } from "@/components/methodology-link";
 import { TierSimulator } from "@/components/tier-simulator";
 import { DiagnosticsCard } from "@/components/diagnostics-card";
 import { featureEntitlement, loadEntitlements, toFeatureStates } from "@/lib/entitlements";
@@ -65,6 +66,7 @@ export default async function DiagnosticsPage(
         {/* SETTLED page (metron-ops#145/#146): as_of is the close date the valuation
             used, sourced from the API's own metadata — never static page copy. */}
         <AsOfClose date={d.as_of} />
+        <MethodologyLink section="diagnostics" />
       </div>
       <p className="text-sm text-muted">
         Portfolio structure, measured: concentration, sector weights vs {d.benchmark}, geography, and your own stated

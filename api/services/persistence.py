@@ -30,7 +30,7 @@ through a sibling path; that is out of scope for CSV ingestion.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from sqlalchemy import delete, func, select
@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from portfolio_analytics.ingestion.base import ConnectorSnapshot
+from portfolio_analytics.ingestion.quality import Finding
 from portfolio_analytics.ingestion.schema import CanonicalActivity, activity_key, legacy_activity_key, lot_key
 from portfolio_analytics.prices import to_yf_symbol
 
@@ -55,6 +56,9 @@ class PersistResult:
     accounts_excluded: int = 0     # snapshot accounts skipped — user-deleted (excluded keys)
     realized_lots_inserted: int = 0  # broker closed-lot realized gains unioned (metron-ops#81)
     open_lots_imported: int = 0      # lot-level open positions written (metron-ops#74)
+    # Schema-contract findings for this snapshot (metron-ops#219) — flag mode: reported,
+    # never acted on. Empty for a clean snapshot.
+    data_quality_findings: list[Finding] = field(default_factory=list)
 
 
 def account_key(broker: str, external_id: str) -> str:
@@ -362,6 +366,13 @@ def persist_snapshot(
     by ``source_key``, positions replaced per account (snapshot semantics).
     """
     result = PersistResult()
+    # Layer-5 schema contract (metron-ops#219), FLAG MODE: checked against the snapshot
+    # exactly as the connector produced it (before the exclusion filter below, so a
+    # user-deleted account's rows aren't misread as dangling references). Read-only —
+    # findings are logged and reported on the result; nothing is dropped or altered.
+    from api.services import data_quality
+
+    result.data_quality_findings = data_quality.gate_snapshot(snapshot)
     # User-deleted accounts are dropped from the snapshot BEFORE the upsert — the one
     # chokepoint every import path (SnapTrade, Flex, CSV/OFX) flows through, so a
     # deleted account can never be silently resurrected by a later sync. Their
