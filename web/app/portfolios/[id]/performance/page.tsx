@@ -5,6 +5,7 @@ import { PortfolioNav } from "@/components/portfolio-nav";
 import { BuildHistory } from "@/components/build-history";
 import { NavChart } from "@/components/nav-chart";
 import { AsOfClose } from "@/components/as-of-close";
+import { MethodologyLink } from "@/components/methodology-link";
 import { NavBridge } from "@/components/nav-bridge";
 import { RiskOverTime } from "@/components/risk-over-time";
 import { BenchmarkGapSection } from "@/components/benchmark-gap-table";
@@ -103,6 +104,7 @@ export default async function PerformancePage(
         {/* SETTLED tab (metron-ops#145/#146): every figure here is from the recorded
             EOD-close NAV history — the live intraday label belongs to Overview/Holdings only. */}
         <AsOfClose date={perf.last_date} />
+        <MethodologyLink section="performance" />
       </div>
       <p className="text-sm text-muted">
         NAV records forward each time you refresh prices. To get instant history, build it from past prices.
