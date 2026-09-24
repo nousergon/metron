@@ -201,17 +201,36 @@ def _sell(ledger: Ledger, txn: Transaction) -> None:
         raise ValueError(f"SELL of {txn.quantity} {txn.ticker} on {txn.when} exceeds {available} shares held")
     # Proceeds net of fees, allocated across closed lots pro-rata by share.
     net_proceeds_per_share = txn.price - txn.fees / txn.quantity
-    remaining = txn.quantity
+    ledger.realized.extend(
+        relieve_lots(lots, txn.quantity, close_date=txn.when, proceeds_per_share=net_proceeds_per_share)
+    )
+    ledger.cash += txn.quantity * txn.price - txn.fees
+
+
+def relieve_lots(
+    lots: list[Lot], quantity: float, *, close_date: date, proceeds_per_share: float
+) -> list[RealizedGain]:
+    """Close ``quantity`` shares against ``lots`` **in list order**, returning one
+    `RealizedGain` per lot touched (a partial lot yields a partial gain).
+
+    Mutates ``lots``: consumed quantity is removed and fully closed lots are popped. The
+    list order IS the relief order — chronological order gives FIFO (the ledger's
+    default); a caller that wants specific-lot relief passes the chosen lots in the
+    chosen order (see ``tax.hypothetical_sale``). Relief stops when the lots run out, so
+    the caller checks availability first.
+    """
+    realized: list[RealizedGain] = []
+    remaining = quantity
     while remaining > 1e-9 and lots:
         lot = lots[0]
         closed = min(lot.quantity, remaining)
-        ledger.realized.append(
+        realized.append(
             RealizedGain(
-                ticker=txn.ticker,
+                ticker=lot.ticker,
                 open_date=lot.open_date,
-                close_date=txn.when,
+                close_date=close_date,
                 quantity=closed,
-                proceeds=closed * net_proceeds_per_share,
+                proceeds=closed * proceeds_per_share,
                 cost_basis=closed * lot.cost_per_share,
             )
         )
@@ -219,7 +238,7 @@ def _sell(ledger: Ledger, txn: Transaction) -> None:
         remaining -= closed
         if lot.quantity <= 1e-9:
             lots.pop(0)
-    ledger.cash += txn.quantity * txn.price - txn.fees
+    return realized
 
 
 def _split(ledger: Ledger, txn: Transaction) -> None:
