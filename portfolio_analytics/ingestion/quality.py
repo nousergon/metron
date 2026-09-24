@@ -98,7 +98,8 @@ _ISO_CCY = re.compile(r"^[A-Z]{3}$")
 
 _ASSET_TYPES = frozenset({ASSET_EQUITY, ASSET_ETF, ASSET_FUND, ASSET_OPTION, ASSET_CASH, ASSET_OTHER})
 _TAX_TREATMENTS = frozenset({"", TAX_TAXABLE, TAX_DEFERRED, TAX_EXEMPT})
-_TRADE_TYPES = frozenset({TxnType.BUY, TxnType.SELL})
+# REINVESTMENT is a purchase (metron-ops#335): the ledger applies it through the BUY path.
+_TRADE_TYPES = frozenset({TxnType.BUY, TxnType.REINVESTMENT, TxnType.SELL})
 _CASH_TYPES = frozenset({TxnType.DIVIDEND, TxnType.INTEREST, TxnType.DEPOSIT, TxnType.WITHDRAWAL, TxnType.FEE})
 
 

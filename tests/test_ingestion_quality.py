@@ -169,6 +169,14 @@ class TestSchemaContract:
         act = CanonicalActivity(**{**base, **kwargs})
         assert needle in _details(check_snapshot_contract(_clean(activities=[act]), today=TODAY))
 
+    def test_reinvestment_is_held_to_the_purchase_contract(self):
+        # REINVESTMENT goes through the ledger's BUY path (metron-ops#335), so the same
+        # silently-skipped non-positive quantity must be flagged for it too.
+        act = CanonicalActivity(account_number="U1", when=date(2024, 1, 2), type=TxnType.REINVESTMENT,
+                                security_id=SEC.security_id, quantity=0, price=10)
+        text = _details(check_snapshot_contract(_clean(activities=[act]), today=TODAY))
+        assert f"{TxnType.REINVESTMENT} quantity=0 is not positive (the ledger skips it)" in text
+
     def test_split_violations(self):
         bad = [
             CanonicalActivity(account_number="U1", when=date(2024, 1, 2), type=TxnType.SPLIT, quantity=2.0),
