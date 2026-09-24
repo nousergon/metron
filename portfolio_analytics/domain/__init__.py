@@ -25,6 +25,7 @@ from portfolio_analytics.domain.ledger import (
     TxnType,
     build_ledger,
     external_cash_flows,
+    relieve_lots,
 )
 from portfolio_analytics.domain.realized import YearlyIncome, summarize_income_by_year
 from portfolio_analytics.domain.stress import (
@@ -34,9 +35,18 @@ from portfolio_analytics.domain.stress import (
     historical_scenario_impact,
 )
 from portfolio_analytics.domain.tax import (
+    HypotheticalSale,
+    LotMethod,
+    LotPick,
+    SaleDelta,
+    SoldLot,
+    TaxRates,
     classify_term,
     harvestable_loss,
     holding_period_days,
+    hypothetical_sale,
+    net_capital_gains,
+    sale_delta,
     tax_on_gain,
 )
 
@@ -58,6 +68,7 @@ __all__ = [
     "TxnType",
     "build_ledger",
     "external_cash_flows",
+    "relieve_lots",
     "YearlyIncome",
     "summarize_income_by_year",
     "FactorShock",
@@ -68,4 +79,13 @@ __all__ = [
     "harvestable_loss",
     "holding_period_days",
     "tax_on_gain",
+    "HypotheticalSale",
+    "LotMethod",
+    "LotPick",
+    "SaleDelta",
+    "SoldLot",
+    "TaxRates",
+    "hypothetical_sale",
+    "net_capital_gains",
+    "sale_delta",
 ]

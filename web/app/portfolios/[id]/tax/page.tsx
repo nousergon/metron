@@ -10,6 +10,7 @@ import {
 import { accountingMoney, accountingMoneyWhole, isoDate, money, moneyWhole, quantity, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
+import { IfSoldTaxPanel } from "@/components/if-sold-tax-panel";
 import { MethodologyLink } from "@/components/methodology-link";
 import { TxnTypeLabel } from "@/components/txn-type-label";
 import { navFeatureStates } from "@/lib/entitlements";
@@ -213,6 +214,16 @@ export default async function TaxPage(
           <Empty>Refresh prices on the portfolio page to value lots and surface harvestable losses.</Empty>
         </div>
       )}
+
+      {taxData.lots.length > 0 ? (
+        <Section title="If sold — tax estimate" note="a hypothetical sale you describe · per-lot ST/LT split">
+          <IfSoldTaxPanel
+            portfolioId={id}
+            tickers={[...new Set(taxData.lots.map((l) => l.ticker))]}
+            accountIds={accountIds}
+          />
+        </Section>
+      ) : null}
 
       <Section title="Open lots" note={`${taxData.n_lots} open · cost basis & term are price-free`}>
         {taxData.lots.length === 0 ? (
