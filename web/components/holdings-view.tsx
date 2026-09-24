@@ -33,6 +33,7 @@ import { ColumnPresetControl } from "@/components/holdings-column-presets";
 import { type ColumnBand } from "@/components/holdings-table";
 import { useColumnBands } from "@/components/column-bands-context";
 import { HoldingsWhatIfPanel } from "@/components/holdings-whatif-panel";
+import { IfSoldTaxPanel } from "@/components/if-sold-tax-panel";
 import { saveHoldingsViewAction } from "@/app/portfolios/[id]/actions";
 import type { Account, Holding, ValuationMedians } from "@/lib/api";
 
@@ -323,6 +324,14 @@ export function HoldingsView({
       </div>
       <TypeFilterChips securityTypes={securityTypes} hidden={hiddenTypes} onToggle={toggleType} />
       {priced && filtered.length > 0 ? <HoldingsWhatIfPanel holdings={filtered} /> : null}
+      {portfolioId && filtered.length > 0 ? (
+        <IfSoldTaxPanel
+          portfolioId={portfolioId}
+          tickers={[...new Set(filtered.map((h) => h.ticker))]}
+          accountIds={selectedAccountIds}
+          collapsible
+        />
+      ) : null}
       {filtered.length === 0 ? (
         <p className="rounded-lg border border-line bg-surface px-4 py-3 text-sm text-muted">
           All instrument types are hidden — re-enable a type chip above to see holdings.

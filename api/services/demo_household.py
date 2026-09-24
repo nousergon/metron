@@ -57,10 +57,14 @@ the same way the Showcase is — see ``api/routers/portfolios.py::list_portfolio
 Dividend reinvestment (DRP, metron-ops-I325). ``DEMO-KO``'s twenty quarterly
 dividends each carry a same-date ``REINVESTMENT`` row in
 ``fixtures/demo_household/transactions.csv``, priced at that date's own close from
-``closes.csv``, for ``dividend_amount / close`` fractional shares. That is the
-representation the importer already has: ``csv_import._TYPE_SYNONYMS`` maps
-``reinvestment``/``reinvest shares`` onto ``TxnType.BUY``, so a DRP is a cash
-``DIVIDEND`` followed by a ``BUY`` of the same symbol on the same date.
+``closes.csv``, for ``dividend_amount / close`` fractional shares.
+``csv_import._TYPE_SYNONYMS`` maps ``reinvestment``/``reinvest shares`` onto
+``TxnType.REINVESTMENT`` (metron-ops#335), so a DRP is a cash ``DIVIDEND`` followed by a
+``REINVESTMENT`` of the same symbol on the same date — a first-class type every layer
+treats exactly as a ``BUY`` (``TxnType.is_purchase``) and the Transactions table renders
+as a reinvested dividend. An instance seeded before that type existed holds these rows
+as ``BUY``; the next reconcile re-types them in place (the legacy-key path in
+``persistence._insert_activities``) rather than duplicating them.
 
 Its TWR treatment is correct by construction, and not the one the phrase "not an
 external contribution" first suggests: Metron's NAV is the market value of HOLDINGS
@@ -71,11 +75,9 @@ never inside the valued NAV, so the reinvestment is the moment that capital ente
 is neutralised exactly like any other purchase; what must never happen is it being
 booked as new OUTSIDE money (a DEPOSIT).
 ``tests/test_demo_household.py::TestDividendReinvestment`` pins the share-count
-increase and recomputes the whole flow series from the fixture to hold that line. What this fixture does NOT yet get is a distinct RENDERING — a reinvestment
-reaches the Transactions view as a plain BUY, because no layer from
-``models.Transaction.txn_type`` up to the web table carries a reinvestment flag
-(metron-ops-I325 deliverable 4, still open: it needs a first-class type through the
-ledger, the model + its migration, the API row and the web table).
+increase and recomputes the whole flow series from the fixture to hold that line;
+``TestReinvestmentType`` pins that the rows persist and render as ``REINVESTMENT`` and
+that the TWR and attribution goldens are unchanged by the type (metron-ops#335).
 
 Goal inputs (metron-ops-I317 deliverable 4): illustrative retirement-goal values
 (target amount, target date, annual contribution, withdrawal rate) are upserted onto

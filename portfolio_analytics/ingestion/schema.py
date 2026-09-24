@@ -23,7 +23,7 @@ so matching the consumer is the correct, lower-friction choice. Native ``amount`
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 
 from portfolio_analytics.domain.ledger import RealizedGain, TxnType  # noqa: F401 — re-exported for connectors
@@ -231,6 +231,20 @@ def activity_key(act: CanonicalActivity) -> str:
     """Stable identity for cross-sync dedup (events accumulate beyond a rolling
     window, so they're unioned, not replaced)."""
     return f"{act.account_number}|{act.when.isoformat()}|{act.type}|{act.security_id}|{act.quantity}|{act.amount}"
+
+
+def legacy_activity_key(act: CanonicalActivity) -> str | None:
+    """The key this activity was stored under BEFORE it had its own type, or None.
+
+    Until metron-ops#335 a dividend reinvestment was ingested as a ``BUY``, and the type
+    is part of ``activity_key`` — so a re-import of the very same DRP row now produces a
+    NEW key. Unioning by key alone would insert it a second time and double-count the
+    reinvested shares. Callers that union by key check this too: when the legacy key is
+    already held, the stored record IS this activity and is upgraded in place rather
+    than duplicated. Only ``REINVESTMENT`` ever had a different prior type."""
+    if act.type is not TxnType.REINVESTMENT:
+        return None
+    return activity_key(replace(act, type=TxnType.BUY))
 
 
 def lot_key(account_number: str, rg: RealizedGain) -> str:

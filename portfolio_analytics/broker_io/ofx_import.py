@@ -119,7 +119,7 @@ def _classify(tr) -> TxnType | None:
     if name == "INCOME":
         return _INCOME_TYPE.get(getattr(tr, "incometype", None), TxnType.DIVIDEND)
     if name == "REINVEST":
-        return TxnType.BUY  # dividend reinvested into shares
+        return TxnType.REINVESTMENT  # dividend reinvested into shares (a buy — metron-ops#335)
     if getattr(tr, "buytype", None) is not None or name.startswith("BUY"):
         return TxnType.BUY
     if getattr(tr, "selltype", None) is not None or name.startswith("SELL"):

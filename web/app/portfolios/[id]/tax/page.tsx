@@ -10,7 +10,9 @@ import {
 import { accountingMoney, accountingMoneyWhole, isoDate, money, moneyWhole, quantity, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
+import { IfSoldTaxPanel } from "@/components/if-sold-tax-panel";
 import { MethodologyLink } from "@/components/methodology-link";
+import { TxnTypeLabel } from "@/components/txn-type-label";
 import { navFeatureStates } from "@/lib/entitlements";
 import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
@@ -213,6 +215,16 @@ export default async function TaxPage(
         </div>
       )}
 
+      {taxData.lots.length > 0 ? (
+        <Section title="If sold — tax estimate" note="a hypothetical sale you describe · per-lot ST/LT split">
+          <IfSoldTaxPanel
+            portfolioId={id}
+            tickers={[...new Set(taxData.lots.map((l) => l.ticker))]}
+            accountIds={accountIds}
+          />
+        </Section>
+      ) : null}
+
       <Section title="Open lots" note={`${taxData.n_lots} open · cost basis & term are price-free`}>
         {taxData.lots.length === 0 ? (
           <Empty>No open lots.</Empty>
@@ -305,7 +317,7 @@ export default async function TaxPage(
             {txns.map((t, i) => (
               <tr key={`${t.trade_date}-${t.txn_type}-${t.ticker}-${i}`} className="border-b border-line last:border-0">
                 <td className="px-4 py-2 font-medium tabular-nums">{isoDate(t.trade_date)}</td>
-                <td className="px-4 py-2 text-right text-muted">{t.txn_type}</td>
+                <td className="px-4 py-2 text-right text-muted"><TxnTypeLabel type={t.txn_type} /></td>
                 <td className="px-4 py-2 text-right">{t.ticker || "—"}</td>
                 <td className="px-4 py-2 text-right text-muted">{t.currency}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{t.quantity ? quantity(t.quantity) : "—"}</td>

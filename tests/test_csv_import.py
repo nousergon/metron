@@ -63,7 +63,23 @@ class TestHeaderFlexibility:
     def test_type_synonyms(self):
         csv = "date,type,symbol,amount\n2024-01-01,Reinvestment,VTI,100\n2024-01-02,contribution,,500\n"
         acts = parse_transactions_csv(csv).snapshot.activities
-        assert [a.type for a in acts] == [TxnType.BUY, TxnType.DEPOSIT]
+        assert [a.type for a in acts] == [TxnType.REINVESTMENT, TxnType.DEPOSIT]
+
+    @pytest.mark.parametrize(
+        "cell",
+        ["Reinvestment", "reinvest shares", "Reinvest Dividend", "Dividend Reinvestment",
+         "reinvested dividend", "REINVESTMENT"],
+    )
+    def test_dividend_reinvestment_synonyms_map_to_reinvestment(self, cell):
+        # metron-ops#335: a DRP row is its own type, never a plain BUY.
+        csv = f"date,type,symbol,quantity,price,amount\n2024-01-01,{cell},VTI,0.5,200,100\n"
+        act = parse_transactions_csv(csv).snapshot.activities[0]
+        assert act.type is TxnType.REINVESTMENT
+
+    def test_reinvestment_requires_a_symbol(self):
+        # A reinvestment buys shares of something — like a BUY it is refused without one.
+        r = parse_transactions_csv("date,type,symbol,quantity,price\n2024-01-01,reinvestment,,1,10\n")
+        assert r.parsed == 0 and "REINVESTMENT row requires a symbol" in r.errors[0].reason
 
     def test_multiple_accounts(self):
         csv = "date,type,symbol,quantity,price,account\n2024-01-01,BUY,AAPL,1,100,Roth\n2024-01-01,BUY,AAPL,1,100,Taxable\n"
