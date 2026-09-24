@@ -63,6 +63,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/privacy" className="hover:text-fg">
                 Privacy
               </Link>
+              <Link href="/methodology" className="hover:text-fg">
+                Methodology
+              </Link>
             </p>
           </footer>
         </div>
