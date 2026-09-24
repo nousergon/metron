@@ -321,9 +321,23 @@ export type AccountDetail = {
   transactions: Transaction[];
 };
 
+/** Canonical ledger transaction type (`portfolio_analytics.domain.ledger.TxnType`).
+ *  REINVESTMENT is a dividend reinvestment — a buy funded by a dividend, distinct only
+ *  so it can render as one (metron-ops#335). */
+export type TxnType =
+  | "BUY"
+  | "REINVESTMENT"
+  | "SELL"
+  | "DIVIDEND"
+  | "INTEREST"
+  | "DEPOSIT"
+  | "WITHDRAWAL"
+  | "FEE"
+  | "SPLIT";
+
 export type Transaction = {
   trade_date: string; // ISO date
-  txn_type: string;
+  txn_type: TxnType;
   ticker: string;
   quantity: number;
   price: number;

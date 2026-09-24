@@ -29,9 +29,17 @@ _LONG_TERM_DAYS = 365
 
 class TxnType(StrEnum):
     """Transaction kinds. DEPOSIT/WITHDRAWAL are the only *external* cash flows;
-    BUY/SELL/DIVIDEND move cash within the portfolio (internal)."""
+    BUY/REINVESTMENT/SELL/DIVIDEND move cash within the portfolio (internal).
+
+    REINVESTMENT is a dividend reinvestment (DRP/DRIP): shares bought with a dividend
+    paid on the same holding. Economically it IS a buy — it opens a tax lot at its
+    price and moves cash out exactly like ``BUY`` — and every consumer treats it as
+    one via ``is_purchase``/``PURCHASE_TYPES``. It is a distinct member only so the
+    record can say "this buy was your dividend" (metron-ops#335); the dividend cash
+    itself is still its own ``DIVIDEND`` row."""
 
     BUY = "BUY"
+    REINVESTMENT = "REINVESTMENT"  # dividend reinvestment — a BUY funded by a dividend
     SELL = "SELL"
     DIVIDEND = "DIVIDEND"
     INTEREST = "INTEREST"  # cash-in like DIVIDEND; canonical layer needs a distinct member
@@ -40,11 +48,25 @@ class TxnType(StrEnum):
     FEE = "FEE"
     SPLIT = "SPLIT"  # quantity = new:old ratio (2.0 = 2-for-1)
 
+    @property
+    def is_purchase(self) -> bool:
+        """True for every type that acquires shares for cash (BUY and REINVESTMENT).
+
+        Branch on this, never on ``is TxnType.BUY``, wherever the question is "does
+        this open a lot / bring capital into the holdings" — a reinvested dividend
+        answers yes, and a check that names only BUY silently drops it."""
+        return self in PURCHASE_TYPES
+
+
+# Types that acquire shares for cash. Anything that switches on "is this a buy" reads
+# this set (or ``TxnType.is_purchase``) so REINVESTMENT can never be half-handled.
+PURCHASE_TYPES: frozenset[TxnType] = frozenset({TxnType.BUY, TxnType.REINVESTMENT})
+
 
 @dataclass(frozen=True)
 class Transaction:
     """A dated portfolio event. Cash amounts are positive magnitudes; the type
-    determines direction. ``quantity``/``price`` apply to BUY/SELL (shares,
+    determines direction. ``quantity``/``price`` apply to BUY/REINVESTMENT/SELL (shares,
     per-share); ``quantity`` is the ratio for SPLIT; ``amount`` is the cash
     magnitude for DEPOSIT/WITHDRAWAL/DIVIDEND/FEE."""
 
@@ -160,7 +182,7 @@ def _apply(ledger: Ledger, txn: Transaction) -> None:
         ledger.cash += txn.amount
     elif txn.type is TxnType.FEE:
         ledger.cash -= txn.amount
-    elif txn.type is TxnType.BUY:
+    elif txn.type.is_purchase:  # BUY and REINVESTMENT: identical lot + cash handling
         _buy(ledger, txn)
     elif txn.type is TxnType.SELL:
         _sell(ledger, txn)

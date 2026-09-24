@@ -36,7 +36,7 @@ from api.services import analytics, compute_cache, fund_proxy
 from api.services import fx as fx_service
 from api.services import prices as price_service
 from api.services.security_perf import market_today
-from portfolio_analytics.domain.ledger import TxnType
+from portfolio_analytics.domain.ledger import PURCHASE_TYPES, TxnType
 from portfolio_analytics.prices import ClosePoint, HistorySource, fetch_latest_closes
 
 logger = logging.getLogger(__name__)
@@ -76,12 +76,21 @@ PERIOD_TILES: list[tuple[str, str]] = [("today", "Today"), ("ytd", "YTD"), ("ltm
 _BENCH_COVERAGE_SLACK_DAYS = 4
 
 
+# Stored ``txn_type`` values that count toward net purchases: every purchase type
+# (BUY and a dividend REINVESTMENT — "a reinvested dividend is a buy", metron-ops#44)
+# plus SELL. A reinvestment carries a distinct type only for display (metron-ops#335);
+# its flow arithmetic is exactly a BUY's.
+_PURCHASE_TYPE_VALUES = frozenset(t.value for t in PURCHASE_TYPES)
+_NET_PURCHASE_TYPE_VALUES = sorted(_PURCHASE_TYPE_VALUES | {TxnType.SELL.value})
+
+
 def _purchase_flow(rows: list[tuple[str, float]]) -> float:
-    """Net purchases for a set of (txn_type, amount) rows: a BUY brings capital INTO the
-    holdings (+amount), a SELL takes it OUT (−amount)."""
+    """Net purchases for a set of (txn_type, amount) rows: a BUY (or a dividend
+    REINVESTMENT, which is a buy) brings capital INTO the holdings (+amount), a SELL takes
+    it OUT (−amount)."""
     flow = 0.0
     for txn_type, amount in rows:
-        if txn_type == TxnType.BUY.value:
+        if txn_type in _PURCHASE_TYPE_VALUES:
             flow += float(amount)
         elif txn_type == TxnType.SELL.value:
             flow -= float(amount)
@@ -109,7 +118,7 @@ def _net_purchases(
         models.Transaction.tenant_id == tenant_id,
         models.Account.portfolio_id == portfolio_id,
         models.Transaction.trade_date <= through,
-        models.Transaction.txn_type.in_([TxnType.BUY.value, TxnType.SELL.value]),
+        models.Transaction.txn_type.in_(_NET_PURCHASE_TYPE_VALUES),
     ]
     if after is not None:
         conds.append(models.Transaction.trade_date > after)
@@ -129,7 +138,7 @@ def _account_net_purchases(
         models.Transaction.tenant_id == tenant_id,
         models.Transaction.account_id == account_id,
         models.Transaction.trade_date <= through,
-        models.Transaction.txn_type.in_([TxnType.BUY.value, TxnType.SELL.value]),
+        models.Transaction.txn_type.in_(_NET_PURCHASE_TYPE_VALUES),
     ]
     if after is not None:
         conds.append(models.Transaction.trade_date > after)

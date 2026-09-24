@@ -17,7 +17,7 @@ const H = `/portfolios/${DEMO_HOUSEHOLD_PORTFOLIO_ID}`;
 
 describe("isExternalDemoPageAllowed", () => {
   it("allows the household's no-advice pages", () => {
-    for (const p of [H, `${H}/glance`, `${H}/risk`, `${H}/plan`, `${H}/tearsheet/DEMO-AAPL`, `${H}/in-development`]) {
+    for (const p of [H, `${H}/glance`, `${H}/risk`, `${H}/plan`, `${H}/tearsheet/DEMO-AAPL`, `${H}/in-development`, "/methodology"]) {
       expect(isExternalDemoPageAllowed(p)).toBe(true);
     }
   });

@@ -3,6 +3,7 @@ import { percent } from "@/lib/format";
 import { Empty, Locked, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { AsOfClose } from "@/components/as-of-close";
+import { MethodologyLink } from "@/components/methodology-link";
 import { TierSimulator } from "@/components/tier-simulator";
 import { ComputeRisk } from "@/components/compute-risk";
 import { featureEntitlement, loadEntitlements, toFeatureStates } from "@/lib/entitlements";
@@ -68,6 +69,7 @@ export default async function RiskPage(
         {/* SETTLED tab (metron-ops#145/#146): as_of is the model's aligned-grid end date —
             its true data horizon — not the compute-call date. */}
         <AsOfClose date={risk.as_of} />
+        <MethodologyLink section="factor-risk" />
       </div>
       <p className="text-sm text-muted">
         Ex-ante volatility decomposed into market + style factors and idiosyncratic risk, with tracking error vs{" "}
