@@ -99,6 +99,15 @@ def refresh_latest_prices(
     if not closes:
         return 0
 
+    # Layer-5 data-quality gate (metron-ops#219), FLAG MODE: judges each incoming close
+    # against the security's previous cached close and logs findings. It reads only —
+    # every close below is written exactly as the source returned it.
+    from api.services import data_quality
+
+    data_quality.gate_latest_closes(
+        session, [(fetch_targets[s], p) for s, p in closes.items() if s in fetch_targets]
+    )
+
     written = 0
     for yf_sym, point in closes.items():
         sec = fetch_targets.get(yf_sym)
@@ -228,6 +237,17 @@ def backfill_prices(
             }
     if not rows:
         return 0
+    # Layer-5 data-quality gate (metron-ops#219), FLAG MODE: outlier / split-continuity
+    # check over each incoming series before it lands. Read-only — ``rows`` is upserted
+    # below exactly as built above, whatever the gate finds.
+    from api.services import data_quality
+
+    by_security: dict[uuid.UUID, tuple[str, list[ClosePoint]]] = {}
+    for yf_sym, series in history.items():
+        sec = fetch_targets.get(yf_sym)
+        if sec is not None:
+            by_security.setdefault(sec.id, (sec.symbol, []))[1].extend(series)
+    data_quality.gate_close_history(session, by_security, start=start)
     # Upsert in the database instead of preloading every existing bar to diff in Python
     # (metron-ops-I343). The preload read ALL dates for every symbol, as full ORM rows,
     # on every call: three calls per portfolio per daily-refresh (reconstruct, risk,
