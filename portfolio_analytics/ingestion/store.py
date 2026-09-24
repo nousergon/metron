@@ -37,6 +37,7 @@ from portfolio_analytics.ingestion.schema import (
     CanonicalHolding,
     CanonicalSecurity,
     activity_key,
+    legacy_activity_key,
     lot_key,
 )
 
@@ -240,7 +241,13 @@ class CanonicalStore:
         for n in replace_set:
             self.holdings[n] = grouped.get(n, [])
         for act in activities:
-            self.activities.setdefault(activity_key(act), act)  # union (first wins)
+            key = activity_key(act)
+            legacy = legacy_activity_key(act)
+            if key not in self.activities and legacy is not None and legacy in self.activities:
+                # The same event stored under its pre-REINVESTMENT BUY key (metron-ops#335):
+                # upgrade it in place, never union a second copy of the same shares.
+                del self.activities[legacy]
+            self.activities.setdefault(key, act)  # union (first wins)
         for number, rg in realized_lots:
             self.realized_lots.setdefault(lot_key(number, rg), (number, rg))  # union
         self.meta[source] = {"as_of": _iso(as_of), "synced_at": _iso(datetime.now())}
