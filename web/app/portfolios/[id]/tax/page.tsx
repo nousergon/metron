@@ -10,6 +10,7 @@ import {
 import { accountingMoney, accountingMoneyWhole, isoDate, money, moneyWhole, quantity, signClass, signedMoneyWhole } from "@/lib/format";
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
+import { MethodologyLink } from "@/components/methodology-link";
 import { navFeatureStates } from "@/lib/entitlements";
 import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
@@ -84,7 +85,10 @@ export default async function TaxPage(
     <div>
       <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
 
-      <h1 className="mt-3 text-lg font-semibold">Tax</h1>
+      <div className="mt-3 flex items-baseline gap-2">
+        <h1 className="text-lg font-semibold">Tax</h1>
+        <MethodologyLink section="tax-lots" />
+      </div>
       <p className="text-sm text-muted">
         Realized income by year, plus per-lot holding-period term and unrealized P&amp;L (at the last close, in {ccy})
         with harvestable losses flagged. Taxable accounts only. Descriptive, not advice.
