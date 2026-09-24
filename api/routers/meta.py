@@ -4,6 +4,7 @@ and report system-wide data freshness (metron-ops#220 provenance surface)."""
 from __future__ import annotations
 
 import importlib.metadata
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
@@ -15,7 +16,9 @@ from api.config import settings
 from api.db import models
 from api.db.session import get_session
 from api.plugins import active_plugins
-from api.services import external_demo_release_gate, glance_latency
+from api.services import data_quality, external_demo_release_gate, glance_latency
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/meta", tags=["system"])
 
@@ -181,6 +184,8 @@ def system_status(session: Session = Depends(get_session)) -> dict:
         "portfolios": {
             "total": total_portfolios or 0,
         },
+        # Layer 5 (metron-ops#219): ingestion data-quality gates, flag mode. Counts only.
+        "data_quality": _data_quality_block(session),
         "reconciliation": {
             "available": False,
             "note": "Layer 1 (break store) not yet deployed — reconciliation-run and open-break-count fields will be added once metron-ops#210 layer 1 lands.",
@@ -192,3 +197,13 @@ def system_status(session: Session = Depends(get_session)) -> dict:
             "glance_p95": glance_latency.latest(session),
         },
     }
+
+
+def _data_quality_block(session: Session) -> dict:
+    """The layer-5 block, isolated so a failure computing it degrades to
+    ``available: False`` instead of taking the whole /status surface down."""
+    try:
+        return data_quality.status_summary(session)
+    except Exception as exc:  # noqa: BLE001 — /status must answer even if this block can't
+        logger.warning("[data-quality] /status summary failed: %s", exc, exc_info=True)
+        return {"available": False, "mode": "flag", "error": type(exc).__name__}
