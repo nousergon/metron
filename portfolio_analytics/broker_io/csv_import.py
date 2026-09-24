@@ -60,8 +60,13 @@ _TYPE_SYNONYMS: dict[str, TxnType] = {
     "bought": TxnType.BUY,
     "purchase": TxnType.BUY,
     "buy to open": TxnType.BUY,
-    "reinvestment": TxnType.BUY,
-    "reinvest shares": TxnType.BUY,
+    # Dividend reinvestment (DRP/DRIP): a buy funded by a dividend, carried as its own
+    # type so it renders as a reinvestment rather than a plain buy (metron-ops#335).
+    "reinvestment": TxnType.REINVESTMENT,
+    "reinvest shares": TxnType.REINVESTMENT,
+    "reinvest dividend": TxnType.REINVESTMENT,
+    "dividend reinvestment": TxnType.REINVESTMENT,
+    "reinvested dividend": TxnType.REINVESTMENT,
     "sell": TxnType.SELL,
     "sold": TxnType.SELL,
     "sale": TxnType.SELL,
@@ -90,7 +95,7 @@ _TYPE_SYNONYMS: dict[str, TxnType] = {
 
 # Types that require a non-empty symbol; cash events (deposit/withdrawal/fee/interest)
 # do not. DIVIDEND keeps its symbol when present but tolerates a blank (cash sweep).
-_SECURITY_REQUIRED = {TxnType.BUY, TxnType.SELL, TxnType.SPLIT}
+_SECURITY_REQUIRED = {TxnType.BUY, TxnType.REINVESTMENT, TxnType.SELL, TxnType.SPLIT}
 
 
 class CsvImportError(FileImportError):

@@ -602,7 +602,8 @@ def test_seeding_never_touches_a_real_tenants_shared_security_or_price_bar(db_se
 
 class TestDividendReinvestment:
     """``DEMO-KO``'s dividends are reinvested: each cash ``DIVIDEND`` row is paired with
-    a same-date ``REINVESTMENT`` row (``csv_import`` maps that onto ``TxnType.BUY``).
+    a same-date ``REINVESTMENT`` row (``csv_import`` maps that onto
+    ``TxnType.REINVESTMENT``, a purchase type the ledger treats exactly as a BUY).
 
     The parity item this pins is the one Sharesight/Navexa advertise — automatic DRP
     tracking — and the property that makes it correct: the reinvestment buys shares
@@ -728,3 +729,100 @@ class TestDividendReinvestment:
         )
         assert deposits_to_date > 0
         assert sum(flows[d] for d in snap_dates if d <= first_reinvest) != pytest.approx(deposits_to_date)
+
+
+# ── First-class reinvestment type (metron-ops#335) ───────────────────────────────
+
+# The goldens metron-ops-I325 re-pinned after DEMO-KO's dividends became reinvested
+# (``test_golden_twr_mwr`` / ``test_golden_attribution_input_sector_weights``). The type
+# introduction is display-only, so both must be unchanged by it — asserted here against
+# the same numbers, so a regression names #335 rather than an unrelated golden.
+_PINNED_TWR = 0.4441475702250812
+_PINNED_TOTAL_MV = 242790.958313
+_PINNED_DRP_ATTRIBUTION_DELTA = 407.831147  # 6.000164 reinvested DEMO-KO sh x 67.97
+_PRE_DRP_TOTAL_MV = 242383.127166
+
+
+def _ko_rows(session, txn_type: str) -> list[models.Transaction]:
+    ko = session.scalars(select(models.Security).where(models.Security.symbol == "DEMO-KO")).one()
+    return list(
+        session.scalars(
+            select(models.Transaction).where(
+                models.Transaction.security_id == ko.id, models.Transaction.txn_type == txn_type
+            )
+        ).all()
+    )
+
+
+class TestReinvestmentType:
+    """``DEMO-KO``'s twenty reinvestments are stored, served and rendered as
+    ``REINVESTMENT`` — never as a plain ``BUY`` — and TWR and the attribution golden are
+    exactly what they were when the same rows were BUYs."""
+
+    def test_the_twenty_ko_reinvestments_persist_as_reinvestment(self, db_session):
+        demo_household.ensure_demo_household_seeded(db_session)
+        reinvestments = _ko_rows(db_session, "REINVESTMENT")
+        assert len(reinvestments) == 20
+        dividend_dates = {r.trade_date for r in _ko_rows(db_session, "DIVIDEND")}
+        assert {r.trade_date for r in reinvestments} == dividend_dates
+        # None of them leaked through as a BUY on a dividend date.
+        assert not [r for r in _ko_rows(db_session, "BUY") if r.trade_date in dividend_dates]
+
+    def test_transactions_api_serves_them_as_reinvestment(self, client, db_session):
+        demo_household.ensure_demo_household_seeded(db_session)
+        r = client.get(
+            f"/portfolios/{demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID}/transactions", headers=DEMO_HEADERS
+        )
+        assert r.status_code == 200
+        ko = [t for t in r.json() if t["ticker"] == "DEMO-KO"]
+        reinvest = [t for t in ko if t["txn_type"] == "REINVESTMENT"]
+        assert len(reinvest) == 20
+        dividend_dates = {t["trade_date"] for t in ko if t["txn_type"] == "DIVIDEND"}
+        assert {t["trade_date"] for t in reinvest} == dividend_dates
+        assert not [t for t in ko if t["txn_type"] == "BUY" and t["trade_date"] in dividend_dates]
+        # The same rows through the account-detail Transactions table.
+        acct = _taxable_account(db_session)
+        detail = client.get(
+            f"/portfolios/{demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID}/accounts/{acct.id}", headers=DEMO_HEADERS
+        )
+        assert detail.status_code == 200
+        acct_types = [t["txn_type"] for t in detail.json()["transactions"] if t["ticker"] == "DEMO-KO"]
+        assert acct_types.count("REINVESTMENT") == 20
+
+    def test_twr_and_attribution_goldens_are_unchanged_by_the_type(self, db_session):
+        demo_household.ensure_demo_household_seeded(db_session)
+        summary = perf.performance(
+            db_session, demo_household.DEMO_TENANT_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID
+        )
+        assert round(summary.twr, 7) == 0.4441476
+        assert summary.twr == pytest.approx(_PINNED_TWR, abs=1e-9)
+        valued = analytics.valued_holdings(
+            db_session, demo_household.DEMO_TENANT_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID
+        )
+        total_mv = sum(h.market_value for h in valued if h.market_value)
+        assert total_mv == pytest.approx(_PINNED_TOTAL_MV, rel=1e-6)
+        assert total_mv - _PRE_DRP_TOTAL_MV == pytest.approx(_PINNED_DRP_ATTRIBUTION_DELTA, abs=1e-5)
+
+    def test_a_pre_335_instance_is_retyped_in_place_not_duplicated(self, db_session):
+        """An instance seeded before the type existed holds the twenty rows as ``BUY``
+        under their BUY-typed ``source_key``. The next reconcile must re-type those rows
+        — not insert twenty more (double-counting the reinvested shares) — and leave the
+        NAV series, TWR and the holding exactly where they were."""
+        demo_household.ensure_demo_household_seeded(db_session)
+        before = _ko_rows(db_session, "REINVESTMENT")
+        for row in before:  # rewind to what a pre-#335 seed persisted
+            row.txn_type = "BUY"
+            row.source_key = row.source_key.replace("|REINVESTMENT|", "|BUY|")
+        db_session.commit()
+        assert _ko_rows(db_session, "REINVESTMENT") == []
+        tx_count = db_session.scalar(select(func.count(models.Transaction.id)))
+
+        demo_household._reconcile_and_backfill(db_session)
+        db_session.commit()
+
+        assert db_session.scalar(select(func.count(models.Transaction.id))) == tx_count
+        assert len(_ko_rows(db_session, "REINVESTMENT")) == 20
+        summary = perf.performance(
+            db_session, demo_household.DEMO_TENANT_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID
+        )
+        assert summary.twr == pytest.approx(_PINNED_TWR, abs=1e-9)

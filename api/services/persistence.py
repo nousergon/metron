@@ -33,12 +33,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from api.db import models
 from portfolio_analytics.ingestion.base import ConnectorSnapshot
-from portfolio_analytics.ingestion.schema import CanonicalActivity, activity_key, lot_key
+from portfolio_analytics.ingestion.schema import CanonicalActivity, activity_key, legacy_activity_key, lot_key
 from portfolio_analytics.prices import to_yf_symbol
 
 
@@ -50,6 +50,7 @@ class PersistResult:
     securities_created: int = 0
     transactions_inserted: int = 0
     transactions_skipped: int = 0  # already present (idempotent re-import)
+    transactions_retyped: int = 0  # stored BUY re-typed to REINVESTMENT on re-import (metron-ops#335)
     positions_imported: int = 0    # broker-reported holdings written (snapshot sources)
     accounts_excluded: int = 0     # snapshot accounts skipped — user-deleted (excluded keys)
     realized_lots_inserted: int = 0  # broker closed-lot realized gains unioned (metron-ops#81)
@@ -249,6 +250,17 @@ def _insert_activities(
             if key in seen:
                 result.transactions_skipped += 1
                 continue
+            legacy = legacy_activity_key(act)
+            if legacy is not None and legacy in seen:
+                # This dividend reinvestment is already stored as a BUY under its
+                # pre-REINVESTMENT key (metron-ops#335). Re-type that row in place
+                # rather than insert a second copy of the same shares; the numbers are
+                # untouched, only the type (and the key that embeds it) change.
+                _retype_legacy_reinvestment(session, account_id, legacy, key, act.type.value)
+                seen.discard(legacy)
+                seen.add(key)
+                result.transactions_retyped += 1
+                continue
             seen.add(key)
             security = securities.get(act.security_id) if act.security_id else None
             session.add(
@@ -267,6 +279,26 @@ def _insert_activities(
                 )
             )
             result.transactions_inserted += 1
+
+
+def _retype_legacy_reinvestment(
+    session: Session, account_id: uuid.UUID, legacy_key: str, key: str, txn_type: str
+) -> None:
+    """Re-type the stored row keyed ``legacy_key`` to ``txn_type`` under its new ``key``.
+
+    ``created_at`` is refreshed too: ``compute_cache.portfolio_fingerprint`` signs the
+    transactions table by ``(count, max(created_at))`` on the assumption it is append-
+    only, so an in-place re-type that moved neither would keep serving the cached BUY."""
+    row = session.scalars(
+        select(models.Transaction).where(
+            models.Transaction.account_id == account_id, models.Transaction.source_key == legacy_key
+        )
+    ).first()
+    if row is None:  # pragma: no cover — ``seen`` was read from this same account's keys
+        return
+    row.txn_type = txn_type
+    row.source_key = key
+    row.created_at = func.now()
 
 
 def _replace_positions(

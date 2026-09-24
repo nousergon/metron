@@ -76,6 +76,7 @@ from portfolio_analytics.broker_io.file_import import FileImportError, FileImpor
 from portfolio_analytics.broker_io.manual_entry import ManualEntryError, ManualPosition, build_manual_snapshot
 from portfolio_analytics.broker_io.ofx_import import parse_ofx
 from portfolio_analytics.broker_io.snaptrade_reader import SnapTradeReader
+from portfolio_analytics.domain.ledger import TxnType
 from portfolio_analytics.ingestion.ibkr_flex_connector import IbkrFlexConnector
 from portfolio_analytics.ingestion.snaptrade import SnapTradeConnector
 
@@ -374,7 +375,10 @@ class TransactionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     trade_date: date
-    txn_type: str
+    # The canonical ledger type, published as an enum so clients can tell a dividend
+    # REINVESTMENT from a plain BUY (metron-ops#335) — stored values are only ever
+    # ``TxnType.value``.
+    txn_type: TxnType
     ticker: str
     quantity: float
     price: float
@@ -1000,6 +1004,9 @@ class ImportOut(BaseModel):
     securities_created: int
     transactions_inserted: int
     transactions_skipped: int
+    # Already-stored dividend reinvestments (imported as BUY before metron-ops#335)
+    # re-typed to REINVESTMENT in place by this import — neither new nor skipped.
+    transactions_retyped: int = 0
     positions_imported: int = 0
     errors: list[SkipOut]
 
@@ -1588,6 +1595,7 @@ def _summarize(snapshot, persisted: persistence.PersistResult, *, parsed: int, s
         securities_created=persisted.securities_created,
         transactions_inserted=persisted.transactions_inserted,
         transactions_skipped=persisted.transactions_skipped,
+        transactions_retyped=persisted.transactions_retyped,
         positions_imported=persisted.positions_imported,
         errors=[SkipOut(ref=e.ref, reason=e.reason) for e in errors[:_MAX_ERROR_DETAIL]],
     )

@@ -17,6 +17,7 @@ from portfolio_analytics.domain.diagnostics import (
     evaluate_target_drift,
 )
 from portfolio_analytics.domain.ledger import (
+    PURCHASE_TYPES,
     Ledger,
     Lot,
     RealizedGain,
@@ -50,6 +51,7 @@ __all__ = [
     "compute_diagnostics",
     "evaluate_target_drift",
     "Ledger",
+    "PURCHASE_TYPES",
     "Lot",
     "RealizedGain",
     "Transaction",

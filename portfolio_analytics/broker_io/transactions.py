@@ -34,6 +34,10 @@ _SHARE_TOL = 1e-4
 # but the tranche view reads only BUY/SELL-derived lots. Unmapped types skip.
 _TYPE_MAP = {
     "BUY": TxnType.BUY,
+    # Not a SnapTrade activity type — the canonical value, which ``CanonicalReader``
+    # round-trips back into this dict shape. Without it a reinvestment read through the
+    # canonical store would be dropped and its shares lost (metron-ops#335).
+    "REINVESTMENT": TxnType.REINVESTMENT,
     "SELL": TxnType.SELL,
     "DIVIDEND": TxnType.DIVIDEND,
     "CONTRIBUTION": TxnType.DEPOSIT,
