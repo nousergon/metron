@@ -11,6 +11,8 @@ import { accountingMoney, accountingMoneyWhole, isoDate, money, moneyWhole, quan
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { IfSoldTaxPanel } from "@/components/if-sold-tax-panel";
+import { MethodologyLink } from "@/components/methodology-link";
+import { TxnTypeLabel } from "@/components/txn-type-label";
 import { navFeatureStates } from "@/lib/entitlements";
 import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
@@ -85,7 +87,10 @@ export default async function TaxPage(
     <div>
       <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
 
-      <h1 className="mt-3 text-lg font-semibold">Tax</h1>
+      <div className="mt-3 flex items-baseline gap-2">
+        <h1 className="text-lg font-semibold">Tax</h1>
+        <MethodologyLink section="tax-lots" />
+      </div>
       <p className="text-sm text-muted">
         Realized income by year, plus per-lot holding-period term and unrealized P&amp;L (at the last close, in {ccy})
         with harvestable losses flagged. Taxable accounts only. Descriptive, not advice.
@@ -312,7 +317,7 @@ export default async function TaxPage(
             {txns.map((t, i) => (
               <tr key={`${t.trade_date}-${t.txn_type}-${t.ticker}-${i}`} className="border-b border-line last:border-0">
                 <td className="px-4 py-2 font-medium tabular-nums">{isoDate(t.trade_date)}</td>
-                <td className="px-4 py-2 text-right text-muted">{t.txn_type}</td>
+                <td className="px-4 py-2 text-right text-muted"><TxnTypeLabel type={t.txn_type} /></td>
                 <td className="px-4 py-2 text-right">{t.ticker || "—"}</td>
                 <td className="px-4 py-2 text-right text-muted">{t.currency}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{t.quantity ? quantity(t.quantity) : "—"}</td>
