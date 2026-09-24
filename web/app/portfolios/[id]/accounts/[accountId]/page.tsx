@@ -4,6 +4,7 @@ import { accountingMoneyWhole, isoDate, money, moneyWhole, quantity, signClass }
 import { Empty, Section, Table } from "@/components/ui";
 import { GroupedHoldings } from "@/components/grouped-holdings";
 import { LiveValuationProvider } from "@/components/live-valuation-context";
+import { TxnTypeLabel } from "@/components/txn-type-label";
 import { requireApiAuth } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -118,7 +119,7 @@ export default async function AccountPage(props: { params: Promise<{ id: string;
             {txns.map((t, i) => (
               <tr key={`${t.trade_date}-${t.txn_type}-${t.ticker}-${i}`} className="border-b border-line last:border-0">
                 <td className="px-4 py-2 font-medium tabular-nums">{isoDate(t.trade_date)}</td>
-                <td className="px-4 py-2 text-right text-muted">{t.txn_type}</td>
+                <td className="px-4 py-2 text-right text-muted"><TxnTypeLabel type={t.txn_type} /></td>
                 <td className="px-4 py-2 text-right">{t.ticker || "—"}</td>
                 <td className="px-4 py-2 text-right text-muted">{t.currency}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{t.quantity ? quantity(t.quantity) : "—"}</td>

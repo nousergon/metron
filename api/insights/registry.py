@@ -266,7 +266,11 @@ _TAX: tuple[Facet, ...] = (
         _LEDGER_BROKER,
         "tax",
         "tax",
-        notes="L1 ONLY because the user authors the hypothetical. Metron must never pre-select the position (metron-ops#208).",
+        notes=(
+            "L1 ONLY because the user authors the hypothetical. Metron must never pre-select the position "
+            "(metron-ops#208). Computed by GET /portfolios/{id}/tax/if-sold (domain: tax.hypothetical_sale), "
+            "and only for a hypothetical the user typed."
+        ),
     ),
     _f("dividend_qualification", "tax", "Qualified dividends and withholding", _LEDGER, "tax", "tax"),
     _f(
