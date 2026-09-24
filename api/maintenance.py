@@ -36,6 +36,7 @@ from api.services import (
     attribution,
     benchmark_gap,
     broker_sync,
+    data_quality,
     data_spine,
     db_read_profile,
     fx,
@@ -98,6 +99,7 @@ class RefreshResult:
     watchlist_universe_published: bool = False  # watchlist-only-ticker universe published (metron-ops#132)
     broker_flex_synced: int = 0     # portfolios whose IBKR Flex-sourced accounts were re-synced (metron-ops#150)
     broker_snaptrade_synced: int = 0  # portfolios whose SnapTrade-sourced accounts were re-synced (metron-ops#150)
+    stale_prices_flagged: int = 0   # held symbol-portfolio pairs whose close lags the calendar (metron-ops#219, flag only)
 
 
 def daily_refresh(
@@ -182,6 +184,7 @@ def daily_refresh(
     total_symbols = total_updated = total_snaps = total_fx = 0
     total_recon = total_risk = total_attr = total_acct_snaps = total_earnings = 0
     total_bench_gap = 0
+    total_stale_prices = 0
     total_reconciled = 0
     total_flex_synced = total_snaptrade_synced = 0
 
@@ -243,6 +246,13 @@ def daily_refresh(
                 else 0
             )
             record(len(symbols))
+        # Layer-5 stale-price flags (metron-ops#219), FLAG MODE: logs each held symbol whose
+        # cached close now lags the NYSE calendar. Read-only; never pages, never blocks.
+        stale_prices = (
+            data_quality.gate_stale_prices(session, symbols, currency_by_symbol=ccy_by_ticker, today=today)
+            if symbols
+            else []
+        )
         # Refresh FX for every non-base currency held, so foreign positions convert into
         # the base-currency NAV instead of being dropped from the total.
         base = p.base_currency or "USD"
@@ -343,6 +353,7 @@ def daily_refresh(
 
         total_symbols += len(symbols)
         total_updated += updated
+        total_stale_prices += len(stale_prices)
         total_fx += fx_updated
         total_snaps += 1 if snap is not None else 0
         total_acct_snaps += acct_snaps or 0
@@ -403,6 +414,7 @@ def daily_refresh(
         watchlist_universe_published=watchlist_universe_published,
         broker_flex_synced=total_flex_synced,
         broker_snaptrade_synced=total_snaptrade_synced,
+        stale_prices_flagged=total_stale_prices,
     )
 
 
@@ -600,7 +612,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.info(
             "daily-refresh done: %d portfolios, %d symbols, %d prices, %d snapshots, "
             "%d deferred, %d account-snapshots, %d reconstructed, %d risk, %d attribution, "
-            "%d benchmark-gap, universe_published=%s, %d flex-synced, %d snaptrade-synced",
+            "%d benchmark-gap, universe_published=%s, %d flex-synced, %d snaptrade-synced, "
+            "%d stale-price flags",
             r.portfolios,
             r.symbols,
             r.prices_updated,
@@ -614,6 +627,7 @@ def main(argv: list[str] | None = None) -> int:
             r.universe_published,
             r.broker_flex_synced,
             r.broker_snaptrade_synced,
+            r.stale_prices_flagged,
         )
         # Non-zero when positions are stale: the run refreshed prices but did NOT keep
         # share counts current, and a green systemd unit would say otherwise.
