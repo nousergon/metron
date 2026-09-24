@@ -107,8 +107,8 @@ npm install --no-audit --no-fund --silent || { echo "npm install FAILED"; exit 1
 # ANTHROPIC_API_KEY is RETIRED (2026-08-29 ruling: direct-Anthropic linkage ends
 # fleet-wide). It is deliberately NOT in this hydration list and metron_ext no longer
 # reads it anywhere (metron-ops-I281) — the advisor resolves a krepis router GROUP
-# only. A hand-pasted ANTHROPIC_API_KEY left over on the box from before this change is
-# inert; remove it from the box's metron-ops/.env at the next opportunity.
+# only. A hand-pasted copy left on the box from before the ruling is removed by the
+# declared-env step below (infrastructure/declared-flags.env lists it as retired).
 # Values are written straight to the file and NEVER echoed (they'd leak into the GHA log).
 #
 # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID were dropped 2026-08-03: they pointed at
@@ -211,6 +211,20 @@ sed -i '/# >>> ssm-hydrated/,/# <<< ssm-hydrated/d' "$ENVF"
 cat "${BLOCK}.wrapped" >> "$ENVF"
 rm -f "$BLOCK" "${BLOCK}.wrapped"
 echo "  hydrated ${HYDRATED} var(s) from SSM (values not logged)"
+
+# Apply the declared, non-secret environment (metron-ops-I340, metron-ops-I281).
+# infrastructure/declared-flags.env is the only home of EXTERNAL_DEMO_RELEASED and
+# DISPLAY_LICENCE_CONFIRMED: before this step they were a hand-managed line in an untracked
+# env file on one box, nothing recorded their value, a rebuild silently fell back to the
+# api/config.py default, and a hand edit that flipped one was invisible. They are written
+# into metron/.env (read by every Metron unit, including the release gate, which does not
+# read metron-ops/.env); any hand-set line for them in either file is removed and logged,
+# and retired names (ANTHROPIC_API_KEY) are removed with their values never logged.
+DEPLOY_STAGE="declared env"
+echo "=== applying infrastructure/declared-flags.env ==="
+bash "$REPO/infrastructure/declared_env.sh" "$REPO/infrastructure/declared-flags.env" "$REPO/.env" "$ENVF" \
+  || { echo "declared env FAILED"; exit 1; }
+DEPLOY_STAGE="unit install"
 
 # Install tracked systemd units when the repo copy differs from the live one, so a unit
 # edit deploys via the merge button alone (metron-ops DEPLOY.md declares
