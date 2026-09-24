@@ -3,6 +3,7 @@ import { percent, signClass } from "@/lib/format";
 import { Empty, Locked, Section, StatCard, Table } from "@/components/ui";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { AsOfClose } from "@/components/as-of-close";
+import { MethodologyLink } from "@/components/methodology-link";
 import { TierSimulator } from "@/components/tier-simulator";
 import { ComputeAttribution } from "@/components/compute-attribution";
 import { featureEntitlement, loadEntitlements, toFeatureStates } from "@/lib/entitlements";
@@ -70,6 +71,7 @@ export default async function AttributionPage(
         {/* SETTLED tab (metron-ops#145/#146): as_of is the freshest close bar the window
             returns were computed from — the decomposition's true data horizon. */}
         <AsOfClose date={attr.as_of} />
+        <MethodologyLink section="attribution" />
       </div>
       <p className="text-sm text-muted">
         Brinson-Fachler decomposition of active return vs {attr.benchmark} into allocation (sector tilts), selection
