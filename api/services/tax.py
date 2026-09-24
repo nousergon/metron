@@ -12,7 +12,7 @@ unrealized and is excluded from the unrealized totals (cost basis + term still s
 from __future__ import annotations
 
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -22,7 +22,17 @@ from sqlalchemy.orm import Session
 from api.db import models
 from api.services import account_meta, analytics, fx
 from api.services import prices as price_service
-from portfolio_analytics.domain.tax import LONG_TERM, classify_term
+from portfolio_analytics.domain.tax import (
+    LONG_TERM,
+    HypotheticalSale,
+    LotMethod,
+    LotPick,
+    SaleDelta,
+    TaxRates,
+    classify_term,
+    hypothetical_sale,
+    sale_delta,
+)
 from portfolio_analytics.domain.tax import harvestable_loss as compute_harvestable
 
 
@@ -69,6 +79,33 @@ class TaxSummary:
     lots: list[TaxLot] = field(default_factory=list)
 
 
+def _tax_scope(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    taxable_only: bool,
+    selected_account_ids: Collection[uuid.UUID] | None,
+) -> tuple[Collection[uuid.UUID] | None, int]:
+    """The account scope of a tax view and how many candidate accounts it dropped for
+    being tax-advantaged. The selection (else every account) is intersected with the
+    taxable set when ``taxable_only`` — the taxable-only safety always wins."""
+    selected = set(selected_account_ids) if selected_account_ids is not None else None
+    if not taxable_only:
+        return selected, 0
+    # Candidate accounts = the selection if any, else every account in the portfolio.
+    candidate_ids = selected if selected is not None else set(
+        session.scalars(
+            select(models.Account.id).where(
+                models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id
+            )
+        ).all()
+    )
+    taxable = account_meta.taxable_account_ids(session, tenant_id, portfolio_id)
+    account_ids = candidate_ids & taxable
+    return account_ids, len(candidate_ids) - len(account_ids)
+
+
 def tax_lots(
     session: Session,
     tenant_id: uuid.UUID,
@@ -93,21 +130,9 @@ def tax_lots(
     leak its lots into the Tax lens. ``n_accounts_excluded`` counts the candidate
     accounts dropped for being tax-advantaged."""
     base = analytics._base_currency(session, portfolio_id)
-    selected = set(selected_account_ids) if selected_account_ids is not None else None
-    # Candidate accounts = the selection if any, else every account in the portfolio.
-    candidate_ids = selected if selected is not None else set(
-        session.scalars(
-            select(models.Account.id).where(
-                models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id
-            )
-        ).all()
+    account_ids, n_excluded = _tax_scope(
+        session, tenant_id, portfolio_id, taxable_only=taxable_only, selected_account_ids=selected_account_ids
     )
-    account_ids: Collection[uuid.UUID] | None = selected
-    n_excluded = 0
-    if taxable_only:
-        taxable = account_meta.taxable_account_ids(session, tenant_id, portfolio_id)
-        account_ids = candidate_ids & taxable
-        n_excluded = len(candidate_ids) - len(account_ids)
     ledger, incomplete = analytics.load_ledger(session, tenant_id, portfolio_id, account_ids=account_ids)
     prices = price_service.latest_close_by_symbol(session, list(ledger.open_lots))
     ccy_by_ticker = analytics._currency_by_symbol(session, list(ledger.open_lots))
@@ -179,4 +204,167 @@ def tax_lots(
         n_incomplete=len(incomplete),
         incomplete_tickers=incomplete_tickers,
         lots=lots,
+    )
+
+
+# ── "If sold" preview (metron-ops#208) ──────────────────────────────────────────
+#
+# Tax math on a hypothetical sale the USER authors — holding, quantity, price and lot
+# method are all inputs; nothing here picks a position or a lot. Read-only: builds the
+# ledger, reads the cached close, computes, returns. It writes nothing.
+
+# Placeholder flat rates used ONLY for a rate the caller did not supply. They are not
+# anyone's actual rates and every response names which rates were placeholders so the
+# UI can say so. (No per-user tax-rate preference exists yet.)
+PLACEHOLDER_RATES = TaxRates(short_term=0.24, long_term=0.15, state=0.0)
+
+
+class IfSoldError(ValueError):
+    """The hypothetical can't be measured as given (no lots, no price, bad quantity…)."""
+
+
+@dataclass
+class IfSoldLot:
+    """One open lot of the holding, as the specific-lot picker shows it."""
+
+    lot_index: int
+    open_date: date
+    quantity: float
+    cost_per_share: float
+    cost_basis: float
+    holding_days: int
+    term: str
+
+
+@dataclass
+class IfSoldPreview:
+    as_of: date
+    ticker: str
+    currency: str
+    price: float
+    price_source: str  # "latest_close" | "user"
+    price_as_of: date | None
+    quantity_held: float
+    rates: TaxRates
+    rates_placeholder: list[str]  # names of rates that fell back to PLACEHOLDER_RATES
+    open_lots: list[IfSoldLot]
+    sale: HypotheticalSale
+    fifo: HypotheticalSale  # the FIFO baseline for the same quantity + price
+    delta_vs_fifo: SaleDelta | None  # set for a specific-lot hypothetical only
+    n_accounts_excluded: int = 0
+    # The ticker has broker history in scope that starts mid-position — those shares
+    # can't be dated into lots, so they are not part of this preview.
+    history_incomplete: bool = False
+
+
+def resolve_rates(
+    short_term: float | None, long_term: float | None, state: float | None
+) -> tuple[TaxRates, list[str]]:
+    """Caller-supplied rates, with ``PLACEHOLDER_RATES`` filling any left out. Returns
+    the rates and the names of those that are placeholders."""
+    supplied = {"short_term": short_term, "long_term": long_term, "state": state}
+    placeholder = [name for name, value in supplied.items() if value is None]
+    values = {name: getattr(PLACEHOLDER_RATES, name) if value is None else value for name, value in supplied.items()}
+    try:
+        return TaxRates(**values), placeholder
+    except ValueError as e:
+        raise IfSoldError(str(e)) from None
+
+
+def if_sold_preview(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    ticker: str,
+    *,
+    today: date,
+    rates: TaxRates,
+    rates_placeholder: Sequence[str] = (),
+    quantity: float | None = None,
+    price: float | None = None,
+    method: LotMethod = LotMethod.FIFO,
+    picks: Sequence[LotPick] | None = None,
+    taxable_only: bool = True,
+    selected_account_ids: Collection[uuid.UUID] | None = None,
+) -> IfSoldPreview:
+    """Measure a hypothetical sale of ``ticker`` over the (taxable) account scope.
+
+    ``quantity`` defaults to the full position and ``price`` to the latest cached close.
+    Lots are the ledger's open lots across the scoped accounts, oldest first; FIFO
+    relieves them in that order (brokers relieve per account — narrowing the selection to
+    one account matches a single broker's FIFO). Amounts are in the security's own
+    currency, not converted.
+    """
+    symbol = ticker.strip()
+    if not symbol:
+        raise IfSoldError("Enter a ticker.")
+    account_ids, n_excluded = _tax_scope(
+        session, tenant_id, portfolio_id, taxable_only=taxable_only, selected_account_ids=selected_account_ids
+    )
+    ledger, incomplete = analytics.load_ledger(session, tenant_id, portfolio_id, account_ids=account_ids)
+    key = next((t for t in ledger.open_lots if t.upper() == symbol.upper()), None)
+    lots = [lot for lot in ledger.open_lots.get(key, []) if lot.quantity > 0] if key else []
+    history_incomplete = any(i.ticker and i.ticker.upper() == symbol.upper() for i in incomplete)
+    if not lots:
+        scope = "the taxable accounts in scope" if taxable_only else "the accounts in scope"
+        note = " Its imported history starts mid-position, so its lots can't be dated." if history_incomplete else ""
+        raise IfSoldError(f"No open lots for {symbol.upper()} in {scope}.{note}")
+    symbol = key or symbol
+
+    currency = analytics._currency_by_symbol(session, [symbol]).get(symbol, "USD")
+    price_as_of: date | None = None
+    if price is None:
+        point = price_service.latest_close_by_symbol(
+            session, [symbol], currency_by_symbol={symbol: currency}
+        ).get(symbol)
+        if point is None:
+            raise IfSoldError(f"No cached close for {symbol} — enter a price for the hypothetical.")
+        price, price_as_of, price_source = point.close, point.bar_date, "latest_close"
+    else:
+        price_source = "user"
+    held = sum(lot.quantity for lot in lots)
+    qty = held if quantity is None else quantity
+
+    try:
+        fifo = hypothetical_sale(lots, quantity=qty, price=price, asof=today, rates=rates)
+        sale = (
+            fifo
+            if method is LotMethod.FIFO
+            else hypothetical_sale(
+                lots, quantity=qty, price=price, asof=today, rates=rates, method=method, picks=picks
+            )
+        )
+    except ValueError as e:
+        raise IfSoldError(str(e)) from None
+
+    open_rows = []
+    for i, lot in enumerate(lots):
+        days = (today - lot.open_date).days
+        open_rows.append(
+            IfSoldLot(
+                lot_index=i,
+                open_date=lot.open_date,
+                quantity=lot.quantity,
+                cost_per_share=lot.cost_per_share,
+                cost_basis=lot.cost_basis,
+                holding_days=days,
+                term=classify_term(days),
+            )
+        )
+    return IfSoldPreview(
+        as_of=today,
+        ticker=symbol,
+        currency=currency,
+        price=price,
+        price_source=price_source,
+        price_as_of=price_as_of,
+        quantity_held=held,
+        rates=rates,
+        rates_placeholder=list(rates_placeholder),
+        open_lots=open_rows,
+        sale=sale,
+        fifo=fifo,
+        delta_vs_fifo=None if method is LotMethod.FIFO else sale_delta(sale, fifo),
+        n_accounts_excluded=n_excluded,
+        history_incomplete=history_incomplete,
     )

@@ -76,6 +76,8 @@ from portfolio_analytics.broker_io.file_import import FileImportError, FileImpor
 from portfolio_analytics.broker_io.manual_entry import ManualEntryError, ManualPosition, build_manual_snapshot
 from portfolio_analytics.broker_io.ofx_import import parse_ofx
 from portfolio_analytics.broker_io.snaptrade_reader import SnapTradeReader
+from portfolio_analytics.domain.ledger import TxnType
+from portfolio_analytics.domain.tax import LotMethod, LotPick
 from portfolio_analytics.ingestion.ibkr_flex_connector import IbkrFlexConnector
 from portfolio_analytics.ingestion.snaptrade import SnapTradeConnector
 
@@ -374,7 +376,10 @@ class TransactionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     trade_date: date
-    txn_type: str
+    # The canonical ledger type, published as an enum so clients can tell a dividend
+    # REINVESTMENT from a plain BUY (metron-ops#335) — stored values are only ever
+    # ``TxnType.value``.
+    txn_type: TxnType
     ticker: str
     quantity: float
     price: float
@@ -1000,6 +1005,9 @@ class ImportOut(BaseModel):
     securities_created: int
     transactions_inserted: int
     transactions_skipped: int
+    # Already-stored dividend reinvestments (imported as BUY before metron-ops#335)
+    # re-typed to REINVESTMENT in place by this import — neither new nor skipped.
+    transactions_retyped: int = 0
     positions_imported: int = 0
     errors: list[SkipOut]
     # Ingestion schema-contract findings (metron-ops#219) — FLAG MODE: the import above
@@ -1591,6 +1599,7 @@ def _summarize(snapshot, persisted: persistence.PersistResult, *, parsed: int, s
         securities_created=persisted.securities_created,
         transactions_inserted=persisted.transactions_inserted,
         transactions_skipped=persisted.transactions_skipped,
+        transactions_retyped=persisted.transactions_retyped,
         positions_imported=persisted.positions_imported,
         errors=[SkipOut(ref=e.ref, reason=e.reason) for e in errors[:_MAX_ERROR_DETAIL]],
         data_quality_findings=[f.render() for f in persisted.data_quality_findings[:_MAX_ERROR_DETAIL]],
@@ -2525,6 +2534,146 @@ def get_tax(
         session, portfolio.tenant_id, portfolio.id, today=date.today(),
         taxable_only=taxable_only, selected_account_ids=account_ids,
     )
+
+
+class IfSoldOpenLotOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    lot_index: int
+    open_date: date
+    quantity: float
+    cost_per_share: float
+    cost_basis: float
+    holding_days: int
+    term: str
+
+
+class IfSoldSoldLotOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    lot_index: int
+    open_date: date
+    quantity: float
+    cost_per_share: float
+    proceeds: float
+    cost_basis: float
+    gain: float
+    holding_days: int
+    term: str
+
+
+class IfSoldSaleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    method: str
+    quantity: float
+    price: float
+    proceeds: float
+    cost_basis: float
+    gain_st: float
+    gain_lt: float
+    gain_total: float
+    taxable_st: float
+    taxable_lt: float
+    est_tax_st: float
+    est_tax_lt: float
+    est_tax_state: float
+    est_tax_total: float
+    lots: list[IfSoldSoldLotOut]
+
+
+class IfSoldDeltaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    cost_basis: float
+    gain_st: float
+    gain_lt: float
+    gain_total: float
+    est_tax_total: float
+
+
+class IfSoldRatesOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    short_term: float
+    long_term: float
+    state: float
+
+
+class IfSoldOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    as_of: date
+    ticker: str
+    currency: str
+    price: float
+    price_source: str
+    price_as_of: date | None
+    quantity_held: float
+    rates: IfSoldRatesOut
+    rates_placeholder: list[str]
+    open_lots: list[IfSoldOpenLotOut]
+    sale: IfSoldSaleOut
+    fifo: IfSoldSaleOut
+    delta_vs_fifo: IfSoldDeltaOut | None
+    n_accounts_excluded: int = 0
+    history_incomplete: bool = False
+
+
+def _parse_lot_picks(raw: list[str]) -> list[LotPick]:
+    """``?lot=<index>:<quantity>`` (repeatable) → specific-lot picks; 422 on a bad shape."""
+    picks: list[LotPick] = []
+    for item in raw:
+        index, sep, qty = item.partition(":")
+        try:
+            if not sep:
+                raise ValueError
+            picks.append(LotPick(lot_index=int(index), quantity=float(qty)))
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"lot must be '<index>:<quantity>', got {item!r}") from None
+    return picks
+
+
+@router.get("/{portfolio_id}/tax/if-sold", response_model=IfSoldOut)
+def get_tax_if_sold(
+    ticker: str = Query(min_length=1, max_length=32),
+    quantity: float | None = Query(default=None, gt=0),
+    price: float | None = Query(default=None, ge=0),
+    method: LotMethod = LotMethod.FIFO,
+    lot: list[str] = Query(default=[]),
+    st_rate: float | None = Query(default=None, ge=0, le=1),
+    lt_rate: float | None = Query(default=None, ge=0, le=1),
+    state_rate: float | None = Query(default=None, ge=0, le=1),
+    taxable_only: bool = True,
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
+    session: Session = Depends(get_session),
+    x_preview_tier: str | None = Header(default=None),
+    x_preview_feed: str | None = Header(default=None),
+) -> tax.IfSoldPreview:
+    """"If sold" tax math on a hypothetical the USER authors (metron-ops#208): the
+    ticker, quantity (default: the full position), price (default: the latest cached
+    close) and lot method (``fifo``, or ``specific`` with ``?lot=<index>:<quantity>``
+    picks from ``open_lots``). Returns proceeds, cost basis, the short-/long-term gain
+    split, a per-lot breakdown, and an estimated tax at flat rates — the caller's, or
+    the labelled placeholders named in ``rates_placeholder``. A specific-lot request also
+    carries the FIFO baseline and the delta against it.
+
+    Read-only — it builds the ledger in memory and writes nothing. Taxable accounts only
+    by default, the same scope as ``GET /tax``."""
+    feat = _effective_entitlement("tax", x_preview_tier, x_preview_feed)
+    if not feat["available"]:
+        raise HTTPException(status_code=404, detail="This view isn't available on your plan.")
+    picks = _parse_lot_picks(lot)
+    try:
+        rates, placeholder = tax.resolve_rates(st_rate, lt_rate, state_rate)
+        return tax.if_sold_preview(
+            session, portfolio.tenant_id, portfolio.id, ticker, today=date.today(),
+            rates=rates, rates_placeholder=placeholder, quantity=quantity, price=price,
+            method=method, picks=picks, taxable_only=taxable_only, selected_account_ids=account_ids,
+        )
+    except tax.IfSoldError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
 
 
 class TearsheetPositionOut(BaseModel):

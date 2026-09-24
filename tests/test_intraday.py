@@ -769,3 +769,90 @@ class TestSessionState:
 
     def test_no_snapshot_is_closed(self):
         assert intraday.session_state(self._meta(), now=datetime(2026, 7, 7, 21, 30, tzinfo=UTC)) == "closed"
+
+
+class TestSameSymbolDecoyCannotHijackYfSymbol:
+    """metron-I399: ``securities`` is a GLOBAL table keyed ``(symbol, currency)``, so a
+    same-symbol row in another currency — another tenant's, or a stray — must never hand
+    the held position its yf_symbol (and so another listing's live quote). Mirrors
+    ``tests/test_prices.py::TestPriceServiceGuards``' decoy tests for the intraday layer:
+    every caller resolves by the currency the position is actually held under."""
+
+    _REAL_QUOTE = {"prev_close": 74.0, "open": 75.0, "last": 76.0}
+    # Coherent with the real close on purpose — a wildly off quote would be dropped by the
+    # scale-coherence guard and hide the hijack instead of exposing it.
+    _DECOY_QUOTE = {"prev_close": 70.0, "open": 72.0, "last": 80.0}
+
+    def _seed(self, session):
+        """A broker-snapshot (Position) holding of 1299/HKD — the live shape: its
+        ``holdings()`` currency comes from the Security row the Position links to."""
+        tenant = models.Tenant(name="t")
+        session.add(tenant)
+        session.flush()
+        pf = models.Portfolio(tenant_id=tenant.id, name="P", base_currency="HKD")
+        session.add(pf)
+        session.flush()
+        session.add(models.InvestorPreferences(tenant_id=tenant.id, portfolio_id=pf.id, intraday_enabled=True))
+        acct = models.Account(tenant_id=tenant.id, portfolio_id=pf.id, broker="flex", external_id="A1", currency="HKD")
+        real = models.Security(symbol="1299", yf_symbol="1299.HK", currency="HKD")
+        # The decoy sorts FIRST by id (the old "first row per symbol" pick) and carries a
+        # NEWER bar, so unscoped resolution would pick it on both the quote and EOD paths.
+        decoy = models.Security(id=uuid.UUID(int=0), symbol="1299", currency="USD", yf_symbol=None)
+        session.add_all([acct, real, decoy])
+        session.flush()
+        session.add_all([
+            models.Position(
+                tenant_id=tenant.id, account_id=acct.id, security_id=real.id, quantity=100,
+                avg_cost=60, currency="HKD", as_of=date(2026, 6, 11),
+            ),
+            models.PriceBar(security_id=real.id, bar_date=date(2026, 6, 11), close=75.0, currency="HKD"),
+            models.PriceBar(security_id=decoy.id, bar_date=date(2026, 6, 12), close=79.0, currency="USD"),
+        ])
+        session.commit()
+        return tenant.id, pf.id
+
+    def _reader(self):
+        return lambda: _art({"1299.HK": self._REAL_QUOTE, "1299": self._DECOY_QUOTE})
+
+    def test_yf_symbol_resolves_by_held_currency(self, db_session):
+        self._seed(db_session)
+        # Precondition: without disambiguation the decoy really does win — else this
+        # class would pass against the old code too.
+        assert intraday._yf_symbol_by_ticker(db_session, ["1299"]) == {"1299": "1299"}
+        assert intraday._yf_symbol_by_ticker(
+            db_session, ["1299"], currency_by_symbol={"1299": "HKD"}
+        ) == {"1299": "1299.HK"}
+
+    def test_held_currency_with_no_matching_row_falls_back_to_the_bare_ticker(self, db_session):
+        self._seed(db_session)
+        out = intraday._yf_symbol_by_ticker(db_session, ["1299"], currency_by_symbol={"1299": "EUR"})
+        assert out == {"1299": "1299"}
+
+    def test_live_overlay_uses_the_held_listings_quote(self, db_session):
+        tid, pid = self._seed(db_session)
+        prices, meta = intraday.for_portfolio(db_session, tid, pid, feed_entitled=True, reader=self._reader(), now=_NOW)
+        assert meta.applied
+        assert prices["1299"].close == 76.0
+
+    def test_live_prices_eod_baseline_uses_the_held_currency(self, db_session):
+        """No usable quote → the EOD fallback must be the HKD close, not the decoy's
+        newer USD bar."""
+        self._seed(db_session)
+        prices, meta = intraday.live_prices(
+            db_session, ["1299", "AAPL"], feed_entitled=True, currency_by_symbol={"1299": "HKD"},
+            reader=lambda: _art({"AAPL": {"last": 1.0}}), now=_NOW,
+        )
+        assert meta.source_by_ticker["1299"] == intraday.SOURCE_LAST_CLOSE
+        assert prices["1299"].close == 75.0
+
+    def test_today_view_decomposes_the_held_listing(self, db_session):
+        tid, pid = self._seed(db_session)
+        t = intraday.today_view(db_session, tid, pid, feed_entitled=True, reader=self._reader(), now=_NOW)
+        assert t.n_priced == 1
+        assert (t.rows[0].prev_close, t.rows[0].open, t.rows[0].last) == (74.0, 75.0, 76.0)
+
+    def test_today_by_account_decomposes_the_held_listing(self, db_session):
+        tid, pid = self._seed(db_session)
+        by_acct = intraday.today_by_account(db_session, tid, pid, feed_entitled=True, reader=self._reader(), now=_NOW)
+        (t,) = by_acct.values()
+        assert t.rows[0].last == 76.0

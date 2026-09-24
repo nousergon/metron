@@ -122,9 +122,18 @@ def load_quotes(*, reader=None, now: datetime | None = None) -> tuple[dict[str, 
     return quotes, as_of, _is_stale(as_of, now)
 
 
-def _yf_symbol_by_ticker(session: Session, tickers: list[str]) -> dict[str, str]:
+def _yf_symbol_by_ticker(
+    session: Session, tickers: list[str], *, currency_by_symbol: dict[str, str] | None = None
+) -> dict[str, str]:
     """Held ticker → its yf_symbol (the key the intraday artifact uses), falling back to
-    the bare ticker. First Security row per symbol wins (stable)."""
+    the bare ticker.
+
+    ``securities`` is a GLOBAL, cross-tenant table keyed ``(symbol, currency)`` — pass
+    ``currency_by_symbol`` (the caller's own held currency per ticker, e.g. from
+    ``holdings()``) to match the EXACT row this tenant holds, so a same-symbol duplicate
+    under another currency can never hand the overlay its yf_symbol (metron-I399 — the
+    same fix ``prices._securities_by_symbol`` got in metron-PR401). Without it, falls
+    back to first row per symbol by id."""
     if not tickers:
         return {}
     rows = session.scalars(
@@ -133,8 +142,14 @@ def _yf_symbol_by_ticker(session: Session, tickers: list[str]) -> dict[str, str]
         .order_by(models.Security.symbol, models.Security.id)
     ).all()
     out: dict[str, str] = {}
+    currency_by_symbol = currency_by_symbol or {}
     for row in rows:
-        out.setdefault(row.symbol, row.yf_symbol or row.symbol)
+        wanted = currency_by_symbol.get(row.symbol)
+        if wanted is not None:
+            if row.currency == wanted:
+                out[row.symbol] = row.yf_symbol or row.symbol  # exact (symbol, currency) match
+        else:
+            out.setdefault(row.symbol, row.yf_symbol or row.symbol)  # no disambiguation — first wins
     # Tickers without a Security row still map to themselves (US/USD plain symbols).
     for t in tickers:
         out.setdefault(t, t)
@@ -148,6 +163,7 @@ def _overlay(
     *,
     today: date,
     eod_closes: dict[str, ClosePoint] | None = None,
+    currency_by_symbol: dict[str, str] | None = None,
     reader=None,
     now: datetime | None = None,
 ) -> tuple[dict[str, ClosePoint], set[str]]:
@@ -183,7 +199,7 @@ def _overlay(
     price, so the caller can flag it "estimated" in the UI."""
     from api.services import indices as indices_service
 
-    yf_by_ticker = _yf_symbol_by_ticker(session, tickers)
+    yf_by_ticker = _yf_symbol_by_ticker(session, tickers, currency_by_symbol=currency_by_symbol)
     eod_closes = eod_closes or {}
     out: dict[str, ClosePoint] = {}
     estimated: set[str] = set()
@@ -252,6 +268,7 @@ def live_prices(
     tickers: Collection[str],
     *,
     feed_entitled: bool,
+    currency_by_symbol: dict[str, str] | None = None,
     reader=None,
     now: datetime | None = None,
     today: date | None = None,
@@ -262,7 +279,10 @@ def live_prices(
     values from EOD close exactly as before.
 
     ``feed_entitled`` is the deployment's feed axis (licensed-quote display); ``reader`` /
-    ``now`` / ``today`` are injectable for tests."""
+    ``now`` / ``today`` are injectable for tests. ``currency_by_symbol`` is the caller's
+    held currency per ticker — pass it whenever known, so both the EOD baseline and the
+    quote's yf_symbol resolve to the held security, not a same-symbol row in another
+    currency (metron-I399)."""
     now = now or datetime.now(UTC)
     today = today or now.date()
     tickers = [t for t in dict.fromkeys(tickers) if t]
@@ -283,9 +303,12 @@ def live_prices(
     # source ``fund_eod_close`` for a late-striking-fund same-day estimate — metron-ops#112).
     from api.services import prices as price_service
 
-    eod_closes = price_service.latest_close_by_symbol(session, tickers)
+    eod_closes = price_service.latest_close_by_symbol(
+        session, tickers, currency_by_symbol=currency_by_symbol
+    )
     overlay, estimated = _overlay(
-        session, tickers, quotes, today=today, eod_closes=eod_closes, reader=reader, now=now
+        session, tickers, quotes, today=today, eod_closes=eod_closes,
+        currency_by_symbol=currency_by_symbol, reader=reader, now=now,
     )
     if not overlay:
         return None, IntradayMeta(applied=False, as_of_utc=as_of, stale=stale, reason="unavailable")
@@ -332,7 +355,11 @@ def for_portfolio(
         return None, IntradayMeta(applied=False, reason="off")
     held = analytics.holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     tickers = [h.ticker for h in held if h.ticker]
-    return live_prices(session, tickers, feed_entitled=feed_entitled, reader=reader, now=now)
+    ccy_by_ticker = {h.ticker: h.currency for h in held if h.ticker}
+    return live_prices(
+        session, tickers, feed_entitled=feed_entitled, currency_by_symbol=ccy_by_ticker,
+        reader=reader, now=now,
+    )
 
 
 def session_state(meta: IntradayMeta, *, now: datetime | None = None) -> str:
@@ -501,7 +528,9 @@ def today_view(
     if not quotes:
         return TodaySummary(available=False, base_currency=base, reason="unavailable", as_of_utc=as_of, stale=True)
 
-    yf_by_ticker = _yf_symbol_by_ticker(session, [h.ticker for h in held])
+    yf_by_ticker = _yf_symbol_by_ticker(
+        session, [h.ticker for h in held], currency_by_symbol={h.ticker: h.currency for h in held}
+    )
     return _today_summary(held, quotes, yf_by_ticker, base, as_of=as_of, stale=stale)
 
 
@@ -618,8 +647,11 @@ def today_by_account(
     quotes, as_of, stale = load_quotes(reader=reader, now=now)
     if not quotes:
         return {}
-    all_tickers = [h.ticker for hs in per_acct.values() for h in hs]
-    yf_by_ticker = _yf_symbol_by_ticker(session, all_tickers)
+    all_held = [h for hs in per_acct.values() for h in hs]
+    yf_by_ticker = _yf_symbol_by_ticker(
+        session, [h.ticker for h in all_held],
+        currency_by_symbol={h.ticker: h.currency for h in all_held},
+    )
     return {
         aid: _today_summary(held, quotes, yf_by_ticker, base, as_of=as_of, stale=stale)
         for aid, held in per_acct.items()
