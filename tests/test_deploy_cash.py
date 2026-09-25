@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import uuid
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -330,6 +331,48 @@ def test_foreign_currency_candidate_is_skipped_not_priced_one_to_one(db_session)
     db_session.commit()
     plan = _plan(db_session, tenant_id, pid)
     assert _skip_reason(plan, "KO") == "currency"
+
+
+def test_watchlist_symbol_currency_resolves_through_the_tenants_own_rows(db_session):
+    """metron-ops#351: a watched-but-not-held symbol used to take its currency from the
+    global "first Security row per symbol" pick, so a same-symbol decoy under another
+    currency (the 2026-08-17 ``1299`` USD-vs-HKD shape) could price it — off the decoy's
+    bar — as a base-currency candidate. It must resolve through the Security row this
+    tenant's own ledger links to: here a closed-out 1299/HKD position."""
+    tenant_id, pid = _seed(db_session, held={}, watched={})
+    acct = db_session.query(models.Account).filter_by(tenant_id=tenant_id).one()
+    real = models.Security(symbol="1299", yf_symbol="1299.HK", currency="HKD", sector="Financials")
+    # Sorts FIRST by id (the old pick) and carries a USD bar, so the old path priced it.
+    decoy = models.Security(id=uuid.UUID(int=0), symbol="1299", currency="USD", sector="Financials")
+    db_session.add_all([real, decoy])
+    db_session.flush()
+    for kind, day in (("BUY", date(2026, 1, 2)), ("SELL", date(2026, 3, 2))):
+        db_session.add(
+            models.Transaction(
+                tenant_id=tenant_id,
+                account_id=acct.id,
+                security_id=real.id,
+                txn_type=kind,
+                quantity=100,
+                price=60.0,
+                amount=6000.0,
+                currency="HKD",
+                trade_date=day,
+                source_key=f"{kind}-1299",
+            )
+        )
+    db_session.add_all(
+        [
+            models.PriceBar(security_id=real.id, bar_date=date(2026, 9, 13), close=75.0, currency="HKD"),
+            models.PriceBar(security_id=decoy.id, bar_date=date(2026, 9, 13), close=79.0, currency="USD"),
+            models.WatchlistItem(tenant_id=tenant_id, portfolio_id=pid, symbol="1299"),
+        ]
+    )
+    db_session.commit()
+    ratings = {"1299": {"score": 0.8, "label": "Strong Buy", "ma_score": 0.9, "osc_score": 0.7, "n_votes": 11}}
+    plan = _plan(db_session, tenant_id, pid, ratings=ratings)
+    assert "1299" not in _by_ticker(plan)
+    assert _skip_reason(plan, "1299") == "currency"
 
 
 def test_empty_universe_yields_an_empty_plan_not_an_error(db_session):

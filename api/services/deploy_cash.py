@@ -356,9 +356,13 @@ def build_candidates(
     # SAME price the Holdings live view shows. ``live_prices`` returns None when the overlay
     # doesn't apply (no feed / stale / no usable quote) — then EOD close alone, exactly as
     # the settled view values.
-    # A held ticker resolves by the currency it is actually held under; only watchlist
-    # symbols fall back to the global Security lookup (metron-I399).
-    currency_by_symbol = analytics._currency_by_symbol(session, universe)
+    # A held ticker resolves by the currency it is actually held under (metron-I399). A
+    # watchlist symbol resolves through the tenant's own Security links (e.g. a closed-out
+    # position); only one the tenant has never linked falls back to the global Security
+    # lookup (metron-ops#351).
+    watch_ccy = analytics._tenant_currency_by_symbol(session, tenant_id, watch)
+    currency_by_symbol = analytics._currency_by_symbol(session, [s for s in watch if s not in watch_ccy])
+    currency_by_symbol.update(watch_ccy)
     currency_by_symbol.update({t: h.currency for t, h in held_by_ticker.items() if h.currency})
     eod = price_service.latest_close_by_symbol(session, universe, currency_by_symbol=currency_by_symbol)
     overlay, meta = intraday_service.live_prices(
