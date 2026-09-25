@@ -499,6 +499,40 @@ def _currency_by_symbol(session: Session, symbols: list[str]) -> dict[str, str]:
     return out
 
 
+def _tenant_currency_by_symbol(
+    session: Session,
+    tenant_id: uuid.UUID,
+    symbols: Collection[str],
+    *,
+    account_ids: Collection[uuid.UUID] | None = None,
+) -> dict[str, str]:
+    """Native currency per symbol from the Security rows THIS tenant's own positions and
+    transactions link to (``security_id``), optionally narrowed to ``account_ids``.
+
+    The tenant-scoped counterpart of :func:`_currency_by_symbol`: ``securities`` is a
+    global table keyed ``(symbol, currency)``, so a symbol-text lookup can land on another
+    tenant's (or a stray) same-symbol row under another currency (metron-ops#274/#351).
+    Resolving through the tenant's own links cannot. Position links win over transaction
+    links (a live snapshot over history); a symbol the tenant has no link for is absent —
+    the caller decides its fallback."""
+    if not symbols:
+        return {}
+    out: dict[str, str] = {}
+    for model in (models.Position, models.Transaction):
+        stmt = (
+            select(models.Security.symbol, models.Security.currency)
+            .join(model, model.security_id == models.Security.id)
+            .where(model.tenant_id == tenant_id, models.Security.symbol.in_(list(symbols)))
+            .distinct()
+            .order_by(models.Security.symbol, models.Security.currency)
+        )
+        if account_ids is not None:
+            stmt = stmt.where(model.account_id.in_(list(account_ids)))
+        for symbol, currency in session.execute(stmt).all():
+            out.setdefault(symbol, currency or "USD")
+    return out
+
+
 _CUSIP_LEN = 9
 # US Treasury issues share the "912" CUSIP issuer prefix (bills 912796/912797, notes/bonds
 # 9128xx + 91282x, long bonds 912810). A strong, no-guess treasury signal off the bare CUSIP.
@@ -827,9 +861,10 @@ def _holdings(
         if mv_local is not None:
             broker_mv[ticker] = broker_mv.get(ticker, 0.0) + float(mv_local)
 
-    # Ledger-only tickers (CSV/OFX, no Position row) have no held_ccy entry — fall back
-    # to the global symbol-text lookup only for those.
-    ccy = _currency_by_symbol(session, [t for t in agg if t not in held_ccy])
+    # Ledger-only tickers (CSV/OFX, no Position row) have no held_ccy entry — resolve those
+    # through the Security rows their own transactions link to, never by symbol text
+    # against the global table (metron-ops#351).
+    ccy = _tenant_currency_by_symbol(session, tenant_id, [t for t in agg if t not in held_ccy], account_ids=ledger_ids)
     out: list[Holding] = []
     for t, (shares, basis) in sorted(agg.items()):
         # Per-share broker price from the summed native market value (qty-weighted).
