@@ -224,6 +224,25 @@ DEPLOY_STAGE="declared env"
 echo "=== applying infrastructure/declared-flags.env ==="
 bash "$REPO/infrastructure/declared_env.sh" "$REPO/infrastructure/declared-flags.env" "$REPO/.env" "$ENVF" \
   || { echo "declared env FAILED"; exit 1; }
+
+# Every env file a Metron unit reads is 0600 (metron-ops-I275). metron-ops/.env holds the
+# SSM-hydrated DATABASE_URL and web/.env holds BETTER_AUTH_SECRET and AUTH_DATABASE_URL,
+# on a box where every service runs as ec2-user — the 2026-08-20 exposure was the same
+# credential at 0644 in a drop-in. Every Metron unit is User=ec2-user, so 0600 costs
+# nothing, and the box's unit-secret check (nous-ergon-ops check_unit_secrets.py) fails
+# a credential-bearing EnvironmentFile more permissive than 0640.
+DEPLOY_STAGE="env file modes"
+echo "=== env file modes ==="
+for f in "$REPO/.env" "$REPO/web/.env" "$ENVF"; do
+  [ -e "$f" ] || { echo "  $f: absent"; continue; }
+  mode=$(stat -c %a "$f")
+  if [ "$mode" != "600" ]; then
+    chmod 600 "$f" || { echo "env file modes FAILED: $f"; exit 1; }
+    echo "  $f: mode $mode -> 600"
+  else
+    echo "  $f: mode 600"
+  fi
+done
 DEPLOY_STAGE="unit install"
 
 # Install tracked systemd units when the repo copy differs from the live one, so a unit
