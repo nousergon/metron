@@ -856,3 +856,66 @@ class TestSameSymbolDecoyCannotHijackYfSymbol:
         by_acct = intraday.today_by_account(db_session, tid, pid, feed_entitled=True, reader=self._reader(), now=_NOW)
         (t,) = by_acct.values()
         assert t.rows[0].last == 76.0
+
+
+class TestLedgerOnlyDecoyCannotHijackCurrency:
+    """metron-ops#351: the CSV/OFX ledger-only sibling of the class above. A ledger-only
+    account has no Position row, so ``holdings()`` used to take its currency from the
+    global "first Security row per symbol" pick — a same-symbol decoy under another
+    currency set ``h.currency``, and every currency-keyed lookup downstream (the yf_symbol,
+    the EOD close) then followed the decoy. The currency must come from the Security row
+    the ledger's own transactions link to."""
+
+    _REAL_QUOTE = TestSameSymbolDecoyCannotHijackYfSymbol._REAL_QUOTE
+    _DECOY_QUOTE = TestSameSymbolDecoyCannotHijackYfSymbol._DECOY_QUOTE
+
+    def _seed(self, session):
+        """A CSV (ledger-only, no Position) holding of 1299/HKD next to a decoy 1299/USD
+        row that sorts first by id."""
+        tenant = models.Tenant(name="t")
+        session.add(tenant)
+        session.flush()
+        pf = models.Portfolio(tenant_id=tenant.id, name="P", base_currency="HKD")
+        session.add(pf)
+        session.flush()
+        session.add(models.InvestorPreferences(tenant_id=tenant.id, portfolio_id=pf.id, intraday_enabled=True))
+        acct = models.Account(tenant_id=tenant.id, portfolio_id=pf.id, broker="csv", external_id="C1", currency="HKD")
+        real = models.Security(symbol="1299", yf_symbol="1299.HK", currency="HKD")
+        decoy = models.Security(id=uuid.UUID(int=0), symbol="1299", currency="USD", yf_symbol=None)
+        session.add_all([acct, real, decoy])
+        session.flush()
+        session.add_all(
+            [
+                models.Transaction(
+                    tenant_id=tenant.id,
+                    account_id=acct.id,
+                    security_id=real.id,
+                    txn_type="BUY",
+                    quantity=100,
+                    price=60,
+                    amount=6000,
+                    currency="HKD",
+                    trade_date=date(2026, 6, 1),
+                    source_key="buy-1299",
+                ),
+                models.PriceBar(security_id=real.id, bar_date=date(2026, 6, 11), close=75.0, currency="HKD"),
+                models.PriceBar(security_id=decoy.id, bar_date=date(2026, 6, 12), close=79.0, currency="USD"),
+            ]
+        )
+        session.commit()
+        return tenant.id, pf.id
+
+    def test_holding_currency_comes_from_the_ledgers_own_security(self, db_session):
+        tid, pid = self._seed(db_session)
+        # Precondition: the global symbol-text pick really is the decoy — else this class
+        # would pass against the old code too.
+        assert analytics._currency_by_symbol(db_session, ["1299"]) == {"1299": "USD"}
+        (h,) = analytics.holdings(db_session, tid, pid)
+        assert h.currency == "HKD"
+
+    def test_live_overlay_uses_the_held_listings_quote(self, db_session):
+        tid, pid = self._seed(db_session)
+        reader = lambda: _art({"1299.HK": self._REAL_QUOTE, "1299": self._DECOY_QUOTE})  # noqa: E731
+        prices, meta = intraday.for_portfolio(db_session, tid, pid, feed_entitled=True, reader=reader, now=_NOW)
+        assert meta.applied
+        assert prices["1299"].close == 76.0
