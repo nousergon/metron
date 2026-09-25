@@ -160,3 +160,30 @@ def test_deploy_on_merge_applies_the_declaration_to_both_env_files():
     # After SSM hydration (so the hydrated block is also scanned) and before units restart.
     assert deploy.index("hydrated ${HYDRATED} var(s)") < deploy.index("declared_env.sh")
     assert deploy.index("declared_env.sh") < deploy.index('DEPLOY_STAGE="unit install"')
+
+
+def test_deploy_on_merge_keeps_every_metron_env_file_private(tmp_path):
+    """metron-ops-I275: the env files hold DATABASE_URL, BETTER_AUTH_SECRET and
+    AUTH_DATABASE_URL. The deploy makes all three 0600 before units restart."""
+    deploy = (INFRA / "deploy-on-merge.sh").read_text()
+    start = deploy.index('DEPLOY_STAGE="env file modes"')
+    stage = deploy[start : deploy.index('DEPLOY_STAGE="unit install"')]
+    assert 'for f in "$REPO/.env" "$REPO/web/.env" "$ENVF"; do' in stage
+    assert deploy.index("declared_env.sh") < start
+
+    # Run the stage itself against temp files.
+    repo = tmp_path / "metron"
+    (repo / "web").mkdir(parents=True)
+    ops = tmp_path / "metron-ops"
+    ops.mkdir()
+    for p in (repo / ".env", repo / "web" / ".env", ops / ".env"):
+        p.write_text("X=1\n")
+        p.chmod(0o644)
+    (repo / "web" / ".env").chmod(0o600)
+    script = f'REPO="{repo}"\nENVF="{ops}/.env"\n' + stage
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    for p in (repo / ".env", repo / "web" / ".env", ops / ".env"):
+        assert oct(p.stat().st_mode & 0o777) == "0o600", p
+    assert "mode 644 -> 600" in r.stdout
