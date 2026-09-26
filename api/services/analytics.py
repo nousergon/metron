@@ -533,6 +533,28 @@ def _tenant_currency_by_symbol(
     return out
 
 
+def _ledger_currency_by_symbol(
+    session: Session,
+    tenant_id: uuid.UUID,
+    symbols: Collection[str],
+    *,
+    account_ids: Collection[uuid.UUID] | None = None,
+) -> dict[str, str]:
+    """Native currency for symbols that came out of THIS tenant's own ledger.
+
+    Resolves through the tenant's own Security links first
+    (:func:`_tenant_currency_by_symbol`), so another tenant's same-symbol row under a
+    different currency can't win (metron-ops#351). Only a symbol with no link at all
+    falls back to the global lookup, which keeps today's behaviour for that case instead
+    of dropping it."""
+    symbols = list(dict.fromkeys(symbols))
+    out = _tenant_currency_by_symbol(session, tenant_id, symbols, account_ids=account_ids)
+    missing = [s for s in symbols if s not in out]
+    if missing:
+        out.update(_currency_by_symbol(session, missing))
+    return out
+
+
 _CUSIP_LEN = 9
 # US Treasury issues share the "912" CUSIP issuer prefix (bills 912796/912797, notes/bonds
 # 9128xx + 91282x, long bonds 912810). A strong, no-guess treasury signal off the bare CUSIP.
@@ -1189,7 +1211,9 @@ def _realized(
         ledger, _incomplete = load_ledger(session, tenant_id, portfolio_id, account_ids=replay_ids)
         merged += [(None, r) for r in ledger.realized]
 
-    ccy_by_ticker = _currency_by_symbol(session, [rg.ticker for ccy, rg in merged if ccy is None])
+    ccy_by_ticker = _ledger_currency_by_symbol(
+        session, tenant_id, [rg.ticker for ccy, rg in merged if ccy is None], account_ids=replay_ids
+    )
     out: list[RealizedLot] = []
     for ccy, r in sorted(merged, key=lambda x: x[1].close_date):
         currency = ccy or ccy_by_ticker.get(r.ticker, base)
@@ -1532,7 +1556,9 @@ def _income(
     # Realized gains → base at the close-date rate (rebuild each lot with base proceeds /
     # cost so its derived gain is in base; drop a lot we can't convert). Replayed lots
     # first, then the stored authoritative lots (their stored currency).
-    ccy_by_ticker = _currency_by_symbol(session, [r.ticker for r in ledger.realized])
+    ccy_by_ticker = _ledger_currency_by_symbol(
+        session, tenant_id, [r.ticker for r in ledger.realized], account_ids=account_ids
+    )
     realized_base: list[RealizedGain] = []
     replayed = [(ccy_by_ticker.get(r.ticker, base), r) for r in ledger.realized]
     for ccy, r in replayed + [(c, rg) for _aid, c, rg in stored]:
