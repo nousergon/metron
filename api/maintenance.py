@@ -628,8 +628,11 @@ def main(argv: list[str] | None = None) -> int:
             # One session date for the whole run, so the snapshot and the staleness report
             # agree on which day they describe.
             today = session_today()
-            r = daily_refresh(session, today=today, profile=profile)
-            stale = report_broker_staleness(session, today=today)
+            # Driver-level SELECT counting for the whole run (metron-ops-I343), so the
+            # best_effort blocks that return domain objects are measured too.
+            with profile.watch(session.get_bind()):
+                r = daily_refresh(session, today=today, profile=profile)
+                stale = report_broker_staleness(session, today=today)
         finally:
             session.close()
             db_read_profile.publish(profile, bucket=settings.market_data_bucket)
