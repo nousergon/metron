@@ -29,7 +29,10 @@ path with four separately-fixed NAV correctness bugs (metron-ops#74, #87, #88,
 #89); changing its read pattern on a hypothesis is how a fifth gets written.
 
 **What is measured, and what is NOT.** Rows materialised and wall-clock seconds
-per labelled block, both exact. **Bytes are not reported**, because nothing in
+per labelled block, both exact. Since schema v2, ``watch()`` also counts every
+SELECT the engine runs and the rows the driver says it returned. Those counts
+are charged to the innermost open block, or to ``(outside any block)``, so
+blocks that return a domain object instead of a row count are measured too. **Bytes are not reported**, because nothing in
 the SQLAlchemy/psycopg path exposes wire bytes per statement, and an estimate
 derived from row widths would read as a measurement while being a guess. Rows
 localise the read; the Neon monitor's ``data_transfer_bytes`` remains the
@@ -61,8 +64,13 @@ from datetime import UTC, datetime
 logger = logging.getLogger(__name__)
 
 #: Bumped when a field is added, removed, or changes meaning. A reader keys off
-#: this rather than guessing from shape.
-SCHEMA_VERSION = 1
+#: this rather than guessing from shape. v2 added per-block ``statements`` and
+#: ``db_rows`` from the driver, plus the ``(outside any block)`` entry.
+SCHEMA_VERSION = 2
+
+#: Label for driver-counted reads made while no block is open, so the payload's
+#: ``total_db_rows`` covers the whole run and not just the instrumented regions.
+UNBLOCKED_LABEL = "(outside any block)"
 
 #: Everything this module writes lives under here.
 KEY_PREFIX = "metron/db_read_profile"
@@ -76,6 +84,13 @@ class _Block:
     calls: int = 0
     rows: int = 0
     seconds: float = 0.0
+    #: SELECT statements the driver executed while this block was the innermost open one.
+    statements: int = 0
+    #: Rows those statements returned, from the driver's ``cursor.rowcount``. Unlike
+    #: ``rows`` (what the call site chose to report), this needs no cooperation from the
+    #: code being measured, so a block like ``best_effort:risk`` that returns a domain
+    #: object is no longer a 170-second region with zero rows against it.
+    db_rows: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -83,6 +98,8 @@ class _Block:
             "calls": self.calls,
             "rows": self.rows,
             "seconds": round(self.seconds, 3),
+            "statements": self.statements,
+            "db_rows": self.db_rows,
         }
 
 
@@ -99,6 +116,9 @@ class ReadProfile:
     command: str
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     blocks: dict[str, _Block] = field(default_factory=dict)
+    #: Blocks currently open, innermost last. A driver-counted read is charged to the
+    #: innermost one only, so nesting never counts a row twice.
+    _open: list[_Block] = field(default_factory=list, repr=False)
 
     @contextmanager
     def block(self, label: str):
@@ -118,15 +138,57 @@ class ReadProfile:
             counted += int(rows)
 
         start = time.monotonic()
+        self._open.append(entry)
         try:
             yield record
         finally:
+            self._open.remove(entry)
             # In a `finally` so a raising body still contributes its cost. A
             # block that blew up after reading 40k rows read them regardless,
             # and dropping that is how the expensive call hides in the profile.
             entry.calls += 1
             entry.rows += counted
             entry.seconds += time.monotonic() - start
+
+    def count_statement(self, statement: str, rowcount: int) -> None:
+        """Charge one executed statement to the innermost open block.
+
+        Only SELECTs (including ``WITH ...`` queries) count: they are what leaves
+        the database. ``rowcount`` comes from the driver. psycopg reports the
+        number of rows a SELECT returned. SQLite reports -1, which is recorded as
+        a statement with no row count rather than guessed.
+        """
+        head = statement.lstrip().split(None, 1)[0].lower() if statement.strip() else ""
+        if head not in ("select", "with"):
+            return
+        target = self._open[-1] if self._open else self.blocks.setdefault(
+            UNBLOCKED_LABEL, _Block(UNBLOCKED_LABEL)
+        )
+        target.statements += 1
+        if rowcount > 0:
+            target.db_rows += rowcount
+
+    @contextmanager
+    def watch(self, bind):
+        """Count every SELECT the given engine (or connection) runs until exit.
+
+        Listens on SQLAlchemy's ``after_cursor_execute`` and removes the listener
+        on exit, including when the body raises. Measuring never changes what is
+        read.
+        """
+        from sqlalchemy import event
+
+        engine = getattr(bind, "engine", bind)
+
+        def _after(conn, cursor, statement, parameters, context, executemany):  # noqa: ARG001
+            rowcount = getattr(cursor, "rowcount", None)
+            self.count_statement(statement, -1 if rowcount is None else rowcount)
+
+        event.listen(engine, "after_cursor_execute", _after)
+        try:
+            yield self
+        finally:
+            event.remove(engine, "after_cursor_execute", _after)
 
     def as_dict(self) -> dict:
         ordered = sorted(self.blocks.values(), key=lambda b: b.seconds, reverse=True)
@@ -137,6 +199,8 @@ class ReadProfile:
             "finished_at": datetime.now(UTC).isoformat(),
             "total_rows": sum(b.rows for b in ordered),
             "total_seconds": round(sum(b.seconds for b in ordered), 3),
+            "total_statements": sum(b.statements for b in ordered),
+            "total_db_rows": sum(b.db_rows for b in ordered),
             "blocks": [b.as_dict() for b in ordered],
         }
 
@@ -149,14 +213,14 @@ class ReadProfile:
         """
         payload = self.as_dict()
         logger.info(
-            "db-read-profile %s: %d rows in %.1fs across %d blocks",
-            payload["command"], payload["total_rows"],
-            payload["total_seconds"], len(payload["blocks"]),
+            "db-read-profile %s: %d rows (%d db rows over %d SELECTs) in %.1fs across %d blocks",
+            payload["command"], payload["total_rows"], payload["total_db_rows"],
+            payload["total_statements"], payload["total_seconds"], len(payload["blocks"]),
         )
         for b in payload["blocks"]:
             logger.info(
-                "  %-34s calls=%-4d rows=%-9d %.1fs",
-                b["label"], b["calls"], b["rows"], b["seconds"],
+                "  %-34s calls=%-4d rows=%-9d db_rows=%-9d selects=%-5d %.1fs",
+                b["label"], b["calls"], b["rows"], b["db_rows"], b["statements"], b["seconds"],
             )
 
 

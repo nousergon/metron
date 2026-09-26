@@ -604,8 +604,11 @@ def main(argv: list[str] | None = None) -> int:
         # in-process caller (tests, the API) measures without writing to S3.
         profile = db_read_profile.ReadProfile("daily-refresh")
         try:
-            r = daily_refresh(session, profile=profile)
-            stale = report_broker_staleness(session)
+            # Driver-level SELECT counting for the whole run (metron-ops-I343), so the
+            # best_effort blocks that return domain objects are measured too.
+            with profile.watch(session.get_bind()):
+                r = daily_refresh(session, profile=profile)
+                stale = report_broker_staleness(session)
         finally:
             session.close()
             db_read_profile.publish(profile, bucket=settings.market_data_bucket)
