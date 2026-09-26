@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -49,9 +49,30 @@ from api.services import calendar as calendar_svc
 from api.services import prices as price_service
 from api.services.demo import REFERENCE_PORTFOLIO_ID
 from api.services.demo_namespace import is_demo_symbol
+from api.services.security_perf import market_today
 from portfolio_analytics.prices import fetch_latest_closes
 
 logger = logging.getLogger(__name__)
+
+
+def _now() -> datetime:
+    """The wall clock, timezone-aware — the only clock ``daily-refresh`` reads. A seam, so a
+    test can place a fire either side of UTC midnight."""
+    return datetime.now(UTC)
+
+
+def session_today() -> date:
+    """The NYSE session date a ``daily-refresh`` fire belongs to — never the box's UTC date.
+
+    The box runs in UTC and the snapshot is keyed by date. That was harmless while every
+    fire landed between 20:45Z and 22:30Z, the same calendar date in New York. It stops
+    being harmless once a fire can land after UTC midnight: the EOD data collection that
+    publishes ``close_history`` runs from 18:15 ET and can finish as late as 19:50 ET
+    (23:50Z in summer, 00:50Z in winter), so the post-publish fire does too. Keyed on the
+    UTC date, a Monday-evening fire at 00:15Z reads "Tuesday", the freshness gate defers
+    for want of Tuesday's close, and Monday never gets a snapshot; a Friday-evening fire
+    reads "Saturday" and stamps Friday's close under the weekend."""
+    return market_today(_now())
 
 
 def _market_closes_published(today: date, *, source=None) -> bool:
@@ -125,7 +146,7 @@ def daily_refresh(
     request-time re-valuation, not a persisted series) is unaffected and intentionally still
     shows Metron's own live pricing.
     """
-    today = today or date.today()
+    today = today or session_today()
     # metron-ops-I343: measure what this command reads, never change what it reads.
     # An unsupplied profile is a live object that is simply never published, so the
     # instrumented call sites below are unconditional — a `if profile is not None`
@@ -604,11 +625,14 @@ def main(argv: list[str] | None = None) -> int:
         # in-process caller (tests, the API) measures without writing to S3.
         profile = db_read_profile.ReadProfile("daily-refresh")
         try:
+            # One session date for the whole run, so the snapshot and the staleness report
+            # agree on which day they describe.
+            today = session_today()
             # Driver-level SELECT counting for the whole run (metron-ops-I343), so the
             # best_effort blocks that return domain objects are measured too.
             with profile.watch(session.get_bind()):
-                r = daily_refresh(session, profile=profile)
-                stale = report_broker_staleness(session)
+                r = daily_refresh(session, today=today, profile=profile)
+                stale = report_broker_staleness(session, today=today)
         finally:
             session.close()
             db_read_profile.publish(profile, bucket=settings.market_data_bucket)

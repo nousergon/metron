@@ -195,6 +195,58 @@ def test_daily_refresh_weekend_run_is_not_gated(client, db_session, monkeypatch)
     assert db_session.scalars(_navsnaps(pid)).first() is not None
 
 
+def _clock_at(monkeypatch, instant):
+    monkeypatch.setattr("api.maintenance._now", lambda: instant)
+
+
+def test_daily_refresh_keys_the_snapshot_on_the_nyse_session_not_the_box_utc_date(
+    client, db_session, monkeypatch
+):
+    """The box runs in UTC; the snapshot is keyed on the NYSE session date.
+
+    After the decoupled data cutover (nousergon-data#1930) the EOD collection runs from
+    18:15 ET and can publish ``close_history`` as late as 19:50 ET — 23:50Z in summer,
+    00:50Z in winter — so a post-publish fire can land after UTC midnight. Keyed on the
+    box's UTC date, a Monday-evening fire at 00:15Z Tuesday compares Monday's SPY bar to
+    "Tuesday", defers, and no later fire ever records Monday: the day has no snapshot."""
+    from datetime import UTC, datetime
+
+    monkeypatch.setattr("api.services.prices.fetch_latest_closes", _price_src)
+    monkeypatch.setattr("api.services.performance.fetch_latest_closes", _spy_src)
+    monkeypatch.setattr("api.maintenance.fetch_latest_closes", _spy_src)  # SPY bar: Mon 2024-06-03
+    _no_derived(monkeypatch)
+    pid = _seed(client, str(uuid.uuid4()))
+
+    _clock_at(monkeypatch, datetime(2024, 6, 4, 0, 15, tzinfo=UTC))  # Mon 20:15 EDT
+    result = daily_refresh(db_session)
+
+    assert result.snapshots_deferred == 0
+    assert result.snapshots_recorded == 1
+    snap = db_session.scalars(_navsnaps(pid)).first()
+    assert snap.snap_date == date(2024, 6, 3)
+
+
+def test_a_friday_evening_fire_after_utc_midnight_records_friday_not_saturday(
+    client, db_session, monkeypatch
+):
+    """Read as a UTC date, a Friday-evening fire is a Saturday: the weekend branch skips the
+    freshness gate and stamps Friday's close under Saturday, leaving Friday itself empty."""
+    from datetime import UTC, datetime
+
+    monkeypatch.setattr("api.services.prices.fetch_latest_closes", _price_src)
+    monkeypatch.setattr("api.services.performance.fetch_latest_closes", _spy_src)
+    fri_spy = {"SPY": ClosePoint(bar_date=date(2024, 5, 31), close=500.0)}
+    monkeypatch.setattr("api.maintenance.fetch_latest_closes", lambda s, *, source=None: fri_spy)
+    _no_derived(monkeypatch)
+    pid = _seed(client, str(uuid.uuid4()))
+
+    _clock_at(monkeypatch, datetime(2024, 6, 1, 1, 15, tzinfo=UTC))  # Fri 21:15 EDT
+    result = daily_refresh(db_session)
+
+    assert result.snapshots_recorded == 1
+    assert db_session.scalars(_navsnaps(pid)).first().snap_date == date(2024, 5, 31)
+
+
 def test_daily_refresh_syncs_broker_positions_and_counts_them(client, db_session, monkeypatch):
     # Wiring check for metron-ops#150: the broker re-sync runs per portfolio, before
     # holdings/prices are computed, and a successful sync is counted in the result.
