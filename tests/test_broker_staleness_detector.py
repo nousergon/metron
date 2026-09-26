@@ -157,3 +157,26 @@ def test_cli_exits_zero_when_positions_are_current(db_session, session_factory, 
     monkeypatch.setattr(maintenance, "flex_sync_all", lambda session: 0)
     monkeypatch.setattr(maintenance, "report_broker_staleness", lambda session, **kw: [])
     assert maintenance.main([cmd]) == 0
+
+
+def test_cli_daily_refresh_counts_every_select_the_run_makes(db_session, session_factory, monkeypatch):
+    """metron-ops-I343: the systemd-invoked CLI is what publishes the profile, so the
+    driver-level SELECT counter has to wrap the run there. Otherwise the best_effort blocks
+    that return domain objects stay 170-second regions with nothing counted."""
+    from sqlalchemy import text
+
+    published = []
+
+    def _refresh(session, *, profile, **kw):
+        with profile.block("best_effort:risk"):
+            session.execute(text("SELECT 1")).all()
+        return maintenance.RefreshResult(0, 0, 0, 0)
+
+    monkeypatch.setattr(maintenance, "SessionLocal", session_factory)
+    monkeypatch.setattr(maintenance, "create_all", lambda: None)
+    monkeypatch.setattr(maintenance, "daily_refresh", _refresh)
+    monkeypatch.setattr(maintenance, "report_broker_staleness", lambda session, **kw: [])
+    monkeypatch.setattr(maintenance.db_read_profile, "publish", lambda p, **kw: published.append(p))
+    assert maintenance.main(["daily-refresh"]) == 0
+    (profile,) = published
+    assert profile.blocks["best_effort:risk"].statements == 1

@@ -124,3 +124,74 @@ def test_a_failed_publish_says_what_failed(caplog):
     drp.publish(drp.ReadProfile("daily-refresh"), bucket="b", s3_client=_FakeS3(fail=True))
     assert "AccessDenied" in caplog.text
     assert "db-read-profile" in caplog.text
+
+
+# ── driver-level SELECT counting (schema v2) ─────────────────────────────────
+# The 2026-09-24 refresh profiles showed best_effort:risk / performance /
+# attribution at 110-180 s each with rows=0: they return domain objects, so the
+# call-site counter had nothing to report and the slowest regions were invisible.
+
+
+def test_a_select_is_charged_to_the_innermost_open_block():
+    p = drp.ReadProfile("daily-refresh")
+    with p.block("best_effort:risk"):
+        p.count_statement("SELECT * FROM close_history WHERE symbol = ?", 1200)
+        with p.block("inner"):
+            p.count_statement("  select 1", 3)
+    assert (p.blocks["best_effort:risk"].statements, p.blocks["best_effort:risk"].db_rows) == (1, 1200)
+    assert (p.blocks["inner"].statements, p.blocks["inner"].db_rows) == (1, 3)
+
+
+def test_reads_outside_any_block_still_count_toward_the_total():
+    p = drp.ReadProfile("daily-refresh")
+    p.count_statement("WITH x AS (SELECT 1) SELECT * FROM x", 7)
+    payload = p.as_dict()
+    assert payload["total_db_rows"] == 7
+    assert payload["total_statements"] == 1
+    assert drp.UNBLOCKED_LABEL in p.blocks
+
+
+def test_writes_are_not_reads():
+    p = drp.ReadProfile("daily-refresh")
+    with p.block("snapshots"):
+        for stmt in ("INSERT INTO nav_snapshots VALUES (1)", "UPDATE t SET a = 1", "DELETE FROM t", ""):
+            p.count_statement(stmt, 50)
+    assert p.blocks["snapshots"].statements == 0
+    assert p.blocks["snapshots"].db_rows == 0
+
+
+def test_an_unknown_rowcount_is_a_statement_not_a_guess():
+    """SQLite reports rowcount -1 for a SELECT. That is recorded as a statement
+    with no row count, never as a negative or invented row count."""
+    p = drp.ReadProfile("daily-refresh")
+    with p.block("x"):
+        p.count_statement("SELECT 1", -1)
+    assert (p.blocks["x"].statements, p.blocks["x"].db_rows) == (1, 0)
+
+
+def test_watch_counts_real_statements_and_detaches_on_exit(tmp_path):
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'p.db'}")
+    p = drp.ReadProfile("daily-refresh")
+    with engine.connect() as conn:
+        conn.execute(text("CREATE TABLE t (a INTEGER)"))
+        with p.watch(engine), p.block("reads"):
+            conn.execute(text("SELECT a FROM t")).all()
+            conn.execute(text("SELECT a FROM t")).all()
+        conn.execute(text("SELECT a FROM t")).all()  # after exit: not counted
+    assert p.blocks["reads"].statements == 2
+    assert p.as_dict()["total_statements"] == 2  # the third SELECT, after exit, is not counted
+
+
+def test_watch_detaches_even_when_the_run_raises(tmp_path):
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'p.db'}")
+    p = drp.ReadProfile("daily-refresh")
+    with pytest.raises(RuntimeError):
+        with p.watch(engine):
+            raise RuntimeError("boom")
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1")).all()
+    assert p.as_dict()["total_statements"] == 0
