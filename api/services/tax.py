@@ -135,7 +135,9 @@ def tax_lots(
     )
     ledger, incomplete = analytics.load_ledger(session, tenant_id, portfolio_id, account_ids=account_ids)
     prices = price_service.latest_close_by_symbol(session, list(ledger.open_lots))
-    ccy_by_ticker = analytics._currency_by_symbol(session, list(ledger.open_lots))
+    ccy_by_ticker = analytics._ledger_currency_by_symbol(
+        session, tenant_id, list(ledger.open_lots), account_ids=account_ids
+    )
     fx_rates = fx.rates_to_base(session, list(ccy_by_ticker.values()), base=base)
 
     lots: list[TaxLot] = []
@@ -311,7 +313,9 @@ def if_sold_preview(
         raise IfSoldError(f"No open lots for {symbol.upper()} in {scope}.{note}")
     symbol = key or symbol
 
-    currency = analytics._currency_by_symbol(session, [symbol]).get(symbol, "USD")
+    currency = analytics._ledger_currency_by_symbol(
+        session, tenant_id, [symbol], account_ids=account_ids
+    ).get(symbol, "USD")
     price_as_of: date | None = None
     if price is None:
         point = price_service.latest_close_by_symbol(
