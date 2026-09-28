@@ -42,6 +42,11 @@ def _full_hist(symbols, start, end, *, source=None):
     return {s: _closes(s) for s in symbols}
 
 
+def _recent_hist(symbols, start, end, *, source=None):
+    """``_full_hist`` shifted to end yesterday, for routes that compute as of today."""
+    return {s: _closes(s, start=date.today() - timedelta(days=40)) for s in symbols}
+
+
 def _latest(symbols, *, source=None):
     # Price the held tickers so valued_holdings yields MV weights.
     return {s: ClosePoint(date(2024, 2, 9), 100.0 + _off(s)) for s in symbols if s in {"AAPL", "MSFT"}}
@@ -114,6 +119,56 @@ class TestComputeRisk:
         assert "MSFT" in r.excluded and r.n_modeled == 1
 
 
+class TestEstimationWindow:
+    """metron-ops-I343: the model is estimated over the declared ``window_days`` only.
+
+    The read used to be unbounded, so every cached bar of every held ticker and factor
+    ETF left the database on every run, and the regression ran over all of it."""
+
+    TODAY = date(2024, 2, 15)
+
+    @staticmethod
+    def _old_bars(symbols, start, end, *, source=None):
+        # 120 wild daily closes ending well before the window (TODAY - 403 days).
+        first = date(2022, 3, 1)
+        return {
+            s: [ClosePoint(first + timedelta(days=i), 50.0 + 40.0 * ((i * (3 + _off(s))) % 5)) for i in range(120)]
+            for s in symbols
+        }
+
+    def test_bars_older_than_the_window_do_not_move_the_estimate(self, client, db_session, tenant, monkeypatch):
+        pid = _seed(client, tenant)
+        _refresh(client, tenant, pid, monkeypatch)
+        before = risk.compute_risk(
+            db_session, uuid.UUID(tenant), uuid.UUID(pid), today=self.TODAY, do_backfill=True, source=_full_hist
+        )
+        # Cache pre-window history for every symbol, then recompute from the cache alone.
+        from api.services import prices
+
+        prices.backfill_prices(
+            db_session, ["AAPL", "MSFT", *_ETFS], date(2022, 3, 1), self.TODAY, source=self._old_bars
+        )
+        after = risk.compute_risk(db_session, uuid.UUID(tenant), uuid.UUID(pid), today=self.TODAY)
+        assert before.computable and after.computable
+        assert after.n_obs == before.n_obs
+        assert after.total_vol == pytest.approx(before.total_vol)
+        assert after.tracking_error == pytest.approx(before.tracking_error)
+
+    def test_history_read_is_bounded_at_the_window_start(self, client, db_session, tenant, monkeypatch):
+        from api.services import prices
+
+        seen = []
+        real = prices.close_history_by_symbol
+        monkeypatch.setattr(
+            prices, "close_history_by_symbol",
+            lambda session, symbols, **kw: seen.append(kw) or real(session, symbols, **kw),
+        )
+        pid = _seed(client, tenant)
+        _refresh(client, tenant, pid, monkeypatch)
+        risk.compute_risk(db_session, uuid.UUID(tenant), uuid.UUID(pid), today=self.TODAY)
+        assert seen and seen[-1].get("start_date") == self.TODAY - timedelta(days=int(252 * 1.6))
+
+
 class TestRiskEndpoints:
     def test_compute_then_get(self, client, tenant, monkeypatch):
         # Risk is feed-dependent; the endpoint enforces the entitlement matrix, so this
@@ -124,7 +179,9 @@ class TestRiskEndpoints:
         monkeypatch.setattr(settings, "feed_entitled", True)
         pid = _seed(client, tenant)
         _refresh(client, tenant, pid, monkeypatch)
-        monkeypatch.setattr("api.services.prices.fetch_close_history", _full_hist)
+        # The routes compute as of date.today() over a trailing window, so the cached
+        # history has to end near today, not in 2024 (metron-ops-I343).
+        monkeypatch.setattr("api.services.prices.fetch_close_history", _recent_hist)
         posted = client.post(f"/portfolios/{pid}/risk/compute", headers={"X-Tenant-Id": tenant}).json()
         assert posted["computable"] is True and posted["total_vol"] > 0
         # GET now computes from the cache the POST populated.

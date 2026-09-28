@@ -46,6 +46,11 @@ def _full_hist(symbols, start, end, *, source=None):
     return {s: _closes(s) for s in symbols}
 
 
+def _recent_hist(symbols, start, end, *, source=None):
+    """``_full_hist`` shifted to end yesterday, for routes that compute as of today."""
+    return {s: _closes(s, start=date.today() - timedelta(days=50)) for s in symbols}
+
+
 def _latest(symbols, *, source=None):
     return {s: ClosePoint(date(2024, 2, 19), 100.0 + _off(s)) for s in symbols if s in _HELD}
 
@@ -143,6 +148,50 @@ class TestComputeAttribution:
         assert a.computable is False and a.reason
 
 
+class TestWindowedRead:
+    """metron-ops-I343: attribution reads only closes on/after its window start.
+
+    ``_window_return`` anchors on the first close on/after ``start``, so bars before it
+    never changed a result; reading them was pure egress."""
+
+    TODAY = date(2024, 2, 20)
+
+    def test_bars_before_the_window_leave_the_result_unchanged(self, client, db_session, tenant, monkeypatch):
+        pid = _seed(client, tenant)
+        _refresh(client, tenant, pid, monkeypatch)
+        kw = dict(today=self.TODAY, sector_source=_sectors, benchmark_source=_bench)
+        before = attribution.compute_attribution(
+            db_session, uuid.UUID(tenant), uuid.UUID(pid), do_backfill=True, price_source=_full_hist, **kw
+        )
+        from api.services import prices
+
+        def old(symbols, start, end, *, source=None):
+            return {s: [ClosePoint(date(2023, 6, 1) + timedelta(days=i), 10.0 + i) for i in range(60)] for s in symbols}
+
+        prices.backfill_prices(db_session, [*_HELD, *attribution.SECTOR_ETF.values()], date(2023, 6, 1), self.TODAY, source=old)
+        after = attribution.compute_attribution(db_session, uuid.UUID(tenant), uuid.UUID(pid), **kw)
+        assert before.computable and after.computable
+        assert after.active_return == pytest.approx(before.active_return)
+        assert after.portfolio_return == pytest.approx(before.portfolio_return)
+        assert after.as_of == before.as_of
+
+    def test_history_read_is_bounded_at_the_window_start(self, client, db_session, tenant, monkeypatch):
+        from api.services import prices
+
+        seen = []
+        real = prices.close_history_by_symbol
+        monkeypatch.setattr(
+            prices, "close_history_by_symbol",
+            lambda session, symbols, **kw: seen.append(kw) or real(session, symbols, **kw),
+        )
+        pid = _seed(client, tenant)
+        _refresh(client, tenant, pid, monkeypatch)
+        attribution.compute_attribution(
+            db_session, uuid.UUID(tenant), uuid.UUID(pid), today=self.TODAY, benchmark_source=_bench
+        )
+        assert seen and seen[-1].get("start_date") == self.TODAY - timedelta(days=90)
+
+
 class TestAttributionEndpoints:
     def test_compute_then_get(self, client, tenant, monkeypatch):
         # Attribution is feed-dependent; the endpoint enforces the entitlement matrix,
@@ -152,7 +201,9 @@ class TestAttributionEndpoints:
         monkeypatch.setattr(settings, "feed_entitled", True)
         pid = _seed(client, tenant)
         _refresh(client, tenant, pid, monkeypatch)
-        monkeypatch.setattr("api.services.prices.fetch_close_history", _full_hist)
+        # The routes compute as of date.today() over a trailing window, so the cached
+        # history has to end near today, not in 2024 (metron-ops-I343).
+        monkeypatch.setattr("api.services.prices.fetch_close_history", _recent_hist)
         monkeypatch.setattr("api.services.sectors.fetch_sectors", _sectors)
         monkeypatch.setattr("api.services.attribution.fetch_benchmark_sector_weights", _bench)
         posted = client.post(f"/portfolios/{pid}/attribution/compute", headers={"X-Tenant-Id": tenant}).json()
