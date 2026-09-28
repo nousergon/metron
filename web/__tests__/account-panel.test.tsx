@@ -285,3 +285,25 @@ describe("tax-status grouping", () => {
     expect(screen.getByText("Tax-deferred · 1")).toBeInTheDocument();
   });
 });
+
+// Phone-width layout (Brian, 2026-09-28): at 390px the fixed metric columns squeezed a
+// `min-w-0` name column to zero inside an `overflow-hidden` panel, so "Interactive Brokers"
+// ran under "$323,401". jsdom has no layout engine, so this locks the STRUCTURE that
+// prevents it: every name cell keeps a width floor, and the rows sit in one horizontal
+// scroller sized to their min-content (columns scroll together, never overlap).
+describe("AccountPanel narrow-viewport layout", () => {
+  it("gives every name cell a width floor inside a shared horizontal scroller", () => {
+    renderPanel({ selectable: false });
+    const header = screen.getByText("Account");
+    const nameCell = screen.getByRole("link", { name: "Brokerage" }).closest("li")!.children[1] as HTMLElement;
+    for (const cell of [header, nameCell, screen.getByText("All accounts total")]) {
+      expect(cell.className).toContain("min-w-[10rem]");
+      expect(cell.className).not.toContain("min-w-0");
+    }
+    const rows = header.parentElement!.parentElement!;
+    expect(rows.className).toContain("w-fit");
+    expect(rows.className).toContain("min-w-full");
+    expect(rows.parentElement!.className).toContain("overflow-x-auto");
+    expect(rows.contains(nameCell)).toBe(true);
+  });
+});

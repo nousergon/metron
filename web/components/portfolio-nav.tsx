@@ -84,6 +84,9 @@ export function PortfolioNav({
     { label: "Attribution", href: `${base}/attribution${navQuery}`, feature: "attribution" },
     // Tax now bundles the realized lots + transaction ledger (metron-ops#66).
     { label: "Tax", href: `${base}/tax${navQuery}`, feature: "tax" },
+    // Hypothetical sandboxes (hypothetical weights + "if sold" tax estimate), moved off the
+    // Holdings landing page 2026-09-28. Ungated, as they were on Holdings; selection-scoped.
+    { label: "What-if", href: `${base}/what-if${navQuery}` },
     // Macro detail page (1-yr charts + table); also reached from the Overview macro tiles.
     // FRED public-domain → in the beta tier, so it's a normal (ungated) nav entry, not under
     // the "Pages" fallback (metron-ops#49).
