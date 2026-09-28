@@ -101,6 +101,13 @@ const COL_UNREAL_PCT = "w-20"; // Unrealized %
 const COL_MARKET = "w-24";
 const COL_PERIOD = "w-16"; // Day / YTD / LTM % (metron-ops#87)
 const COL_PERIOD_SUB = "w-14"; // O/N / Intra % decomposition legs, visually subordinate
+// The account-name column: flexes to fill spare width but never shrinks below a readable
+// floor. It used to be `min-w-0 flex-1` inside an `overflow-hidden` panel, so at phone
+// width (390px) the ~700px of fixed metric columns squeezed it to zero and the name /
+// broker / currency / tax-type text spilled UNDER the Balance figures (Brian, 2026-09-28).
+// Now the rows scroll horizontally as one block (see the scroller below) and the name
+// column keeps ≥ 10rem, wrapping within it — columns can scroll, never overlap.
+const COL_NAME = "min-w-[10rem] flex-1";
 
 /** A single column-header row for the metric columns — replaces the per-row labels with
  *  one header. Unrealized is split into $ and % columns (metron-ops#80); Day/YTD/LTM are
@@ -423,7 +430,7 @@ export function AccountPanel({
         ) : (
           <span className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         )}
-        <div className="min-w-0 flex-1">
+        <div className={COL_NAME}>
           <div className="flex flex-wrap items-baseline gap-x-2">
             <Link
               href={`/portfolios/${portfolioId}/accounts/${a.account_id}`}
@@ -507,12 +514,18 @@ export function AccountPanel({
           <ReadOnlyNotice>Illustrative — read-only. Accounts on this showcase portfolio can&apos;t be deleted.</ReadOnlyNotice>
         </div>
       ) : null}
+      {/* Horizontal scroller for the table body: `w-fit min-w-full` sizes every row to the
+          same width — the full panel when the columns fit, else the rows' min-content (name
+          floor + fixed metrics), which then scrolls — so the header, rows, subtotals and total
+          stay column-aligned at any viewport width. The bars above stay at panel width. */}
+      <div className="overflow-x-auto">
+      <div className="w-fit min-w-full">
       {/* One column header for the whole panel — the metric labels no longer repeat per
           row (metron-ops). The 16px lead + w-6 trail spacers mirror the row layout so the
           Cost / Unrealized / Market headers sit directly over their columns in both modes. */}
       <div className="flex items-center gap-3 border-b border-line bg-surface px-4 py-2">
         <span className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-        <div className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-muted">Account</div>
+        <div className={`${COL_NAME} text-[10px] uppercase tracking-wide text-muted`}>Account</div>
         <MetricHeader showDay={showDay} />
         <span className="w-6 shrink-0" aria-hidden="true" />
       </div>
@@ -547,7 +560,7 @@ export function AccountPanel({
             <ul>{accts.map(row)}</ul>
             {showGroups ? (
               <div className="flex items-center gap-3 border-b border-line bg-surface/40 px-4 py-2">
-                <div className="min-w-0 flex-1 pl-7 text-[11px] uppercase tracking-wide text-muted">
+                <div className={`${COL_NAME} pl-7 text-[11px] uppercase tracking-wide text-muted`}>
                   {label} subtotal
                 </div>
                 <MetricCells cost={sub.cost} unreal={sub.unreal} mv={sub.mv} baseCurrency={baseCurrency} muted showDay={showDay} />
@@ -558,11 +571,13 @@ export function AccountPanel({
         );
       })}
       <div className="flex items-center gap-3 border-t border-line bg-surface px-4 py-2 font-medium">
-        <div className="min-w-0 flex-1 pl-7 text-[11px] uppercase tracking-wide text-muted">
+        <div className={`${COL_NAME} pl-7 text-[11px] uppercase tracking-wide text-muted`}>
           {viewingAll ? "All accounts total" : "Selected accounts total"}
         </div>
         <MetricCells cost={grand.cost} unreal={grand.unreal} mv={grand.mv} baseCurrency={baseCurrency} showDay={showDay} />
         <span className="w-6 shrink-0" aria-hidden="true" />
+      </div>
+      </div>
       </div>
     </div>
   );

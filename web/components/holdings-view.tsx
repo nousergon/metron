@@ -20,6 +20,13 @@
 // the SAME band selection instead of its own hardcoded set (metron-ops#121 sync fix). The
 // session-only behavior above is unchanged — the provider is mounted fresh per page load and
 // initializes to whichever default page.tsx passes it.
+//
+// Landing-page layout (Brian, 2026-09-28): the "What-if: try hypothetical weights" and
+// "If sold — tax estimate" panels moved to their own page (app/portfolios/[id]/what-if), and
+// with `hoistTotalAndNotes` the Portfolio total renders at the TOP of the page (page.tsx,
+// FilteredPortfolioTotal) and the plain freshness captions in the page's bottom notes —
+// this view then renders only the column control above the tables, plus any stale-feed
+// WARNINGS (alerts stay inline; notes go to the bottom).
 
 import { useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -32,8 +39,7 @@ import { AccountPanel } from "@/components/account-panel";
 import { ColumnPresetControl } from "@/components/holdings-column-presets";
 import { type ColumnBand } from "@/components/holdings-table";
 import { useColumnBands } from "@/components/column-bands-context";
-import { HoldingsWhatIfPanel } from "@/components/holdings-whatif-panel";
-import { IfSoldTaxPanel } from "@/components/if-sold-tax-panel";
+import { useHiddenTypes } from "@/components/holdings-filter-context";
 import { saveHoldingsViewAction } from "@/app/portfolios/[id]/actions";
 import type { Account, Holding, ValuationMedians } from "@/lib/api";
 
@@ -191,7 +197,7 @@ export function HoldingsView({
   liveAvailable = false,
   sessionState = "closed",
   accounts,
-  selectedAccountIds,
+  hoistTotalAndNotes = false,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -213,8 +219,9 @@ export function HoldingsView({
   sessionState?: "live" | "recap" | "closed";
   /** Accounts for the toolbar scope chip (metron-ops-I156); omitted → no chip. */
   accounts?: Account[];
-  /** The active `?account_id=` selection (empty = whole portfolio). */
-  selectedAccountIds?: string[];
+  /** The landing page renders the Portfolio total at the top of the page and the plain
+   *  freshness captions in its bottom notes — omit both here (see header comment). */
+  hoistTotalAndNotes?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -226,7 +233,8 @@ export function HoldingsView({
   const { bands: visibleGroups, setBands: setVisibleGroups } = useColumnBands();
   // Faceted type filter (metron-ops#115) — the set of HIDDEN security_types (empty = all
   // shown), hydrated from + persisted to the saved view like the other controls.
-  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(() => new Set(savedHiddenTypes ?? []));
+  // Shared via HiddenTypesProvider so the hoisted Portfolio total filters identically.
+  const { hidden: hiddenTypes, setHidden: setHiddenTypes } = useHiddenTypes(savedHiddenTypes);
   const toggleType = (t: string) => {
     const next = new Set(hiddenTypes);
     if (next.has(t)) next.delete(t);
@@ -323,15 +331,6 @@ export function HoldingsView({
         </div>
       </div>
       <TypeFilterChips securityTypes={securityTypes} hidden={hiddenTypes} onToggle={toggleType} />
-      {priced && filtered.length > 0 ? <HoldingsWhatIfPanel holdings={filtered} /> : null}
-      {portfolioId && filtered.length > 0 ? (
-        <IfSoldTaxPanel
-          portfolioId={portfolioId}
-          tickers={[...new Set(filtered.map((h) => h.ticker))]}
-          accountIds={selectedAccountIds}
-          collapsible
-        />
-      ) : null}
       {filtered.length === 0 ? (
         <p className="rounded-lg border border-line bg-surface px-4 py-3 text-sm text-muted">
           All instrument types are hidden — re-enable a type chip above to see holdings.
@@ -344,6 +343,8 @@ export function HoldingsView({
           portfolioId={portfolioId}
           visibleBands={visibleGroups}
           belowTotal={columnControl}
+          showTotal={!hoistTotalAndNotes}
+          freshnessCaptions={!hoistTotalAndNotes}
         />
       ) : effectiveMode === "asset" ? (
         <GroupedHoldings
@@ -354,6 +355,8 @@ export function HoldingsView({
           visibleBands={visibleGroups}
           accountColumn={accountColumn}
           belowTotal={columnControl}
+          showTotal={!hoistTotalAndNotes}
+          freshnessCaptions={!hoistTotalAndNotes}
         />
       ) : (
         <GroupedByClassification
@@ -365,6 +368,7 @@ export function HoldingsView({
           visibleBands={visibleGroups}
           accountColumn={accountColumn}
           belowTotal={columnControl}
+          showTotal={!hoistTotalAndNotes}
         />
       )}
     </div>

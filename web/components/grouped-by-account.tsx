@@ -11,62 +11,11 @@ import type { ReactNode } from "react";
 import { CollapsibleSection } from "@/components/collapsible-section";
 import { HoldingsTable, type ColumnBand } from "@/components/holdings-table";
 import { PortfolioTotalBar } from "@/components/portfolio-total-bar";
+import { PositionsAsOfCaption, PricesAsOfCaption, StalePositionsWarning, StalePriceWarning } from "@/components/price-freshness";
 import type { Holding } from "@/lib/api";
-import { isoDate, moneyWhole } from "@/lib/format";
+import { moneyWhole } from "@/lib/format";
 
 const UNASSIGNED = "Unassigned";
-
-/** The latest close date across priced holdings + whether the close feed has stalled. */
-function priceFreshness(holdings: Holding[]): { asOf: string | null; stale: boolean } {
-  let asOf: string | null = null;
-  let stale = false;
-  for (const h of holdings) {
-    if (h.last_price_date && (asOf === null || h.last_price_date > asOf)) asOf = h.last_price_date;
-    if (h.last_price_stale) stale = true;
-  }
-  return { asOf, stale };
-}
-
-function PricesAsOf({ holdings }: { holdings: Holding[] }) {
-  const { asOf, stale } = priceFreshness(holdings);
-  if (!asOf) return null;
-  if (stale) {
-    return (
-      <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-        ⚠ Prices as of {isoDate(asOf)} — the market-data feed hasn’t updated since, so
-        market values may be stale.
-      </p>
-    );
-  }
-  return <p className="text-xs text-muted">Prices as of {isoDate(asOf)}.</p>;
-}
-
-/** The OLDEST broker sync date across snapshot-sourced holdings + whether any holding's
- *  position sync is stale (metron-ops#150) — see grouped-holdings.tsx's PositionsAsOf for
- *  the full rationale (distinct from PricesAsOf: share count freshness, not price freshness). */
-function positionsFreshness(holdings: Holding[]): { asOf: string | null; stale: boolean } {
-  let asOf: string | null = null;
-  let stale = false;
-  for (const h of holdings) {
-    if (h.broker_as_of && (asOf === null || h.broker_as_of < asOf)) asOf = h.broker_as_of;
-    if (h.positions_stale) stale = true;
-  }
-  return { asOf, stale };
-}
-
-function PositionsAsOf({ holdings }: { holdings: Holding[] }) {
-  const { asOf, stale } = positionsFreshness(holdings);
-  if (!asOf) return null;
-  if (stale) {
-    return (
-      <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-        ⚠ Positions synced through {isoDate(asOf)} — a more recent trade at the broker may
-        not be reflected yet.
-      </p>
-    );
-  }
-  return <p className="text-xs text-muted">Positions synced through {isoDate(asOf)}.</p>;
-}
 
 type Total = { cost: number | null; mv: number | null; unreal: number | null };
 
@@ -120,6 +69,8 @@ export function GroupedByAccount({
   portfolioId,
   visibleBands,
   belowTotal,
+  showTotal = true,
+  freshnessCaptions = true,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -128,6 +79,12 @@ export function GroupedByAccount({
   visibleBands?: ColumnBand[];
   /** Rendered under the Portfolio total bar (the column-band control, metron-ops#118+). */
   belowTotal?: ReactNode;
+  /** false → the page renders the Portfolio total elsewhere (the landing page hoists it to
+   *  the top); `belowTotal` then renders on its own, directly above the tables. */
+  showTotal?: boolean;
+  /** false → omit the plain "prices as of" / "positions synced" captions (the landing page
+   *  renders them in its bottom notes). Stale WARNINGS always render inline. */
+  freshnessCaptions?: boolean;
 }) {
   const groups = groupByAccount(holdings);
   // Show the total bar whenever there's a control to anchor or multiple accounts to summarize.
@@ -135,9 +92,11 @@ export function GroupedByAccount({
 
   return (
     <div className="space-y-5">
-      {priced ? <PricesAsOf holdings={holdings} /> : null}
-      <PositionsAsOf holdings={holdings} />
-      {showBar ? (
+      {priced ? <StalePriceWarning holdings={holdings} /> : null}
+      <StalePositionsWarning holdings={holdings} />
+      {freshnessCaptions && priced ? <PricesAsOfCaption holdings={holdings} /> : null}
+      {freshnessCaptions ? <PositionsAsOfCaption holdings={holdings} /> : null}
+      {!showTotal ? belowTotal : showBar ? (
         <PortfolioTotalBar holdings={holdings} baseCurrency={baseCurrency} priced={priced} below={belowTotal} />
       ) : null}
       {groups.length <= 1 ? (
