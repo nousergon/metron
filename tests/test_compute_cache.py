@@ -145,6 +145,26 @@ def test_request_scoped_session_memoizes_until_its_view_can_change(db_session):
         stop()
 
 
+
+def test_core_write_in_the_same_request_drops_the_memo(db_session):
+    """A Core statement through ``session.execute`` (the price upsert path) writes with no
+    ORM flush; the next fingerprint in that request must still see it."""
+    from sqlalchemy import insert
+
+    tenant = str(uuid.uuid4())
+    pid, _aid, sid = _seed(db_session, tenant)
+    db_session.commit()
+    db_session.info[REQUEST_SCOPED] = True
+    fp0 = compute_cache.portfolio_fingerprint(db_session, uuid.UUID(tenant), pid)
+    db_session.execute(
+        insert(models.PriceBar).values(
+            id=uuid.uuid4(), security_id=sid, bar_date=date(2031, 1, 2), close=1.0, currency="USD"
+        )
+    )
+    assert compute_cache.portfolio_fingerprint(db_session, uuid.UUID(tenant), pid) != fp0
+    db_session.rollback()
+
+
 def test_unscoped_session_never_memoizes(db_session):
     """Maintenance jobs hold one session for a whole run while other sessions write; they
     never opt in, so every call recomputes, as before."""

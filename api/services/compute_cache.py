@@ -134,10 +134,20 @@ def _forget_fingerprints(session: Session, *_args) -> None:
     session.info.pop(_MEMO_KEY, None)
 
 
+def _forget_on_write(orm_execute_state) -> None:
+    # A Core INSERT/UPDATE/DELETE through ``session.execute`` (e.g. the price upsert) writes
+    # without a flush, so the flush hook alone would let a later read in the same request
+    # sign its key with the pre-write fingerprint. Anything that is not a SELECT drops it.
+    if not orm_execute_state.is_select:
+        orm_execute_state.session.info.pop(_MEMO_KEY, None)
+
+
 # The memo describes what the session could see when it was taken; anything that can change
-# that view — its own writes (flush), a new transaction snapshot (commit / rollback) — drops it.
+# that view — its own writes (flush, or a Core statement), a new transaction snapshot
+# (commit / rollback) — drops it.
 for _evt in ("after_flush", "after_commit", "after_rollback", "after_soft_rollback"):
     event.listen(Session, _evt, _forget_fingerprints)
+event.listen(Session, "do_orm_execute", _forget_on_write)
 
 
 def cached(key: str, compute: Callable[[], T]) -> T:
