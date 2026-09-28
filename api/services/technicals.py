@@ -11,13 +11,11 @@ Mirrors `fundamentals.py` exactly (module-level KEY, fail-soft `_default_reader`
 
 from __future__ import annotations
 
-import json
-import logging
 import os
 from dataclasses import dataclass
 from datetime import date
 
-logger = logging.getLogger(__name__)
+from api.services import spine_artifacts
 
 TECHNICALS_KEY = "market_data/technicals/latest.json"
 
@@ -50,14 +48,8 @@ def _bucket() -> str:
 
 
 def _default_reader() -> dict | None:
-    import boto3
-
-    try:
-        obj = boto3.client("s3").get_object(Bucket=_bucket(), Key=TECHNICALS_KEY)
-        return json.loads(obj["Body"].read())
-    except Exception as e:  # fail-soft: the consumer degrades to "technicals unavailable"
-        logger.warning("data-spine read failed %s: %s", TECHNICALS_KEY, e)
-        return None
+    # Fail-soft (None on any read error); shared short-TTL cache — see spine_artifacts.
+    return spine_artifacts.read_json(TECHNICALS_KEY, bucket=_bucket())
 
 
 def _f(d: dict, key: str) -> float | None:

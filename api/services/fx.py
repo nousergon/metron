@@ -16,10 +16,12 @@ USD→USD is the identity 1.0 and is never fetched or stored.
 
 from __future__ import annotations
 
+import bisect
+from collections.abc import Iterable
 from datetime import date
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, aliased
 
 from api.db import models
 from portfolio_analytics.prices import (
@@ -169,9 +171,85 @@ def latest_rate_to_base(session: Session, currency: str, *, base: str = "USD") -
     return float(rate) if rate is not None else None
 
 
+class RateHistory:
+    """Every cached rate for a set of currencies, read ONCE — answers :func:`rate_as_of`
+    and :func:`latest_rate_to_base` for those currencies without a query per call.
+
+    For a loop that converts at many dates. NAV reconstruction converts each foreign
+    ticker at every valuation date and every lot open/close; through :func:`rate_as_of`
+    that was one round trip per (currency, date) — 568 statements on one cold
+    Accounts-panel load of the landing-page benchmark (three foreign currencies, five
+    accounts), each a network round trip to the database. Same semantics as the two
+    single-rate functions: latest rate on or before the date, ``None`` when there is none
+    (never a fabricated 1.0), 1.0 for the base itself. Only currencies passed to
+    :func:`rate_history` are covered — :meth:`covers` says which."""
+
+    def __init__(self, base: str, series: dict[str, tuple[list[date], list[float]]]) -> None:
+        self._base = base
+        self._series = series
+
+    def covers(self, currency: str | None) -> bool:
+        ccy = (currency or self._base).strip().upper()
+        return ccy == self._base or ccy in self._series
+
+    def rate_as_of(self, currency: str | None, on_date: date) -> float | None:
+        ccy = (currency or self._base).strip().upper()
+        if ccy == self._base:
+            return 1.0
+        dates, rates = self._series.get(ccy, ([], []))
+        i = bisect.bisect_right(dates, on_date)
+        return rates[i - 1] if i else None
+
+    def latest(self, currency: str | None) -> float | None:
+        ccy = (currency or self._base).strip().upper()
+        if ccy == self._base:
+            return 1.0
+        _dates, rates = self._series.get(ccy, ([], []))
+        return rates[-1] if rates else None
+
+
+def rate_history(session: Session, currencies: Iterable[str], *, base: str = "USD") -> RateHistory:
+    """Load a :class:`RateHistory` for ``currencies`` in one query."""
+    base = (base or "USD").strip().upper()
+    wanted = sorted({(c or base).strip().upper() for c in currencies} - {base})
+    series: dict[str, tuple[list[date], list[float]]] = {c: ([], []) for c in wanted}
+    if wanted:
+        rows = session.execute(
+            select(models.FxRate.currency, models.FxRate.rate_date, models.FxRate.rate)
+            .where(models.FxRate.currency.in_(wanted), models.FxRate.base == base)
+            .order_by(models.FxRate.currency, models.FxRate.rate_date)
+        ).all()
+        for ccy, rate_date, rate in rows:
+            dates, rates = series[ccy]
+            dates.append(rate_date)
+            rates.append(float(rate))
+    return RateHistory(base, series)
+
+
 def rates_to_base(session: Session, currencies: list[str], *, base: str = "USD") -> dict[str, float | None]:
-    """Batch ``latest_rate_to_base`` — one lookup per distinct currency. A currency with
-    no cached rate maps to ``None`` (caller treats as unconvertible)."""
+    """Batch ``latest_rate_to_base`` — the newest cached rate of every distinct currency in
+    ONE query (every valuation calls this; it was a round trip per currency). A currency
+    with no cached rate maps to ``None`` (caller treats as unconvertible)."""
     base = (base or "USD").strip().upper()
     distinct = {(c or base).strip().upper() for c in currencies}
-    return {ccy: latest_rate_to_base(session, ccy, base=base) for ccy in distinct}
+    out: dict[str, float | None] = dict.fromkeys(distinct)
+    if base in out:
+        out[base] = 1.0
+    foreign = sorted(distinct - {base})
+    if foreign:
+        newer = aliased(models.FxRate)
+        latest_date = (
+            select(func.max(newer.rate_date))
+            .where(newer.currency == models.FxRate.currency, newer.base == models.FxRate.base)
+            .correlate(models.FxRate)
+            .scalar_subquery()
+        )
+        for ccy, rate in session.execute(
+            select(models.FxRate.currency, models.FxRate.rate).where(
+                models.FxRate.currency.in_(foreign),
+                models.FxRate.base == base,
+                models.FxRate.rate_date == latest_date,
+            )
+        ).all():
+            out[ccy] = float(rate)
+    return out

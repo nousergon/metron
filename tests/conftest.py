@@ -19,10 +19,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from api.db.session import Base, get_session
+from api.db.session import REQUEST_SCOPED, Base, get_session
 from api.main import app
 from api.services import attractiveness as attractiveness_service
-from api.services import benchmark_gap, compute_cache, identity
+from api.services import benchmark_gap, compute_cache, identity, spine_artifacts
 
 
 @pytest.fixture(autouse=True)
@@ -32,10 +32,12 @@ def _clear_compute_cache():
     compute_cache.clear()
     attractiveness_service.clear_cache()
     benchmark_gap.clear_cache()
+    spine_artifacts.clear()
     yield
     compute_cache.clear()
     attractiveness_service.clear_cache()
     benchmark_gap.clear_cache()
+    spine_artifacts.clear()
 
 
 class _NoCredsStubClient:
@@ -115,6 +117,7 @@ def _test_tenant_id(x_tenant_id: str | None = Header(default=None)) -> uuid.UUID
 def client(session_factory):
     def _override():
         session = session_factory()
+        session.info[REQUEST_SCOPED] = True  # as api.db.session.get_session marks it in prod
         try:
             yield session
         finally:
@@ -134,6 +137,7 @@ def raw_client(session_factory):
     Used by tests/test_auth_jwt.py; only the DB session is swapped for the test DB."""
     def _override():
         session = session_factory()
+        session.info[REQUEST_SCOPED] = True  # as api.db.session.get_session marks it in prod
         try:
             yield session
         finally:

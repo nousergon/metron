@@ -31,10 +31,11 @@ from collections.abc import Callable
 from typing import TypeVar
 
 import diskcache as dc
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
 from api.db import models
+from api.db.session import REQUEST_SCOPED
 
 T = TypeVar("T")
 
@@ -47,13 +48,31 @@ _cache = dc.Cache(_CACHE_DIR)
 _MISS = object()  # sentinel so None-valued entries are cacheable
 
 
-def _term(session: Session, model, tenant_id, portfolio_id) -> str:
+#: Every table whose content can change a portfolio's valuation / NAV / ledger-derived
+#: history. ``RealizedLot`` has no ``portfolio_id`` column,
+#: so its term is tenant-wide (over-invalidates across the tenant's portfolios — safe, never
+#: stale).
+_FINGERPRINT_MODELS = (
+    models.Transaction,
+    models.Position,
+    models.Account,
+    models.AccountNavSnapshot,
+    models.NavSnapshot,
+    models.RealizedLot,
+)
+
+#: ``Session.info`` key under which a request-scoped session memoizes its fingerprints.
+_MEMO_KEY = "metron.compute_cache.fingerprints"
+
+
+def _term_columns(model, tenant_id, portfolio_id) -> list:
     """A `(count, freshest-timestamp[, value-sum])` signature for one table, scoped to the
     portfolio when it carries `portfolio_id` (else tenant-wide — that only ever
-    OVER-invalidates, never serves stale). Picks whatever change-signal the table actually
-    has: `created_at` for append-only ledgers, `as_of` + `market_value_local` for broker
-    positions overwritten in place on re-sync, `snap_date` for the NAV series. Schema-
-    defensive so a model without a given column never raises."""
+    OVER-invalidates, never serves stale), as scalar subqueries so every table's signature
+    rides ONE round trip. Picks whatever change-signal the table actually has: `created_at`
+    for append-only ledgers, `as_of` + `market_value_local` for broker positions overwritten
+    in place on re-sync, `snap_date` for the NAV series. Schema-defensive so a model without
+    a given column never raises."""
     scope = []
     if hasattr(model, "tenant_id"):
         scope.append(model.tenant_id == tenant_id)
@@ -66,30 +85,59 @@ def _term(session: Session, model, tenant_id, portfolio_id) -> str:
             break
     if hasattr(model, "market_value_local"):  # broker positions: value can change in place
         cols.append(func.sum(model.market_value_local))
-    row = session.execute(select(*cols).where(*scope)).one()
-    return ":".join(str(x) for x in row)
+    return [select(col).where(*scope).scalar_subquery() for col in cols]
+
+
+def _compute_fingerprint(session: Session, tenant_id, portfolio_id) -> str:
+    groups = [_term_columns(model, tenant_id, portfolio_id) for model in _FINGERPRINT_MODELS]
+    # Global reference data (not tenant-scoped): newest cached price + FX dates.
+    latest_bar = select(func.max(models.PriceBar.bar_date)).scalar_subquery()
+    latest_fx = select(func.max(models.FxRate.rate_date)).scalar_subquery()
+    row = session.execute(select(*[c for g in groups for c in g], latest_bar, latest_fx)).one()
+    values = list(row)
+    parts = []
+    for g in groups:
+        parts.append(":".join(str(x) for x in values[: len(g)]))
+        values = values[len(g):]
+    return "|".join(parts) + f"|pb:{values[0]}|fx:{values[1]}"
 
 
 def portfolio_fingerprint(session: Session, tenant_id, portfolio_id) -> str:
     """A cheap content hash of every input that can change a portfolio's valuation / NAV
     / ledger-derived history: the ledger (transactions), broker positions, accounts, the
-    recorded NAV series, and broker-authoritative realized lots (``RealizedLot`` has no
-    ``portfolio_id`` column, so this term over-invalidates tenant-wide on any of the
-    tenant's portfolios — safe, never stale), plus the global price + FX cache high-water
-    dates. Any mutation moves at least one term, so a cache key built on this invalidates
-    precisely when the data changes. ~8 indexed aggregates; well under a millisecond."""
-    parts = [
-        _term(session, models.Transaction, tenant_id, portfolio_id),
-        _term(session, models.Position, tenant_id, portfolio_id),
-        _term(session, models.Account, tenant_id, portfolio_id),
-        _term(session, models.AccountNavSnapshot, tenant_id, portfolio_id),
-        _term(session, models.NavSnapshot, tenant_id, portfolio_id),
-        _term(session, models.RealizedLot, tenant_id, portfolio_id),
-    ]
-    # Global reference data (not tenant-scoped): newest cached price + FX dates.
-    latest_bar = session.execute(select(func.max(models.PriceBar.bar_date))).scalar()
-    latest_fx = session.execute(select(func.max(models.FxRate.rate_date))).scalar()
-    return "|".join(parts) + f"|pb:{latest_bar}|fx:{latest_fx}"
+    recorded NAV series, and broker-authoritative realized lots, plus the global price + FX
+    cache high-water dates. Any mutation moves at least one term, so a cache key built on
+    this invalidates precisely when the data changes.
+
+    **One statement, and at most one per request.** Every ``compute_cache``-wrapped read
+    (``holdings`` / ``realized`` / ``transactions`` / ``income`` / the account performance
+    series) signs its key with this, and one page request makes 5-15 such calls — the
+    per-account paths once per account. It used to be 8 separate aggregate queries per
+    call, so on a warm Holdings landing page the fingerprint alone was 232 of the 355
+    statements sent to Neon, each one a network round trip (production-shaped benchmark,
+    2026-09-28; ``tests/test_landing_page_statement_budget.py`` pins the fix). Now the terms ride one ``SELECT`` of
+    scalar subqueries, and a REQUEST-scoped session (``api.db.session.get_session`` marks
+    it) memoizes the result until that session next flushes, commits or rolls back — the
+    three points at which its own view of the data can change. Sessions that did not opt
+    in (maintenance jobs, ad-hoc scripts) recompute on every call, exactly as before."""
+    memo = session.info.get(_MEMO_KEY) if session.info.get(REQUEST_SCOPED) else None
+    key = (str(tenant_id), str(portfolio_id))
+    if memo is not None and key in memo:
+        return memo[key]
+    fp = _compute_fingerprint(session, tenant_id, portfolio_id)
+    if session.info.get(REQUEST_SCOPED):
+        session.info.setdefault(_MEMO_KEY, {})[key] = fp
+    return fp
+
+
+def _forget_fingerprints(session: Session, *_args) -> None:
+    session.info.pop(_MEMO_KEY, None)
+
+
+# The memo describes what the session could see when it was taken; anything that can change
+# that view — its own writes (flush), a new transaction snapshot (commit / rollback) — drops it.
+for _evt in ("after_flush", "after_commit", "after_rollback", "after_soft_rollback"):
+    event.listen(Session, _evt, _forget_fingerprints)
 
 
 def cached(key: str, compute: Callable[[], T]) -> T:
