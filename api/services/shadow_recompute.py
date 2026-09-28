@@ -93,6 +93,29 @@ class ShadowPoint:
     nav: float
     cumulative_realized: float
     flow: float
+    # False when this date's NAV is known to under-count: a held ticker had no cached
+    # close, or the portfolio has a ticker whose history could not be replayed. Such a
+    # point is never diffed.
+    complete: bool = True
+
+
+def _incomplete_history_tickers(txns: list[Transaction]) -> dict[str, str]:
+    """Tickers whose PORTFOLIO-WIDE replay raises (a SELL exceeding every BUY visible
+    across all accounts — a broker activity feed that starts mid-position), mapped to the
+    replay error. Lots are keyed by ticker, so replaying each ticker alone fails exactly
+    where the merged replay would. This is the portfolio-scoped counterpart of
+    ``analytics.build_portfolio_ledger``'s per-(account, ticker) ``IncompleteHistory``."""
+    by_ticker: dict[str, list[Transaction]] = {}
+    for t in txns:
+        if t.ticker:
+            by_ticker.setdefault(t.ticker, []).append(t)
+    out: dict[str, str] = {}
+    for ticker, group in by_ticker.items():
+        try:
+            build_ledger(group)
+        except ValueError as e:
+            out[ticker] = str(e)
+    return out
 
 
 def _price_on_or_before(series: list[ClosePoint], when: date) -> float | None:
@@ -140,15 +163,22 @@ def _txn_flow(txn: Transaction) -> float:
 
 def shadow_nav_series(
     session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, through: date
-) -> tuple[list[ShadowPoint], list[str]]:
+) -> tuple[list[ShadowPoint], list[str], dict[str, str]]:
     """The shadow-recomputed NAV/realized series, one point per distinct transaction
     date up to and including ``through``. See the module docstring for how this
     aggregation differs structurally from ``performance.reconstruct_snapshots``.
 
-    Returns ``(points, unpriced_tickers)`` — ``unpriced_tickers`` is the union of every
-    ticker that was held but had no cached close at some point in the walk (that date's
-    NAV under-counts by that leg's value; surfaced so the caller can decide whether to
-    skip diffing an affected date rather than silently comparing a partial number).
+    Returns ``(points, unpriced_tickers, incomplete_history)``:
+
+    - ``unpriced_tickers`` is the union of every ticker that was held but had no cached
+      close at some point in the walk (that date's NAV under-counts by that leg's value,
+      and its point is marked ``complete=False``).
+    - ``incomplete_history`` maps each ticker whose portfolio-wide replay fails (see
+      ``_incomplete_history_tickers``) to its replay error. Those tickers are left out of
+      the walk rather than raising — one ticker's history gap must not abort the whole
+      portfolio, the same degradation ``analytics.build_portfolio_ledger`` applies. The
+      shares held before the feed begins are unknowable, so the gap under-counts NAV on
+      EVERY date: all points are ``complete=False`` while any such ticker exists.
 
     One portfolio-wide ``Ledger`` is grown forward across the WHOLE transaction stream
     (every account merged, in strict chronological order) — a single
@@ -163,8 +193,11 @@ def shadow_nav_series(
     thousands) keeps this comfortably fast enough for a nightly batch job."""
     txns = analytics.engine_transactions(session, tenant_id, portfolio_id)
     txns = sorted((t for t in txns if t.when <= through), key=lambda t: t.when)
+    incomplete_history = _incomplete_history_tickers(txns)
+    if incomplete_history:
+        txns = [t for t in txns if t.ticker not in incomplete_history]
     if not txns:
-        return [], []
+        return [], [], incomplete_history
 
     tickers = sorted({t.ticker for t in txns if t.ticker})
     history = price_service.close_history_by_symbol(session, tickers) if tickers else {}
@@ -184,9 +217,12 @@ def shadow_nav_series(
         cumulative_realized = sum(r.gain for r in ledger.realized)
         mv, unpriced = _position_market_value(ledger, history, d)
         unpriced_all.update(unpriced)
-        points.append(ShadowPoint(when=d, nav=mv, cumulative_realized=cumulative_realized, flow=day_flow))
+        points.append(ShadowPoint(
+            when=d, nav=mv, cumulative_realized=cumulative_realized, flow=day_flow,
+            complete=not unpriced and not incomplete_history,
+        ))
 
-    return points, sorted(unpriced_all)
+    return points, sorted(unpriced_all), incomplete_history
 
 
 def shadow_twr(points: list[ShadowPoint]) -> float | None:
@@ -240,9 +276,10 @@ def diff_nav_series(
     unpriced_dates: set[date] | None = None,
 ) -> list[Divergence]:
     """Diff production NAV (``(snap_date, nav)`` pairs, e.g. from ``models.NavSnapshot``)
-    against the shadow series on shared dates. A date with an unpriced shadow leg
-    (``unpriced_dates``) is skipped — that shadow NAV is known-incomplete, so comparing
-    it would manufacture a false divergence, not a real one."""
+    against the shadow series on shared dates. A date whose shadow point is partial
+    (``complete=False``, or listed in ``unpriced_dates``) is skipped — that shadow NAV is
+    known-incomplete, so comparing it would manufacture a false divergence, not a real
+    one."""
     unpriced_dates = unpriced_dates or set()
     shadow_by_date = {p.when: p for p in shadow_points}
     out: list[Divergence] = []
@@ -250,7 +287,7 @@ def diff_nav_series(
         if when in unpriced_dates:
             continue
         shadow = shadow_by_date.get(when)
-        if shadow is None:
+        if shadow is None or not shadow.complete:
             continue
         tol = _abs_or_bps_tolerance(
             prod_nav, floor_usd=settings.shadow_recompute_nav_tolerance_usd,
@@ -319,6 +356,9 @@ class ShadowRecomputeResult:
     breaks_new: int = 0
     breaks_resolved: int = 0
     errors: list[str] = field(default_factory=list)
+    # One entry per portfolio whose shadow NAV could not be compared because a ticker's
+    # history could not be replayed — reported, never raised, and never a silent pass.
+    incomplete_history: list[str] = field(default_factory=list)
 
 
 def _persist_breaks(
@@ -368,10 +408,21 @@ def _persist_breaks(
 
 
 def _resolve_stale_breaks(
-    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, still_open_keys: set[str]
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    still_open_keys: set[str],
+    *,
+    uncompared_nav_dates: set[date] | None = None,
+    twr_compared: bool = True,
 ) -> int:
     """Mark resolved every unresolved break for this portfolio whose key did not
-    reproduce this run (mirrors ``reconciliation._resolve_stale_breaks``)."""
+    reproduce this run (mirrors ``reconciliation._resolve_stale_breaks``).
+
+    A break this run never re-examined stays open: a NAV break on a date in
+    ``uncompared_nav_dates`` (its shadow point was partial) or a TWR break when the TWR
+    was not compared. Not reproducing because it was skipped is not being fixed."""
+    uncompared_nav_dates = uncompared_nav_dates or set()
     candidates = session.scalars(
         select(models.ShadowRecomputeBreak).where(
             models.ShadowRecomputeBreak.tenant_id == tenant_id,
@@ -382,9 +433,14 @@ def _resolve_stale_breaks(
     now = datetime.now(UTC)
     resolved = 0
     for row in candidates:
-        if row.break_key not in still_open_keys:
-            row.resolved_at = now
-            resolved += 1
+        if row.break_key in still_open_keys:
+            continue
+        if row.break_type == "nav" and row.as_of_date in uncompared_nav_dates:
+            continue
+        if row.break_type == "twr" and not twr_compared:
+            continue
+        row.resolved_at = now
+        resolved += 1
     return resolved
 
 
@@ -412,9 +468,11 @@ def shadow_recompute_portfolio(
     today = today or datetime.now(UTC).date()
     result = ShadowRecomputeResult(portfolios_checked=1)
     try:
-        shadow_points, unpriced_tickers = shadow_nav_series(
+        shadow_points, unpriced_tickers, incomplete_history = shadow_nav_series(
             session, portfolio.tenant_id, portfolio.id, through=today
         )
+        uncompared_nav_dates = {p.when for p in shadow_points if not p.complete}
+        twr_compared = False
         prod_rows = session.execute(
             select(models.NavSnapshot.snap_date, models.NavSnapshot.nav).where(
                 models.NavSnapshot.tenant_id == portfolio.tenant_id,
@@ -433,13 +491,20 @@ def shadow_recompute_portfolio(
         # date (true for a portfolio recomputed through its whole history, as
         # ``shadow_nav_series`` does) — a portfolio whose NavSnapshot series starts later
         # than its transaction history (a mid-life onboarding) is skipped rather than
-        # compared on a mismatched base, to avoid manufacturing a false divergence.
+        # compared on a mismatched base, to avoid manufacturing a false divergence. A
+        # cumulative TWR linked through any partial shadow point is itself partial, so
+        # it is skipped the same way.
         if shadow_points and production_points:
             prod_first = min(d for d, _ in production_points)
             shadow_first = shadow_points[0].when
             latest_shared = min(shadow_points[-1].when, max(d for d, _ in production_points))
-            if shadow_first == prod_first and latest_shared >= shadow_first:
-                shadow_asof_points = [p for p in shadow_points if p.when <= latest_shared]
+            shadow_asof_points = [p for p in shadow_points if p.when <= latest_shared]
+            if (
+                shadow_first == prod_first
+                and latest_shared >= shadow_first
+                and all(p.complete for p in shadow_asof_points)
+            ):
+                twr_compared = True
                 shadow_twr_value = shadow_twr(shadow_asof_points)
                 prod_summary = performance.performance(session, portfolio.tenant_id, portfolio.id)
                 twr_divergence = diff_twr(portfolio.id, latest_shared, prod_summary.twr, shadow_twr_value)
@@ -457,12 +522,24 @@ def shadow_recompute_portfolio(
 
         rows, new_count = _persist_breaks(session, portfolio.tenant_id, divergences, today)
         still_open_keys = {row.break_key for row in rows}
-        resolved_count = _resolve_stale_breaks(session, portfolio.tenant_id, portfolio.id, still_open_keys)
+        resolved_count = _resolve_stale_breaks(
+            session, portfolio.tenant_id, portfolio.id, still_open_keys,
+            uncompared_nav_dates=uncompared_nav_dates, twr_compared=twr_compared,
+        )
         session.commit()
 
         result.breaks_open = len(rows)
         result.breaks_new = new_count
         result.breaks_resolved = resolved_count
+
+        if incomplete_history:
+            detail = "; ".join(f"{t}: {err}" for t, err in sorted(incomplete_history.items()))
+            logger.warning(
+                "shadow-recompute: portfolio=%s has %d ticker(s) whose history starts mid-position "
+                "— excluded from the replay, NAV/TWR not compared: %s",
+                portfolio.id, len(incomplete_history), detail,
+            )
+            result.incomplete_history.append(f"{portfolio.id}: {', '.join(sorted(incomplete_history))}")
 
         if unpriced_tickers:
             logger.warning(
@@ -508,4 +585,5 @@ def shadow_recompute_all(session: Session) -> ShadowRecomputeResult:
         total.breaks_new += r.breaks_new
         total.breaks_resolved += r.breaks_resolved
         total.errors.extend(r.errors)
+        total.incomplete_history.extend(r.incomplete_history)
     return total

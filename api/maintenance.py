@@ -691,12 +691,14 @@ def main(argv: list[str] | None = None) -> int:
             session.close()
         logger.info(
             "shadow-recompute done: %d portfolios, %d breaks open (%d new/reopened, %d resolved), "
-            "%d error(s)",
+            "%d error(s), %d portfolio(s) not compared for incomplete history%s",
             r.portfolios_checked,
             r.breaks_open,
             r.breaks_new,
             r.breaks_resolved,
             len(r.errors),
+            len(r.incomplete_history),
+            f" ({'; '.join(r.incomplete_history)})" if r.incomplete_history else "",
         )
         # Same fail-loud posture as `reconcile` above: a per-portfolio failure already
         # alerted individually inside shadow_recompute_portfolio; the non-zero exit

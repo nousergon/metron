@@ -101,13 +101,106 @@ class TestShadowMatchesGoldenFixture:
         _add_price(db_session, sec, date(2025, 7, 1), 210.0)
         db_session.commit()
 
-        points, unpriced = shadow_nav_series(db_session, tenant.id, pf.id, through=date(2025, 7, 1))
+        points, unpriced, incomplete = shadow_nav_series(db_session, tenant.id, pf.id, through=date(2025, 7, 1))
         assert unpriced == ["AAPL"]  # earlier dates have no cached close yet
+        assert incomplete == {}
+        assert [p.complete for p in points] == [False, False, False, True]
         last = points[-1]
         assert last.when == date(2025, 7, 1)
         assert last.cumulative_realized == pytest.approx(542.0)
         # NAV at the last point = 8 remaining shares @ $210 mark = $1,680.00.
         assert last.nav == pytest.approx(1680.0)
+
+
+class TestIncompleteHistory:
+    """A broker activity feed that starts mid-position yields a SELL exceeding every BUY
+    the portfolio can see (live case 2026-09-27: ``SELL of 1.0 AVGO on 2024-06-13
+    exceeds 0 shares held`` failed the first weekly run). That ticker is left out of the
+    replay and reported; the portfolio is never aborted and never falsely diffed."""
+
+    def _seed_mid_position_feed(self, db_session, name):
+        tenant, pf = _seed_portfolio(db_session, name)
+        acct = _add_account(db_session, tenant, pf)
+        aapl = _add_security(db_session, "AAPL")
+        avgo = _add_security(db_session, "AVGO")
+        _add_txn(db_session, tenant, acct, aapl, txn_type="BUY", qty=10, price=100.0,
+                 when=date(2024, 6, 3), key="k1")
+        _add_txn(db_session, tenant, acct, avgo, txn_type="SELL", qty=1, price=1500.0,
+                 when=date(2024, 6, 13), key="k2")
+        _add_price(db_session, aapl, date(2024, 6, 3), 100.0)
+        _add_price(db_session, avgo, date(2024, 6, 3), 1400.0)
+        return tenant, pf
+
+    def test_mid_position_ticker_is_excluded_not_raised(self, db_session):
+        tenant, pf = self._seed_mid_position_feed(db_session, "mid-position")
+        db_session.commit()
+
+        points, unpriced, incomplete = shadow_nav_series(db_session, tenant.id, pf.id, through=date(2024, 6, 30))
+
+        assert list(incomplete) == ["AVGO"]
+        assert "exceeds 0 shares held" in incomplete["AVGO"]
+        assert unpriced == []
+        # AAPL is still replayed; AVGO's SELL date contributes no point of its own.
+        assert [p.when for p in points] == [date(2024, 6, 3)]
+        assert points[0].nav == pytest.approx(1000.0)
+        # The pre-feed AVGO holding is unknowable, so every point under-counts.
+        assert all(not p.complete for p in points)
+
+    def test_sell_covered_by_another_accounts_buy_is_not_incomplete(self, db_session):
+        """Portfolio-wide relief, not per-account: a SELL in account B against a BUY in
+        account A replays fine here (production's per-account relief would flag it)."""
+        tenant, pf = _seed_portfolio(db_session, "cross-account")
+        acct_a = _add_account(db_session, tenant, pf, external_id="A")
+        acct_b = _add_account(db_session, tenant, pf, external_id="B")
+        sec = _add_security(db_session, "AVGO")
+        _add_txn(db_session, tenant, acct_a, sec, txn_type="BUY", qty=2, price=1400.0,
+                 when=date(2024, 6, 3), key="k1")
+        _add_txn(db_session, tenant, acct_b, sec, txn_type="SELL", qty=1, price=1500.0,
+                 when=date(2024, 6, 13), key="k2")
+        db_session.commit()
+
+        _points, _unpriced, incomplete = shadow_nav_series(db_session, tenant.id, pf.id, through=date(2024, 6, 30))
+        assert incomplete == {}
+
+    def test_portfolio_run_reports_instead_of_failing(self, db_session, monkeypatch):
+        alerts: list[str] = []
+        monkeypatch.setattr(shadow_recompute, "send_alert", lambda text: (alerts.append(text), True)[1])
+        tenant, pf = self._seed_mid_position_feed(db_session, "mid-position-e2e")
+        # Production's NAV includes the AVGO holding the shadow cannot see — comparing
+        # would open a false break.
+        db_session.add(models.NavSnapshot(
+            tenant_id=tenant.id, portfolio_id=pf.id, snap_date=date(2024, 6, 3), nav=2400.0,
+        ))
+        db_session.commit()
+
+        result = shadow_recompute.shadow_recompute_portfolio(db_session, pf, today=date(2024, 6, 30))
+
+        assert result.errors == []
+        assert result.breaks_new == 0
+        assert db_session.query(models.ShadowRecomputeBreak).count() == 0
+        assert alerts == []
+        assert result.incomplete_history == [f"{pf.id}: AVGO"]
+
+    def test_existing_break_on_uncompared_date_stays_open(self, db_session, monkeypatch):
+        monkeypatch.setattr(shadow_recompute, "send_alert", lambda text: True)
+        tenant, pf = self._seed_mid_position_feed(db_session, "mid-position-breaks")
+        db_session.add(models.NavSnapshot(
+            tenant_id=tenant.id, portfolio_id=pf.id, snap_date=date(2024, 6, 3), nav=2400.0,
+        ))
+        row = models.ShadowRecomputeBreak(
+            tenant_id=tenant.id, portfolio_id=pf.id, break_type="nav",
+            break_key=shadow_recompute._break_key(pf.id, "nav", date(2024, 6, 3)),
+            break_date=date(2024, 6, 10), as_of_date=date(2024, 6, 3),
+            production_value=2400.0, shadow_value=1000.0, tolerance=5.0,
+        )
+        db_session.add(row)
+        db_session.commit()
+
+        result = shadow_recompute.shadow_recompute_portfolio(db_session, pf, today=date(2024, 6, 30))
+
+        assert result.breaks_resolved == 0
+        db_session.refresh(row)
+        assert row.resolved_at is None
 
 
 # ── 2. Diff logic: tolerance bands, unpriced-date skip, break lifecycle ─────────────
@@ -139,6 +232,12 @@ class TestDiffNavSeries:
         shadow = [ShadowPoint(when=date(2025, 1, 1), nav=1.0, cumulative_realized=0.0, flow=0.0)]
         out = diff_nav_series(pid, prod, shadow, unpriced_dates={date(2025, 1, 1)})
         assert out == []
+
+    def test_partial_shadow_point_is_skipped_not_flagged(self):
+        pid = uuid.uuid4()
+        prod = [(date(2025, 1, 1), 10_000.0)]
+        shadow = [ShadowPoint(when=date(2025, 1, 1), nav=1.0, cumulative_realized=0.0, flow=0.0, complete=False)]
+        assert diff_nav_series(pid, prod, shadow) == []
 
     def test_missing_shadow_date_is_skipped(self):
         pid = uuid.uuid4()
