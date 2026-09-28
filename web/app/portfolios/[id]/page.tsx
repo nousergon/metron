@@ -6,7 +6,9 @@ import { LiveValuationProvider } from "@/components/live-valuation-context";
 import { RefreshPrices } from "@/components/refresh-prices";
 import { IntradayRefresher } from "@/components/intraday-refresher";
 import { SettledRefresher } from "@/components/settled-refresher";
-import { SessionPanel } from "@/components/session-panel";
+import { SessionNotes, SessionPanel } from "@/components/session-panel";
+import { FilteredPortfolioTotal, HiddenTypesProvider } from "@/components/holdings-filter-context";
+import { PositionsAsOfCaption, PricesAsOfCaption } from "@/components/price-freshness";
 import { PortfolioNav } from "@/components/portfolio-nav";
 import { WatchlistCompareTable } from "@/components/watchlist-compare-table";
 import { ColumnBandsProvider } from "@/components/column-bands-context";
@@ -46,6 +48,13 @@ function SectionSkeleton({ rows = 3 }: { rows?: number }) {
 // the two expensive sections (Accounts, Holdings table) each stream in behind their own
 // <Suspense> as their data lands. Each streamed section is an async Server Component that
 // fetches only its own slice and fails soft.
+//
+// Landing layout (Brian, 2026-09-28, reviewed on a phone): the Portfolio total leads the
+// page content; the live-session headline follows; then Holdings and Watchlist; and every
+// explanatory NOTE (session footnotes, freshness captions, the account-scope hint) sits in
+// one Notes block at the very bottom. The what-if / if-sold panels moved to their own page
+// (./what-if). The holdings read is started ONCE here and shared by the three sections that
+// need it (total, table, notes) — each awaits the same promise under its own <Suspense>.
 export default async function HoldingsPage(
   props: {
     params: Promise<{ id: string }>;
@@ -126,7 +135,24 @@ export default async function HoldingsPage(
   const ccy = summary.base_currency;
   const priced = summary.market_value != null;
 
+  // One holdings read shared by the total, the table and the notes (see header comment).
+  // Each consumer handles a rejection itself; the no-op catch only keeps an unconsumed
+  // rejection (e.g. a streamed boundary abandoned mid-render) from surfacing as unhandled.
+  const holdingsP = getHoldings(apiAuth, id, accountIds, byAccount, valuation);
+  holdingsP.catch(() => {});
+  // The live session's data (covered-basis Today + drift legs), shared by the headline
+  // panel near the top and its footnotes in the bottom notes. Live mode only.
+  const sessionP: Promise<SessionData> | null =
+    valuation === "live" && priced && live
+      ? Promise.all([
+          getToday(apiAuth, id, accountIds).catch((): Today | null => null),
+          getIntradayLegs(apiAuth, id).catch((): IntradayLegHistory | null => null),
+        ]).then(([today, legs]) => ({ today, legs }))
+      : null;
+
   return (
+    // Seeded from the saved view so the hoisted total's first render matches the table.
+    <HiddenTypesProvider initialHidden={savedView?.hidden_types ?? null}>
     <div>
       <PortfolioNav portfolioId={id} navQuery={navQuery} featureStates={featureStates} />
 
@@ -137,19 +163,23 @@ export default async function HoldingsPage(
             an all-day-open tab still catches the EOD snapshot advance (metron-ops#154). */}
         {valuation === "live" ? <IntradayRefresher portfolioId={id} /> : <SettledRefresher />}
       </div>
-      <p className="text-sm text-muted">
-        All accounts are included by default. (De)activate accounts below to filter the positions for this view.
-      </p>
+
+      {/* Portfolio total — first on the page (Brian, 2026-09-28). Same type-filtered rows as
+          the table below (HiddenTypesProvider), so the two can never disagree. */}
+      <Suspense fallback={<Bar className="mt-3 h-12 w-full animate-pulse" />}>
+        <TotalSection holdingsP={holdingsP} ccy={ccy} priced={priced} />
+      </Suspense>
 
       {/* Live-session panel (metron-ops#153): coverage banner + covered-basis session strip
-          + excluded-holdings disclosure. Live mode only — the settled regime shows no
+          (its footnotes — covered basis, excluded holdings, drift split — are in the bottom
+          Notes block since 2026-09-28). Live mode only — the settled regime shows no
           session figures anywhere on the page. Now mounts through "closed" too (the live
           regime is offered at every session state as of 2026-07-22): SessionPanel and its
           CoverageBanner were already written generically for "stale → as of close" framing,
           so no change was needed here beyond letting valuation stay "live" that long. */}
-      {valuation === "live" && priced && live ? (
+      {sessionP && live ? (
         <Suspense fallback={<SectionSkeleton rows={2} />}>
-          <SessionSection apiAuth={apiAuth} id={id} ccy={ccy} accountIds={accountIds} status={live} />
+          <SessionSection sessionP={sessionP} ccy={ccy} status={live} />
         </Suspense>
       ) : null}
 
@@ -164,42 +194,90 @@ export default async function HoldingsPage(
           day; Overview is the settled-mode fallback. */}
       <ColumnBandsProvider initialBands={valuation === "live" ? INTRADAY_VISIBLE_GROUPS : DEFAULT_VISIBLE_GROUPS}>
         <Suspense fallback={<SectionSkeleton rows={6} />}>
-          <HoldingsSection apiAuth={apiAuth} id={id} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} savedView={savedView} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} />
+          <HoldingsSection apiAuth={apiAuth} id={id} holdingsP={holdingsP} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} savedView={savedView} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} />
         </Suspense>
 
         <Suspense fallback={<SectionSkeleton rows={3} />}>
           <WatchlistSection apiAuth={apiAuth} id={id} ccy={ccy} />
         </Suspense>
       </ColumnBandsProvider>
+
+      {/* Notes — every explanatory footnote on the page, at the very bottom (Brian,
+          2026-09-28), below Holdings and Watchlist rather than between the headline cards.
+          Stale-feed WARNINGS are alerts, not notes, and stay inline above the table. */}
+      <section className="mt-10 space-y-2 border-t border-line pt-4" aria-labelledby="holdings-notes">
+        <h2 id="holdings-notes" className="text-[11px] font-medium uppercase tracking-wide text-muted">
+          Notes
+        </h2>
+        {sessionP ? (
+          <Suspense fallback={null}>
+            <SessionNotesSection sessionP={sessionP} ccy={ccy} />
+          </Suspense>
+        ) : null}
+        <Suspense fallback={null}>
+          <FreshnessNotesSection holdingsP={holdingsP} priced={priced} />
+        </Suspense>
+        <p className="text-xs text-muted">
+          All accounts are included by default. (De)activate accounts with the account chip in the Holdings toolbar to
+          filter the positions for this view.
+        </p>
+      </section>
     </div>
+    </HiddenTypesProvider>
   );
 }
 
 // --- streamed sections -----------------------------------------------------
 
-/** The live-session panel's data (scoped like the table): the covered-basis Today
- *  decomposition + the drift history, joined with the coverage status fetched upstream. */
-async function SessionSection({
-  apiAuth, id, ccy, accountIds, status,
-}: {
-  apiAuth: string; id: string; ccy: string; accountIds: string[]; status: IntradayStatus;
-}) {
-  const [today, legs] = await Promise.all([
-    getToday(apiAuth, id, accountIds).catch((): Today | null => null),
-    getIntradayLegs(apiAuth, id).catch((): IntradayLegHistory | null => null),
-  ]);
+type SessionData = { today: Today | null; legs: IntradayLegHistory | null };
+
+/** The hoisted Portfolio total (top of the page) — fails soft (the table reports errors). */
+async function TotalSection({ holdingsP, ccy, priced }: { holdingsP: Promise<Holding[]>; ccy: string; priced: boolean }) {
+  const holdings = await holdingsP.catch((): Holding[] | null => null);
+  if (!holdings || holdings.length === 0) return null;
+  return (
+    <div className="mt-3">
+      <FilteredPortfolioTotal holdings={holdings} baseCurrency={ccy} priced={priced} />
+    </div>
+  );
+}
+
+/** The live-session headline (scoped like the table): the covered-basis Today
+ *  decomposition joined with the coverage status fetched upstream. */
+async function SessionSection({ sessionP, ccy, status }: { sessionP: Promise<SessionData>; ccy: string; status: IntradayStatus }) {
+  const { today } = await sessionP;
   if (!today) return null;
-  return <SessionPanel status={status} today={today} legs={legs} ccy={ccy} />;
+  return <SessionPanel status={status} today={today} ccy={ccy} />;
+}
+
+/** The live session's footnotes, rendered in the bottom Notes block. */
+async function SessionNotesSection({ sessionP, ccy }: { sessionP: Promise<SessionData>; ccy: string }) {
+  const { today, legs } = await sessionP;
+  if (!today) return null;
+  return <SessionNotes today={today} legs={legs} ccy={ccy} />;
+}
+
+/** The plain "prices as of" / "positions synced through" captions, over the whole holdings
+ *  read (page-level provenance, independent of the table's type filter). */
+async function FreshnessNotesSection({ holdingsP, priced }: { holdingsP: Promise<Holding[]>; priced: boolean }) {
+  const holdings = await holdingsP.catch((): Holding[] | null => null);
+  if (!holdings || holdings.length === 0) return null;
+  return (
+    <>
+      {priced ? <PricesAsOfCaption holdings={holdings} /> : null}
+      <PositionsAsOfCaption holdings={holdings} />
+    </>
+  );
 }
 
 async function HoldingsSection({
-  apiAuth, id, accountIds, ccy, priced, entitlements, byAccount, savedView, valuation, liveAvailable, sessionState,
+  apiAuth, id, holdingsP, accountIds, ccy, priced, entitlements, byAccount, savedView, valuation, liveAvailable, sessionState,
 }: {
-  apiAuth: string; id: string; accountIds: string[]; ccy: string; priced: boolean; entitlements: Entitlements | null; byAccount: boolean; savedView: HoldingsViewPrefs | null; valuation: "live" | "settled"; liveAvailable: boolean; sessionState: "live" | "recap" | "closed";
+  apiAuth: string; id: string; holdingsP: Promise<Holding[]>; accountIds: string[]; ccy: string; priced: boolean; entitlements: Entitlements | null; byAccount: boolean; savedView: HoldingsViewPrefs | null; valuation: "live" | "settled"; liveAvailable: boolean; sessionState: "live" | "recap" | "closed";
 }) {
   let holdings: Holding[];
   try {
-    holdings = await getHoldings(apiAuth, id, accountIds, byAccount, valuation);
+    holdings = await holdingsP;
   } catch {
     return (
       <Section title="Holdings">
@@ -247,7 +325,7 @@ async function HoldingsSection({
         // markers (metron-ops#147) — settled mode mounts it with live=false so the table
         // makes zero live claims; the Watchlist section below stays outside it entirely.
         (<LiveValuationProvider live={valuation === "live" && (live?.applied ?? false)}>
-          <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} accounts={accounts ?? undefined} selectedAccountIds={accountIds} />
+          <HoldingsView holdings={holdings} baseCurrency={ccy} priced={priced} medians={medians} portfolioId={id} byAccount={byAccount} savedGrouping={savedView?.grouping ?? null} savedHiddenTypes={savedView?.hidden_types ?? null} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} accounts={accounts ?? undefined} hoistTotalAndNotes />
         </LiveValuationProvider>)
       )}
     </Section>

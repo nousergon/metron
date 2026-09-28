@@ -12,71 +12,8 @@ import type { ReactNode } from "react";
 import { CollapsibleSection } from "@/components/collapsible-section";
 import { HoldingsTable, type ColumnBand } from "@/components/holdings-table";
 import { PortfolioTotalBar } from "@/components/portfolio-total-bar";
+import { PositionsAsOfCaption, PricesAsOfCaption, StalePositionsWarning, StalePriceWarning } from "@/components/price-freshness";
 import type { Holding } from "@/lib/api";
-import { isoDate } from "@/lib/format";
-
-/** The latest close date across priced holdings + whether the close feed has stalled
- *  (any holding flagged ≥1 full session stale by the server). */
-function priceFreshness(holdings: Holding[]): { asOf: string | null; stale: boolean } {
-  let asOf: string | null = null;
-  let stale = false;
-  for (const h of holdings) {
-    if (h.last_price_date && (asOf === null || h.last_price_date > asOf)) asOf = h.last_price_date;
-    if (h.last_price_stale) stale = true;
-  }
-  return { asOf, stale };
-}
-
-/** Always-on "prices as of {date}" caption so the EOD valuation date is never implicit;
- *  escalates to an amber warning when the upstream close feed has skipped a session, so a
- *  frozen feed fails loud instead of showing a stale price as if it were current. */
-function PricesAsOf({ holdings }: { holdings: Holding[] }) {
-  const { asOf, stale } = priceFreshness(holdings);
-  if (!asOf) return null;
-  if (stale) {
-    // Boxed amber alert, matching the existing warning convention (import-panel /
-    // performance) — a stalled feed should read as an alert, not a quiet footnote.
-    return (
-      <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-        ⚠ Prices as of {isoDate(asOf)} — the market-data feed hasn’t updated since, so
-        market values may be stale.
-      </p>
-    );
-  }
-  return <p className="text-xs text-muted">Prices as of {isoDate(asOf)}.</p>;
-}
-
-/** The OLDEST broker sync date across snapshot-sourced holdings (the worst-case
- *  contributor, not the freshest — a stale account must not hide behind a fresh one) +
- *  whether any holding's position sync is stale (metron-ops#150). null when every
- *  holding is ledger-derived (CSV/OFX), which has no broker snapshot to go stale. */
-function positionsFreshness(holdings: Holding[]): { asOf: string | null; stale: boolean } {
-  let asOf: string | null = null;
-  let stale = false;
-  for (const h of holdings) {
-    if (h.broker_as_of && (asOf === null || h.broker_as_of < asOf)) asOf = h.broker_as_of;
-    if (h.positions_stale) stale = true;
-  }
-  return { asOf, stale };
-}
-
-/** "Positions synced through {date}" caption — DISTINCT from PricesAsOf: this is about
- *  how current the broker-reported SHARE COUNT is, not the per-share price. Escalates to
- *  an amber warning when the daily broker re-sync has fallen behind, so a real trade at
- *  the broker can't silently sit unreflected behind a fresh-looking price. */
-function PositionsAsOf({ holdings }: { holdings: Holding[] }) {
-  const { asOf, stale } = positionsFreshness(holdings);
-  if (!asOf) return null;
-  if (stale) {
-    return (
-      <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-        ⚠ Positions synced through {isoDate(asOf)} — a more recent trade at the broker may
-        not be reflected yet.
-      </p>
-    );
-  }
-  return <p className="text-xs text-muted">Positions synced through {isoDate(asOf)}.</p>;
-}
 
 // Display order + labels for the security types classify_security_type emits. The
 // fixed-income family is split into Treasuries / Bonds / CDs (metron-ops#114).
@@ -125,6 +62,8 @@ export function GroupedHoldings({
   visibleBands,
   accountColumn,
   belowTotal,
+  showTotal = true,
+  freshnessCaptions = true,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -137,6 +76,12 @@ export function GroupedHoldings({
   accountColumn?: boolean;
   /** Rendered under the Portfolio total bar (the column-band control, metron-ops#118+). */
   belowTotal?: ReactNode;
+  /** false → the page renders the Portfolio total elsewhere (the landing page hoists it to
+   *  the top); `belowTotal` then renders on its own, directly above the tables. */
+  showTotal?: boolean;
+  /** false → omit the plain "prices as of" / "positions synced" captions (the landing page
+   *  renders them in its bottom notes). Stale WARNINGS always render inline. */
+  freshnessCaptions?: boolean;
 }) {
   const groups = groupByType(holdings);
   // Show the total bar whenever there's a control to anchor or multiple groups to summarize.
@@ -144,9 +89,11 @@ export function GroupedHoldings({
 
   return (
     <div className="space-y-5">
-      {priced ? <PricesAsOf holdings={holdings} /> : null}
-      <PositionsAsOf holdings={holdings} />
-      {showBar ? (
+      {priced ? <StalePriceWarning holdings={holdings} /> : null}
+      <StalePositionsWarning holdings={holdings} />
+      {freshnessCaptions && priced ? <PricesAsOfCaption holdings={holdings} /> : null}
+      {freshnessCaptions ? <PositionsAsOfCaption holdings={holdings} /> : null}
+      {!showTotal ? belowTotal : showBar ? (
         <PortfolioTotalBar holdings={holdings} baseCurrency={baseCurrency} priced={priced} below={belowTotal} />
       ) : null}
       {groups.length <= 1 ? (

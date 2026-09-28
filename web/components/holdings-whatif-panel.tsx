@@ -1,7 +1,8 @@
 "use client";
 
-// What-if reallocation sandbox (metron-ops#171) — a collapsible panel ON the Holdings
-// page (not a dedicated route). The user types hypothetical per-ticker weights; the
+// What-if reallocation sandbox (metron-ops#171) — a collapsible panel, now on the dedicated
+// What-if page (app/portfolios/[id]/what-if; moved off the Holdings landing page 2026-09-28,
+// where it opens expanded via `defaultOpen`). The user types hypothetical per-ticker weights; the
 // panel recomputes the SAME diagnostics the Holdings page already shows — concentration
 // (HHI / top-N), sector exposure, weighted valuation aggregates, weighted Attractiveness
 // — as current → hypothetical deltas, using the shared math in lib/whatif.ts so the
@@ -92,14 +93,14 @@ function WeightInput({ value, onChange }: { value: number; onChange: (next: numb
   );
 }
 
-export function HoldingsWhatIfPanel({ holdings }: { holdings: Holding[] }) {
+export function HoldingsWhatIfPanel({ holdings, defaultOpen = false }: { holdings: Holding[]; defaultOpen?: boolean }) {
   // Controlled open state (not a bare <details>/<summary> pair): the panel's body
   // repeats each ticker (once per hypothetical-weight row) alongside the always-mounted
   // Holdings table above it, so — unlike the column-preset <details> disclosure, whose
   // content is unique — this body must NOT stay mounted-but-hidden while collapsed, or
   // every ticker on the page becomes ambiguous to a screen reader / find-in-page. Only
   // render the (heavier, duplicate-ticker-bearing) body once the user actually opens it.
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const included = useMemo(() => includedHoldings(holdings), [holdings]);
   const baseline = useMemo(() => baselineWeights(holdings), [holdings]);
   const [hypothetical, setHypothetical] = useState<WeightMap>(baseline);

@@ -148,23 +148,59 @@ def _account_net_purchases(
     return _purchase_flow(rows)
 
 
-def _scoped_net_purchases(
-    session: Session,
-    tenant_id: uuid.UUID,
-    portfolio_id: uuid.UUID,
-    account_ids: Collection[uuid.UUID] | None,
+def _net_purchase_rows_by_account(
+    session: Session, tenant_id: uuid.UUID, account_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, tuple[list[date], list[tuple[str, float]]]]:
+    """Every net-purchase row (BUY / REINVESTMENT / SELL) of ``account_ids`` in ONE read,
+    grouped per account and sorted by trade date — ``(dates, (txn_type, amount) rows)``.
+
+    The set-based input to :func:`_windowed_net_purchases`. A NAV reconstruction takes the
+    flow term over every consecutive valuation sub-period; reading it with
+    :func:`_account_net_purchases` cost one query per (sub-period × ledger account) — the
+    84 statements of a cold Accounts-panel load in the landing-page benchmark, a count that
+    grows with every month of history (``tests/test_landing_page_statement_budget.py``)."""
+    out: dict[uuid.UUID, tuple[list[date], list[tuple[str, float]]]] = {aid: ([], []) for aid in account_ids}
+    if not account_ids:
+        return out
+    rows = session.execute(
+        select(
+            models.Transaction.account_id,
+            models.Transaction.trade_date,
+            models.Transaction.txn_type,
+            models.Transaction.amount,
+        ).where(
+            models.Transaction.tenant_id == tenant_id,
+            models.Transaction.account_id.in_(list(account_ids)),
+            models.Transaction.txn_type.in_(_NET_PURCHASE_TYPE_VALUES),
+        )
+    ).all()
+    grouped: dict[uuid.UUID, list[tuple[date, str, float]]] = defaultdict(list)
+    for account_id, trade_date, txn_type, amount in rows:
+        grouped[account_id].append((trade_date, txn_type, amount))
+    for account_id, items in grouped.items():
+        items.sort(key=lambda r: r[0])  # stable: same-day rows keep their read order
+        out[account_id] = ([d for d, _t, _a in items], [(t, a) for _d, t, a in items])
+    return out
+
+
+def _windowed_net_purchases(
+    prefetched: dict[uuid.UUID, tuple[list[date], list[tuple[str, float]]]],
+    account_ids: Collection[uuid.UUID],
     *,
     after: date | None,
     through: date,
 ) -> float:
-    """Net purchases over ``(after, through]`` for the whole portfolio (``account_ids``
-    None) or a scoped set — the TWR flow term, at either grain. Summing per-account net
-    purchases equals the portfolio figure (BUY/SELL amounts partition by account)."""
-    if account_ids is None:
-        return _net_purchases(session, tenant_id, portfolio_id, after=after, through=through)
-    return sum(
-        _account_net_purchases(session, tenant_id, aid, after=after, through=through) for aid in account_ids
-    )
+    """Net purchases of ``account_ids`` over ``(after, through]`` — per account exactly
+    what :func:`_account_net_purchases` returns (the same window, the same
+    :func:`_purchase_flow`), summed across accounts — answered from
+    :func:`_net_purchase_rows_by_account`'s prefetch instead of a query per account."""
+    total = 0
+    for aid in account_ids:
+        dates, rows = prefetched.get(aid, ([], []))
+        lo = bisect.bisect_right(dates, after) if after is not None else 0
+        hi = bisect.bisect_right(dates, through)
+        total += _purchase_flow(rows[lo:hi])
+    return total
 
 
 def _last_snapshot_date(
@@ -1927,27 +1963,35 @@ def _reconstruct_nav_points(
     if backfill and foreign:
         fx_service.backfill_fx_rates(session, foreign, first, today, base="USD")
     _rate_cache: dict[tuple[str, date], float] = {}
+    # Every foreign rate this reconstruction can ask for, read once (after the backfill
+    # above, so it sees what that wrote) — not one query per (currency, valuation date).
+    fx_history = fx_service.rate_history(session, foreign)
 
     def _rate(ccy: str, when: date) -> float:
         if not ccy or ccy == "USD":
             return 1.0
         key = (ccy, when)
         if key not in _rate_cache:
-            _rate_cache[key] = (
-                fx_service.rate_as_of(session, ccy, when)
-                or fx_service.latest_rate_to_base(session, ccy)
-                or 1.0
-            )
+            if fx_history.covers(ccy):
+                _rate_cache[key] = fx_history.rate_as_of(ccy, when) or fx_history.latest(ccy) or 1.0
+            else:
+                _rate_cache[key] = (
+                    fx_service.rate_as_of(session, ccy, when)
+                    or fx_service.latest_rate_to_base(session, ccy)
+                    or 1.0
+                )
         return _rate_cache[key]
 
     # Capital in/out for the lot-valued (snapshot-sourced) positions — a lot opening is the
     # moment a position enters a no-trade-feed account, a realized lot closing the moment it
     # leaves. Without this the flow term below is 0 for these accounts and the entire
     # contribution-driven NAV build-up reads as return (metron-ops#88). Ledger (CSV/OFX)
-    # accounts keep their trade-ledger flow via ``_scoped_net_purchases`` over JUST those
+    # accounts keep their trade-ledger flow via ``_windowed_net_purchases`` over JUST those
     # accounts — the two sets partition by the snapshot/ledger boundary, so no double count.
     lot_opens, lot_closes = _load_lot_flows(session, tenant_id, portfolio_id, account_ids)
     ledger_account_ids = sorted({aid for aid, _t in ledger_by_account})
+    # One read for every sub-period's trade-ledger flow (not one per sub-period × account).
+    ledger_purchases = _net_purchase_rows_by_account(session, tenant_id, ledger_account_ids)
 
     def _event_mv(ticker: str, qty: float, d: date) -> float:
         """Base-currency MARKET value of ``qty`` of ``ticker`` on ``d`` — valued IDENTICALLY
@@ -2000,9 +2044,7 @@ def _reconstruct_nav_points(
         flow = (
             sum(_event_mv(t, q, d) for t, d, q in lot_opens if (lo is None or d > lo) and d <= hi)
             - sum(_event_mv(t, q, d) for t, d, q in lot_closes if (lo is None or d > lo) and d <= hi)
-            + _scoped_net_purchases(
-                session, tenant_id, portfolio_id, ledger_account_ids, after=prev, through=when
-            )
+            + _windowed_net_purchases(ledger_purchases, ledger_account_ids, after=prev, through=when)
         )
         points.append(
             _NavPoint(when=when, nav=nav, cost_basis=cost_basis, flow=flow, spy_close=_asof_close(spy_series, when))

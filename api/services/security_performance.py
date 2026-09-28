@@ -10,13 +10,11 @@ Mirrors ``technicals.py`` / ``fundamentals.py`` (injectable reader, fail-soft).
 
 from __future__ import annotations
 
-import json
-import logging
 import os
 from dataclasses import dataclass, field
 from datetime import date
 
-logger = logging.getLogger(__name__)
+from api.services import spine_artifacts
 
 SECURITY_PERFORMANCE_KEY = "market_data/security_performance/latest.json"
 
@@ -49,14 +47,8 @@ def _bucket() -> str:
 
 
 def _default_reader() -> dict | None:
-    import boto3
-
-    try:
-        obj = boto3.client("s3").get_object(Bucket=_bucket(), Key=SECURITY_PERFORMANCE_KEY)
-        return json.loads(obj["Body"].read())
-    except Exception as e:
-        logger.warning("data-spine read failed %s: %s", SECURITY_PERFORMANCE_KEY, e)
-        return None
+    # Fail-soft (None on any read error); shared short-TTL cache — see spine_artifacts.
+    return spine_artifacts.read_json(SECURITY_PERFORMANCE_KEY, bucket=_bucket())
 
 
 def _f(d: dict, key: str) -> float | None:

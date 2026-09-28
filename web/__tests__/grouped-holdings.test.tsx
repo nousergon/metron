@@ -81,11 +81,63 @@ describe("GroupedHoldings", () => {
     expect(screen.queryByText(/feed hasn’t updated/)).not.toBeInTheDocument();
   });
 
-  it("escalates to a stale warning when any holding is flagged stale", () => {
+  it("escalates to a stale warning naming the stale holding and ITS last close", () => {
     const holdings = [h("AAPL", "equity", { last_price_date: "2026-06-23", last_price_stale: true })];
     render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced />);
-    expect(screen.getByText(/Prices as of Jun 23, 2026/)).toBeInTheDocument();
-    expect(screen.getByText(/feed hasn’t updated since/)).toBeInTheDocument();
+    const warning = screen.getByRole("status");
+    expect(warning).toHaveTextContent("Stale price for AAPL (last close Jun 23, 2026)");
+    expect(warning).toHaveTextContent(/feed hasn’t updated it since/);
+  });
+
+  it("scopes the stale warning to the lagging holding, not the freshest date (2026-09-28 regression)", () => {
+    // A live-overlaid row carries today's date; ONE close-fed holding lags. The old banner
+    // printed the freshest date ("Prices as of Sep 28 — the feed hasn't updated since"),
+    // claiming a whole-feed stall on a normal trading morning.
+    const holdings = [
+      h("AAPL", "equity", { last_price_date: "2026-09-28" }),
+      h("1299", "equity", { user_label: "AIA", last_price_date: "2026-09-24", last_price_stale: true }),
+      h("1299", "equity", { user_label: "AIA", last_price_date: "2026-09-23", last_price_stale: true }),
+    ];
+    render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced />);
+    const warning = screen.getByRole("status");
+    // Deduped per label, oldest close for that label.
+    expect(warning).toHaveTextContent("Stale price for AIA (last close Sep 23, 2026)");
+    expect(warning).not.toHaveTextContent(/Sep 28/);
+    // The plain caption still reports the freshest close, separately.
+    expect(screen.getByText(/Prices as of Sep 28, 2026\./)).toBeInTheDocument();
+  });
+
+  it("pluralizes the stale warning for several holdings, oldest first", () => {
+    const holdings = [
+      h("MSFT", "equity", { last_price_date: "2026-06-22", last_price_stale: true }),
+      h("AAPL", "equity", { last_price_date: "2026-06-19", last_price_stale: true }),
+    ];
+    render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Stale prices for 2 holdings: AAPL (last close Jun 19, 2026), MSFT (last close Jun 22, 2026)",
+    );
+  });
+
+  it("landing mode: no total bar or plain captions, but the control and stale warnings stay", () => {
+    const holdings = [
+      h("AAPL", "equity", { last_price_date: "2026-06-23", last_price_stale: true, broker_as_of: "2026-06-23" }),
+      h("VMFXX", "cash"),
+    ];
+    render(
+      <GroupedHoldings
+        holdings={holdings}
+        baseCurrency="USD"
+        priced
+        belowTotal={<span>Columns control</span>}
+        showTotal={false}
+        freshnessCaptions={false}
+      />,
+    );
+    expect(screen.queryByText("Portfolio total")).not.toBeInTheDocument();
+    expect(screen.getByText("Columns control")).toBeInTheDocument();
+    expect(screen.queryByText(/Prices as of/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Positions synced through/)).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/Stale price for AAPL/);
   });
 
   it("omits the caption on the price-free (cost-basis-only) view", () => {

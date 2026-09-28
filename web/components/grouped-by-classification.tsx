@@ -79,6 +79,7 @@ export function GroupedByClassification({
   visibleBands,
   accountColumn,
   belowTotal,
+  showTotal = true,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -91,12 +92,19 @@ export function GroupedByClassification({
   accountColumn?: boolean;
   /** Rendered under the Portfolio total bar (the column-band control, metron-ops#118+). */
   belowTotal?: ReactNode;
+  /** false → the page renders the Portfolio total elsewhere (the landing page hoists it to
+   *  the top); `belowTotal` then renders on its own, directly above the tables. */
+  showTotal?: boolean;
 }) {
   const sectors = partition(holdings, "sector");
 
   return (
     <div className="space-y-6">
-      <PortfolioTotalBar holdings={holdings} baseCurrency={baseCurrency} priced={priced} below={belowTotal} />
+      {showTotal ? (
+        <PortfolioTotalBar holdings={holdings} baseCurrency={baseCurrency} priced={priced} below={belowTotal} />
+      ) : (
+        belowTotal
+      )}
       {sectors.map(([sector, sectorHoldings]) => {
         const countries = partition(sectorHoldings, "country");
         return (
