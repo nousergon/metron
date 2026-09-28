@@ -15,7 +15,7 @@ import uuid
 from datetime import date
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from api.db import models
 from portfolio_analytics.prices import (
@@ -141,40 +141,35 @@ def latest_close_by_symbol(
     Absent symbols (never refreshed, or refreshed but unpriceable) are omitted — the
     caller treats absence as "no market value".
 
-    Latest-per-symbol via a window function (``ROW_NUMBER`` partitioned by
-    ``(symbol, currency)``, newest bar first), so the DB returns ONE row per
-    symbol-currency pair off the ``(security_id, bar_date)`` index — NOT every bar for
-    every symbol pulled across the wire to be deduped in Python (that scanned ~all of
-    ``price_bars`` on every valuation, the dominant page-load cost). Partitioning
-    includes ``currency`` (not just ``symbol``) because ``securities`` is a GLOBAL,
-    cross-tenant table: two Security rows can share a symbol under different
-    currencies, and if BOTH have price history, ranking by symbol alone could return
-    another tenant's price under a shared key (metron-I399). Pass
+    Latest-per-symbol via a correlated ``max(bar_date)`` per security, answered off the
+    ``(security_id, bar_date)`` unique index — the DB touches ONE bar per held security and
+    returns one row per symbol-currency pair. NOT every bar for every symbol pulled across
+    the wire to be deduped in Python (that scanned ~all of ``price_bars`` on every
+    valuation, the dominant page-load cost), and NOT a ``ROW_NUMBER`` window either: that
+    returned the same rows but made the database sort every bar of every held symbol to
+    rank them — ~60 ms per call on a 54k-bar table in the landing-page benchmark versus
+    ~2 ms for this, and the Holdings page makes this call about ten times per load. One
+    row per ``(symbol, currency)`` because ``securities`` is a GLOBAL, cross-tenant table:
+    two Security rows can share a symbol under different currencies (``uq_security_symbol_ccy``
+    makes each pair one security), and if BOTH have price history, picking by symbol alone
+    could return another tenant's price under a shared key (metron-I399). Pass
     ``currency_by_symbol`` (from ``analytics.holdings()``) to pick the exact currency
     this caller holds; without it, the currency with the most recent bar wins."""
     symbols = [s for s in dict.fromkeys(symbols) if s]
     if not symbols:
         return {}
-    rn = func.row_number().over(
-        partition_by=(models.Security.symbol, models.Security.currency),
-        order_by=models.PriceBar.bar_date.desc(),
-    ).label("rn")
-    ranked = (
-        select(
-            models.Security.symbol.label("symbol"),
-            models.Security.currency.label("currency"),
-            models.PriceBar.bar_date.label("bar_date"),
-            models.PriceBar.close.label("close"),
-            rn,
-        )
-        .join(models.PriceBar, models.PriceBar.security_id == models.Security.id)
-        .where(models.Security.symbol.in_(symbols))
-        .subquery()
+    newer = aliased(models.PriceBar)
+    latest_date = (
+        select(func.max(newer.bar_date))
+        .where(newer.security_id == models.Security.id)
+        .correlate(models.Security)
+        .scalar_subquery()
     )
     rows = session.execute(
-        select(ranked.c.symbol, ranked.c.currency, ranked.c.bar_date, ranked.c.close)
-        .where(ranked.c.rn == 1)
-        .order_by(ranked.c.bar_date.desc())
+        select(models.Security.symbol, models.Security.currency, models.PriceBar.bar_date, models.PriceBar.close)
+        .join(models.PriceBar, models.PriceBar.security_id == models.Security.id)
+        .where(models.Security.symbol.in_(symbols), models.PriceBar.bar_date == latest_date)
+        .order_by(models.PriceBar.bar_date.desc())
     ).all()
     currency_by_symbol = currency_by_symbol or {}
     out: dict[str, ClosePoint] = {}

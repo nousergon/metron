@@ -1214,10 +1214,14 @@ def _realized(
     ccy_by_ticker = _ledger_currency_by_symbol(
         session, tenant_id, [rg.ticker for ccy, rg in merged if ccy is None], account_ids=replay_ids
     )
+    # Every close-date rate from one read, not a query per foreign lot.
+    fx_history = fx_service.rate_history(
+        session, {ccy or ccy_by_ticker.get(r.ticker, base) for ccy, r in merged}, base=base
+    )
     out: list[RealizedLot] = []
     for ccy, r in sorted(merged, key=lambda x: x[1].close_date):
         currency = ccy or ccy_by_ticker.get(r.ticker, base)
-        rate = fx_service.rate_as_of(session, currency, r.close_date, base=base)
+        rate = fx_history.rate_as_of(currency, r.close_date)
         out.append(
             RealizedLot(
                 ticker=r.ticker,
@@ -1341,9 +1345,11 @@ def _transactions(
     """Uncached core of :func:`transactions` — see that wrapper for caching."""
     base = _base_currency(session, portfolio_id)
     rows = list(_portfolio_rows(session, tenant_id, portfolio_id, account_id, account_ids))
+    # Every trade-date rate from one read, not a query per foreign transaction.
+    fx_history = fx_service.rate_history(session, {row.currency for row, _ticker in rows}, base=base)
     out: list[TransactionRow] = []
     for row, ticker in rows:
-        rate = fx_service.rate_as_of(session, row.currency, row.trade_date, base=base)
+        rate = fx_history.rate_as_of(row.currency, row.trade_date)
         amount = float(row.amount)
         out.append(
             TransactionRow(
@@ -1559,10 +1565,25 @@ def _income(
     ccy_by_ticker = _ledger_currency_by_symbol(
         session, tenant_id, [r.ticker for r in ledger.realized], account_ids=account_ids
     )
-    realized_base: list[RealizedGain] = []
     replayed = [(ccy_by_ticker.get(r.ticker, base), r) for r in ledger.realized]
-    for ccy, r in replayed + [(c, rg) for _aid, c, rg in stored]:
-        rate = fx_service.rate_as_of(session, ccy, r.close_date, base=base)
+    lots = replayed + [(c, rg) for _aid, c, rg in stored]
+    # Tax-deferred distribution rows are read up front so ONE rate read covers every
+    # conversion below — not a query per foreign lot / dividend / withdrawal.
+    distribution_rows = (
+        _portfolio_rows(session, tenant_id, portfolio_id, account_ids=list(distribution_account_ids))
+        if distribution_account_ids
+        else []
+    )
+    fx_history = fx_service.rate_history(
+        session,
+        {ccy for ccy, _r in lots}
+        | {row.currency for row, _t in rows}
+        | {row.currency for row, _t in distribution_rows},
+        base=base,
+    )
+    realized_base: list[RealizedGain] = []
+    for ccy, r in lots:
+        rate = fx_history.rate_as_of(ccy, r.close_date)
         if rate is None:
             continue
         realized_base.append(
@@ -1581,7 +1602,7 @@ def _income(
     for row, _ticker in rows:
         if row.txn_type not in (TxnType.DIVIDEND.value, TxnType.INTEREST.value):
             continue
-        rate = fx_service.rate_as_of(session, row.currency, row.trade_date, base=base)
+        rate = fx_history.rate_as_of(row.currency, row.trade_date)
         if rate is None:
             continue
         amount = float(row.amount) * rate
@@ -1593,16 +1614,13 @@ def _income(
     # RMDs). Scanned from their own account scope — they're deliberately outside the
     # taxable ``account_ids`` above, so this is a separate query.
     distributions: dict[int, float] = defaultdict(float)
-    if distribution_account_ids:
-        for row, _ticker in _portfolio_rows(
-            session, tenant_id, portfolio_id, account_ids=list(distribution_account_ids)
-        ):
-            if row.txn_type != TxnType.WITHDRAWAL.value:
-                continue
-            rate = fx_service.rate_as_of(session, row.currency, row.trade_date, base=base)
-            if rate is None:
-                continue
-            distributions[row.trade_date.year] += abs(float(row.amount)) * rate
+    for row, _ticker in distribution_rows:
+        if row.txn_type != TxnType.WITHDRAWAL.value:
+            continue
+        rate = fx_history.rate_as_of(row.currency, row.trade_date)
+        if rate is None:
+            continue
+        distributions[row.trade_date.year] += abs(float(row.amount)) * rate
 
     return summarize_income_by_year(realized_base, dict(dividends), dict(interest), dict(distributions))
 

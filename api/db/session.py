@@ -72,9 +72,17 @@ engine = create_engine(settings.database_url, **_engine_kwargs(settings.database
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
+#: ``Session.info`` flag marking a session as scoped to ONE API request (short-lived, read
+#: mostly). Per-request memoization keys off it — ``compute_cache.portfolio_fingerprint``
+#: computes the portfolio's content fingerprint once per request instead of once per cached
+#: call. Long-lived sessions (maintenance jobs) never carry it.
+REQUEST_SCOPED = "metron.request_scoped"
+
+
 def get_session() -> Iterator[Session]:
     """FastAPI dependency yielding a request-scoped session."""
     session = SessionLocal()
+    session.info[REQUEST_SCOPED] = True
     try:
         yield session
     finally:
