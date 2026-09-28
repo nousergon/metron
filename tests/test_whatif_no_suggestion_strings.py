@@ -23,6 +23,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 # so the invariant can't silently stop covering new surface.
 _WHATIF_FILES = (
     "web/components/holdings-whatif-panel.tsx",
+    "web/app/portfolios/[id]/what-if/page.tsx",
     "web/lib/whatif.ts",
 )
 

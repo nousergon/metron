@@ -15,10 +15,19 @@
 // the panel simply mounts more often now, showing the last live snapshot frozen indefinitely
 // instead of vanishing. Only the "as of" timestamp needed a fix (below): a bare time reads as
 // "today" and would misrepresent a multi-day-old frozen snapshot as fresher than it is.
+//
+// Split in two (Brian, 2026-09-28): SessionPanel is the headline (coverage banner + strip);
+// SessionNotes carries the explanatory footnotes (covered-basis denominator, the
+// not-in-the-live-session list, the since-tracking drift split), which the landing page
+// renders in its notes block at the BOTTOM of the page rather than between the headline
+// cards and the holdings. The coverage figure is a SHARE, not a change, so it renders
+// unsigned ("(91.3%)", never "(+91.3%)"), and its "as of" time renders client-side in the
+// viewer's local zone (LocalAsOf) — the same convention as the page header's live label.
 
 import type { IntradayStatus, IntradayLegHistory, Today } from "@/lib/api";
-import { accountingMoneyWhole, moneyWhole, percent, signClass } from "@/lib/format";
+import { accountingMoneyWhole, moneyWhole, pct1, percent, signClass } from "@/lib/format";
 import { StatCard } from "@/components/ui";
+import { LocalAsOf } from "@/components/local-as-of";
 
 const EXCLUDED_REASON: Record<string, string> = {
   suspect: "quote failed the outlier guard",
@@ -26,26 +35,10 @@ const EXCLUDED_REASON: Record<string, string> = {
   no_fx: "no FX rate to base currency",
 };
 
-/** "11:03 AM" local for a same-day snapshot; "Fri, Jul 18 · 4:00 PM" once the frozen
- *  snapshot is from an earlier calendar day (metron-ops-I156 supersession, 2026-07-22) — a
- *  bare time reads as "today" and would misrepresent a weekend/holiday view of the last
- *  completed session as fresher than it is. */
-function asOf(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-  const sameDay = d.toDateString() === new Date().toDateString();
-  if (sameDay) return time;
-  const day = d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-  return `${day} · ${time}`;
-}
-
 function CoverageBanner({ status, today, ccy }: { status: IntradayStatus; today: Today; ccy: string }) {
   const covered = status.covered_nav;
   const total = status.total_nav;
   const pct = covered != null && total ? covered / total : null;
-  const when = asOf(status.as_of_utc ?? today.as_of_utc);
   const state = today.stale ? "session closed — as of close" : "~15-min delayed";
   return (
     <div className="rounded-md border border-line bg-surface px-3 py-2 text-xs text-muted">
@@ -54,14 +47,14 @@ function CoverageBanner({ status, today, ccy }: { status: IntradayStatus; today:
           Live session covers{" "}
           <span className="font-medium text-ink">{moneyWhole(covered, ccy)}</span> of{" "}
           <span className="font-medium text-ink">{moneyWhole(total, ccy)}</span> NAV
-          {pct != null ? <> ({percent(pct)})</> : null}
+          {pct != null ? <> ({pct1(pct)})</> : null}
         </>
       ) : (
         <>Live session · coverage {today.n_priced}/{today.n_priced + today.n_excluded} holdings</>
       )}
       {" · "}
       {state}
-      {when ? <> · as of {when}</> : null}
+      <LocalAsOf iso={status.as_of_utc ?? today.as_of_utc} prefix=" · as of " />
     </div>
   );
 }
@@ -93,30 +86,48 @@ function SessionStrip({ today, ccy }: { today: Today; ccy: string }) {
   );
 }
 
+/** The live session's headline: NAV-weighted coverage banner + the covered-basis strip. */
 export function SessionPanel({
   status,
+  today,
+  ccy,
+}: {
+  status: IntradayStatus;
+  today: Today;
+  ccy: string;
+}) {
+  if (!today.available || today.rows.length === 0) return null;
+  return (
+    <section className="mt-4">
+      <CoverageBanner status={status} today={today} ccy={ccy} />
+      <SessionStrip today={today} ccy={ccy} />
+    </section>
+  );
+}
+
+/** The live session's explanatory footnotes — rendered in the landing page's bottom notes.
+ *  Null whenever SessionPanel is (no session to annotate) or there is nothing to note. */
+export function SessionNotes({
   today,
   legs,
   ccy,
 }: {
-  status: IntradayStatus;
   today: Today;
   legs: IntradayLegHistory | null;
   ccy: string;
 }) {
   if (!today.available || today.rows.length === 0) return null;
   const showLegs = (legs?.n_days ?? 0) > 0 && legs?.cum_day_pct != null;
+  if (today.covered_prev_mv == null && today.excluded_rows.length === 0 && !showLegs) return null;
   return (
-    <section className="mt-4">
-      <CoverageBanner status={status} today={today} ccy={ccy} />
-      <SessionStrip today={today} ccy={ccy} />
+    <div className="space-y-2">
       {today.covered_prev_mv != null ? (
-        <p className="mt-1 text-[11px] text-muted/70">
-          session %s over the covered basis — {moneyWhole(today.covered_prev_mv, ccy)} of prior-close market value
+        <p className="text-xs text-muted">
+          Session %s over the covered basis — {moneyWhole(today.covered_prev_mv, ccy)} of prior-close market value.
         </p>
       ) : null}
       {today.excluded_rows.length > 0 ? (
-        <p className="mt-2 text-xs text-muted">
+        <p className="text-xs text-muted">
           Not in the live session ({today.excluded_rows.length}):{" "}
           {today.excluded_rows.map((e, i) => (
             <span key={e.ticker}>
@@ -131,7 +142,7 @@ export function SessionPanel({
         </p>
       ) : null}
       {showLegs && legs ? (
-        <p className="mt-2 text-xs text-muted">
+        <p className="text-xs text-muted">
           Since tracking ({legs.n_days} day{legs.n_days === 1 ? "" : "s"}), cumulative drift split:{" "}
           <span className={signClass(legs.cum_overnight_pct ?? 0)}>
             overnight {legs.cum_overnight_pct != null ? percent(legs.cum_overnight_pct) : "—"}
@@ -146,6 +157,6 @@ export function SessionPanel({
           </span>
         </p>
       ) : null}
-    </section>
+    </div>
   );
 }
