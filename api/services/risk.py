@@ -141,7 +141,8 @@ def compute_risk(
     fetches the held + factor-ETF history over the window first (the POST path); the
     GET path computes from whatever is already cached. ``account_ids`` scopes the
     holdings (weights + backfilled tickers) to the selected accounts; None = whole
-    portfolio (factor-ETF history is global and stays unscoped)."""
+    portfolio (factor-ETF history is global and stays unscoped). The model is estimated
+    over closes from the same ~``window_days`` session window only."""
     held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     priced = [h for h in held if h.market_value and h.market_value > 0]
     if not priced:
@@ -151,13 +152,17 @@ def compute_risk(
     tickers = list(weights)
     etfs = [MARKET_ETF, *STYLE_ETF.values()]
 
+    start = today - timedelta(days=int(window_days * 1.6))  # ~window_days trading sessions
     if do_backfill:
-        start = today - timedelta(days=int(window_days * 1.6))  # ~window_days trading sessions
         for etf in etfs:
             price_service.ensure_security(session, etf)
         price_service.backfill_prices(session, [*tickers, *etfs], start, today, source=source)
 
-    hist = price_service.close_history_by_symbol(session, [*tickers, *etfs])
+    # Read only the window the model is estimated over (metron-ops-I343). Unbounded, this
+    # pulled every cached bar for every held ticker and factor ETF, and the regression ran
+    # over all of it, so the estimation window grew with cache depth instead of being the
+    # declared ``window_days``.
+    hist = price_service.close_history_by_symbol(session, [*tickers, *etfs], start_date=start)
     factor_series = _factor_returns(hist)
     if factor_series is None:
         return RiskSummary(False, reason="Not enough market history yet — compute risk to backfill it.")

@@ -192,7 +192,10 @@ def compute_attribution(
         )
 
     sector_of = sector_service.sectors_by_symbol(session, tickers)
-    hist = price_service.close_history_by_symbol(session, [*tickers, *etfs])
+    # Bounded at ``start`` (metron-ops-I343): ``_window_return`` anchors on the first close
+    # on/after ``start``, so earlier bars never change a result that has two closes in the
+    # window. Unbounded, this read every cached bar of every held ticker and sector ETF.
+    hist = price_service.close_history_by_symbol(session, [*tickers, *etfs], start_date=start)
     holding_returns = {t: r for t in tickers if (r := _window_return(hist.get(t), start)) is not None}
 
     w_p, r_p, coverage = _portfolio_sector_aggregates(priced, sector_of, holding_returns)
