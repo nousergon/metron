@@ -15,7 +15,7 @@ import botocore.exceptions
 import pytest
 from fastapi import Header, HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -147,3 +147,16 @@ def raw_client(session_factory):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def statements(_engine):
+    """Every SQL statement the engine executes, in order."""
+    seen: list[str] = []
+
+    def _count(conn, cursor, statement, parameters, context, executemany):  # noqa: ARG001
+        seen.append(statement)
+
+    event.listen(_engine, "after_cursor_execute", _count)
+    yield seen
+    event.remove(_engine, "after_cursor_execute", _count)

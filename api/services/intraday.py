@@ -623,6 +623,7 @@ def today_by_account(
     account_ids: Collection[uuid.UUID] | None = None,
     reader=None,
     now: datetime | None = None,
+    held_by_account: dict | None = None,
 ) -> dict[uuid.UUID, TodaySummary]:
     """Per-account TODAY decomposition computed in ONE pass — values every account's
     holdings once (``analytics.valued_holdings_by_account``: a single price + FX lookup over
@@ -631,13 +632,21 @@ def today_by_account(
     Replaces the per-account ``today_view`` N+1 in ``performance.account_period_returns``
     (was N× valued_holdings + N× snapshot decode for an N-account portfolio — the dominant
     cost of the Accounts panel). Empty/out-of-scope accounts are omitted from the result;
-    callers treat an absent account_id as "no TODAY legs"."""
+    callers treat an absent account_id as "no TODAY legs".
+
+    ``held_by_account`` is a caller's own ``analytics.valued_holdings_by_account`` result for
+    the same portfolio, when it already has one (read-only here) — it saves re-valuing every
+    account a second time in the same request."""
     from api.services import analytics
 
     now = now or datetime.now(UTC)
     if not feed_entitled:
         return {}
-    per_acct = analytics.valued_holdings_by_account(session, tenant_id, portfolio_id)
+    per_acct = (
+        held_by_account
+        if held_by_account is not None
+        else analytics.valued_holdings_by_account(session, tenant_id, portfolio_id)
+    )
     if account_ids is not None:
         scope = set(account_ids)
         per_acct = {aid: hs for aid, hs in per_acct.items() if aid in scope}
