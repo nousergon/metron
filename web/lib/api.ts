@@ -1171,7 +1171,7 @@ export type RatingIcPoint = { date: string; horizon: number; ic: number | null }
 export type RatingPerformance = {
   schema_version: number;
   as_of_utc: string | null;
-  rating_version: string | null;
+  rating_version: number | null;
   horizons: number[]; // e.g. [1, 5, 20]
   windows: number[]; // e.g. [20, 60, 250]
   // segment ("live" | "backfill" | "all") -> window (string int) -> horizon (string int).

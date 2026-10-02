@@ -195,6 +195,9 @@ def test_rating_performance_fixture_validates_and_reader_extracts_cells():
     )
     assert parsed is not None
     assert parsed.schema_version == 1
+    # The producer publishes rating_version as an integer (>= 1). The reader used to keep
+    # it only when it was a str, so the real artifact's 2 was silently dropped to None.
+    assert parsed.rating_version == 2
     assert parsed.horizons == [1, 5, 20] and parsed.windows == [20, 60, 250]
     stats = parsed.stats_for(segment="all", window=60, horizon=5)
     assert stats is not None
