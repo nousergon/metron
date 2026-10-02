@@ -55,14 +55,23 @@ _RATINGS = {
 }
 
 
+# Fields the v2 producer schema requires on every rating that the plan never reads
+# (the plan prices off the price service, not the rating's provisional bar).
+_RATING_V2_DEFAULTS = {
+    "n_buy": 0, "n_neutral": 0, "n_sell": 0, "rating_version": 2,
+    "price": 1.0, "bar_date": "2026-09-14",
+}
+
+
 def _ratings_artifact(ratings: dict | None = None) -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "as_of_utc": _ARTIFACT_AS_OF,
         "quote_as_of_utc": _ARTIFACT_AS_OF,
         "source": "computed_intraday",
         "ratings": {
-            sym: {**body, "basis": "intraday"} for sym, body in (ratings if ratings is not None else _RATINGS).items()
+            sym: {**_RATING_V2_DEFAULTS, **body, "basis": "intraday"}
+            for sym, body in (ratings if ratings is not None else _RATINGS).items()
         },
     }
 
