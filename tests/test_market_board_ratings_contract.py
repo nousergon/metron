@@ -26,13 +26,19 @@ def _schema() -> dict:
 
 
 def _fixture_artifact() -> dict:
+    now = datetime.now(UTC)
+    as_of = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
-        "schema_version": 1,
-        "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "schema_version": 2,
+        "as_of_utc": as_of,
+        "quote_as_of_utc": as_of,
+        "source": "computed_intraday",
         "ratings": {
             "AAPL": {
                 "score": 0.55, "label": "Buy", "ma_score": 0.6, "osc_score": 0.5,
                 "n_buy": 9, "n_neutral": 1, "n_sell": 1, "n_votes": 11,
+                "rating_version": 2, "price": 227.5,
+                "bar_date": now.date().isoformat(), "basis": "intraday",
             },
         },
     }
