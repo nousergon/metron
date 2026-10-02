@@ -22,7 +22,7 @@ def _art() -> dict:
     return {
         "schema_version": 1,
         "as_of_utc": "2026-09-14T05:00:00Z",
-        "rating_version": "v1",
+        "rating_version": 2,
         "horizons": [1, 5, 20],
         "windows": [20, 60, 250],
         "segments": {
@@ -97,7 +97,7 @@ def test_load_parses_full_artifact():
     parsed = rp.load_rating_performance(reader=_art)
     assert parsed is not None
     assert parsed.schema_version == 1
-    assert parsed.rating_version == "v1"
+    assert parsed.rating_version == 2
     assert parsed.horizons == [1, 5, 20]
     assert parsed.windows == [20, 60, 250]
     assert len(parsed.ic_series) == 3
@@ -234,3 +234,22 @@ def test_non_numeric_entries_in_horizons_windows_are_skipped():
     parsed = rp.load_rating_performance(reader=lambda: art)
     assert parsed.horizons == [1, 5]
     assert parsed.windows == [20, 60]
+
+
+# ── rating_version is the producer's integer, kept as an integer ───────────────────────
+
+
+def test_rating_version_integer_is_kept():
+    """The producer publishes ``rating_version: 2`` (an integer >= 1). The reader used to keep
+    it only when it was a str, so every real artifact surfaced ``rating_version=None``."""
+    art = {**_art(), "rating_version": 2}
+    parsed = rp.load_rating_performance(reader=lambda: art)
+    assert parsed is not None and parsed.rating_version == 2
+
+
+@pytest.mark.parametrize("bad", ["v1", "2", True, 0, -1, 2.0, None])
+def test_rating_version_outside_the_contract_reads_absent_not_coerced(bad):
+    art = {**_art(), "rating_version": bad}
+    parsed = rp.load_rating_performance(reader=lambda: art)
+    assert parsed is not None, "a bad rating_version must not drop the whole artifact"
+    assert parsed.rating_version is None

@@ -8,7 +8,7 @@
   "properties": {
     "schema_version": { "const": 1 },
     "as_of_utc": { "type": "string" },
-    "rating_version": { "type": ["string", "null"] },
+    "rating_version": { "type": ["integer", "null"], "minimum": 1 },
     "horizons": { "type": "array", "items": { "type": "integer" } },
     "windows": { "type": "array", "items": { "type": "integer" } },
     "segments": {
