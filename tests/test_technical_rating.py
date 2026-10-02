@@ -1,5 +1,5 @@
 """Technical rating consumer (metron-ops#294) — the reader against both producer artifacts
-(``market_data/intraday/technical_ratings.json`` v1 intraday, ``market_data/technicals/latest
+(``market_data/intraday/technical_ratings.json`` v2 intraday, ``market_data/technicals/latest
 .json`` v3 embedded EOD fallback), the Holdings/tearsheet wiring, and the feed-gate. Pure
 unit tests (injected readers — no S3, no network); the artifact does not exist in S3 yet
 (concurrent sibling producer PR), which is exactly the "absent artifact" path these tests
@@ -24,14 +24,14 @@ _NOW = datetime(2026, 9, 14, 15, 0, 0, tzinfo=UTC)  # mid-session ET
 
 def _fresh_intraday_art(as_of: str = "2026-09-14T14:55:00Z") -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "as_of_utc": as_of,
         "quote_as_of_utc": as_of,
         "source": "computed_intraday",
         "ratings": {
             "AAPL": {
                 "score": 0.6, "label": "Buy", "ma_score": 0.7, "osc_score": 0.5,
-                "n_buy": 8, "n_neutral": 2, "n_sell": 1, "n_votes": 11,
+                "n_buy": 8, "n_neutral": 2, "n_sell": 1, "n_votes": 11, "rating_version": 2,
                 "price": 227.5, "bar_date": "2026-09-14", "basis": "intraday",
             },
         },
@@ -61,9 +61,9 @@ def schema() -> dict:
     return json.loads(SCHEMA_PATH.read_text())
 
 
-def test_pinned_schema_is_valid_and_v1(schema):
+def test_pinned_schema_is_valid_and_v2(schema):
     jsonschema.Draft202012Validator.check_schema(schema)
-    assert schema["properties"]["schema_version"]["const"] == 1
+    assert schema["properties"]["schema_version"]["const"] == 2
 
 
 def test_fresh_intraday_fixture_conforms_to_pinned_schema(schema):
