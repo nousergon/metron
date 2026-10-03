@@ -2283,11 +2283,15 @@ def get_accounts(
     session: Session = Depends(get_session),
 ) -> list[analytics.AccountInfo]:
     # Always lists ALL accounts (this is the selector itself) with per-account valuation.
-    accts = analytics.accounts(session, portfolio.tenant_id, portfolio.id)
+    # Every account valued ONCE; the panel rows, the YTD/LTM series and the Day legs all read
+    # it (each used to value the whole portfolio again).
+    held = analytics.valued_holdings_by_account(session, portfolio.tenant_id, portfolio.id)
+    accts = analytics.accounts(session, portfolio.tenant_id, portfolio.id, held_by_account=held)
     # Per-account Day / YTD / LTM rollups (metron-ops#87) — YTD/LTM from each account's
     # reconstructed NAV series, Day legs from the intraday spine (owner build).
     returns = performance.account_period_returns(
-        session, portfolio.tenant_id, portfolio.id, today=date.today(), feed_entitled=settings.feed_entitled
+        session, portfolio.tenant_id, portfolio.id, today=date.today(), feed_entitled=settings.feed_entitled,
+        held_by_account=held,
     )
     for a in accts:
         r = returns.get(a.account_id)
