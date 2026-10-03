@@ -833,7 +833,7 @@ class RatingPerformanceOut(BaseModel):
 
     schema_version: int
     as_of_utc: str | None
-    rating_version: str | None
+    rating_version: int | None
     horizons: list[int]
     windows: list[int]
     segments: dict[str, dict[str, dict[str, RatingHorizonStatsOut]]]

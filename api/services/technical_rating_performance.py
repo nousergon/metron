@@ -89,7 +89,10 @@ class IcPoint:
 class RatingPerformance:
     schema_version: int
     as_of_utc: str | None
-    rating_version: str | None
+    # The producer's rule-set version: an integer >= 1 (nousergon-data
+    # contracts/rating_performance.schema.json, pinned as
+    # tests/contracts/rating_performance.producer.schema.json).
+    rating_version: int | None
     horizons: list[int] = field(default_factory=list)
     windows: list[int] = field(default_factory=list)
     # segment -> window (JSON string of an int) -> horizon (JSON string of an int) -> stats.
@@ -173,6 +176,14 @@ def _parse_ic_series(raw: object) -> list[IcPoint]:
     return points
 
 
+def _rating_version(raw: object) -> int | None:
+    """The producer's integer rule-set version, or None. A bool is an int in Python and a
+    version below 1 is outside the producer contract — both read as absent, never coerced."""
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        return None
+    return raw
+
+
 def _int_list(raw: object) -> list[int]:
     if not isinstance(raw, list):
         return []
@@ -223,7 +234,7 @@ def load_rating_performance(*, reader=None) -> RatingPerformance | None:
     return RatingPerformance(
         schema_version=schema_version,
         as_of_utc=art.get("as_of_utc") if isinstance(art.get("as_of_utc"), str) else None,
-        rating_version=art.get("rating_version") if isinstance(art.get("rating_version"), str) else None,
+        rating_version=_rating_version(art.get("rating_version")),
         horizons=_int_list(art.get("horizons")),
         windows=_int_list(art.get("windows")),
         segments=segments,

@@ -204,7 +204,7 @@ def test_tearsheet_technical_rating_absent_producer_omits_fields(db_session):
 _RATING_PERF_ART = {
     "schema_version": 1,
     "as_of_utc": "2026-09-14T05:00:00Z",
-    "rating_version": "v1",
+    "rating_version": 2,
     "horizons": [1, 5, 20],
     "windows": [20, 60, 250],
     "segments": {
