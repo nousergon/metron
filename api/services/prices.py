@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from api.db import models
@@ -330,5 +330,60 @@ def close_history_by_symbol(
     rows = session.execute(stmt).all()
     out: dict[str, list[ClosePoint]] = {}
     for symbol, bar_date, close in rows:
+        out.setdefault(symbol, []).append(ClosePoint(bar_date=bar_date, close=float(close)))
+    return out
+
+
+def close_history_in_windows(
+    session: Session,
+    windows: dict[str, tuple[date, date]],
+    *,
+    floor: date,
+) -> dict[str, list[ClosePoint]]:
+    """``close_history_by_symbol`` with a window PER SYMBOL, for a caller that knows each
+    symbol is only ever looked up as-of a date inside its own ``(lo, hi)`` (metron-ops-I343).
+
+    Returns exactly what ``close_history_by_symbol(symbols, start_date=floor,
+    end_date=max hi)`` returns, minus rows no as-of lookup inside the windows can reach. For
+    each symbol that is every bar in ``[lo, hi]`` plus ONE carry-forward anchor: the latest
+    bar on or after ``floor`` and on or before ``lo``. ``_asof_close(series, d)`` for any
+    ``lo <= d <= hi`` takes the latest bar ``<= d``. If one lies in ``[lo, d]`` it is kept.
+    Otherwise it is the latest bar in ``[floor, lo]``, which is the anchor. So every lookup
+    inside the window answers as it did on the wider read. A lookup outside the window does
+    not, and a caller must never make one.
+
+    The anchor is a correlated ``max(bar_date)`` per security in the same statement, so
+    this is still one round trip. ``lo`` is clamped up to ``floor`` and a symbol whose
+    window is empty after that is omitted, as an absent symbol is."""
+    windows = {s: (max(lo, floor), hi) for s, (lo, hi) in windows.items() if s and max(lo, floor) <= hi}
+    if not windows:
+        return {}
+    anchor_bar = aliased(models.PriceBar)
+    clauses = []
+    for symbol, (lo, hi) in windows.items():
+        anchor = (
+            select(func.max(anchor_bar.bar_date))
+            .where(
+                anchor_bar.security_id == models.PriceBar.security_id,
+                anchor_bar.bar_date >= floor,
+                anchor_bar.bar_date <= lo,
+            )
+            .scalar_subquery()
+        )
+        clauses.append(
+            and_(
+                models.Security.symbol == symbol,
+                models.PriceBar.bar_date <= hi,
+                models.PriceBar.bar_date >= func.coalesce(anchor, lo),
+            )
+        )
+    stmt = (
+        select(models.Security.symbol, models.PriceBar.bar_date, models.PriceBar.close)
+        .join(models.PriceBar, models.PriceBar.security_id == models.Security.id)
+        .where(or_(*clauses))
+        .order_by(models.Security.symbol, models.PriceBar.bar_date)
+    )
+    out: dict[str, list[ClosePoint]] = {}
+    for symbol, bar_date, close in session.execute(stmt).all():
         out.setdefault(symbol, []).append(ClosePoint(bar_date=bar_date, close=float(close)))
     return out
