@@ -43,7 +43,7 @@ from api.config import settings
 from api.db import models
 from api.db.session import get_session
 from api.routers.portfolios import _owned_portfolio
-from api.services import analytics
+from api.services import analytics, demo_household
 from api.services import prices as price_service
 from api.services import tearsheet as tearsheet_service
 from api.services import technical_rating as technical_rating_service
@@ -190,7 +190,7 @@ def get_market_board(
     rows: list[MarketBoardRowOut] = []
     for ticker, held in tickers:
         yf = yf_map.get(ticker, ticker)
-        r = ratings.get(yf)
+        r = ratings.get(demo_household.reference_symbol(yf))
         chg = changes.get(ticker, _PriceChange(change_1d_pct=None, change_5d_pct=None))
         rows.append(
             MarketBoardRowOut(

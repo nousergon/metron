@@ -93,24 +93,30 @@ for every other portfolio.
 from __future__ import annotations
 
 import csv
+import logging
 import os
 import uuid
-from dataclasses import replace
-from datetime import date
+from dataclasses import dataclass, field, replace
+from datetime import date, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from api.db import models
+from api.services import analytics, persistence
 from api.services import goal as goal_service
-from api.services import persistence
+from api.services import performance as performance_service
 from api.services import plan_targets as plan_targets_service
+from api.services import prices as price_service
 from api.services.demo import DEMO_TENANT_ID
 from api.services.demo_namespace import DEMO_SYMBOL_PREFIX as _DEMO_SYMBOL_PREFIX
 from api.services.demo_namespace import assert_demo_symbols
 from api.services.performance import record_snapshot
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
 from portfolio_analytics.ingestion.schema import activity_key
+from portfolio_analytics.prices import ClosePoint, HistorySource, fetch_close_history
+
+logger = logging.getLogger(__name__)
 
 # Fixed, well-known id (stable across restarts so links don't break) — distinct from
 # demo.REFERENCE_PORTFOLIO_ID, a second portfolio under the SAME demo tenant.
@@ -163,6 +169,30 @@ SECURITY_META: dict[str, tuple[str, str, str | None]] = {
     "DEMO-NVDA": ("NVIDIA Corp. (illustrative)", "equity", "Technology"),
     "DEMO-TSLA": ("Tesla Inc. (illustrative)", "equity", "Consumer Cyclical"),
 }
+
+# The real listing each fixture symbol stands in for (``DEMO-AAPL`` -> ``AAPL``). Two
+# uses, both READ-side only — nothing is ever written under the real symbol:
+#
+#   * live pricing (``refresh_live_prices``): after the fixture's last month, each
+#     ``DEMO-`` close moves by the real symbol's own daily return, so the household
+#     updates every trading day instead of freezing on the fixture's final month;
+#   * spine-artifact lookups keyed by ticker (the technical rating on Holdings, the
+#     Market board and the tearsheet): ``reference_symbol`` resolves ``DEMO-AAPL`` to
+#     ``AAPL``'s rating, so the household's board is rated like a real one.
+#
+# Explicit, not "strip the prefix": the Showcase sample sleeve's ``DEMO-UST-2026`` /
+# ``DEMO-MMF`` (api/services/demo.py) name no real listing, and a rule would quietly
+# map them onto whatever real ticker happened to match.
+REFERENCE_SYMBOLS: dict[str, str] = {
+    demo_symbol: demo_symbol[len(DEMO_SYMBOL_PREFIX):] for demo_symbol in SECURITY_META
+}
+
+
+def reference_symbol(symbol: str) -> str:
+    """The real listing a household fixture symbol stands in for; any other symbol
+    (a real tenant's ticker, a Showcase-only fixture symbol) is returned unchanged."""
+    return REFERENCE_SYMBOLS.get(symbol, symbol)
+
 
 # Illustrative retirement-goal inputs (metron-ops-I317 deliverable 4), sized for this
 # fixture: current value is ~$242k (test_golden_attribution_input_sector_weights) —
@@ -466,3 +496,198 @@ def _seed_price_bars_for_date(session: Session, d: date, closes: dict[str, float
             continue
         session.add(models.PriceBar(security_id=sec.id, bar_date=d, close=close, currency=sec.currency or "USD"))
     session.commit()
+
+
+# ── Live pricing after the fixture ends ───────────────────────────────────────────
+#
+# The fixture's synthetic month-end walk stops at its last date. Before this, nothing
+# priced a ``DEMO-`` symbol after that (``daily-refresh`` skips the namespace for every
+# vendor fetch), so the household froze there: Glance read "as of" the fixture's last
+# month, every later daily snapshot was the same number, and the Market board had no
+# 1d/5d move to show.
+#
+# Each ``DEMO-<SYM>`` is now carried forward by ``<SYM>``'s real daily closes from the
+# data spine, CHAINED onto the fixture's last close rather than replacing it:
+#
+#     DEMO close(d) = fixture close(anchor) x real close(d) / real close(anchor)
+#
+# so every day-over-day move after the anchor is exactly the real symbol's move, and the
+# level stays continuous with the five years of NAV history already built from the
+# fixture. Pricing at the real level instead would put a one-day cliff in that history
+# wherever the synthetic walk and the real price diverged (the fixture's NVDA ends near
+# 853 where the real close is near 225; XOM near 79 where the real close is near 159),
+# and that cliff would read as a return on every performance surface.
+#
+# Nothing is written under a real symbol: the real series is only read, and the bars
+# written belong to the ``DEMO-`` securities (guarded by ``assert_demo_symbols``). A real
+# symbol the spine does not carry leaves its ``DEMO-`` twin at its last close and is
+# reported in ``LivePriceResult.unpriced`` — never filled from a substitute.
+
+# How far before the anchor to look for the real symbol's anchor close. Wide enough to
+# span a long weekend plus a holiday; the fixture's anchor dates are calendar dates, not
+# sessions (2026-08-15 was a Saturday).
+_ANCHOR_LOOKBACK_DAYS = 10
+
+
+@dataclass
+class LivePriceResult:
+    anchor: date | None = None
+    bars_written: int = 0
+    snapshots_restated: int = 0
+    priced: list[str] = field(default_factory=list)
+    unpriced: list[str] = field(default_factory=list)
+
+
+def fixture_anchor() -> tuple[date, dict[str, float]]:
+    """The fixture's last close date and its closes — the point live pricing chains onto."""
+    monthly = _load_monthly_closes()
+    last = max(monthly)
+    return last, monthly[last]
+
+
+def chained_closes(
+    anchor: date,
+    anchor_closes: dict[str, float],
+    real_history: dict[str, list[ClosePoint]],
+) -> tuple[dict[str, list[ClosePoint]], list[str]]:
+    """``({demo_symbol: [ClosePoint after anchor, ...]}, unpriced)`` — pure.
+
+    A symbol is unpriced when the real series has no close on or before ``anchor`` to
+    chain from (the spine does not carry it, or not back that far). A symbol with an
+    anchor close but no session after it yet is priced with an empty list."""
+    out: dict[str, list[ClosePoint]] = {}
+    unpriced: list[str] = []
+    for demo_symbol in sorted(anchor_closes):
+        series = real_history.get(reference_symbol(demo_symbol)) or []
+        base = next((p for p in reversed(series) if p.bar_date <= anchor), None)
+        if base is None or base.close <= 0:
+            unpriced.append(demo_symbol)
+            continue
+        scale = anchor_closes[demo_symbol] / base.close
+        out[demo_symbol] = [
+            ClosePoint(bar_date=p.bar_date, close=round(p.close * scale, 6))
+            for p in series
+            if p.bar_date > anchor
+        ]
+    return out, unpriced
+
+
+def refresh_live_prices(
+    session: Session, *, today: date, source: HistorySource | None = None
+) -> LivePriceResult:
+    """Write the household's ``DEMO-`` closes for every session after the fixture's
+    anchor through ``today``, then restate the household's post-anchor NAV snapshots at
+    those closes. Idempotent: a re-run rewrites nothing that has not changed, and a
+    corrected real close (a spine restatement) propagates on the next run.
+
+    Called by ``daily-refresh`` before its per-portfolio loop, so the household's own
+    snapshot for ``today`` is recorded at today's chained close. A no-op when the
+    household has not been seeded on this deployment."""
+    result = LivePriceResult()
+    if session.get(models.Portfolio, DEMO_HOUSEHOLD_PORTFOLIO_ID) is None:
+        return result
+    anchor, anchor_closes = fixture_anchor()
+    result.anchor = anchor
+    if today <= anchor:
+        return result
+    real = sorted({reference_symbol(s) for s in anchor_closes})
+    history = fetch_close_history(real, anchor - timedelta(days=_ANCHOR_LOOKBACK_DAYS), today, source=source)
+    chained, result.unpriced = chained_closes(anchor, anchor_closes, history)
+    result.priced = sorted(chained)
+    if result.unpriced:
+        logger.warning(
+            "demo household: no real close to chain from for %d symbol(s) — held at their last "
+            "fixture close: %s",
+            len(result.unpriced), ", ".join(result.unpriced),
+        )
+    writable = {s: pts for s, pts in chained.items() if pts}
+    if writable:
+        assert_demo_symbols(writable, context="demo_household.refresh_live_prices")
+        result.bars_written = price_service.backfill_prices(
+            session,
+            list(writable),
+            anchor + timedelta(days=1),
+            today,
+            source=lambda symbols, _start, _end: {s: writable[s] for s in symbols if s in writable},
+        )
+    result.snapshots_restated = _restate_post_anchor_snapshots(session, anchor)
+    return result
+
+
+def _restate_post_anchor_snapshots(session: Session, anchor: date) -> int:
+    """Re-value every household NAV snapshot (portfolio and per-account) dated after the
+    fixture's anchor at the ``DEMO-`` close as of its own date.
+
+    Without this, the daily snapshots recorded while the prices were frozen would all
+    read the anchor value, and the first live snapshot would carry the whole move since
+    the anchor as one day's return — on the Glance TODAY tile and in the path. Positions
+    are constant after the anchor (the fixture has no activity after its last close,
+    asserted by ``tests/test_demo_household.py``), so each date is today's quantities at
+    that date's close — the same valuation ``record_snapshot`` makes, as of the date.
+    Cost basis and flow are untouched. Returns the number of rows whose NAV changed."""
+    held_by_account = analytics.valued_holdings_by_account(session, DEMO_TENANT_ID, DEMO_HOUSEHOLD_PORTFOLIO_ID)
+    tickers = sorted({h.ticker for hs in held_by_account.values() for h in hs if h.ticker})
+    history = price_service.close_history_by_symbol(session, tickers, start_date=anchor)
+    portfolio_rows = session.scalars(
+        select(models.NavSnapshot).where(
+            models.NavSnapshot.tenant_id == DEMO_TENANT_ID,
+            models.NavSnapshot.portfolio_id == DEMO_HOUSEHOLD_PORTFOLIO_ID,
+            models.NavSnapshot.snap_date > anchor,
+        )
+    ).all()
+    account_rows = session.scalars(
+        select(models.AccountNavSnapshot).where(
+            models.AccountNavSnapshot.tenant_id == DEMO_TENANT_ID,
+            models.AccountNavSnapshot.portfolio_id == DEMO_HOUSEHOLD_PORTFOLIO_ID,
+            models.AccountNavSnapshot.snap_date > anchor,
+        )
+    ).all()
+    all_held = [h for hs in held_by_account.values() for h in hs]
+    changed = 0
+    for row in portfolio_rows:
+        changed += _restate_row(row, all_held, history)
+    for row in account_rows:
+        changed += _restate_row(row, held_by_account.get(row.account_id, []), history)
+    if changed:
+        session.commit()
+    return changed
+
+
+def _restate_row(row, held, history: dict[str, list[ClosePoint]]) -> int:
+    """Set one snapshot row's NAV (and its composition legs) to ``held`` valued at each
+    ticker's close as of ``row.snap_date``. 1 when the NAV moved, else 0."""
+    valued = []
+    for h in held:
+        if not h.ticker or h.quantity <= 0:
+            continue
+        point = _asof(history.get(h.ticker), row.snap_date)
+        if point is None:
+            continue
+        fx_rate = h.fx_rate or 1.0
+        valued.append(replace(
+            h,
+            last_price=point.close,
+            last_price_date=point.bar_date,
+            market_value_local=h.quantity * point.close,
+            market_value=h.quantity * point.close * fx_rate,
+        ))
+    if not valued:
+        return 0
+    nav = sum(h.market_value for h in valued)
+    if abs(float(row.nav) - nav) < 1e-6:
+        return 0
+    row.nav = nav
+    if row.composition is not None:
+        # The same leg shape ``record_snapshot`` persists, as of this row's date.
+        row.composition = performance_service._composition(valued, row.snap_date)
+    return 1
+
+
+def _asof(series: list[ClosePoint] | None, when: date) -> ClosePoint | None:
+    """The last close on or before ``when`` (``series`` ascending), else None."""
+    point = None
+    for p in series or []:
+        if p.bar_date > when:
+            break
+        point = p
+    return point

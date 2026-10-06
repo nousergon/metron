@@ -53,7 +53,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.db import models
-from api.services import analytics
+from api.services import analytics, demo_household
 from api.services import classifications as classifications_service
 from api.services import intraday as intraday_service
 from api.services import prices as price_service
@@ -376,7 +376,7 @@ def build_candidates(
     rating_basis: str | None = None
     candidates: list[Candidate] = []
     for ticker in universe:
-        rating = by_symbol.get(ticker)
+        rating = by_symbol.get(demo_household.reference_symbol(ticker))
         if rating is None or rating.score is None or rating.label is None:
             _skip(skipped, ticker, "no_rating", "no technical rating published for this symbol")
             continue
