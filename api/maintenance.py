@@ -121,6 +121,7 @@ class RefreshResult:
     broker_flex_synced: int = 0     # portfolios whose IBKR Flex-sourced accounts were re-synced (metron-ops#150)
     broker_snaptrade_synced: int = 0  # portfolios whose SnapTrade-sourced accounts were re-synced (metron-ops#150)
     stale_prices_flagged: int = 0   # held symbol-portfolio pairs whose close lags the calendar (metron-ops#219, flag only)
+    demo_household_bars: int = 0    # DEMO- closes chained onto the real symbols' closes (demo_household.refresh_live_prices)
 
 
 def daily_refresh(
@@ -178,6 +179,28 @@ def daily_refresh(
             logger.info("research-intel sync: %s", "updated" if updated else "no artifact (kept last-good)")
         except Exception as e:  # noqa: BLE001 - best-effort intel sync; never fatal
             logger.warning("research-intel sync failed (non-fatal): %s", e)
+
+    # Demo household live pricing: carry each ``DEMO-<SYM>`` forward by ``<SYM>``'s real
+    # daily closes past the fixture's last month (see demo_household.refresh_live_prices),
+    # BEFORE the per-portfolio loop so the household's snapshot for ``today`` values at
+    # today's close. Best-effort: a spine read failure WARNs and leaves the household at
+    # its last written close; it never costs a real tenant's refresh.
+    demo_household_bars = 0
+    if settings.demo_enabled:
+        from api.services import demo_household
+
+        try:
+            live = demo_household.refresh_live_prices(session, today=today)
+            demo_household_bars = live.bars_written
+            if live.anchor is not None:
+                logger.info(
+                    "demo household live pricing: %d bar(s) written, %d snapshot(s) restated, "
+                    "%d symbol(s) priced, %d unpriced (anchor %s)",
+                    live.bars_written, live.snapshots_restated, len(live.priced), len(live.unpriced), live.anchor,
+                )
+        except Exception as e:  # noqa: BLE001 - best-effort demo pricing; never fatal
+            logger.warning("demo household live pricing failed (non-fatal): %s", e)
+            session.rollback()
 
     def _best_effort(label: str, portfolio_id, fn):
         """Run a derived backfill; on failure log a WARN and roll back its partial work
@@ -251,7 +274,9 @@ def daily_refresh(
         # closes are seeded from committed fixtures (demo._SAMPLE_SLEEVE_PRICES,
         # demo_household's closes.csv) and must stay exactly what those fixtures say,
         # or the displayed Holdings price drifts away from the constant the persisted
-        # NavSnapshot series was built from.
+        # NavSnapshot series was built from. The household's closes AFTER its fixture
+        # ends are written above by demo_household.refresh_live_prices, chained onto
+        # the real symbols' closes — never by fetching the ``DEMO-`` symbol itself.
         #
         # Replaces the pre-metron-ops-I319 ``SAMPLE_SLEEVE_TICKERS`` carve-out, which
         # existed only because the sample sleeve shared REAL tickers with real tenants
@@ -436,6 +461,7 @@ def daily_refresh(
         broker_flex_synced=total_flex_synced,
         broker_snaptrade_synced=total_snaptrade_synced,
         stale_prices_flagged=total_stale_prices,
+        demo_household_bars=demo_household_bars,
     )
 
 
