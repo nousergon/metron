@@ -14,7 +14,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from api.services import analyst as analyst_service
-from api.services import analytics
+from api.services import analytics, demo_household
 from api.services import attractiveness as attractiveness_service
 from api.services import fundamentals as fundamentals_service
 from api.services import sentiment as sentiment_service
@@ -86,7 +86,7 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
             h.mom_20d = t.mom_20d
         # Technical rating (metron-ops#294) — intraday where fresh, EOD fallback otherwise
         # (decided per symbol by the reader itself).
-        r = ratings.get(yf)
+        r = ratings.get(demo_household.reference_symbol(yf))
         if r is not None:
             h.tech_rating_score = r.score
             h.tech_rating_label = r.label
