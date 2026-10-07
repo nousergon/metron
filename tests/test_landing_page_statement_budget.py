@@ -24,9 +24,6 @@ from __future__ import annotations
 import uuid
 from datetime import date, timedelta
 
-import pytest
-from sqlalchemy import event
-
 from api.db import models
 from api.services import compute_cache
 
@@ -126,19 +123,6 @@ def _seed(session, secs: dict[str, models.Security], *, months: int) -> tuple[uu
     session.add(models.WatchlistItem(tenant_id=tenant.id, portfolio_id=pf.id, symbol="AAA"))
     session.commit()
     return tenant.id, pf.id
-
-
-@pytest.fixture()
-def statements(_engine):
-    """Every SQL statement the engine executes, in order."""
-    seen: list[str] = []
-
-    def _count(conn, cursor, statement, parameters, context, executemany):  # noqa: ARG001
-        seen.append(statement)
-
-    event.listen(_engine, "after_cursor_execute", _count)
-    yield seen
-    event.remove(_engine, "after_cursor_execute", _count)
 
 
 def _load_page(client, tenant_id, pid, statements) -> dict[str, list[str]]:

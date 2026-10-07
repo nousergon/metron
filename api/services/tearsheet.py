@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from api.services import analyst as analyst_service
-from api.services import analytics
+from api.services import analytics, demo_household
 from api.services import attractiveness as attractiveness_service
 from api.services import fundamentals as fundamentals_service
 from api.services import security_perf as security_perf_service
@@ -327,7 +327,7 @@ def tearsheet(
             intraday_reader=rating_reader, technicals_reader=technicals_reader
         )
         performance = _performance_from_spine(perf_snap.by_symbol.get(yf), holding.unrealized_pct)
-        technical = _technical_from_spine(tech_snap.by_symbol.get(yf), rating_snap.by_symbol.get(yf))
+        technical = _technical_from_spine(tech_snap.by_symbol.get(yf), rating_snap.by_symbol.get(demo_household.reference_symbol(yf)))
         # Track record (metron-ops#298) — same feed gate as the rating itself; only read
         # once a rating actually resolved for this ticker (no label -> no bucket to look up).
         if technical.tech_rating_label is not None:

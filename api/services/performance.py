@@ -940,6 +940,30 @@ def _account_perf_series(
         )
         .order_by(models.AccountNavSnapshot.snap_date)
     ).all()
+    return _account_perf_series_from_rows(rows)
+
+
+def _account_nav_rows_by_account(
+    session: Session, tenant_id: uuid.UUID, account_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, list]:
+    """Every per-account NAV snapshot row of ``account_ids`` in ONE read, oldest first,
+    split per account — the input :func:`_account_perf_series_from_rows` takes."""
+    out: dict[uuid.UUID, list] = defaultdict(list)
+    rows = session.scalars(
+        select(models.AccountNavSnapshot)
+        .where(
+            models.AccountNavSnapshot.tenant_id == tenant_id,
+            models.AccountNavSnapshot.account_id.in_(list(account_ids)),
+        )
+        .order_by(models.AccountNavSnapshot.snap_date)
+    ).all()
+    for r in rows:
+        out[r.account_id].append(r)
+    return out
+
+
+def _account_perf_series_from_rows(rows: list) -> tuple[list[PerfPoint], float | None]:
+    """The pure core of :func:`_account_perf_series` over already-read snapshot rows."""
     if not rows:
         return [], None
     by_date: dict[date, list] = defaultdict(list)
@@ -1407,14 +1431,20 @@ def account_period_returns(
     account_ids: Collection[uuid.UUID] | None = None,
     reader=None,
     now: datetime | None = None,
+    held_by_account: dict | None = None,
 ) -> dict[uuid.UUID, AccountPeriodReturns]:
     """Per-account Day / YTD / LTM returns for the accounts panel (metron-ops#87). YTD/LTM
     come from each account's reconstructed NAV growth series (one
     ``account_performance_series`` pass); Day legs (overnight/intraday/day) from the intraday
-    spine per account (owner build only). Accounts with too little history carry None."""
+    spine per account (owner build only). Accounts with too little history carry None.
+
+    ``held_by_account`` is the caller's own ``analytics.valued_holdings_by_account`` result
+    when it already has one (the ``/accounts`` route values every account first); both
+    passes below read it instead of valuing every account again."""
     out: dict[uuid.UUID, AccountPeriodReturns] = {}
     series = account_performance_series(
-        session, tenant_id, portfolio_id, today=today, account_ids=account_ids, with_benchmarks=False
+        session, tenant_id, portfolio_id, today=today, account_ids=account_ids, with_benchmarks=False,
+        held_by_account=held_by_account,
     )
     for a in series.accounts:
         ytd, ltm = _period_from_growth(a.points, today)
@@ -1426,7 +1456,8 @@ def account_period_returns(
         # ONE pass over all (scoped) accounts — NOT a today_view() per account, which was an
         # O(accounts) N+1 (each call re-ran valued_holdings + decoded the intraday snapshot).
         by_acct = intraday.today_by_account(
-            session, tenant_id, portfolio_id, feed_entitled=True, account_ids=account_ids, reader=reader, now=now
+            session, tenant_id, portfolio_id, feed_entitled=True, account_ids=account_ids, reader=reader, now=now,
+            held_by_account=held_by_account,
         )
         for aid, t in by_acct.items():
             r = out.setdefault(aid, AccountPeriodReturns())
@@ -1470,6 +1501,7 @@ def account_performance_series(
     account_ids: Collection[uuid.UUID] | None = None,
     with_benchmarks: bool = True,
     benchmark_source: HistorySource | None = None,
+    held_by_account: dict | None = None,
 ) -> HoldingsPerfSeries:
     """Per-account performance lines for the Holdings chart (metron-ops#78): one cumulative
     flow-neutralized growth index per selected account (all accounts when the selection is
@@ -1490,6 +1522,7 @@ def account_performance_series(
         return _account_performance_series(
             session, tenant_id, portfolio_id, today=today,
             account_ids=account_ids, with_benchmarks=with_benchmarks, benchmark_source=benchmark_source,
+            held_by_account=held_by_account,
         )
     scope = ",".join(sorted(str(a) for a in account_ids)) if account_ids else "*"
     fp = compute_cache.portfolio_fingerprint(session, tenant_id, portfolio_id)
@@ -1499,6 +1532,7 @@ def account_performance_series(
         lambda: _account_performance_series(
             session, tenant_id, portfolio_id, today=today,
             account_ids=account_ids, with_benchmarks=with_benchmarks, benchmark_source=benchmark_source,
+            held_by_account=held_by_account,
         ),
     )
 
@@ -1512,6 +1546,7 @@ def _account_performance_series(
     account_ids: Collection[uuid.UUID] | None = None,
     with_benchmarks: bool = True,
     benchmark_source: HistorySource | None = None,
+    held_by_account: dict | None = None,
 ) -> HoldingsPerfSeries:
     """Uncached core of :func:`account_performance_series` — see that wrapper for caching."""
     targets = list(account_ids) if account_ids else list(
@@ -1558,6 +1593,21 @@ def _account_performance_series(
         session, [*union_symbols, "SPY"], start_date=first, end_date=today
     )
 
+    # The per-account inputs, read ONCE for every target instead of once per account in the
+    # loop below (the Accounts panel sent ~25 statements per account for these — #515 left it
+    # as the largest cold cost on the Holdings page). Each is exactly what the per-account
+    # call would have read for that account.
+    lots_by_account = _load_lot_timeline_by_account(session, tenant_id, portfolio_id, targets)
+    flows_by_account = _load_lot_flows_by_account(session, tenant_id, portfolio_id, targets)
+    if held_by_account is None:
+        held_by_account = analytics.valued_holdings_by_account(session, tenant_id, portfolio_id)
+    foreign = sorted({c for c in ticker_ccy.values() if c and c != "USD"})
+    fx_history = fx_service.rate_history(session, foreign)
+    ledger_purchases = _net_purchase_rows_by_account(
+        session, tenant_id, sorted({aid for aid, _t in by_account_all if aid not in snapshot_account_ids})
+    )
+    forward_rows: dict[uuid.UUID, list] | None = None  # read on first need, once
+
     result = HoldingsPerfSeries()
     earliest: date | None = None
     for aid in targets:
@@ -1576,11 +1626,18 @@ def _account_performance_series(
             by_account=by_account_all,
             snapshot_account_ids=snapshot_account_ids,
             ticker_ccy=ticker_ccy,
+            lot_timeline=lots_by_account[aid],
+            lot_flows=flows_by_account[aid],
+            held=held_by_account.get(aid, []),
+            fx_history=fx_history,
+            ledger_purchases=ledger_purchases,
         )
         pts = _growth_from_navpoints(recon)
         coverage = "reconstructed"
         if len(pts) < 2:
-            forward = _account_perf_series(session, tenant_id, [aid])[0]
+            if forward_rows is None:
+                forward_rows = _account_nav_rows_by_account(session, tenant_id, targets)
+            forward = _account_perf_series_from_rows(forward_rows.get(aid, []))[0]
             if len(forward) < 2:
                 continue  # not a line yet either way
             pts = _growth_index(forward)
@@ -1678,6 +1735,64 @@ def _load_lot_timeline(
         (r.ticker, float(r.quantity), float(r.cost_basis), r.open_date, r.close_date) for r in _q(models.RealizedLot)
     ]
     return open_lots, closed_lots
+
+
+def _load_lot_timeline_by_account(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, tuple[list, list]]:
+    """:func:`_load_lot_timeline` for EVERY account in ``account_ids`` in two reads, split
+    per account: ``{account_id: (open_lots, closed_lots)}``. The per-account Holdings /
+    Accounts-panel series otherwise re-ran the same two lot reads once per account."""
+    out: dict[uuid.UUID, tuple[list, list]] = {aid: ([], []) for aid in account_ids}
+    if not out:
+        return out
+    scope = list(out)
+    for model, closed in ((models.OpenLot, False), (models.RealizedLot, True)):
+        rows = session.scalars(
+            select(model)
+            .join(models.Account, model.account_id == models.Account.id)
+            .where(
+                model.tenant_id == tenant_id,
+                models.Account.portfolio_id == portfolio_id,
+                model.account_id.in_(scope),
+            )
+        ).all()
+        for r in rows:
+            if closed:
+                out[r.account_id][1].append((r.ticker, float(r.quantity), float(r.cost_basis), r.open_date, r.close_date))
+            else:
+                out[r.account_id][0].append((r.ticker, float(r.quantity), float(r.cost_basis), r.open_date))
+    return out
+
+
+def _load_lot_flows_by_account(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, tuple[list, list]]:
+    """:func:`_load_lot_flows` for EVERY account in ``account_ids`` in three reads, split
+    per account: ``{account_id: (opens, closes)}``."""
+    out: dict[uuid.UUID, tuple[list, list]] = {aid: ([], []) for aid in account_ids}
+    if not out:
+        return out
+    scope = list(out)
+
+    def _q(model, *cols):
+        return session.execute(
+            select(model.account_id, *cols)
+            .join(models.Account, model.account_id == models.Account.id)
+            .where(model.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id, model.account_id.in_(scope))
+        ).all()
+
+    for aid, t, d, q in _q(models.OpenLot, models.OpenLot.ticker, models.OpenLot.open_date, models.OpenLot.quantity):
+        out[aid][0].append((t, d, float(q)))
+    for aid, t, d, q in _q(
+        models.RealizedLot, models.RealizedLot.ticker, models.RealizedLot.open_date, models.RealizedLot.quantity
+    ):
+        out[aid][0].append((t, d, float(q)))
+    for aid, t, d, q in _q(
+        models.RealizedLot, models.RealizedLot.ticker, models.RealizedLot.close_date, models.RealizedLot.quantity
+    ):
+        out[aid][1].append((t, d, float(q)))
+    return out
 
 
 def _load_lot_flows(
@@ -1916,6 +2031,11 @@ def _reconstruct_nav_points(
     snapshot_account_ids: set[uuid.UUID] | None = None,
     ticker_ccy: dict[str, str] | None = None,
     profile=None,
+    lot_timeline: tuple[list, list] | None = None,
+    lot_flows: tuple[list, list] | None = None,
+    held: list | None = None,
+    fx_history: fx_service.RateHistory | None = None,
+    ledger_purchases: dict | None = None,
 ) -> list[_NavPoint]:
     """The read-only core of NAV reconstruction — the historical valuation series for the
     whole portfolio (``account_ids`` None) or a scoped set of accounts (per-account history,
@@ -1928,8 +2048,16 @@ def _reconstruct_nav_points(
     when a caller reconstructs per-account series in a loop it fetches them ONCE and injects
     them here, instead of this function re-pulling the full close history + ledger on every
     call (the O(accounts) Holdings-chart blowup). Each is computed locally when omitted, so
-    the whole-portfolio write path is unchanged."""
-    open_lots, closed_lots = _load_lot_timeline(session, tenant_id, portfolio_id, account_ids)
+    the whole-portfolio write path is unchanged.
+
+    ``lot_timeline`` / ``lot_flows`` / ``held`` / ``fx_history`` / ``ledger_purchases`` are
+    the PER-ACCOUNT (or, for the last two, superset) inputs the same loop would otherwise
+    read once per account — each is exactly what this function computes for ``account_ids``
+    when omitted, so injecting them changes the number of statements and nothing else."""
+    if lot_timeline is not None:
+        open_lots, closed_lots = lot_timeline
+    else:
+        open_lots, closed_lots = _load_lot_timeline(session, tenant_id, portfolio_id, account_ids)
     # Replay the transaction ledger ONLY for genuinely ledger-sourced (CSV/OFX) accounts —
     # the SAME snapshot-vs-ledger boundary analytics.holdings() uses. Snapshot-sourced
     # accounts (IBKR Flex / SnapTrade / reference) ALSO carry a transactions/activity feed,
@@ -1980,7 +2108,8 @@ def _reconstruct_nav_points(
             )
             record(sum(len(v) for v in history.values()))
     spy_series = history.get("SPY")
-    held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
+    if held is None:
+        held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     current_px = {h.ticker: h.last_price for h in held if h.last_price is not None}
 
     # Holdings covered by neither lots NOR the transaction ledger (e.g. a money-market
@@ -2003,7 +2132,8 @@ def _reconstruct_nav_points(
     _rate_cache: dict[tuple[str, date], float] = {}
     # Every foreign rate this reconstruction can ask for, read once (after the backfill
     # above, so it sees what that wrote) — not one query per (currency, valuation date).
-    fx_history = fx_service.rate_history(session, foreign)
+    if fx_history is None:
+        fx_history = fx_service.rate_history(session, foreign)
 
     def _rate(ccy: str, when: date) -> float:
         if not ccy or ccy == "USD":
@@ -2026,10 +2156,14 @@ def _reconstruct_nav_points(
     # contribution-driven NAV build-up reads as return (metron-ops#88). Ledger (CSV/OFX)
     # accounts keep their trade-ledger flow via ``_windowed_net_purchases`` over JUST those
     # accounts — the two sets partition by the snapshot/ledger boundary, so no double count.
-    lot_opens, lot_closes = _load_lot_flows(session, tenant_id, portfolio_id, account_ids)
+    if lot_flows is not None:
+        lot_opens, lot_closes = lot_flows
+    else:
+        lot_opens, lot_closes = _load_lot_flows(session, tenant_id, portfolio_id, account_ids)
     ledger_account_ids = sorted({aid for aid, _t in ledger_by_account})
     # One read for every sub-period's trade-ledger flow (not one per sub-period × account).
-    ledger_purchases = _net_purchase_rows_by_account(session, tenant_id, ledger_account_ids)
+    if ledger_purchases is None:
+        ledger_purchases = _net_purchase_rows_by_account(session, tenant_id, ledger_account_ids)
 
     def _event_mv(ticker: str, qty: float, d: date) -> float:
         """Base-currency MARKET value of ``qty`` of ``ticker`` on ``d`` — valued IDENTICALLY

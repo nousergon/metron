@@ -838,6 +838,27 @@ def _holdings(
 
     All monetary values here are in the instrument's NATIVE currency — FX conversion to
     the portfolio base happens in ``valued_holdings``."""
+    ledger_ids = _scoped_account_ids(session, portfolio_id, account_id, account_ids) - (
+        _snapshot_sourced_account_ids(session, tenant_id, portfolio_id)
+    )
+    ledger, _incomplete = load_ledger(session, tenant_id, portfolio_id, account_ids=ledger_ids)
+    position_rows = _position_rows(session, tenant_id, portfolio_id, account_id, account_ids)
+    return _assemble_holdings(
+        ledger,
+        position_rows,
+        # Ledger-only tickers (CSV/OFX, no Position row) have no held currency — resolve
+        # those through the Security rows their own transactions link to, never by symbol
+        # text against the global table (metron-ops#351).
+        lambda tickers: _tenant_currency_by_symbol(session, tenant_id, tickers, account_ids=ledger_ids),
+    )
+
+
+def _assemble_holdings(ledger, position_rows, currency_of_ledger_only) -> list[Holding]:
+    """Fold one scope's replayed ledger + broker position rows into native ``Holding`` rows.
+
+    Pure apart from ``currency_of_ledger_only(tickers)``, the currency lookup for tickers
+    no broker position carries a currency for. Shared by :func:`_holdings` (one scope, one
+    lookup) and :func:`_holdings_by_account` (every account, lookups already read)."""
     # ticker → [total_shares, total_cost_basis, broker_market_value_local | None]
     agg: dict[str, list[float]] = {}
     broker_mv: dict[str, float] = {}
@@ -849,12 +870,6 @@ def _holdings(
     # actually points at.
     held_ccy: dict[str, str] = {}
 
-    # Ledger side: only accounts in scope that have NO broker position snapshot. This is
-    # what prevents the SnapTrade/Flex "activities + positions" double-count.
-    ledger_ids = _scoped_account_ids(session, portfolio_id, account_id, account_ids) - (
-        _snapshot_sourced_account_ids(session, tenant_id, portfolio_id)
-    )
-    ledger, _incomplete = load_ledger(session, tenant_id, portfolio_id, account_ids=ledger_ids)
     for ticker in ledger.open_lots:
         shares, avg_cost = ledger.position(ticker)
         if shares > 0:
@@ -862,9 +877,7 @@ def _holdings(
             agg[ticker][0] += shares
             agg[ticker][1] += shares * avg_cost
 
-    for quantity, avg_cost, mv_local, as_of, ticker, currency in _position_rows(
-        session, tenant_id, portfolio_id, account_id, account_ids
-    ):
+    for quantity, avg_cost, mv_local, as_of, ticker, currency in position_rows:
         qty = float(quantity)
         if qty <= 0:
             continue
@@ -883,10 +896,7 @@ def _holdings(
         if mv_local is not None:
             broker_mv[ticker] = broker_mv.get(ticker, 0.0) + float(mv_local)
 
-    # Ledger-only tickers (CSV/OFX, no Position row) have no held_ccy entry — resolve those
-    # through the Security rows their own transactions link to, never by symbol text
-    # against the global table (metron-ops#351).
-    ccy = _tenant_currency_by_symbol(session, tenant_id, [t for t in agg if t not in held_ccy], account_ids=ledger_ids)
+    ccy = currency_of_ledger_only([t for t in agg if t not in held_ccy])
     out: list[Holding] = []
     for t, (shares, basis) in sorted(agg.items()):
         # Per-share broker price from the summed native market value (qty-weighted).
@@ -902,6 +912,96 @@ def _holdings(
                 broker_market_value=bm,
                 broker_as_of=broker_as_of.get(t),
             )
+        )
+    return out
+
+
+def holdings_by_account(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, list[Holding]]:
+    """:func:`holdings` for EVERY account in ``account_ids`` at once — ``{account_id: rows}``,
+    each list exactly what ``holdings(..., account_id=aid)`` returns for that account.
+
+    ``valued_holdings_by_account`` used to call ``holdings`` once per account, and each call
+    re-read the portfolio's snapshot-account set, its own account's ledger and positions,
+    and a currency lookup — about eight statements an account, which is what made
+    ``/accounts`` the largest cold cost on the Holdings page (metron#515). Here those reads
+    happen once for the whole portfolio and the rows are split per account in memory. Same
+    content-fingerprint cache and copy-on-read contract as :func:`holdings`."""
+    ids = sorted(account_ids, key=str)
+    fp = compute_cache.portfolio_fingerprint(session, tenant_id, portfolio_id)
+    key = f"holdings_by_account|{tenant_id}|{portfolio_id}|{','.join(str(a) for a in ids)}|{fp}"
+    cached_rows = compute_cache.cached(
+        key, lambda: _holdings_by_account(session, tenant_id, portfolio_id, ids)
+    )
+    return {aid: [replace(h) for h in rows] for aid, rows in cached_rows.items()}
+
+
+def _holdings_by_account(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[Holding]]:
+    """Uncached core of :func:`holdings_by_account` — see that wrapper."""
+    if not account_ids:
+        return {}
+    in_scope = set(account_ids)
+    ledger_ids = in_scope - _snapshot_sourced_account_ids(session, tenant_id, portfolio_id)
+
+    txns_by_account: dict[uuid.UUID, list[tuple[uuid.UUID, Transaction]]] = {aid: [] for aid in ledger_ids}
+    if ledger_ids:
+        for aid, txn in engine_transactions_by_account(session, tenant_id, portfolio_id, account_ids=ledger_ids):
+            txns_by_account[aid].append((aid, txn))
+    ledgers = {aid: build_portfolio_ledger(txns)[0] for aid, txns in txns_by_account.items()}
+
+    positions_by_account: dict[uuid.UUID, list] = {aid: [] for aid in account_ids}
+    pos_stmt = (
+        select(
+            models.Position.account_id,
+            models.Position.quantity,
+            models.Position.avg_cost,
+            models.Position.market_value_local,
+            models.Position.as_of,
+            models.Security.symbol,
+            models.Security.currency,
+        )
+        .join(models.Account, models.Position.account_id == models.Account.id)
+        .join(models.Security, models.Position.security_id == models.Security.id)
+        .where(
+            models.Position.tenant_id == tenant_id,
+            models.Account.portfolio_id == portfolio_id,
+            models.Position.account_id.in_(account_ids),
+        )
+    )
+    for aid, *row in session.execute(pos_stmt).all():
+        positions_by_account[aid].append(tuple(row))
+
+    # Currency of tickers only a ledger account holds: one lookup over every ledger account,
+    # answered per account in _tenant_currency_by_symbol's own precedence (position links
+    # before transaction links, first by (symbol, currency)).
+    ledger_tickers = {t for led in ledgers.values() for t in led.open_lots}
+    ccy_by_account: dict[uuid.UUID, dict[str, str]] = defaultdict(dict)
+    if ledger_tickers and ledger_ids:
+        for model in (models.Position, models.Transaction):
+            stmt = (
+                select(model.account_id, models.Security.symbol, models.Security.currency)
+                .join(model, model.security_id == models.Security.id)
+                .where(
+                    model.tenant_id == tenant_id,
+                    models.Security.symbol.in_(sorted(ledger_tickers)),
+                    model.account_id.in_(list(ledger_ids)),
+                )
+                .distinct()
+                .order_by(models.Security.symbol, models.Security.currency)
+            )
+            for aid, symbol, currency in session.execute(stmt).all():
+                ccy_by_account[aid].setdefault(symbol, currency or "USD")
+
+    out: dict[uuid.UUID, list[Holding]] = {}
+    for aid in account_ids:
+        own = ccy_by_account.get(aid, {}) if aid in ledger_ids else {}
+        out[aid] = _assemble_holdings(
+            ledgers.get(aid, Ledger()),
+            positions_by_account[aid],
+            lambda tickers, own=own: {t: own[t] for t in tickers if t in own},
         )
     return out
 
@@ -1042,9 +1142,7 @@ def valued_holdings_by_account(
             )
         ).all()
     )
-    per_account = {
-        aid: holdings(session, tenant_id, portfolio_id, account_id=aid) for aid in acct_ids
-    }
+    per_account = holdings_by_account(session, tenant_id, portfolio_id, acct_ids)
     all_held = [h for hs in per_account.values() for h in hs]
     if not all_held:
         return per_account
@@ -1625,10 +1723,18 @@ def _income(
     return summarize_income_by_year(realized_base, dict(dividends), dict(interest), dict(distributions))
 
 
-def accounts(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[AccountInfo]:
+def accounts(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    held_by_account: dict[uuid.UUID, list[Holding]] | None = None,
+) -> list[AccountInfo]:
     """The portfolio's connected accounts (one row per broker account), with tags +
     derived taxable status + per-account valuation (cost basis / market value /
-    unrealized, base currency). Always lists ALL accounts (the panel is the selector)."""
+    unrealized, base currency). Always lists ALL accounts (the panel is the selector).
+    ``held_by_account`` is the caller's own :func:`valued_holdings_by_account` when it will
+    reuse it for other reads of the same request (read-only here)."""
     from api.services import account_meta  # local import avoids a cycle (account_meta → models)
 
     rows = session.scalars(
@@ -1636,7 +1742,9 @@ def accounts(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) ->
         .where(models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
         .order_by(models.Account.broker, models.Account.external_id)
     ).all()
-    by_account = valued_holdings_by_account(session, tenant_id, portfolio_id)
+    by_account = (
+        held_by_account if held_by_account is not None else valued_holdings_by_account(session, tenant_id, portfolio_id)
+    )
     cash_by_account = _cash_by_account(session, tenant_id, portfolio_id)
     out: list[AccountInfo] = []
     for a in rows:
