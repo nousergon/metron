@@ -17,7 +17,7 @@
     "@tanstack/react-table": "^9.2.4",
     "@tanstack/react-virtual": "^3.14.13",
     "better-auth": "^1.7.6",
-    "next": "15.5.26",
+    "next": "15.5.27",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "server-only": "^0.0.1",
