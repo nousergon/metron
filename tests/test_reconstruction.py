@@ -225,7 +225,9 @@ class TestReconstruct:
         is unscoped global reference data both portfolios read — prove the bound is a
         no-op: two structurally-identical portfolios (same CSV, different tenants)
         reconstruct through, respectively, the real bounded fetch and a monkeypatched
-        pre-I279 unbounded one, and their resulting NAV series must match exactly."""
+        pre-I279 unbounded one, and their resulting NAV series must match exactly. Since
+        metron-ops-I343 the fetch is ``close_history_in_windows`` (per-symbol windows), so
+        both readers are patched; ``tests/test_close_history_windows.py`` holds the rest."""
         pid_a = _seed(client, tenant)
         tenant2 = str(uuid.uuid4())
         pid_b = _seed(client, tenant2)
@@ -247,7 +249,11 @@ class TestReconstruct:
         def _unbounded(session, symbols, *, start_date=None, end_date=None):
             return real(session, symbols)  # ignore the bound — the pre-I279 behaviour
 
+        def _unbounded_windows(session, windows, *, floor):
+            return real(session, list(windows))  # metron-ops-I343 moved the fetch here
+
         monkeypatch.setattr(prices, "close_history_by_symbol", _unbounded)
+        monkeypatch.setattr(prices, "close_history_in_windows", _unbounded_windows)
 
         n_b = performance.reconstruct_snapshots(
             db_session, uuid.UUID(tenant2), uuid.UUID(pid_b), today=date(2024, 3, 20), source=_hist_src

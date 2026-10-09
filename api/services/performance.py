@@ -1865,6 +1865,44 @@ def _lot_positions_asof(open_lots, closed_lots, when: date):
     return pos, cost
 
 
+def _close_read_windows(open_lots, closed_lots, ledger_txns, first: date, today: date) -> dict[str, tuple[date, date]]:
+    """``symbol → (lo, hi)``: the only dates ``_reconstruct_nav_points`` can ask a close of
+    that symbol for (metron-ops-I343). Pure.
+
+    The function looks a close up in two places, the NAV loop (a ticker with shares as-of a
+    valuation date) and ``_event_mv`` (a lot opening or closing). That gives these bounds:
+
+    - an OPEN lot is held from its open date, so ``(open_date, today)``;
+    - a CLOSED lot is held on ``[open_date, close_date)`` and its close is valued at
+      ``close_date``, so ``(open_date, close_date)``;
+    - a ledger (CSV/OFX) ticker has no position before its first transaction, but nothing
+      cheap says when the replay last holds it, so ``(first txn date, today)``;
+    - ``SPY`` is the benchmark close on every valuation date, so ``(first, today)``.
+
+    A symbol with several sources gets the hull of them. ``_load_lot_flows`` reads the
+    same two lot tables with the same scope, so its events fall inside the lot windows.
+    Every ``hi`` is clamped to ``today``, the old read's upper bound."""
+    spans: dict[str, list[date]] = {}
+
+    def _cover(ticker: str, lo: date, hi: date) -> None:
+        if not ticker:
+            return
+        hi = min(hi, today)
+        cur = spans.get(ticker)
+        spans[ticker] = [lo, hi] if cur is None else [min(cur[0], lo), max(cur[1], hi)]
+
+    for ticker, _q, _cb, od in open_lots:
+        _cover(ticker, od, today)
+    for ticker, _q, _cb, od, cd in closed_lots:
+        # min/max, not (od, cd): a lot recorded closing before it opened is never held,
+        # but ``_event_mv`` still values both of its events.
+        _cover(ticker, min(od, cd), max(od, cd))
+    for t in ledger_txns:
+        _cover(t.ticker, t.when, today)
+    _cover("SPY", first, today)
+    return {s: (lo, hi) for s, (lo, hi) in spans.items()}
+
+
 def _ticker_currencies(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> dict[str, str]:
     """ticker → native currency, from the lot tables — so historical native prices can be
     FX-converted to base before they enter NAV (a foreign close is not a USD value)."""
@@ -2058,15 +2096,15 @@ def _reconstruct_nav_points(
         # this function will ever value (no lot/txn/flow predates it), and no valuation
         # date exceeds `today` — the same bound the `backfill` branch above already
         # uses for its own write.
-        # metron-ops-I343: THE read to watch. `first` is the earliest lot/txn date
-        # that has ever existed for this portfolio, so this pulls every close for
-        # every symbol ever held, from inception, on every run — and `daily-refresh`
-        # fires three times a night. Counted and timed, never changed: this function
-        # sits on the path of metron-ops#74/#87/#88/#89, and narrowing the window
-        # without first knowing it dominates is how a fifth NAV bug gets written.
+        # metron-ops-I343: [first, today] was still every close for every symbol ever
+        # held, from inception, three refreshes a night (~83k rows a run in the
+        # profile). Each symbol is now read only over the dates it can be valued at
+        # (`_close_read_windows`), plus one carry-forward bar. The NAV series is
+        # unchanged: tests/test_close_history_windows.py compares it, point for point,
+        # against the [first, today] read on the golden portfolios.
         with _profiled(profile, "performance.close_history_by_symbol") as record:
-            history = price_service.close_history_by_symbol(
-                session, [*symbols, "SPY"], start_date=first, end_date=today
+            history = price_service.close_history_in_windows(
+                session, _close_read_windows(open_lots, closed_lots, ledger_txns, first, today), floor=first
             )
             record(sum(len(v) for v in history.values()))
     spy_series = history.get("SPY")
