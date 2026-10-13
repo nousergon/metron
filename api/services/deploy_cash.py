@@ -53,7 +53,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.db import models
-from api.services import analytics, demo_household
+from api.services import analytics
 from api.services import classifications as classifications_service
 from api.services import intraday as intraday_service
 from api.services import prices as price_service
@@ -375,8 +375,14 @@ def build_candidates(
     rating_as_of: str | None = None
     rating_basis: str | None = None
     candidates: list[Candidate] = []
+    # Deferred, not module-level: demo_household imports goal -> performance ->
+    # security_perf -> tearsheet at load, so a top-level import here closes an import
+    # cycle that kills every entry point loading this module first
+    # (python -m api.maintenance among them).
+    from api.services.demo_household import reference_symbol
+
     for ticker in universe:
-        rating = by_symbol.get(demo_household.reference_symbol(ticker))
+        rating = by_symbol.get(reference_symbol(ticker))
         if rating is None or rating.score is None or rating.label is None:
             _skip(skipped, ticker, "no_rating", "no technical rating published for this symbol")
             continue

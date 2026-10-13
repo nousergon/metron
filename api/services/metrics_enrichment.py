@@ -14,7 +14,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from api.services import analyst as analyst_service
-from api.services import analytics, demo_household
+from api.services import analytics
 from api.services import attractiveness as attractiveness_service
 from api.services import fundamentals as fundamentals_service
 from api.services import sentiment as sentiment_service
@@ -40,6 +40,12 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
     # metron-ops-I334: once retired, compute_universe() is {} — stamp the substrate state on
     # every row so the UI renders "retired" rather than a blank that reads as a coverage gap.
     att_retired = attractiveness_service.retired()
+    # Deferred, not module-level: demo_household imports goal -> performance ->
+    # security_perf -> tearsheet at load, so a top-level import here closes an import
+    # cycle that kills every entry point loading this module first
+    # (python -m api.maintenance among them).
+    from api.services.demo_household import reference_symbol
+
     for h in held:
         yf = yf_map.get(h.ticker, h.ticker)
         f = funds.get(yf)
@@ -86,7 +92,7 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
             h.mom_20d = t.mom_20d
         # Technical rating (metron-ops#294) — intraday where fresh, EOD fallback otherwise
         # (decided per symbol by the reader itself).
-        r = ratings.get(demo_household.reference_symbol(yf))
+        r = ratings.get(reference_symbol(yf))
         if r is not None:
             h.tech_rating_score = r.score
             h.tech_rating_label = r.label
