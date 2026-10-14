@@ -590,6 +590,38 @@ def flex_sync_all(session: Session) -> int:
     return synced
 
 
+def _backfill_snapshot_gap(start: date, end: date, *, apply: bool, undo: bool) -> int:
+    """CLI body for ``backfill-snapshot-gap``. Prints one JSON object (ids only, no names)."""
+    import json
+
+    from api.services import demo_household, snapshot_gap
+
+    if end < start or end >= session_today():
+        logger.error("backfill-snapshot-gap: need --from <= --through < today (%s)", session_today())
+        return 2
+    create_all()
+    session = SessionLocal()
+    try:
+        if undo:
+            n = snapshot_gap.undo(session, start=start, end=end, dry_run=not apply)
+            print(json.dumps({"mode": "undo" if apply else "undo-dry-run", "rows": n}))
+            return 0
+        plans = snapshot_gap.plan_gap(
+            session, start=start, end=end,
+            exclude_portfolios={REFERENCE_PORTFOLIO_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID},
+        )
+        written = snapshot_gap.apply_plan(session, plans) if apply else 0
+        print(json.dumps({
+            "mode": "apply" if apply else "dry-run",
+            "would_write": sum(len(p.points) for p in plans if not p.skipped),
+            "written": written,
+            "series": [p.as_dict() for p in plans],
+        }, indent=2))
+        return 0
+    finally:
+        session.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m api.maintenance", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -612,6 +644,16 @@ def main(argv: list[str] | None = None) -> int:
         help="one-time: re-derive tax_treatment for existing NULL accounts from their stored "
         "account_type (metron-ops#194); safe to re-run, never clobbers a set value",
     )
+    p_gap = sub.add_parser(
+        "backfill-snapshot-gap",
+        help="fill missed days in the daily NAV snapshot series (portfolio + account grain) "
+        "from each day's own closes, where positions are provably unchanged across the gap. "
+        "Dry run unless --apply; --undo removes only rows this command wrote (metron-ops#361)",
+    )
+    p_gap.add_argument("--from", dest="start", required=True, type=date.fromisoformat, help="first missed day")
+    p_gap.add_argument("--through", dest="end", required=True, type=date.fromisoformat, help="last missed day")
+    p_gap.add_argument("--apply", action="store_true", help="write the rows (default: report only)")
+    p_gap.add_argument("--undo", action="store_true", help="delete rows this command wrote in the range")
     p_unl = sub.add_parser(
         "mark-unlisted",
         help="flag a security as having no public listing (broker-snapshot-priced; "
@@ -622,6 +664,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    if args.cmd == "backfill-snapshot-gap":
+        return _backfill_snapshot_gap(args.start, args.end, apply=args.apply, undo=args.undo)
     if args.cmd == "mark-unlisted":
         create_all()  # additive auto-ALTER brings an existing SQLite DB up to the model
         session = SessionLocal()
