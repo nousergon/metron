@@ -620,11 +620,16 @@ def _backfill_snapshot_gap(start: date, end: date, *, apply: bool, undo: bool, o
                 out["restored"] = restored
             print(json.dumps(out))
             return 0
-        plans = snapshot_gap.plan_gap(
-            session, start=start, end=end,
-            exclude_portfolios={REFERENCE_PORTFOLIO_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID},
-            options=opts,
-        )
+        try:
+            plans = snapshot_gap.plan_gap(
+                session, start=start, end=end,
+                exclude_portfolios={REFERENCE_PORTFOLIO_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID},
+                options=opts,
+            )
+        except snapshot_gap.LegPricesError as exc:
+            session.rollback()
+            logger.error("backfill-snapshot-gap: %s", exc)
+            return 2
         updates = sum(len(p.updates()) for p in plans)
         if apply:
             written = snapshot_gap.apply_plan(session, plans, options=opts)
@@ -653,6 +658,38 @@ def _bridge_pair(text: str) -> tuple[str, str]:
     return ticker.strip(), proxy.strip()
 
 
+def _leg_prices_file(path: str) -> dict[str, dict[date, float]]:
+    """``--leg-prices FILE``: a CSV of ``ticker,date,price`` rows (an optional header row).
+    Malformed, duplicated or non-positive rows are rejected, naming the line."""
+    import csv
+
+    out: dict[str, dict[date, float]] = {}
+    try:
+        with open(path, newline="") as fh:
+            rows = list(csv.reader(fh))
+    except OSError as exc:
+        raise argparse.ArgumentTypeError(f"cannot read {path}: {exc}") from exc
+    for n, row in enumerate(rows, start=1):
+        if not row or not "".join(row).strip():
+            continue
+        cells = [c.strip() for c in row]
+        if n == 1 and [c.lower() for c in cells] == ["ticker", "date", "price"]:
+            continue
+        try:
+            ticker, day, price = cells
+            day, price = date.fromisoformat(day), float(price)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"{path} line {n}: expected ticker,YYYY-MM-DD,price") from exc
+        if not ticker or not price > 0 or price == float("inf"):
+            raise argparse.ArgumentTypeError(f"{path} line {n}: need a ticker and a positive price")
+        if day in out.setdefault(ticker, {}):
+            raise argparse.ArgumentTypeError(f"{path} line {n}: {ticker} {day.isoformat()} given twice")
+        out[ticker][day] = price
+    if not out:
+        raise argparse.ArgumentTypeError(f"{path}: no prices")
+    return out
+
+
 def _gap_options(args):
     from api.services import snapshot_gap
 
@@ -664,6 +701,8 @@ def _gap_options(args):
         proxy_bridge=dict(args.proxy_bridge or []),
         portfolio_from_accounts=args.portfolio_from_accounts,
         only=frozenset(args.only or []),
+        anchor=args.anchor,
+        leg_prices=args.leg_prices or {},
     )
 
 
@@ -718,6 +757,12 @@ def main(argv: list[str] | None = None) -> int:
                        help="fill portfolio-grain missed days as the sum of every account of the cohort")
     p_gap.add_argument("--only", action="append", metavar="ACCOUNT_ID|PORTFOLIO_ID|portfolio",
                        help="restrict the run to these series (repeatable)")
+    p_gap.add_argument("--anchor", choices=("none", "proportional"), default="none",
+                       help="proportional: a series whose reprice misses a recorded end by 0.5-2%% is "
+                       "scaled linearly in time so both ends match, flagged estimated (default: skip it)")
+    p_gap.add_argument("--leg-prices", type=_leg_prices_file, metavar="FILE",
+                       help="CSV of ticker,date,price used as closes for those legs (broker-priced funds); "
+                       "a missing US session in the gap fails the run")
     p_unl = sub.add_parser(
         "mark-unlisted",
         help="flag a security as having no public listing (broker-snapshot-priced; "
