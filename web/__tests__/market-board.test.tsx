@@ -97,11 +97,12 @@ describe("MarketBoardPanel", () => {
     await waitFor(() => expect(screen.getByText("This view isn't available on your plan.")).toBeTruthy());
   });
 
-  it("renders the fixed track-record header copy verbatim", () => {
-    render(<MarketBoardPanel portfolioId="p1" initialScope="held" initialBoard={HELD_BOARD} />);
-    expect(
-      screen.getByText(/Describes recent price action; graded IC ≈ 0 at 1–20 days \(metron-ops#295\)\. Not a forecast, not investment advice\./),
-    ).toBeTruthy();
+  it("renders the fixed track-record header copy verbatim, with no fixed IC claim", () => {
+    const { container } = render(<MarketBoardPanel portfolioId="p1" initialScope="held" initialBoard={HELD_BOARD} />);
+    expect(screen.getByText(/Describes recent price action\. Not a forecast, not investment advice\./)).toBeTruthy();
+    // The only IC figure on the board is the measured one; a fixed "graded IC" claim drifts
+    // out of agreement with it.
+    expect(container.textContent).not.toMatch(/graded IC/);
   });
 
   // metron-ops-I334: the board's score is the live, collector-fed technical rating — not the
