@@ -590,36 +590,120 @@ def flex_sync_all(session: Session) -> int:
     return synced
 
 
-def _backfill_snapshot_gap(start: date, end: date, *, apply: bool, undo: bool) -> int:
-    """CLI body for ``backfill-snapshot-gap``. Prints one JSON object (ids only, no names)."""
+def _backfill_snapshot_gap(start: date, end: date, *, apply: bool, undo: bool, options=None) -> int:
+    """CLI body for ``backfill-snapshot-gap``. Prints one JSON object (ids only, no names).
+
+    ``options`` (a ``snapshot_gap.Options``) carries the opt-in methods of metron-ops-I361;
+    None, or a default ``Options()``, is the original tool exactly."""
     import json
 
     from api.services import demo_household, snapshot_gap
 
+    opts = options or snapshot_gap.Options()
     if end < start or end >= session_today():
         logger.error("backfill-snapshot-gap: need --from <= --through < today (%s)", session_today())
+        return 2
+    if opts.explain and (apply or undo):
+        logger.error("backfill-snapshot-gap: --explain is read-only; drop --apply / --undo")
+        return 2
+    if undo and opts.extended:
+        logger.error("backfill-snapshot-gap: --undo takes only --from/--through (and --apply)")
         return 2
     create_all()
     session = SessionLocal()
     try:
         if undo:
+            restored = snapshot_gap.restore_stashes(session, start=start, end=end, dry_run=not apply)
             n = snapshot_gap.undo(session, start=start, end=end, dry_run=not apply)
-            print(json.dumps({"mode": "undo" if apply else "undo-dry-run", "rows": n}))
+            out = {"mode": "undo" if apply else "undo-dry-run", "rows": n}
+            if restored:
+                out["restored"] = restored
+            print(json.dumps(out))
             return 0
-        plans = snapshot_gap.plan_gap(
-            session, start=start, end=end,
-            exclude_portfolios={REFERENCE_PORTFOLIO_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID},
-        )
-        written = snapshot_gap.apply_plan(session, plans) if apply else 0
-        print(json.dumps({
+        try:
+            plans = snapshot_gap.plan_gap(
+                session, start=start, end=end,
+                exclude_portfolios={REFERENCE_PORTFOLIO_ID, demo_household.DEMO_HOUSEHOLD_PORTFOLIO_ID},
+                options=opts,
+            )
+        except snapshot_gap.LegPricesError as exc:
+            session.rollback()
+            logger.error("backfill-snapshot-gap: %s", exc)
+            return 2
+        updates = sum(len(p.updates()) for p in plans)
+        if apply:
+            written = snapshot_gap.apply_plan(session, plans, options=opts)
+        else:
+            written = 0
+            session.rollback()  # --restate-anchors restates in memory only; a dry run keeps nothing
+        out = {
             "mode": "apply" if apply else "dry-run",
             "would_write": sum(len(p.points) for p in plans if not p.skipped),
             "written": written,
-            "series": [p.as_dict() for p in plans],
-        }, indent=2))
+        }
+        if opts.extended:
+            out["updates"] = updates
+        out["series"] = [p.as_dict(opts.extended) for p in plans]
+        print(json.dumps(out, indent=2))
         return 0
     finally:
         session.close()
+
+
+def _bridge_pair(text: str) -> tuple[str, str]:
+    """``TICKER=PROXY`` for ``--proxy-bridge``."""
+    ticker, sep, proxy = text.partition("=")
+    if not sep or not ticker.strip() or not proxy.strip():
+        raise argparse.ArgumentTypeError("expected TICKER=PROXY")
+    return ticker.strip(), proxy.strip()
+
+
+def _leg_prices_file(path: str) -> dict[str, dict[date, float]]:
+    """``--leg-prices FILE``: a CSV of ``ticker,date,price`` rows (an optional header row).
+    Malformed, duplicated or non-positive rows are rejected, naming the line."""
+    import csv
+
+    out: dict[str, dict[date, float]] = {}
+    try:
+        with open(path, newline="") as fh:
+            rows = list(csv.reader(fh))
+    except OSError as exc:
+        raise argparse.ArgumentTypeError(f"cannot read {path}: {exc}") from exc
+    for n, row in enumerate(rows, start=1):
+        if not row or not "".join(row).strip():
+            continue
+        cells = [c.strip() for c in row]
+        if n == 1 and [c.lower() for c in cells] == ["ticker", "date", "price"]:
+            continue
+        try:
+            ticker, day, price = cells
+            day, price = date.fromisoformat(day), float(price)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"{path} line {n}: expected ticker,YYYY-MM-DD,price") from exc
+        if not ticker or not price > 0 or price == float("inf"):
+            raise argparse.ArgumentTypeError(f"{path} line {n}: need a ticker and a positive price")
+        if day in out.setdefault(ticker, {}):
+            raise argparse.ArgumentTypeError(f"{path} line {n}: {ticker} {day.isoformat()} given twice")
+        out[ticker][day] = price
+    if not out:
+        raise argparse.ArgumentTypeError(f"{path}: no prices")
+    return out
+
+
+def _gap_options(args):
+    from api.services import snapshot_gap
+
+    return snapshot_gap.Options(
+        explain=args.explain,
+        restate_anchors=args.restate_anchors,
+        trade_aware=args.trade_aware,
+        missing_close=args.missing_close,
+        proxy_bridge=dict(args.proxy_bridge or []),
+        portfolio_from_accounts=args.portfolio_from_accounts,
+        only=frozenset(args.only or []),
+        anchor=args.anchor,
+        leg_prices=args.leg_prices or {},
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -653,7 +737,32 @@ def main(argv: list[str] | None = None) -> int:
     p_gap.add_argument("--from", dest="start", required=True, type=date.fromisoformat, help="first missed day")
     p_gap.add_argument("--through", dest="end", required=True, type=date.fromisoformat, help="last missed day")
     p_gap.add_argument("--apply", action="store_true", help="write the rows (default: report only)")
-    p_gap.add_argument("--undo", action="store_true", help="delete rows this command wrote in the range")
+    p_gap.add_argument(
+        "--undo", action="store_true",
+        help="delete rows this command wrote in the range, and restore any flow or anchor it changed",
+    )
+    # Opt-in methods (metron-ops-I361). With none of them the command is unchanged.
+    p_gap.add_argument("--explain", action="store_true",
+                       help="read-only: list every failing leg of each skipped series, with a cause code")
+    p_gap.add_argument("--restate-anchors", action="store_true",
+                       help="restate a still-provisional bracketing row from struck fund NAVs first")
+    p_gap.add_argument("--trade-aware", action="store_true",
+                       help="value days between trades from the ledger or lots; rebases the next row's flow")
+    p_gap.add_argument("--missing-close", choices=("skip", "carry"), default="skip",
+                       help="carry: a leg with no close on a missed session carries its previous close, "
+                       "flagged stale, capped at 5%% of NAV (default: skip the series)")
+    p_gap.add_argument("--proxy-bridge", action="append", type=_bridge_pair, metavar="TICKER=PROXY",
+                       help="bridge a broker-priced leg with a listed proxy's returns, flagged estimated")
+    p_gap.add_argument("--portfolio-from-accounts", action="store_true",
+                       help="fill portfolio-grain missed days as the sum of every account of the cohort")
+    p_gap.add_argument("--only", action="append", metavar="ACCOUNT_ID|PORTFOLIO_ID|portfolio",
+                       help="restrict the run to these series (repeatable)")
+    p_gap.add_argument("--anchor", choices=("none", "proportional"), default="none",
+                       help="proportional: a series whose reprice misses a recorded end by 0.5-2%% is "
+                       "scaled linearly in time so both ends match, flagged estimated (default: skip it)")
+    p_gap.add_argument("--leg-prices", type=_leg_prices_file, metavar="FILE",
+                       help="CSV of ticker,date,price used as closes for those legs (broker-priced funds); "
+                       "a missing US session in the gap fails the run")
     p_unl = sub.add_parser(
         "mark-unlisted",
         help="flag a security as having no public listing (broker-snapshot-priced; "
@@ -665,7 +774,9 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if args.cmd == "backfill-snapshot-gap":
-        return _backfill_snapshot_gap(args.start, args.end, apply=args.apply, undo=args.undo)
+        return _backfill_snapshot_gap(
+            args.start, args.end, apply=args.apply, undo=args.undo, options=_gap_options(args)
+        )
     if args.cmd == "mark-unlisted":
         create_all()  # additive auto-ALTER brings an existing SQLite DB up to the model
         session = SessionLocal()
