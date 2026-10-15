@@ -55,8 +55,37 @@ with every field at its default the behaviour above is unchanged, byte for byte:
   rows (``nav``, ``external_flow``, ``cost_basis``, legs concatenated), only when EVERY
   account of the cohort has a row that day and the accounts sum to the portfolio at A and
   B within ``_COHORT_IDENTITY_TOLERANCE``.
+  A leg whose quantity changed with NO trade in the chosen source is reconciled only by
+  one of two corporate events, each reported in ``notes``:
+
+  * ``split`` — ``b_qty / a_qty`` is a simple ratio and the leg's close series proves it.
+    Either the series is UNADJUSTED across the split: exactly one session inside ``(A, B]``
+    whose close over the previous close is ``1/ratio`` within ``_SPLIT_PRICE_TOLERANCE``
+    (that day is the split date: ``a_qty`` before it, ``b_qty`` from it, no flow); or the
+    series is SPLIT-ADJUSTED (the price cache's history comes from a source that
+    back-adjusts every bar before a corporate action, so a refresh after the split rewrites
+    A's close): A's stored close times the ratio matches A's recorded price, B's stored
+    close matches B's, and no day jumps. On an adjusted series every day is valued at
+    ``b_qty`` × the adjusted close — ``a_qty × raw = b_qty × raw / ratio`` — which needs no
+    split date. A recorded ``SPLIT`` transaction in the ledger names the date and must
+    agree on the ratio; it never stands in for the price evidence. No matching evidence,
+    no split: the series is skipped with the reason.
+  * ``drip`` — a small increase (≤ ``_DRIP_MAX_FRACTION`` of the position) with no trade:
+    a dividend reinvested into shares. The dividend is return, not an external flow, so no
+    flow is recorded. The quantity steps on the latest ``DIVIDEND`` the ledger records for
+    the leg inside the gap, or, with none recorded, on the first day after A.
+- ``anchor="proportional"`` — a series whose reprice misses a recorded end by more than
+  ``_SELF_CHECK_TOLERANCE`` (but by at most ``_ANCHOR_MAX_ERROR`` at both ends) is scaled
+  by ``f(d) = f_A + (f_B − f_A) × (d − A) / (B − A)``, ``f`` = recorded NAV / repriced NAV,
+  so both ends match exactly; every scaled day is flagged estimated (``how`` "anchor").
+- ``leg_prices`` — operator-supplied ``ticker -> {date: price}`` used as that leg's closes
+  (a broker-priced fund with no close history). A missing price for any US session inside
+  the gap is an error (:class:`LegPricesError`), never a skip. Days so priced are flagged
+  estimated (``how`` "operator-price").
 - ``only`` — restrict the run to the named account ids, portfolio ids, or ``"portfolio"``.
-- ``explain`` — for every skipped series, list every failing leg with a cause code.
+- ``explain`` — for every skipped series, list every failing leg with a cause code; for a
+  series that fails the self-check, every leg's recorded vs repriced value at A and B; for
+  a skipped portfolio, the sum of its accounts' NAVs vs the portfolio row at A and B.
 
 Rows written under any option carry ``method``, ``estimated`` and ``estimated_legs`` in
 ``composition["backfill"]``; ``undo`` also restores every stashed flow and anchor.
@@ -67,11 +96,13 @@ from __future__ import annotations
 import bisect
 import copy
 import logging
+import math
 import uuid
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from fractions import Fraction
 from operator import itemgetter
 
 from sqlalchemy import and_, or_, select
@@ -98,6 +129,12 @@ _BRIDGE_CAP = 0.10                 # a proxy-bridged leg, as a share of NAV
 _COHORT_IDENTITY_TOLERANCE = 0.001  # Σ accounts vs the portfolio row, at A and at B
 _TRADE_DAY_RETURN_CAP = 0.10       # |(nav − flow) / nav_prev − 1| on a trade day
 _CENT = 0.005
+_ANCHOR_MAX_ERROR = 0.02           # proportional anchoring refuses an end missed by more
+_SPLIT_PRICE_TOLERANCE = 0.02      # close ratio vs 1/split ratio (and recorded vs stored close)
+_SPLIT_MAX_TERM = 100              # a "simple" ratio: both terms at most this,
+_SPLIT_MAX_SMALL_TERM = 10         # and the smaller at most this (5:1, 3:2, 1:20 — not 73:100)
+_SPLIT_MIN_MOVE = math.log(1.2)    # |ln ratio| below this is indistinguishable from a day's move
+_DRIP_MAX_FRACTION = 0.02          # a reinvested dividend adds at most this share of the position
 
 # Why a leg cannot be priced on a day (``--explain`` cause codes).
 CAUSES = {
@@ -120,6 +157,8 @@ class Options:
     proxy_bridge: dict[str, str] = field(default_factory=dict)  # broker-priced ticker -> listed proxy
     portfolio_from_accounts: bool = False
     only: frozenset[str] = frozenset()  # account id | portfolio id | "portfolio"
+    anchor: str = "none"  # "none" | "proportional"
+    leg_prices: dict[str, dict[date, float]] = field(default_factory=dict)  # ticker -> date -> price
 
     @property
     def extended(self) -> bool:
@@ -132,6 +171,10 @@ class Options:
         if plan.grain == "portfolio":
             return "portfolio" in wanted or str(plan.portfolio_id) in wanted
         return str(plan.account_id) in wanted
+
+
+class LegPricesError(ValueError):
+    """``leg_prices`` cannot price a day it was asked to: never a quiet skip."""
 
 
 @dataclass
@@ -264,11 +307,36 @@ class _Valuer:
             frac = (d - self.a.snap_date).days / (self.b.snap_date - self.a.snap_date).days
         return p_a * (pd.close / pa.close) * residual ** frac, proxy
 
+    def _operator_price(self, k, d: date, anchor: str | None):
+        """``(px, px_date, how)`` from ``opts.leg_prices``. A recorded end with no supplied
+        price keeps its recorded price; a missed US session with none is an error."""
+        supplied = self.opts.leg_prices[k[0]]
+        if d in supplied:
+            return supplied[d], d, None if anchor else "operator-price"
+        if anchor is not None:
+            ref = (self.a_agg if anchor == "A" else self.b_agg).get(k)
+            return 2 if ref is None or not ref["price"] else (ref["price"], None, None)
+        if d in self.us_sessions:
+            raise LegPricesError(f"--leg-prices has no price for {k[0]} on {d.isoformat()} (a US session)")
+        earlier = [x for x in supplied if self.a.snap_date <= x < d]
+        if earlier:
+            x = max(earlier)
+            return supplied[x], x, "operator-price"
+        ref = self.a_agg.get(k)
+        return 2 if ref is None or not ref["price"] else (ref["price"], None, "operator-price")
+
     def price(self, k, d: date, anchor: str | None):
         """``(px, px_date, rate, how, proxy)`` or an int cause code. ``anchor`` is "A"/"B"
         when ``d`` is a recorded end, None for a missed day."""
         ticker, ccy = k
         how, proxy = None, None
+        if ticker in self.opts.leg_prices:
+            got = self._operator_price(k, d, anchor)
+            if isinstance(got, int):
+                return got
+            px, px_date, how = got
+            rate = self.fx_hist.rate_as_of(ccy, d)
+            return 5 if rate is None else (px, px_date, rate, how, None)
         series = self.history.get(ticker)
         carry = anchor is None and self.opts.missing_close == "carry"
         if series:
@@ -356,6 +424,9 @@ class _Ctx:
     opts: Options = field(default_factory=Options)
     trades: dict[str, list[tuple[date, str, float]]] | None = None  # source -> (date, ticker, ±qty)
     flow_of: Callable[[date, date], float] | None = None  # live net purchases over (after, through]
+    # Recorded corporate events in (A, B]: {"splits": {ticker: [(date, ratio)]},
+    # "dividends": {ticker: [date]}} — read only under trade_aware.
+    corporate: dict | None = None
 
 
 def _explain(plan: SeriesPlan, a, b, a_agg, b_agg, ctx: _Ctx) -> dict:
@@ -395,7 +466,33 @@ def _explain(plan: SeriesPlan, a, b, a_agg, b_agg, ctx: _Ctx) -> dict:
         valuer.value_on(d, {k: v["qty"] for k, v in qty_src.items()}, anchor=anchor, causes=causes)
         for c in causes:
             out["legs"].append({**c, **facts((c["ticker"], c["currency"]))})
+    if plan.self_check is not None and plan.self_check > _SELF_CHECK_TOLERANCE:
+        out["reprice"] = [_reprice_detail(snap, anchor, agg, valuer)
+                          for snap, anchor, agg in ((a, "A", a_agg), (b, "B", b_agg))]
     return out
+
+
+def _reprice_detail(snap, anchor: str, agg: dict, valuer: _Valuer) -> dict:
+    """``--explain`` for a failed self-check: each leg's recorded value vs its repriced value
+    at one end, largest gap first, so a residual can be located."""
+    got = valuer.value_on(snap.snap_date, {k: v["qty"] for k, v in agg.items()}, anchor=anchor)
+    repriced = {} if got is None else {(x["ticker"], x["currency"]): x for x in got[1]}
+    nav = float(snap.nav or 0.0)
+    legs = []
+    for k, rec in agg.items():
+        x = repriced.get(k)
+        value = None if x is None else x["value"]
+        legs.append({"ticker": k[0], "currency": k[1], "qty": rec["qty"], "recorded_price": rec["price"],
+                     "repriced_price": None if x is None else x["price"],
+                     "recorded_value": round(rec["value"], 2), "repriced_value": None if value is None else round(value, 2),
+                     "diff": None if value is None else round(value - rec["value"], 2),
+                     "diff_pct_of_nav": None if value is None or not nav else round((value - rec["value"]) / nav * 100, 4)})
+    legs.sort(key=lambda x: -abs(x["diff"] or 0.0))
+    total = None if got is None else got[0]
+    return {"anchor": anchor, "date": snap.snap_date.isoformat(), "recorded_nav": round(nav, 2),
+            "recorded_legs_sum": round(sum(v["value"] for v in agg.values()), 2),
+            "repriced_nav": None if total is None else round(total, 2),
+            "rel_error_pct": None if total is None or not nav else round((total / nav - 1) * 100, 4), "legs": legs}
 
 
 def _restate_anchor(row, history, plan: SeriesPlan, done: set[int]) -> None:
@@ -413,35 +510,124 @@ def _restate_anchor(row, history, plan: SeriesPlan, done: set[int]) -> None:
                                            "provisional": bool(row.provisional)}))
 
 
-def _trade_quantities(plan: SeriesPlan, a_agg, b_agg, ctx: _Ctx):
-    """Pick the trade source that reconciles A to B exactly for every leg. Returns
-    ``(source, trades)`` or sets ``plan.skipped`` and returns None."""
+def _ratio_terms(ratio: float) -> Fraction | None:
+    """``ratio`` as a simple fraction (both terms ≤ ``_SPLIT_MAX_TERM``), or None."""
+    if not math.isfinite(ratio) or ratio <= 0:
+        return None
+    frac = Fraction(ratio).limit_denominator(_SPLIT_MAX_TERM)
+    if frac.numerator > _SPLIT_MAX_TERM or min(frac.numerator, frac.denominator) > _SPLIT_MAX_SMALL_TERM \
+            or not _same_qty(float(frac), ratio):
+        return None
+    return frac
+
+
+def _near(x: float, want: float, tol: float = _SPLIT_PRICE_TOLERANCE) -> bool:
+    return want > 0 and abs(x / want - 1) <= tol
+
+
+def _split(k, qa: float, qb: float, a, b, a_agg, b_agg, ctx: _Ctx) -> dict | str:
+    """The split that explains ``qa → qb`` with no trade, or why there is none.
+
+    Never invented: the leg's close series must show it, either as a one-day step of
+    ``1/ratio`` inside ``(A, B]`` (unadjusted series) or as a stored close at A that is
+    A's recorded price divided by the ratio, with B's matching and no step (adjusted)."""
+    if not qa or not qb:
+        return "not held at both ends"
+    ratio = qb / qa
+    frac = _ratio_terms(ratio)
+    if frac is None:
+        return f"quantity ratio {ratio:.6g} is not a simple split ratio"
+    if abs(math.log(ratio)) < _SPLIT_MIN_MOVE:
+        return f"quantity ratio {ratio:.6g} is too small to tell from a day's price move"
+    terms = f"{frac.numerator}:{frac.denominator}"
+    recorded = sorted((ctx.corporate or {}).get("splits", {}).get(k[0], []))
+    if recorded and not any(_same_qty(r, ratio) for _d, r in recorded):
+        return f"recorded split ratio {recorded[0][1]:g} does not match the quantity ratio {terms}"
+    series = ctx.history.get(k[0]) or []
+    bar_a, bar_b = _asof(series, a.snap_date), _asof(series, b.snap_date)
+    a_px, b_px = a_agg[k]["price"], b_agg[k]["price"]
+    if bar_a is None or bar_b is None or not bar_a.close or not a_px or not b_px:
+        return "no close history (or recorded price) at A and B to confirm a split"
+    steps = []
+    for i, bar in enumerate(series):
+        if i and a.snap_date < bar.bar_date <= b.snap_date and series[i - 1].close:
+            if _near(bar.close / series[i - 1].close, 1 / ratio):
+                steps.append(bar.bar_date)
+    note = {"kind": "split", "ticker": k[0], "ratio": ratio, "terms": terms, "a_qty": qa, "b_qty": qb,
+            "recorded_date": recorded[0][0].isoformat() if recorded else None}
+    if len(steps) == 1 and _near(a_px, bar_a.close):
+        return {**note, "date": steps[0].isoformat(), "basis": "unadjusted", "step": steps[0]}
+    if not steps and _near(a_px, bar_a.close * ratio) and _near(b_px, bar_b.close):
+        # Valued at b_qty × the adjusted close every day: the same NAV whatever the date.
+        return {**note, "date": note["recorded_date"], "basis": "adjusted", "step": None}
+    if len(steps) > 1:
+        return f"{len(steps)} sessions step by 1/{terms}; the split date is ambiguous"
+    return f"no close-to-close step of 1/{terms} inside the gap (and the closes are not split-adjusted)"
+
+
+def _drip(k, qa: float, qb: float, a, ctx: _Ctx) -> dict | str:
+    """A small reinvested dividend explaining ``qa → qb`` with no trade, or why not."""
+    if not qa or qb <= qa:
+        return "not an increase"
+    frac = (qb - qa) / qa
+    if frac > _DRIP_MAX_FRACTION:
+        return f"increase of {frac:.2%} exceeds the {_DRIP_MAX_FRACTION:.0%} reinvestment bound"
+    recorded = sorted((ctx.corporate or {}).get("dividends", {}).get(k[0], []))
+    step = recorded[-1] if recorded else a.snap_date + timedelta(days=1)
+    return {"kind": "drip", "ticker": k[0], "a_qty": qa, "b_qty": qb, "fraction": frac,
+            "date": step.isoformat(), "date_source": "ledger-dividend" if recorded else "first-day-after-A",
+            "step": step}
+
+
+def _reconcile(keys, a_agg, b_agg, trades, by_ticker, a, b, ctx: _Ctx):
+    """``(adjustments, mismatches)`` for one trade source: every leg must close A + trades =
+    B exactly, or (under trade_aware, with no trade in that leg) by a split or a DRIP."""
+    net: dict = defaultdict(float)
+    traded: set = set()
+    for _d, ticker, q in trades:
+        ks = by_ticker.get(ticker) or []
+        if len(ks) != 1:
+            return [], [{"ticker": ticker, "reason": "traded leg held at neither end" if not ks else "ambiguous currency"}]
+        net[ks[0]] += q
+        traded.add(ks[0])
+    adjustments, mismatches = [], []
+    for k in sorted(keys):
+        qa = a_agg[k]["qty"] if k in a_agg else 0.0
+        qb = b_agg[k]["qty"] if k in b_agg else 0.0
+        if _same_qty(qa + net[k], qb):
+            continue
+        miss = {"ticker": k[0], "a_qty": qa, "traded": net[k], "b_qty": qb}
+        if k in traded:
+            mismatches.append(miss)
+            continue
+        found = _split(k, qa, qb, a, b, a_agg, b_agg, ctx)
+        if isinstance(found, str):
+            why_split = found
+            found = _drip(k, qa, qb, a, ctx)
+            if isinstance(found, str):
+                mismatches.append({**miss, "not_split": why_split, "not_drip": found})
+                continue
+        adjustments.append((k, found))
+    return adjustments, mismatches
+
+
+def _trade_quantities(plan: SeriesPlan, a, b, a_agg, b_agg, ctx: _Ctx):
+    """Pick the trade source that reconciles A to B exactly for every leg (a leg with no
+    trade may be closed by a split or a DRIP). Returns ``(source, trades, adjustments)`` or
+    sets ``plan.skipped`` and returns None."""
     keys = set(a_agg) | set(b_agg)
     by_ticker: dict[str, list] = defaultdict(list)
     for k in keys:
         by_ticker[k[0]].append(k)
     tried = []
-    for source, trades in (ctx.trades or {}).items():
-        if not trades:
-            continue
-        net: dict = defaultdict(float)
-        bad = None
-        for _d, ticker, q in trades:
-            ks = by_ticker.get(ticker) or []
-            if len(ks) != 1:
-                bad = {"ticker": ticker, "reason": "traded leg held at neither end" if not ks else "ambiguous currency"}
-                break
-            net[ks[0]] += q
-        mismatches = [] if bad is None else [bad]
-        if bad is None:
-            for k in sorted(keys):
-                qa = a_agg[k]["qty"] if k in a_agg else 0.0
-                qb = b_agg[k]["qty"] if k in b_agg else 0.0
-                if not _same_qty(qa + net[k], qb):
-                    mismatches.append({"ticker": k[0], "a_qty": qa, "traded": net[k], "b_qty": qb})
-        if not mismatches:
-            return source, [(d, by_ticker[t][0], q) for d, t, q in trades]
-        tried.append({"source": source, "mismatches": mismatches})
+    sources = [(src, t) for src, t in (ctx.trades or {}).items() if t]
+    # No trade at all: the corporate events alone may still close every leg.
+    for source, trades in [*sources, ("none", [])]:
+        adjustments, mismatches = _reconcile(keys, a_agg, b_agg, trades, by_ticker, a, b, ctx)
+        if not mismatches and (trades or adjustments):
+            return source, [(d, by_ticker[t][0], q) for d, t, q in trades], adjustments
+        if trades or not sources:
+            tried.append({"source": source, "mismatches": mismatches})
     plan.notes.append({"kind": "trade-sources", "tried": tried})
     plan.skipped = "no trade record (ledger or lots) reconciles A to B for every leg"
     return None
@@ -511,6 +697,8 @@ def _plan_series_core(plan: SeriesPlan, a, b, ctx: _Ctx) -> None:
     a_agg, b_agg = _aggregate(a_legs), _aggregate(b_legs)
     same = set(a_agg) == set(b_agg) and all(_same_qty(a_agg[k]["qty"], bl["qty"]) for k, bl in b_agg.items())
     trades: list[tuple[date, tuple, float]] = []
+    adjustments: list[tuple[tuple, dict]] = []
+    aware = False
     if same or not opts.trade_aware:
         if set(a_agg) != set(b_agg):
             plan.skipped = "holdings differ across the gap"
@@ -521,30 +709,41 @@ def _plan_series_core(plan: SeriesPlan, a, b, ctx: _Ctx) -> None:
                 return
         refs = b_agg
     else:
-        picked = _trade_quantities(plan, a_agg, b_agg, ctx)
+        picked = _trade_quantities(plan, a, b, a_agg, b_agg, ctx)
         if picked is None:
             return
-        source, trades = picked
-        plan.method = "trade-aware"
+        source, trades, adjustments = picked
+        aware = True
+        plan.method = "trade-aware" + "".join(sorted({f"+{adj['kind']}" for _k, adj in adjustments}))
         plan.notes.append({"kind": "trade-source", "source": source,
                            "trades": [{"date": d.isoformat(), "ticker": k[0], "qty": q} for d, k, q in trades]})
+        plan.notes.extend({x: v for x, v in adj.items() if x != "step"} for _k, adj in adjustments)
         refs = {}
         for k in list(b_agg) + [k for k in a_agg if k not in b_agg]:
             bl = b_agg.get(k)
             refs[k] = bl if bl is not None and bl["qty"] and bl["value"] else a_agg[k]
+
+    def corporate(d: date, q: dict) -> dict:
+        # A split on an adjusted series is valued in post-split shares on every day; an
+        # unadjusted split or a DRIP steps a_qty -> b_qty on its day. Neither is a flow.
+        for k, adj in adjustments:
+            q[k] = adj["b_qty"] if adj["step"] is None or adj["step"] <= d else adj["a_qty"]
+        return q
 
     def qty_on(d: date) -> dict:
         q = {k: (a_agg[k]["qty"] if k in a_agg else 0.0) for k in refs}
         for td, k, dq in trades:
             if td <= d:
                 q[k] += dq
-        return q
+        return corporate(d, q)
 
     valuer = _Valuer(a, b, a_agg, b_agg, refs, ctx.history, ctx.fx_hist, opts)
-    errors = []
+    errors, scales = [], []
     for snap, anchor in ((a, "A"), (b, "B")):
-        qty = {k: v["qty"] for k, v in (a_agg if anchor == "A" else b_agg).items()} if trades \
+        qty = {k: v["qty"] for k, v in (a_agg if anchor == "A" else b_agg).items()} if aware \
             else {k: v["qty"] for k, v in b_agg.items()}
+        if aware:
+            qty = corporate(snap.snap_date, qty)
         got = valuer.value_on(snap.snap_date, qty, anchor=anchor)
         if got is None:
             plan.skipped = f"cannot re-price the {snap.snap_date.isoformat()} snapshot (missing close or FX)"
@@ -554,17 +753,31 @@ def _plan_series_core(plan: SeriesPlan, a, b, ctx: _Ctx) -> None:
             plan.skipped = f"the {snap.snap_date.isoformat()} snapshot has zero NAV"
             return
         errors.append(abs(got[0] - nav) / nav)
+        scales.append(nav / got[0] if got[0] else float("inf"))
     plan.self_check = max(errors)
+    scale_of = None
     if plan.self_check > _SELF_CHECK_TOLERANCE:
-        plan.skipped = "pricing method does not reproduce the bracketing snapshots' recorded NAV"
-        return
+        if opts.anchor != "proportional" or plan.self_check > _ANCHOR_MAX_ERROR:
+            plan.skipped = "pricing method does not reproduce the bracketing snapshots' recorded NAV"
+            if opts.anchor == "proportional":
+                plan.skipped += f" (and an end is off by more than the {_ANCHOR_MAX_ERROR:.0%} anchoring bound)"
+            return
+        span = (b.snap_date - a.snap_date).days
+
+        def scale_of(d: date) -> float:
+            return scales[0] + (scales[1] - scales[0]) * (d - a.snap_date).days / span
+
+        plan.notes.append({"kind": "anchor", "method": "proportional", "error_a": errors[0], "error_b": errors[1],
+                           "scale_a": scales[0], "scale_b": scales[1]})
     plan.cost_basis = float(a.cost_basis or 0.0)
     spy = ctx.history.get("SPY")
     for d in plan.missing:
-        got = valuer.value_on(d, qty_on(d) if trades else {k: v["qty"] for k, v in b_agg.items()})
+        got = valuer.value_on(d, qty_on(d) if aware else {k: v["qty"] for k, v in b_agg.items()})
         if got is None:
             _fail(plan, f"no close for a held leg on {d.isoformat()}")
             return
+        if scale_of is not None:
+            got = _scaled(got, d, scale_of(d))
         plan.points[d], plan.legs[d], est = got
         plan.estimated_legs.extend(est)
         bar = _asof(spy, d)
@@ -579,8 +792,18 @@ def _plan_series_core(plan: SeriesPlan, a, b, ctx: _Ctx) -> None:
             return
     if plan.estimated_legs:
         plan.method += "+" + "+".join(sorted({e["how"] for e in plan.estimated_legs}))
-    if trades:
-        _trade_flows(plan, a, b, {d for d, _k, _q in trades}, ctx.flow_of)
+    if aware:
+        steps = {adj["step"] for _k, adj in adjustments if adj["step"] is not None}
+        _trade_flows(plan, a, b, {d for d, _k, _q in trades} | steps, ctx.flow_of)
+
+
+def _scaled(got, d: date, f: float):
+    """One repriced day scaled by the proportional anchor ``f`` (metron-ops-I361 D3)."""
+    total, legs, estimated = got
+    legs = [{**leg, "value": leg["value"] * f, "anchor_scale": f} for leg in legs]
+    estimated = [*estimated, {"ticker": None, "date": d.isoformat(), "how": "anchor", "value": total * (f - 1),
+                              "price_date": None, "proxy": None, "scale": f}]
+    return total * f, legs, estimated
 
 
 def _trade_flows(plan: SeriesPlan, a, b, trade_days: set[date], flow_of) -> None:
@@ -722,6 +945,28 @@ def _trade_records(session: Session, plan: SeriesPlan, a, b) -> dict[str, list[t
     return {"ledger": sorted(ledger, key=key), "lots": sorted(lots, key=key)}
 
 
+def _corporate_records(session: Session, plan: SeriesPlan, a, b) -> dict:
+    """Recorded SPLITs (ratio) and DIVIDENDs per ticker in ``(A, B]`` for this series."""
+    if plan.account_id is not None:
+        accounts = [plan.account_id]
+    else:
+        accounts = list(session.scalars(select(models.Account.id).where(
+            models.Account.tenant_id == plan.tenant_id, models.Account.portfolio_id == plan.portfolio_id)))
+    txn = models.Transaction
+    out: dict = {"splits": defaultdict(list), "dividends": defaultdict(list)}
+    for d, t, q, sym in session.execute(
+        select(txn.trade_date, txn.txn_type, txn.quantity, models.Security.symbol)
+        .join(models.Security, txn.security_id == models.Security.id)
+        .where(txn.tenant_id == plan.tenant_id, txn.account_id.in_(accounts), txn.trade_date > a.snap_date,
+               txn.trade_date <= b.snap_date, txn.txn_type.in_([TxnType.SPLIT.value, TxnType.DIVIDEND.value]))
+    ).all():
+        if t == TxnType.SPLIT.value:
+            out["splits"][sym].append((d, float(q)))
+        else:
+            out["dividends"][sym].append(d)
+    return out
+
+
 def _flow_reader(session: Session, plan: SeriesPlan) -> Callable[[date, date], float]:
     """The live writer's own flow definition for this series, over ``(after, through]``."""
     if plan.account_id is not None:
@@ -778,7 +1023,7 @@ def plan_gap(
 
     # Account rows bracketing each portfolio gap, for --portfolio-from-accounts.
     acct_rows: dict[uuid.UUID, list] = {}
-    if opts.portfolio_from_accounts:
+    if opts.portfolio_from_accounts or opts.explain:
         for plan, a, b in plans:
             if plan.grain == "portfolio" and a is not None and b is not None:
                 acct_rows[plan.portfolio_id] = list(session.scalars(
@@ -790,7 +1035,8 @@ def plan_gap(
                     )
                 ).all())
     anchors = [snap for _p, a, b in plans for snap in (a, b) if snap is not None]
-    anchors += [r for rows in acct_rows.values() for r in rows]
+    if opts.portfolio_from_accounts:
+        anchors += [r for rows in acct_rows.values() for r in rows]
 
     tickers = sorted({"SPY"} | set(opts.proxy_bridge.values()) | {
         leg["ticker"]
@@ -807,13 +1053,15 @@ def plan_gap(
         session, tickers, start_date=start - timedelta(days=_HISTORY_LOOKBACK_DAYS), end_date=last_b
     ) if tickers else {}
     fx_hist = fx_service.rate_history(session, ccys)
+    if opts.leg_prices:
+        _check_leg_prices(opts, plans, history)
 
     if opts.restate_anchors:
         done: set[int] = set()
         for plan, a, b in plans:
             for row in (a, b):
                 _restate_anchor(row, history, plan, done)
-            if plan.grain == "portfolio" and a is not None and b is not None:
+            if plan.grain == "portfolio" and a is not None and b is not None and opts.portfolio_from_accounts:
                 for row in acct_rows.get(plan.portfolio_id, []):
                     if row.snap_date in (a.snap_date, b.snap_date):
                         _restate_anchor(row, history, plan, done)
@@ -830,9 +1078,49 @@ def plan_gap(
             continue
         if opts.trade_aware and a is not None and b is not None:
             ctx.trades = _trade_records(session, plan, a, b)
+            ctx.corporate = _corporate_records(session, plan, a, b)
             ctx.flow_of = _flow_reader(session, plan)
         _plan_series(plan, a, b, history, fx_hist, ctx)
+    if opts.explain:
+        for plan, a, b in plans:
+            if plan.grain == "portfolio" and plan.skipped and a is not None and b is not None:
+                if plan.explain is None:
+                    plan.explain = _explain(plan, a, b, {}, {}, _Ctx(history, fx_hist, opts))
+                plan.explain["account_sum"] = _account_sum(a, b, acct_rows.get(plan.portfolio_id, []))
     return [p for p, _a, _b in plans]
+
+
+def _account_sum(a, b, acct_rows: list) -> list[dict]:
+    """``--explain`` for a portfolio: Σ its accounts' NAVs vs its own row, at A and at B."""
+    out = []
+    for snap in (a, b):
+        navs = sorted((str(r.account_id), float(r.nav)) for r in acct_rows if r.snap_date == snap.snap_date)
+        total, nav = sum(v for _i, v in navs), float(snap.nav)
+        out.append({"date": snap.snap_date.isoformat(), "portfolio_nav": round(nav, 2),
+                    "account_sum": round(total, 2), "diff": round(total - nav, 2),
+                    "rel_diff_pct": round((total / nav - 1) * 100, 4) if nav else None,
+                    "accounts": [{"account_id": i, "nav": round(v, 2)} for i, v in navs]})
+    return out
+
+
+def _check_leg_prices(opts: Options, plans, history) -> None:
+    """Every ``leg_prices`` ticker must be held by a planned series, and priced on every US
+    session inside each gap where it is held — or the run fails, naming what is missing."""
+    sessions = {p.bar_date for p in history.get("SPY") or []}
+    held = set()
+    for plan, a, b in plans:
+        if a is None or b is None:
+            continue
+        tickers = {leg["ticker"] for snap in (a, b) for leg in (snap.composition or {}).get("legs") or []}
+        for ticker in tickers & set(opts.leg_prices):
+            held.add(ticker)
+            lacking = [d for d in plan.missing if d in sessions and d not in opts.leg_prices[ticker]]
+            if lacking:
+                raise LegPricesError(f"--leg-prices has no price for {ticker} on "
+                                     f"{', '.join(d.isoformat() for d in lacking)} (US sessions in the gap)")
+    unused = sorted(set(opts.leg_prices) - held)
+    if unused:
+        raise LegPricesError(f"--leg-prices names tickers no gapped series holds: {', '.join(unused)}")
 
 
 def apply_plan(session: Session, plans: list[SeriesPlan], *, options: Options | None = None) -> int:

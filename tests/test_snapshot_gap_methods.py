@@ -543,3 +543,333 @@ def test_cli_default_output_is_unchanged(db_session, session_factory, monkeypatc
     assert maintenance.main([*CLI_GAP, "--apply"]) == 0
     assert all(set(r.composition["backfill"]) == {"by", "at"}
                for r in rows(session_factory(), models.NavSnapshot) if "backfill" in (r.composition or {}))
+
+
+# --- trade-aware: splits ---------------------------------------------------------------
+
+SPLIT_DAY = date(2026, 10, 8)
+CCC_RAW = {d: (200.0 + d.day) / (5 if d >= SPLIT_DAY else 1) for d in SESSIONS}   # unadjusted, steps 1/5
+CCC_ADJ = {d: (200.0 + d.day) / 5 for d in SESSIONS}                              # back-adjusted
+
+
+def _split_world(session, stored, *, b_qty=50, recorded=None, extra=()):
+    w = World(session, {"CCC": stored, **dict(extra)})
+    acct = w.account()
+    raw_a, raw_b = 200.0 + A_DAY.day, (200.0 + B_DAY.day) / 5  # what the live writer recorded
+    w.snap(A_DAY, [leg("CCC", 10, raw_a)], account=acct)
+    w.snap(B_DAY, [leg("CCC", b_qty, raw_b)], account=acct)
+    if recorded is not None:
+        w.txn(acct, "CCC", "SPLIT", recorded[1], 0.0, recorded[0])
+    w.commit()
+    return w, acct
+
+
+def _held(d):  # what the account actually held, at each day's raw close
+    return (10 if d < SPLIT_DAY else 50) * asof(CCC_RAW, d)
+
+
+def test_split_on_an_unadjusted_series_steps_on_the_jump_day_with_no_flow(db_session):
+    _split_world(db_session, CCC_RAW)
+    assert one(plan(db_session)).skipped == "quantity of CCC changed inside the gap"  # default unchanged
+    p = one(plan(db_session, trade_aware=True))
+    assert p.skipped is None and p.method == "trade-aware+split" and not p.estimated
+    assert p.points == {d: pytest.approx(_held(d)) for d in GAP_DAYS}
+    assert [x["qty"] for x in p.legs[date(2026, 10, 7)]] == [10] and [x["qty"] for x in p.legs[SPLIT_DAY]] == [50]
+    assert not any(p.flows.values()) and p.rebase is None
+    note = next(n for n in p.notes if n["kind"] == "split")
+    assert note == {"kind": "split", "ticker": "CCC", "ratio": 5.0, "terms": "5:1", "a_qty": 10, "b_qty": 50,
+                    "recorded_date": None, "date": "2026-10-08", "basis": "unadjusted"}
+
+
+def test_split_on_a_split_adjusted_series_values_the_same_navs(db_session):
+    _split_world(db_session, CCC_ADJ)
+    p = one(plan(db_session, trade_aware=True))
+    assert p.skipped is None and p.method == "trade-aware+split" and p.self_check == pytest.approx(0.0)
+    # b_qty × the adjusted close IS a_qty × the raw close before the split: same NAV every day.
+    assert p.points == {d: pytest.approx(_held(d)) for d in GAP_DAYS}
+    assert all(x["qty"] == 50 for d in GAP_DAYS for x in p.legs[d])
+    note = next(n for n in p.notes if n["kind"] == "split")
+    assert note["basis"] == "adjusted" and note["date"] is None and note["ratio"] == 5.0
+
+
+def test_a_recorded_split_supplies_the_date_and_must_agree_on_the_ratio(db_session):
+    w, _acct = _split_world(db_session, CCC_ADJ, recorded=(SPLIT_DAY, 5.0))
+    note = next(n for n in one(plan(db_session, trade_aware=True)).notes if n["kind"] == "split")
+    assert note["date"] == note["recorded_date"] == "2026-10-08" and note["basis"] == "adjusted"
+    db_session.query(models.Transaction).update({"quantity": 2.0})
+    db_session.commit()
+    p = one(plan(db_session, trade_aware=True))
+    assert p.skipped == "no trade record (ledger or lots) reconciles A to B for every leg"
+    miss = p.notes[0]["tried"][0]["mismatches"][0]
+    assert miss["not_split"] == "recorded split ratio 2 does not match the quantity ratio 5:1"
+
+
+@pytest.mark.parametrize("stored, b_qty, why", [
+    # No jump anywhere and A's stored close is A's recorded price: nothing proves a split.
+    ({d: 200.0 + d.day for d in SESSIONS}, 50, "no close-to-close step of 1/5:1 inside the gap"),
+    # A one-day step that is not 1/5 (a -10% day) is not a 5:1 split.
+    ({d: (200.0 + d.day) * (0.9 if d >= SPLIT_DAY else 1) for d in SESSIONS}, 50, "no close-to-close step"),
+    # Two days both step by 1/2: the date is ambiguous.
+    ({d: (200.0 + d.day) / (4 if d >= SPLIT_DAY else 2 if d >= date(2026, 10, 7) else 1) for d in SESSIONS}, 20,
+     "2 sessions step by 1/2:1"),
+    (CCC_RAW, 47.7, "quantity ratio 4.77 is not a simple split ratio"),
+    (CCC_RAW, 11, "quantity ratio 1.1 is too small to tell from a day's price move"),
+])
+def test_a_split_is_never_invented_without_matching_price_evidence(db_session, stored, b_qty, why):
+    _split_world(db_session, stored, b_qty=b_qty)
+    p = one(plan(db_session, trade_aware=True))
+    assert p.skipped == "no trade record (ledger or lots) reconciles A to B for every leg" and not p.points
+    (tried,) = next(n for n in p.notes if n["kind"] == "trade-sources")["tried"]
+    assert tried["source"] == "none" and tried["mismatches"][0]["not_split"].startswith(why)
+
+
+def test_a_split_without_close_history_is_refused(db_session):
+    w = World(db_session)
+    acct = w.account()
+    w.snap(A_DAY, [leg("PRIV1", 10, 100.0)], account=acct)
+    w.snap(B_DAY, [leg("PRIV1", 50, 20.0)], account=acct)
+    w.commit()
+    miss = one(plan(db_session, trade_aware=True)).notes[0]["tried"][0]["mismatches"][0]
+    assert miss["not_split"].startswith("no close history") and miss["not_drip"].startswith("increase of 400.00%")
+    assert _split_reason(0, 1) == "not held at both ends"
+
+
+def _split_reason(qa, qb):
+    return snapshot_gap._split(("X", "USD"), qa, qb, None, None, {}, {}, None)
+
+
+def test_a_split_next_to_lot_trades_reconciles_from_the_same_source(db_session):
+    w, acct = _funded_from_cash_leg(db_session)  # AAA bought from cash, on the lots only
+    w.bars("CCC", CCC_RAW)
+    for row in rows(db_session):
+        raw = CCC_RAW[row.snap_date]
+        qty = 10 if row.snap_date == A_DAY else 50
+        row.composition = {**row.composition, "legs": [*row.composition["legs"], leg("CCC", qty, raw)]}
+        row.nav = float(row.nav) + qty * raw
+    w.commit()
+    p = one(plan(db_session, trade_aware=True))
+    assert p.skipped is None and p.method == "trade-aware+split"
+    assert next(n for n in p.notes if n["kind"] == "trade-source")["source"] == "lots"
+    d = date(2026, 10, 7)
+    assert p.points[d] == pytest.approx(10 * AAA[d] + 2000 + 10 * CCC_RAW[d])
+    assert p.points[SPLIT_DAY] == pytest.approx(15 * AAA[SPLIT_DAY] + 1460 + 50 * CCC_RAW[SPLIT_DAY])
+
+
+# --- trade-aware: dividend reinvestment ------------------------------------------------
+
+
+def _drip_world(session, b_qty=20.002, dividend_on=None):
+    w = World(session, {"AAA": AAA, "BBB": BBB})
+    acct = w.account()
+    w.snap(A_DAY, [leg("AAA", 20.0, AAA[A_DAY]), leg("BBB", 5, BBB[A_DAY])], account=acct)
+    w.snap(B_DAY, [leg("AAA", b_qty, AAA[B_DAY]), leg("BBB", 5, BBB[B_DAY])], account=acct)
+    if dividend_on:
+        w.txn(acct, "AAA", "DIVIDEND", 0, 1.2, dividend_on)
+    w.commit()
+    return w
+
+
+def test_drip_without_a_recorded_dividend_steps_on_the_first_day_after_a(db_session):
+    _drip_world(db_session)
+    p = one(plan(db_session, trade_aware=True))
+    assert p.skipped is None and p.method == "trade-aware+drip"
+    assert p.points == {d: pytest.approx(20.002 * asof(AAA, d) + 5 * asof(BBB, d)) for d in GAP_DAYS}
+    assert not any(p.flows.values()) and p.rebase is None  # the dividend is return, not a flow
+    note = next(n for n in p.notes if n["kind"] == "drip")
+    assert note["date"] == "2026-10-06" and note["date_source"] == "first-day-after-A"
+    assert note["fraction"] == pytest.approx(0.002 / 20.0)
+
+
+def test_drip_steps_on_the_recorded_dividend(db_session):
+    _drip_world(db_session, dividend_on=FRI)
+    p = one(plan(db_session, trade_aware=True))
+    for d in GAP_DAYS:
+        assert p.points[d] == pytest.approx((20.0 if d < FRI else 20.002) * asof(AAA, d) + 5 * asof(BBB, d))
+    note = next(n for n in p.notes if n["kind"] == "drip")
+    assert note["date"] == FRI.isoformat() and note["date_source"] == "ledger-dividend"
+
+
+@pytest.mark.parametrize("b_qty, why", [(20.5, "increase of 2.50% exceeds"), (19.9, "not an increase")])
+def test_drip_is_bounded_to_a_small_increase(db_session, b_qty, why):
+    _drip_world(db_session, b_qty=b_qty)
+    p = one(plan(db_session, trade_aware=True))
+    assert p.skipped and p.notes[0]["tried"][0]["mismatches"][0]["not_drip"].startswith(why)
+
+
+# --- proportional anchoring ------------------------------------------------------------
+
+
+def _off_by(session, b_error):
+    w = World(session, {"AAA": AAA})
+    acct = w.account()
+    w.snap(A_DAY, [leg("AAA", 10, AAA[A_DAY])], account=acct)
+    w.snap(B_DAY, [leg("AAA", 10, AAA[B_DAY])], account=acct, nav=10 * AAA[B_DAY] * (1 + b_error))
+    w.commit()
+
+
+def test_proportional_anchor_blends_the_end_scales_linearly_in_time(db_session):
+    _off_by(db_session, 0.01)
+    assert one(plan(db_session)).skipped.startswith("pricing method does not reproduce")  # default unchanged
+    opts = Options(anchor="proportional")
+    plans = snapshot_gap.plan_gap(db_session, start=GAP[0], end=GAP[1], options=opts)
+    p = one(plans)
+    assert p.skipped is None and p.method == "reprice+anchor" and p.estimated
+    assert p.self_check == pytest.approx(0.01 / 1.01)
+    for d in GAP_DAYS:
+        f = 1 + 0.01 * (d - A_DAY).days / (B_DAY - A_DAY).days
+        assert p.points[d] == pytest.approx(10 * asof(AAA, d) * f)
+        assert p.legs[d][0]["anchor_scale"] == pytest.approx(f)
+    note = next(n for n in p.notes if n["kind"] == "anchor")
+    assert note["scale_a"] == pytest.approx(1.0) and note["scale_b"] == pytest.approx(1.01)
+    assert snapshot_gap.apply_plan(db_session, plans, options=opts) == 7
+    meta = rows(db_session)[1].composition["backfill"]
+    assert meta["method"] == "reprice+anchor" and meta["estimated"] is True
+    assert meta["estimated_legs"][0]["how"] == "anchor"
+
+
+def test_proportional_anchor_refuses_an_end_off_by_more_than_two_percent(db_session):
+    _off_by(db_session, 0.03)
+    p = one(plan(db_session, anchor="proportional"))
+    assert p.skipped.endswith("(and an end is off by more than the 2% anchoring bound)") and not p.points
+
+
+# --- operator-supplied leg prices ------------------------------------------------------
+
+
+def _priv_prices(skip=()):
+    return {d: 100.0 + 0.5 * i for i, d in enumerate(SESSIONS) if d not in skip}
+
+
+def test_leg_prices_price_a_broker_priced_leg_from_the_operator_file(db_session):
+    _broker_priced(db_session)
+    supplied = _priv_prices()
+    p = one(plan(db_session, leg_prices={"PRIV1": supplied}))
+    assert p.skipped is None and p.method == "reprice+operator-price" and p.estimated
+    for d in GAP_DAYS:
+        assert p.points[d] == pytest.approx(100 * asof(AAA, d) + 10 * asof(supplied, d))
+    assert {e["ticker"] for e in p.estimated_legs} == {"PRIV1"} and len(p.estimated_legs) == 7
+
+
+def test_leg_prices_fall_back_to_the_recorded_price_at_the_ends_and_before_any_supplied_day(db_session):
+    _broker_priced(db_session)
+    supplied = {d: 101.0 for d in SESSIONS if GAP[0] <= d <= GAP[1]}
+    p = one(plan(db_session, leg_prices={"PRIV1": supplied}))
+    # The ends had no supplied price and kept the recorded 100 / 104: the self-check is exact.
+    assert p.skipped is None and p.self_check == pytest.approx(0.0)
+    assert p.points[GAP[0]] == pytest.approx(100 * AAA[GAP[0]] + 10 * 101.0)
+
+
+def test_leg_prices_missing_a_session_fails_loudly(db_session):
+    _broker_priced(db_session)
+    with pytest.raises(snapshot_gap.LegPricesError, match="no price for PRIV1 on 2026-10-08"):
+        plan(db_session, leg_prices={"PRIV1": _priv_prices(skip={date(2026, 10, 8)})})
+    with pytest.raises(snapshot_gap.LegPricesError, match="no gapped series holds: NOPE"):
+        plan(db_session, leg_prices={"PRIV1": _priv_prices(), "NOPE": {A_DAY: 1.0}})
+
+
+def test_operator_price_guards_inside_the_valuer(db_session):
+    _broker_priced(db_session)
+    a, b = rows(db_session)
+    a_agg = snapshot_gap._aggregate(a.composition["legs"])
+    b_agg = snapshot_gap._aggregate(b.composition["legs"])
+    hist = {"SPY": [snapshot_gap.price_service.ClosePoint(bar_date=d, close=1.0) for d in SESSIONS]}
+    opts = Options(leg_prices={"PRIV1": {date(2026, 10, 9): 103.0}, "GONE": {}})
+    v = snapshot_gap._Valuer(a, b, a_agg, b_agg, b_agg, hist, None, opts)
+    k = ("PRIV1", "USD")
+    assert v._operator_price(k, date(2026, 10, 10), None) == (103.0, date(2026, 10, 9), "operator-price")
+    assert v._operator_price(k, date(2026, 10, 4), None) == (100.0, None, "operator-price")  # before any
+    assert v._operator_price(k, A_DAY, "A") == (100.0, None, None)
+    assert v._operator_price(("GONE", "USD"), A_DAY, "A") == 2
+    assert v._operator_price(("GONE", "USD"), date(2026, 10, 11), None) == 2
+    with pytest.raises(snapshot_gap.LegPricesError):
+        v._operator_price(k, date(2026, 10, 8), None)
+
+
+# --- explain: account sums and the per-leg reprice residual -----------------------------
+
+
+def test_explain_shows_how_far_the_accounts_are_from_the_portfolio(db_session):
+    _w, one_, _two = _household(db_session, second_account_gapped=False)
+    a_row = db_session.scalars(select(models.AccountNavSnapshot).where(
+        models.AccountNavSnapshot.account_id == one_.id, models.AccountNavSnapshot.snap_date == B_DAY)).one()
+    a_row.nav = float(a_row.nav) - 50.0
+    db_session.commit()
+    p = one(plan(db_session, portfolio_from_accounts=True, explain=True), "portfolio")
+    assert p.skipped == "the accounts do not sum to the portfolio on 2026-10-13"
+    at_a, at_b = p.explain["account_sum"]
+    assert at_a["diff"] == 0.0 and at_a["rel_diff_pct"] == 0.0 and len(at_a["accounts"]) == 2
+    assert at_b["date"] == "2026-10-13" and at_b["diff"] == -50.0
+    assert at_b["rel_diff_pct"] == pytest.approx(round(-50.0 / _sum(B_DAY) * 100, 4))
+    # Without --explain nothing extra is computed or reported.
+    assert one(plan(db_session, portfolio_from_accounts=True), "portfolio").explain is None
+
+
+def test_explain_locates_a_self_check_residual_leg_by_leg(db_session):
+    _stuck_provisional_anchor(db_session)
+    p = one(plan(db_session, explain=True))
+    assert p.skipped.startswith("pricing method does not reproduce")
+    at_a, at_b = p.explain["reprice"]
+    assert at_a["anchor"] == "A" and at_a["recorded_nav"] == 5250.0
+    worst = at_a["legs"][0]
+    assert worst["ticker"] == "FUND1" and worst["recorded_value"] == 4200.0
+    assert worst["repriced_value"] == pytest.approx(4500.0) and worst["diff"] == pytest.approx(300.0)
+    assert worst["diff_pct_of_nav"] == pytest.approx(round(300 / 5250 * 100, 4))
+    assert at_a["rel_error_pct"] == pytest.approx(round(300 / 5250 * 100, 4))
+    assert at_b["rel_error_pct"] == 0.0 and all(x["diff"] == 0.0 for x in at_b["legs"])
+
+
+def test_explain_reprice_detail_reports_a_leg_it_cannot_price(db_session):
+    _broker_priced(db_session)
+    a, _b = rows(db_session)
+    agg = snapshot_gap._aggregate(a.composition["legs"])
+    hist = {"AAA": [snapshot_gap.price_service.ClosePoint(bar_date=d, close=c) for d, c in AAA.items()]}
+
+    class NoFx:
+        @staticmethod
+        def rate_as_of(_ccy, _d):
+            return None
+
+    v = snapshot_gap._Valuer(a, _b, agg, agg, agg, hist, NoFx, Options())
+    out = snapshot_gap._reprice_detail(a, "A", agg, v)
+    assert out["repriced_nav"] is None and out["rel_error_pct"] is None
+    assert all(x["repriced_value"] is None and x["diff"] is None for x in out["legs"])
+
+
+# --- CLI: the new options --------------------------------------------------------------
+
+
+def test_cli_parses_anchor_and_leg_prices(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(maintenance, "_backfill_snapshot_gap", lambda s, e, **kw: seen.update(kw) or 0)
+    f = tmp_path / "p.csv"
+    f.write_text("ticker,date,price\nPRIV1,2026-10-06,101.5\n\nPRIV1,2026-10-07, 102\n")
+    assert maintenance.main([*CLI_GAP, "--anchor", "proportional", "--leg-prices", str(f)]) == 0
+    assert seen["options"] == Options(anchor="proportional",
+                                      leg_prices={"PRIV1": {date(2026, 10, 6): 101.5, date(2026, 10, 7): 102.0}})
+
+
+@pytest.mark.parametrize("body", ["PRIV1,2026-10-06\n", "PRIV1,not-a-date,1\n", "PRIV1,2026-10-06,-1\n",
+                                  "PRIV1,2026-10-06,1\nPRIV1,2026-10-06,2\n", "ticker,date,price\n", None])
+def test_cli_rejects_a_malformed_leg_prices_file(tmp_path, body):
+    f = tmp_path / "p.csv"
+    if body is not None:
+        f.write_text(body)
+    with pytest.raises(SystemExit):
+        maintenance.main([*CLI_GAP, "--leg-prices", str(f)])
+
+
+def test_cli_leg_prices_missing_a_day_exits_two(db_session, session_factory, monkeypatch, tmp_path):
+    _broker_priced(db_session)
+    _cli(monkeypatch, session_factory)
+    f = tmp_path / "p.csv"
+    f.write_text("PRIV1,2026-10-06,101\n")
+    assert maintenance.main([*CLI_GAP, "--leg-prices", str(f)]) == 2
+
+
+def test_a_traded_leg_that_does_not_reconcile_is_never_explained_as_a_split_or_drip(db_session):
+    _bought_inside_gap(db_session)
+    db_session.query(models.AccountNavSnapshot).filter_by(snap_date=B_DAY).one().composition = {
+        "schema": 1, "legs": [leg("AAA", 75, AAA[B_DAY])]}  # 5 bought, yet 10 -> 75
+    db_session.commit()
+    miss = one(plan(db_session, trade_aware=True)).notes[0]["tried"][0]["mismatches"][0]
+    assert miss == {"ticker": "AAA", "a_qty": 10, "traded": 5.0, "b_qty": 75}
