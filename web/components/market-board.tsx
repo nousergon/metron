@@ -7,8 +7,9 @@
 // to the existing tearsheet for that ticker.
 //
 // MEASURED 2026-09-14 (metron-ops#295 backfill grade): the rating carries NO predictive
-// edge at 1-20 days (IC ~= -0.017 at 5d). The header states this plainly; nothing here is
-// phrased as a recommendation.
+// edge at 1-20 days (IC ~= -0.017 at 5d). The header carries no fixed IC figure, which would
+// go stale against the measured line beside it; that live line states the track record, and
+// nothing here is phrased as a recommendation.
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
@@ -45,8 +46,7 @@ function TrackRecordLine({ board }: { board: MarketBoard }) {
   const tr = board.track_record;
   return (
     <p className="mt-2 text-xs text-muted">
-      Describes recent price action; graded IC ≈ 0 at 1–20 days (metron-ops#295). Not a forecast, not investment
-      advice.
+      Describes recent price action. Not a forecast, not investment advice.
       {tr && tr.ic_mean != null ? (
         <>
           {" "}
