@@ -346,12 +346,12 @@ def test_cli_dry_run_with_restate_anchors_keeps_nothing(db_session, session_fact
 # --- proxy bridge ---------------------------------------------------------------------
 
 
-def _broker_priced(session, *, priv_qty=10):
+def _broker_priced(session, *, priv_qty=10, b_price=104.0):
     idx = closes(300.0, 2.0)
     w = World(session, {"AAA": AAA, "IDX": idx})
     acct = w.account()
     w.snap(A_DAY, [leg("AAA", 100, AAA[A_DAY]), leg("PRIV1", priv_qty, 100.0)], account=acct)
-    w.snap(B_DAY, [leg("AAA", 100, AAA[B_DAY]), leg("PRIV1", priv_qty, 104.0)], account=acct)
+    w.snap(B_DAY, [leg("AAA", 100, AAA[B_DAY]), leg("PRIV1", priv_qty, b_price)], account=acct)
     w.commit()
     return idx
 
@@ -451,11 +451,56 @@ def test_portfolio_from_accounts_refuses_a_cohort_that_changes_or_does_not_sum(d
     a_row.nav = 1.0
     db_session.commit()
     p = one(plan(db_session, portfolio_from_accounts=True), "portfolio")
-    assert p.skipped == "the accounts do not sum to the portfolio on 2026-10-05"
+    assert p.skipped.startswith("the accounts do not sum to the portfolio on 2026-10-05 (cohort of 2 accounts; ")
     db_session.delete(a_row)
     db_session.commit()
     p = one(plan(db_session, portfolio_from_accounts=True), "portfolio")
     assert p.skipped == "the account cohort differs between the two ends of the gap"
+
+
+def _portfolio_row(session, d):
+    return session.scalars(select(models.NavSnapshot).where(models.NavSnapshot.snap_date == d)).one()
+
+
+def test_a_failed_cohort_identity_states_the_numbers_at_both_ends(db_session):
+    _w, one_, _two = _household(db_session, second_account_gapped=False)
+    b_row = db_session.scalars(select(models.AccountNavSnapshot).where(
+        models.AccountNavSnapshot.account_id == one_.id, models.AccountNavSnapshot.snap_date == B_DAY)).one()
+    b_row.nav = float(b_row.nav) - 50.0
+    db_session.commit()
+    p = one(plan(db_session, portfolio_from_accounts=True), "portfolio")
+    a_sum, b_sum = _sum(A_DAY), _sum(B_DAY)
+    pct = -50.0 / b_sum * 100
+    assert p.skipped == (
+        "the accounts do not sum to the portfolio on 2026-10-13 (cohort of 2 accounts; "
+        f"A 2026-10-05: accounts {a_sum:.2f} vs portfolio {a_sum:.2f}, diff +0.00 (+0.0000%); "
+        f"B 2026-10-13: accounts {b_sum - 50:.2f} vs portfolio {b_sum:.2f}, diff -50.00 ({pct:+.4f}%))")
+
+
+def test_portfolio_from_accounts_compares_a_reconstructed_end_on_its_live_legs(db_session):
+    _household(db_session)
+    b_row = _portfolio_row(db_session, B_DAY)  # reconstruct rewrote nav, kept the live legs
+    b_row.nav = _sum(B_DAY) + 400.0
+    db_session.commit()
+    p = one(plan(db_session, portfolio_from_accounts=True), "portfolio")
+    assert p.skipped is None and p.self_check == pytest.approx(0.0)
+    assert p.points == {d: pytest.approx(_sum(d)) for d in GAP_DAYS if d != date(2026, 10, 8)}
+    (note,) = [n for n in p.notes if n["kind"] == "reconstructed-anchor"]
+    assert note == {"kind": "reconstructed-anchor", "end": "B", "date": "2026-10-13",
+                    "recorded_nav": round(_sum(B_DAY) + 400.0, 2), "legs_sum": round(_sum(B_DAY), 2),
+                    "residual": 400.0}
+
+
+def test_a_reconstructed_end_whose_legs_also_disagree_is_still_refused(db_session):
+    _household(db_session)
+    b_row = _portfolio_row(db_session, B_DAY)
+    b_row.nav = _sum(B_DAY) + 400.0
+    b_row.composition = {"schema": 1, "legs": [leg("AAA", 10, AAA[B_DAY]), leg("BBB", 25, BBB[B_DAY])]}
+    db_session.commit()
+    p = one(plan(db_session, portfolio_from_accounts=True), "portfolio")
+    assert p.skipped.startswith("the accounts do not sum to the portfolio on 2026-10-13")
+    assert f"[portfolio legs sum; row NAV {_sum(B_DAY) + 400.0:.2f} was rewritten by reconstruction]" in p.skipped
+    assert not p.points
 
 
 def test_only_restricts_the_run_to_the_named_series(db_session):
@@ -795,7 +840,7 @@ def test_explain_shows_how_far_the_accounts_are_from_the_portfolio(db_session):
     a_row.nav = float(a_row.nav) - 50.0
     db_session.commit()
     p = one(plan(db_session, portfolio_from_accounts=True, explain=True), "portfolio")
-    assert p.skipped == "the accounts do not sum to the portfolio on 2026-10-13"
+    assert p.skipped.startswith("the accounts do not sum to the portfolio on 2026-10-13")
     at_a, at_b = p.explain["account_sum"]
     assert at_a["diff"] == 0.0 and at_a["rel_diff_pct"] == 0.0 and len(at_a["accounts"]) == 2
     assert at_b["date"] == "2026-10-13" and at_b["diff"] == -50.0
@@ -873,3 +918,139 @@ def test_a_traded_leg_that_does_not_reconcile_is_never_explained_as_a_split_or_d
     db_session.commit()
     miss = one(plan(db_session, trade_aware=True)).notes[0]["tried"][0]["mismatches"][0]
     assert miss == {"ticker": "AAA", "a_qty": 10, "traded": 5.0, "b_qty": 75}
+
+
+# --- estimated broker-priced legs (log-linear in trading-day steps) ---------------------
+
+# US sessions after A up to each gap day: 10-06..10-09 are sessions 1-4, the weekend and
+# 10-12 carry/advance to 4 and 5, and B (10-13) is session 6.
+_N_AFTER_A = {date(2026, 10, d): n for d, n in ((6, 1), (7, 2), (8, 3), (9, 4), (10, 4), (11, 4), (12, 5))}
+
+
+def _priv(p, d):
+    return next(x for x in p.legs[d] if x["ticker"] == "PRIV1")
+
+
+def test_estimate_broker_legs_interpolates_log_linearly_in_trading_days(db_session):
+    _broker_priced(db_session)
+    assert one(plan(db_session)).skipped.startswith("cannot re-price")  # default unchanged
+    p = one(plan(db_session, estimate_broker_legs=True))
+    assert p.skipped is None and p.self_check == pytest.approx(0.0) and p.method == "reprice+interpolated"
+    for d in GAP_DAYS:
+        want = 100.0 * (104.0 / 100.0) ** (_N_AFTER_A[d] / 6)
+        assert _priv(p, d)["price"] == pytest.approx(want) and _priv(p, d)["price_date"] is None
+        assert p.points[d] == pytest.approx(100 * asof(AAA, d) + 10 * want)
+    assert {(e["ticker"], e["how"]) for e in p.estimated_legs} == {("PRIV1", "interpolated")}
+    assert len(p.estimated_legs) == 7 and p.estimated
+    out = p.as_dict(extended=True)
+    assert out["estimated"] and out["method"] == "reprice+interpolated" and "explain" not in out
+
+
+def test_estimate_broker_legs_apply_flags_every_row_estimated(db_session):
+    _broker_priced(db_session)
+    opts = Options(estimate_broker_legs=True)
+    plans = snapshot_gap.plan_gap(db_session, start=GAP[0], end=GAP[1], options=opts)
+    assert snapshot_gap.apply_plan(db_session, plans, options=opts) == 7
+    inserted = [r for r in rows(db_session) if GAP[0] <= r.snap_date <= GAP[1]]
+    for r in inserted:
+        meta = r.composition["backfill"]
+        assert meta["method"] == "reprice+interpolated" and meta["estimated"]
+        assert [e["how"] for e in meta["estimated_legs"]] == ["interpolated"]
+
+
+@pytest.mark.parametrize(("qty", "b_price", "refused"), [
+    (200, 110.0, True),    # ~65% of NAV, moved +10%: refused
+    (200, 90.0, True),     # a fall counts the same
+    (200, 104.0, False),   # large but moved only 4%
+    (10, 110.0, False),    # moved 10% but under 25% of NAV
+])
+def test_estimate_broker_legs_refuses_a_large_volatile_leg(db_session, qty, b_price, refused):
+    _broker_priced(db_session, priv_qty=qty, b_price=b_price)
+    p = one(plan(db_session, estimate_broker_legs=True))
+    if refused:
+        assert p.skipped.startswith("refusing to interpolate: PRIV1 is ") and not p.points
+        assert "over 25%" in p.skipped and "over 5%" in p.skipped and "not straight-lined" in p.skipped
+    else:
+        assert p.skipped is None and p.method == "reprice+interpolated" and len(p.points) == 7
+
+
+def test_estimate_broker_legs_keeps_operator_supplied_days(db_session):
+    _broker_priced(db_session)
+    supplied = {date(2026, 10, 8): 103.0}
+    with pytest.raises(snapshot_gap.LegPricesError):  # without the option a partial file still fails
+        plan(db_session, leg_prices={"PRIV1": supplied})
+    p = one(plan(db_session, leg_prices={"PRIV1": supplied}, estimate_broker_legs=True))
+    assert p.skipped is None and p.method == "reprice+interpolated+operator-price"
+    assert _priv(p, date(2026, 10, 8))["price"] == 103.0
+    # Interpolated between the known prices around each day: A (100) -> 10-08 (103) -> B (104).
+    assert _priv(p, date(2026, 10, 6))["price"] == pytest.approx(100.0 * 1.03 ** (1 / 3))
+    assert _priv(p, date(2026, 10, 9))["price"] == pytest.approx(103.0 * (104.0 / 103.0) ** (1 / 3))
+    assert _priv(p, date(2026, 10, 11))["price"] == pytest.approx(103.0 * (104.0 / 103.0) ** (1 / 3))
+    hows = {e["date"]: e["how"] for e in p.estimated_legs}
+    assert hows["2026-10-08"] == "operator-price" and hows["2026-10-06"] == "interpolated"
+    # A fully supplied leg has nothing to estimate.
+    full = one(plan(db_session, leg_prices={"PRIV1": _priv_prices()}, estimate_broker_legs=True))
+    assert full.method == "reprice+operator-price"
+
+
+def test_estimate_broker_legs_defers_to_a_named_proxy_bridge(db_session):
+    _broker_priced(db_session)
+    p = one(plan(db_session, estimate_broker_legs=True, proxy_bridge={"PRIV1": "IDX"}, explain=True))
+    assert p.method == "reprice+proxy-bridge"
+    assert [x["verdict"] for x in p.explain["broker_legs"]] == ["proxy-bridge"]
+
+
+def test_explain_shows_which_broker_legs_would_be_interpolated(db_session):
+    _broker_priced(db_session)
+    p = one(plan(db_session, explain=True))  # option off: skipped, but the verdict is shown
+    assert p.skipped.startswith("cannot re-price")
+    (row,) = p.explain["broker_legs"]
+    assert row["ticker"] == "PRIV1" and row["verdict"] == "interpolate"
+    assert row["a_price"] == 100.0 and row["b_price"] == 104.0 and row["move"] == pytest.approx(0.04)
+    # The larger of its weight at A and at B (here A's: 1000 of 11500).
+    assert row["weight"] == pytest.approx(1000.0 / (100 * AAA[A_DAY] + 1000.0), abs=1e-6)
+    on = one(plan(db_session, explain=True, estimate_broker_legs=True))
+    assert on.skipped is None and on.explain["broker_legs"][0]["verdict"] == "interpolate"
+
+
+def test_explain_reports_a_refused_broker_leg_with_its_reason(db_session):
+    _broker_priced(db_session, priv_qty=200, b_price=110.0)
+    p = one(plan(db_session, explain=True, estimate_broker_legs=True))
+    (row,) = p.explain["broker_legs"]
+    assert row["verdict"] == "refuse" and row["reason"] in p.skipped
+    assert not [x for x in p.explain["legs"] if x.get("cause") == 2 and x["ticker"] == "AAA"]
+
+
+def test_explain_of_a_series_without_broker_legs_is_unchanged(db_session):
+    w = World(db_session, {"AAA": AAA})
+    acct = w.account()
+    w.snap(A_DAY, [leg("AAA", 10, AAA[A_DAY]), leg("CASH", 1, 500.0)], account=acct)
+    w.snap(B_DAY, [leg("AAA", 10, AAA[B_DAY]), leg("CASH", 1, 500.0)], account=acct)
+    w.commit()
+    p = one(plan(db_session, explain=True, estimate_broker_legs=True))
+    assert p.skipped is None and p.explain is None and p.method == "reprice"
+
+
+def test_interpolation_falls_back_to_calendar_days_without_sessions(db_session):
+    _broker_priced(db_session)
+    a, b = rows(db_session)
+    a_agg = snapshot_gap._aggregate(a.composition["legs"])
+    b_agg = snapshot_gap._aggregate(b.composition["legs"])
+    v = snapshot_gap._Valuer(a, b, a_agg, b_agg, b_agg, {}, None, Options(estimate_broker_legs=True))
+    got = v._interpolated(("PRIV1", "USD"), date(2026, 10, 9))
+    assert got == pytest.approx(100.0 * 1.04 ** (4 / 8))
+    assert snapshot_gap._broker_legs(None, b, a_agg, b_agg, {}, Options(), []) == []
+
+
+def test_cli_estimate_broker_legs(db_session, session_factory, monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setattr(maintenance, "_backfill_snapshot_gap", lambda s, e, **kw: seen.update(kw) or 0)
+    assert maintenance.main([*CLI_GAP, "--estimate-broker-legs"]) == 0
+    assert seen["options"] == Options(estimate_broker_legs=True) and seen["options"].extended
+    monkeypatch.undo()
+    _broker_priced(db_session)
+    _cli(monkeypatch, session_factory)
+    assert maintenance.main([*CLI_GAP, "--estimate-broker-legs", "--explain"]) == 0
+    out = capsys.readouterr().out
+    assert '"method": "reprice+interpolated"' in out and '"verdict": "interpolate"' in out
+    assert '"written": 0' in out
