@@ -703,6 +703,7 @@ def _gap_options(args):
         only=frozenset(args.only or []),
         anchor=args.anchor,
         leg_prices=args.leg_prices or {},
+        estimate_broker_legs=args.estimate_broker_legs,
     )
 
 
@@ -763,6 +764,11 @@ def main(argv: list[str] | None = None) -> int:
     p_gap.add_argument("--leg-prices", type=_leg_prices_file, metavar="FILE",
                        help="CSV of ticker,date,price used as closes for those legs (broker-priced funds); "
                        "a missing US session in the gap fails the run")
+    p_gap.add_argument("--estimate-broker-legs", action="store_true",
+                       help="estimate a broker-priced leg (no close history, recorded price at both ends) "
+                       "log-linearly in trading-day steps between its A and B prices (days given by "
+                       "--leg-prices are kept), flagged estimated; refused for a leg over 25%% of NAV "
+                       "that moved over 5%%")
     p_unl = sub.add_parser(
         "mark-unlisted",
         help="flag a security as having no public listing (broker-snapshot-priced; "
