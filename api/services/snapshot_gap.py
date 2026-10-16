@@ -54,7 +54,10 @@ with every field at its default the behaviour above is unchanged, byte for byte:
 - ``portfolio_from_accounts`` — a portfolio-grain missed day is the sum of its accounts'
   rows (``nav``, ``external_flow``, ``cost_basis``, legs concatenated), only when EVERY
   account of the cohort has a row that day and the accounts sum to the portfolio at A and
-  B within ``_COHORT_IDENTITY_TOLERANCE``.
+  B within ``_COHORT_IDENTITY_TOLERANCE``. An end whose ``nav`` was rewritten by
+  ``reconstruct_snapshots`` (it no longer equals the sum of its own recorded legs) is
+  compared on its legs — the live writer's basis — and the residual is reported in
+  ``notes``. A failed identity names both ends' sums, diff and % in the skip reason.
   A leg whose quantity changed with NO trade in the chosen source is reconciled only by
   one of two corporate events, each reported in ``notes``:
 
@@ -82,10 +85,22 @@ with every field at its default the behaviour above is unchanged, byte for byte:
   (a broker-priced fund with no close history). A missing price for any US session inside
   the gap is an error (:class:`LegPricesError`), never a skip. Days so priced are flagged
   estimated (``how`` "operator-price").
+- ``estimate_broker_legs`` — a broker-priced leg (no close history, a recorded price at both
+  A and B) is estimated autonomously: each US session's price is log-linear in trading-day
+  steps between the known prices around it — A's and B's recorded prices, and any day the
+  operator supplied through ``leg_prices``, which is never overridden — so
+  ``p(d) = p_lo × (p_hi / p_lo) ^ (n(d) − n(lo)) / (n(hi) − n(lo))``, ``n`` counting sessions
+  after A. A non-session day carries the last session's estimate. Each such day is flagged
+  estimated (``how`` "interpolated"). REFUSED, with the reason, when the leg weighs more than
+  ``_INTERP_MAX_WEIGHT`` of the series NAV (at A or at B) AND moved more than
+  ``_INTERP_MAX_MOVE`` from A to B: a large, volatile leg is not straight-lined. A leg named
+  in ``proxy_bridge`` is bridged, not interpolated.
 - ``only`` — restrict the run to the named account ids, portfolio ids, or ``"portfolio"``.
 - ``explain`` — for every skipped series, list every failing leg with a cause code; for a
   series that fails the self-check, every leg's recorded vs repriced value at A and B; for
-  a skipped portfolio, the sum of its accounts' NAVs vs the portfolio row at A and B.
+  a skipped portfolio, the sum of its accounts' NAVs vs the portfolio row at A and B; and,
+  for any series holding a broker-priced leg, which of them ``estimate_broker_legs``
+  interpolates or refuses (``broker_legs``), whether or not that option is set.
 
 Rows written under any option carry ``method``, ``estimated`` and ``estimated_legs`` in
 ``composition["backfill"]``; ``undo`` also restores every stashed flow and anchor.
@@ -135,6 +150,8 @@ _SPLIT_MAX_TERM = 100              # a "simple" ratio: both terms at most this,
 _SPLIT_MAX_SMALL_TERM = 10         # and the smaller at most this (5:1, 3:2, 1:20 — not 73:100)
 _SPLIT_MIN_MOVE = math.log(1.2)    # |ln ratio| below this is indistinguishable from a day's move
 _DRIP_MAX_FRACTION = 0.02          # a reinvested dividend adds at most this share of the position
+_INTERP_MAX_WEIGHT = 0.25          # an interpolated leg above this share of NAV ...
+_INTERP_MAX_MOVE = 0.05            # ... that moved more than this A -> B is refused
 
 # Why a leg cannot be priced on a day (``--explain`` cause codes).
 CAUSES = {
@@ -159,6 +176,7 @@ class Options:
     only: frozenset[str] = frozenset()  # account id | portfolio id | "portfolio"
     anchor: str = "none"  # "none" | "proportional"
     leg_prices: dict[str, dict[date, float]] = field(default_factory=dict)  # ticker -> date -> price
+    estimate_broker_legs: bool = False
 
     @property
     def extended(self) -> bool:
@@ -290,6 +308,9 @@ class _Valuer:
         # flagged). Non-session days (weekends, holidays) carry as-of, which is what a live
         # weekend snapshot does too.
         self.us_sessions = {p.bar_date for p in history.get("SPY") or []}
+        # Broker-priced legs estimated by interpolation (``estimate_broker_legs``); set by the
+        # planner once the refusal rule has passed. Empty on every other path.
+        self.interp: frozenset = frozenset()
 
     def _bridge(self, ticker: str, ccy: str, d: date):
         """Proxy-bridged price for a gap day, or None when the proxy has no usable close."""
@@ -307,15 +328,36 @@ class _Valuer:
             frac = (d - self.a.snap_date).days / (self.b.snap_date - self.a.snap_date).days
         return p_a * (pd.close / pa.close) * residual ** frac, proxy
 
+    def _interpolated(self, k, d: date) -> float:
+        """Log-linear in trading-day steps between the known prices bracketing ``d``: A's
+        and B's recorded prices and any operator-supplied day strictly between them."""
+        lo_d, hi_d = self.a.snap_date, self.b.snap_date
+        knots = {lo_d: float(self.a_agg[k]["price"]), hi_d: float(self.b_agg[k]["price"])}
+        for x, px in (self.opts.leg_prices.get(k[0]) or {}).items():
+            if lo_d < x < hi_d:
+                knots[x] = float(px)
+        order = sorted(knots)
+        i = bisect.bisect_right(order, d)
+        lo, hi = order[i - 1], order[i]  # A < d < B, so both exist and differ
+        n = sorted(s for s in self.us_sessions if lo < s <= hi)
+        if n:
+            frac = sum(1 for s in n if s <= d) / len(n)
+        else:
+            frac = (d - lo).days / (hi - lo).days
+        return knots[lo] * (knots[hi] / knots[lo]) ** frac
+
     def _operator_price(self, k, d: date, anchor: str | None):
         """``(px, px_date, how)`` from ``opts.leg_prices``. A recorded end with no supplied
-        price keeps its recorded price; a missed US session with none is an error."""
+        price keeps its recorded price; a missed US session with none is an error — unless
+        the leg is interpolated (``estimate_broker_legs``), which fills the unsupplied days."""
         supplied = self.opts.leg_prices[k[0]]
         if d in supplied:
             return supplied[d], d, None if anchor else "operator-price"
         if anchor is not None:
             ref = (self.a_agg if anchor == "A" else self.b_agg).get(k)
             return 2 if ref is None or not ref["price"] else (ref["price"], None, None)
+        if k in self.interp:
+            return self._interpolated(k, d), None, "interpolated"
         if d in self.us_sessions:
             raise LegPricesError(f"--leg-prices has no price for {k[0]} on {d.isoformat()} (a US session)")
         earlier = [x for x in supplied if self.a.snap_date <= x < d]
@@ -357,6 +399,9 @@ class _Valuer:
             al, bl = self.a_agg.get(k), self.b_agg.get(k)
             if al is not None and bl is not None and al["price"] == bl["price"]:
                 px, px_date = bl["price"], None
+            elif k in self.interp:
+                px = al["price"] if anchor == "A" else bl["price"] if anchor == "B" else self._interpolated(k, d)
+                px_date, how = None, None if anchor else "interpolated"
             elif ticker in self.opts.proxy_bridge and al is not None and bl is not None \
                     and al["price"] and bl["price"]:
                 if anchor == "A":
@@ -415,6 +460,47 @@ class _Valuer:
         return total, legs, estimated
 
 
+def _broker_legs(a, b, a_agg: dict, b_agg: dict, history: dict, opts: Options, missing: list[date]) -> list[dict]:
+    """Every broker-priced leg ``estimate_broker_legs`` would act on, and its verdict.
+
+    A candidate has no close history and a recorded price at both A and B that differs (or
+    is a ``leg_prices`` ticker, whose unsupplied days are filled). Verdicts: "interpolate";
+    "refuse" (over ``_INTERP_MAX_WEIGHT`` of NAV and moved over ``_INTERP_MAX_MOVE``);
+    "leg-prices" (every missed US session supplied: nothing to estimate); "proxy-bridge"."""
+    if a is None or b is None:
+        return []
+    sessions = {p.bar_date for p in history.get("SPY") or []}
+    a_nav, b_nav = float(a.nav or 0.0), float(b.nav or 0.0)
+    out = []
+    for k in sorted(set(a_agg) & set(b_agg)):
+        al, bl = a_agg[k], b_agg[k]
+        supplied = opts.leg_prices.get(k[0])
+        if history.get(k[0]) or not al["price"] or not bl["price"]:
+            continue
+        if al["price"] == bl["price"] and supplied is None:
+            continue  # constant-priced (cash): already valued exactly
+        move = float(bl["price"]) / float(al["price"]) - 1
+        weights = [x["value"] / nav for x, nav in ((al, a_nav), (bl, b_nav)) if nav]
+        weight = max((abs(w) for w in weights), default=None)
+        row = {"ticker": k[0], "currency": k[1], "a_price": al["price"], "b_price": bl["price"],
+               "move": round(move, 6), "weight": None if weight is None else round(weight, 6)}
+        if k[0] in opts.proxy_bridge:
+            row["verdict"] = "proxy-bridge"
+        elif supplied is not None and all(d in supplied for d in missing if d in sessions):
+            row["verdict"] = "leg-prices"
+        elif weight is not None and weight > _INTERP_MAX_WEIGHT and abs(move) > _INTERP_MAX_MOVE:
+            row["verdict"] = "refuse"
+            row["reason"] = (f"{k[0]} is {weight:.1%} of NAV (over {_INTERP_MAX_WEIGHT:.0%}) and moved "
+                             f"{move:+.1%} from A to B (over {_INTERP_MAX_MOVE:.0%}): a large, volatile "
+                             "broker-priced leg is not straight-lined")
+        else:
+            row["verdict"] = "interpolate"
+        if supplied is not None and row["verdict"] in ("interpolate", "refuse"):
+            row["supplied_days"] = sum(1 for d in supplied if a.snap_date < d < b.snap_date)
+        out.append(row)
+    return out
+
+
 @dataclass
 class _Ctx:
     """What ``_plan_series`` needs beyond the two anchors; session-bound reads are callables."""
@@ -460,6 +546,9 @@ def _explain(plan: SeriesPlan, a, b, a_agg, b_agg, ctx: _Ctx) -> dict:
                             "cause_text": "quantity differs between A and B", **facts(k)})
     refs = {k: (b_agg.get(k) if k in b_agg else a_agg[k]) for k in list(b_agg) + [k for k in a_agg if k not in b_agg]}
     valuer = _Valuer(a, b, a_agg, b_agg, refs, ctx.history, ctx.fx_hist, ctx.opts)
+    if ctx.opts.estimate_broker_legs:
+        valuer.interp = frozenset((x["ticker"], x["currency"]) for x in _broker_legs(
+            a, b, a_agg, b_agg, ctx.history, ctx.opts, plan.missing) if x["verdict"] == "interpolate")
     for d, anchor, qty_src in ((a.snap_date, "A", a_agg), (b.snap_date, "B", b_agg),
                                *((d, None, b_agg) for d in plan.missing)):
         causes: list = []
@@ -678,10 +767,15 @@ def _plan_series(plan: SeriesPlan, a, b, history, fx_hist, ctx: _Ctx | None = No
     """Fill ``plan.points`` for ``plan.missing`` from A/B compositions, or set ``skipped``."""
     ctx = ctx or _Ctx(history, fx_hist)
     _plan_series_core(plan, a, b, ctx)
-    if plan.skipped and ctx.opts.explain:
-        a_agg = _aggregate((a.composition or {}).get("legs") or []) if a is not None else {}
-        b_agg = _aggregate((b.composition or {}).get("legs") or []) if b is not None else {}
+    if not ctx.opts.explain:
+        return
+    a_agg = _aggregate((a.composition or {}).get("legs") or []) if a is not None else {}
+    b_agg = _aggregate((b.composition or {}).get("legs") or []) if b is not None else {}
+    if plan.skipped:
         plan.explain = _explain(plan, a, b, a_agg, b_agg, ctx)
+    broker = _broker_legs(a, b, a_agg, b_agg, ctx.history, ctx.opts, plan.missing)
+    if broker:
+        plan.explain = {**(plan.explain or {}), "broker_legs": broker}
 
 
 def _plan_series_core(plan: SeriesPlan, a, b, ctx: _Ctx) -> None:
@@ -738,6 +832,13 @@ def _plan_series_core(plan: SeriesPlan, a, b, ctx: _Ctx) -> None:
         return corporate(d, q)
 
     valuer = _Valuer(a, b, a_agg, b_agg, refs, ctx.history, ctx.fx_hist, opts)
+    if opts.estimate_broker_legs:
+        broker = _broker_legs(a, b, a_agg, b_agg, ctx.history, opts, plan.missing)
+        refused = [x for x in broker if x["verdict"] == "refuse"]
+        if refused:
+            plan.skipped = "refusing to interpolate: " + "; ".join(x["reason"] for x in refused)
+            return
+        valuer.interp = frozenset((x["ticker"], x["currency"]) for x in broker if x["verdict"] == "interpolate")
     errors, scales = [], []
     for snap, anchor in ((a, "A"), (b, "B")):
         qty = {k: v["qty"] for k, v in (a_agg if anchor == "A" else b_agg).items()} if aware \
@@ -867,16 +968,19 @@ def _plan_from_accounts(plan: SeriesPlan, a, b, acct_rows: list, acct_plans: lis
     if cohort != set(by_date.get(b.snap_date, {})):
         plan.skipped = "the account cohort differs between the two ends of the gap"
         return
-    errors = []
-    for snap in (a, b):
-        total = sum(c["nav"] for c in by_date[snap.snap_date].values())
-        nav = float(snap.nav)
-        err = abs(total - nav) / nav if nav else float("inf")
-        if err > _COHORT_IDENTITY_TOLERANCE:
-            plan.skipped = f"the accounts do not sum to the portfolio on {snap.snap_date.isoformat()}"
-            return
-        errors.append(err)
-    plan.self_check = max(errors)
+    ends = [_cohort_identity(snap, end, by_date[snap.snap_date]) for snap, end in ((a, "A"), (b, "B"))]
+    bad = [e for e in ends if e["rel_err"] > _COHORT_IDENTITY_TOLERANCE]
+    if bad:
+        detail = "; ".join(_identity_text(e) for e in ends)
+        plan.skipped = (f"the accounts do not sum to the portfolio on {bad[0]['date']} "
+                        f"(cohort of {len(cohort)} accounts; {detail})")
+        return
+    for e in ends:
+        if e["rewritten"]:
+            plan.notes.append({"kind": "reconstructed-anchor", "end": e["end"], "date": e["date"],
+                               "recorded_nav": round(e["nav"], 2), "legs_sum": round(e["legs_sum"], 2),
+                               "residual": round(e["nav"] - e["legs_sum"], 2)})
+    plan.self_check = max(e["rel_err"] for e in ends)
     for d, recorded in sorted(plan.existing_in_gap.items()):
         present = by_date.get(d, {})
         if set(present) == cohort and recorded:
@@ -904,6 +1008,38 @@ def _plan_from_accounts(plan: SeriesPlan, a, b, acct_rows: list, acct_plans: lis
     _settle_flows(plan, b, flow_of)
     if plan.skipped:
         _fail(plan, plan.skipped)
+
+
+def _cohort_identity(snap, end: str, present: dict) -> dict:
+    """Σ the cohort's account rows vs the portfolio row at one end of the gap.
+
+    The portfolio row is compared on the live writer's basis. ``record_snapshot`` writes
+    ``nav == Σ composition legs`` by construction, and so does every other writer of a
+    composition (restatement, this module). ``reconstruct_snapshots`` — re-run on every
+    daily refresh — upserts each month-end and flow date's ``nav`` from the lot timeline
+    WITHOUT touching the composition, so such a row carries the reconstructed NAV over the
+    live legs: ``nav = Σ legs + X``, X recorded by the row itself. Account rows are never
+    rewritten that way, and a missed day is by definition one reconstruct did not write,
+    so the accounts are compared with Σ legs and the inserted days stay a plain sum."""
+    total = sum(c["nav"] for c in present.values())
+    nav = float(snap.nav)
+    legs = (snap.composition or {}).get("legs") or []
+    legs_sum = sum(float(x.get("value") or 0.0) for x in legs)
+    rewritten = bool(legs) and abs(nav - legs_sum) > _CENT
+    target = legs_sum if rewritten else nav
+    rel_err = abs(total - target) / target if target else float("inf")
+    return {"end": end, "date": snap.snap_date.isoformat(), "accounts": total, "nav": nav,
+            "legs_sum": legs_sum, "rewritten": rewritten, "target": target, "rel_err": rel_err}
+
+
+def _identity_text(e: dict) -> str:
+    diff = e["accounts"] - e["target"]
+    pct = f"{diff / e['target'] * 100:+.4f}%" if e["target"] else "n/a"
+    text = (f"{e['end']} {e['date']}: accounts {e['accounts']:.2f} vs portfolio {e['target']:.2f}, "
+            f"diff {diff:+.2f} ({pct})")
+    if e["rewritten"]:
+        text += f" [portfolio legs sum; row NAV {e['nav']:.2f} was rewritten by reconstruction]"
+    return text
 
 
 def _trade_records(session: Session, plan: SeriesPlan, a, b) -> dict[str, list[tuple[date, str, float]]]:
@@ -1105,17 +1241,24 @@ def _account_sum(a, b, acct_rows: list) -> list[dict]:
 
 def _check_leg_prices(opts: Options, plans, history) -> None:
     """Every ``leg_prices`` ticker must be held by a planned series, and priced on every US
-    session inside each gap where it is held — or the run fails, naming what is missing."""
+    session inside each gap where it is held — or the run fails, naming what is missing.
+    Under ``estimate_broker_legs`` an unsupplied day of an interpolable leg is estimated."""
     sessions = {p.bar_date for p in history.get("SPY") or []}
     held = set()
     for plan, a, b in plans:
         if a is None or b is None:
             continue
         tickers = {leg["ticker"] for snap in (a, b) for leg in (snap.composition or {}).get("legs") or []}
+        interpolable = set()
+        if opts.estimate_broker_legs:
+            a_agg = _aggregate((a.composition or {}).get("legs") or [])
+            b_agg = _aggregate((b.composition or {}).get("legs") or [])
+            interpolable = {x["ticker"] for x in _broker_legs(a, b, a_agg, b_agg, history, opts, plan.missing)
+                            if x["verdict"] in ("interpolate", "refuse")}
         for ticker in tickers & set(opts.leg_prices):
             held.add(ticker)
             lacking = [d for d in plan.missing if d in sessions and d not in opts.leg_prices[ticker]]
-            if lacking:
+            if lacking and ticker not in interpolable:
                 raise LegPricesError(f"--leg-prices has no price for {ticker} on "
                                      f"{', '.join(d.isoformat() for d in lacking)} (US sessions in the gap)")
     unused = sorted(set(opts.leg_prices) - held)
