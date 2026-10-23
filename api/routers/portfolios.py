@@ -695,6 +695,14 @@ class SectorEffectOut(BaseModel):
     total: float
 
 
+class UnattributedHoldingOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    market_value: float
+    reason: str
+
+
 class AttributionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -702,8 +710,10 @@ class AttributionOut(BaseModel):
     benchmark: str
     reason: str | None
     required_tier: str | None = None
+    # The common window every return was measured over (metron-ops-I372).
     as_of: date | None
     start_date: date | None
+    requested_start: date | None = None
     lookback_days: int
     coverage: float
     n_sectors: int
@@ -714,6 +724,8 @@ class AttributionOut(BaseModel):
     selection: float | None
     interaction: float | None
     sectors: list[SectorEffectOut]
+    # Priced holdings left out of the attribution, with the reason (coverage < 1).
+    unattributed: list[UnattributedHoldingOut] = []
 
 
 class GapDriverOut(BaseModel):
