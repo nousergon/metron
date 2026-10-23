@@ -65,6 +65,7 @@ _PERF_ART = {
 }
 
 _TECH_ART = {
+    "schema_version": 4,
     "as_of": "2026-06-26",
     "technicals": {
         "AAPL": {
@@ -305,6 +306,7 @@ def test_tearsheet_track_record_not_read_when_no_rating_resolved(db_session):
 
 
 _FUND_ART = {
+    "schema_version": 5,
     "as_of": "2026-06-17",
     "fundamentals": {
         "AAPL": {

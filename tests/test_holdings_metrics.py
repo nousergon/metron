@@ -13,6 +13,7 @@ from api.services import analytics, fundamentals, metrics_enrichment, technicals
 
 def test_fundamentals_parses_pb_and_ps():
     art = {
+        "schema_version": 5,
         "as_of": "2026-06-26",
         "fundamentals": {
             "AAPL": {"trailingPE": 30.0, "priceToBook": 6.0, "priceToSalesTrailing12Months": 7.5,
@@ -26,13 +27,13 @@ def test_fundamentals_parses_pb_and_ps():
 
 
 def test_fundamentals_missing_pb_ps_is_none():
-    snap = fundamentals.load_fundamentals(reader=lambda: {"fundamentals": {"X": {"trailingPE": 12.0}}})
+    snap = fundamentals.load_fundamentals(reader=lambda: {"schema_version": 5, "fundamentals": {"X": {"trailingPE": 12.0}}})
     f = snap.by_symbol["X"]
     assert f.price_to_book is None and f.price_to_sales is None
 
 
 def test_fundamentals_parses_balance_sheet():
-    art = {"fundamentals": {"AAPL": {"totalDebt": 1.1e11, "totalCash": 6.0e10,
+    art = {"schema_version": 5, "fundamentals": {"AAPL": {"totalDebt": 1.1e11, "totalCash": 6.0e10,
                                      "ebitda": 1.3e11, "freeCashflow": 9.0e10}}}
     f = fundamentals.load_fundamentals(reader=lambda: art).by_symbol["AAPL"]
     assert f.total_debt == 1.1e11 and f.total_cash == 6.0e10
@@ -40,19 +41,19 @@ def test_fundamentals_parses_balance_sheet():
 
 
 def test_fundamentals_parses_eps(): # metron-ops#163
-    art = {"fundamentals": {"AAPL": {"trailingEps": 6.5, "forwardEps": 7.2}}}
+    art = {"schema_version": 5, "fundamentals": {"AAPL": {"trailingEps": 6.5, "forwardEps": 7.2}}}
     f = fundamentals.load_fundamentals(reader=lambda: art).by_symbol["AAPL"]
     assert f.eps == 6.5 and f.fwd_eps == 7.2
 
 
 def test_fundamentals_missing_eps_is_none():
-    snap = fundamentals.load_fundamentals(reader=lambda: {"fundamentals": {"X": {"trailingPE": 12.0}}})
+    snap = fundamentals.load_fundamentals(reader=lambda: {"schema_version": 5, "fundamentals": {"X": {"trailingPE": 12.0}}})
     f = snap.by_symbol["X"]
     assert f.eps is None and f.fwd_eps is None
 
 
 def test_fundamentals_parses_valuation_ratio_inputs():  # metron-ops#178
-    art = {"fundamentals": {"AAPL": {"bookValue": 4.25, "revenuePerShare": 24.5,
+    art = {"schema_version": 5, "fundamentals": {"AAPL": {"bookValue": 4.25, "revenuePerShare": 24.5,
                                      "enterpriseValue": 3.1e12}}}
     f = fundamentals.load_fundamentals(reader=lambda: art).by_symbol["AAPL"]
     assert f.book_value_per_share == 4.25
@@ -61,7 +62,7 @@ def test_fundamentals_parses_valuation_ratio_inputs():  # metron-ops#178
 
 
 def test_fundamentals_missing_valuation_ratio_inputs_is_none():
-    snap = fundamentals.load_fundamentals(reader=lambda: {"fundamentals": {"X": {"trailingPE": 12.0}}})
+    snap = fundamentals.load_fundamentals(reader=lambda: {"schema_version": 5, "fundamentals": {"X": {"trailingPE": 12.0}}})
     f = snap.by_symbol["X"]
     assert f.book_value_per_share is None
     assert f.revenue_per_share is None
@@ -72,6 +73,7 @@ def test_fundamentals_missing_valuation_ratio_inputs_is_none():
 
 def test_technicals_round_trip():
     art = {
+        "schema_version": 4,
         "as_of": "2026-06-26",
         "technicals": {
             "AAPL": {"rsi_14": 61.2, "macd_hist": 1.3, "ma_50": 190.0, "ma_200": 175.0,
@@ -119,6 +121,7 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
     monkeypatch.setattr(
         metrics_enrichment.fundamentals_service, "load_fundamentals",
         lambda: real_funds(reader=lambda: {
+            "schema_version": 5,
             "fundamentals": {"AAPL": {"trailingPE": 30.0, "forwardPE": 25.0, "priceToBook": 6.0,
                                       "priceToSalesTrailing12Months": 7.5, "marketCap": 3.0e12,
                                       "returnOnEquity": 0.5, "debtToEquity": 150.0, "beta": 1.2,
@@ -132,6 +135,7 @@ def test_enrich_metrics_maps_fundamentals_and_technicals(monkeypatch):
     monkeypatch.setattr(
         metrics_enrichment.technicals_service, "load_technicals",
         lambda: real_techs(reader=lambda: {
+            "schema_version": 4,
             "technicals": {"AAPL": {"rsi_14": 61.0, "macd_hist": 1.1, "pct_to_ma_50": 0.05,
                                     "pct_to_ma_200": 0.12, "pct_in_52w_range": 0.8, "mom_20d": 0.03}}}),
     )
