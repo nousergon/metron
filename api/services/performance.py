@@ -381,9 +381,15 @@ def _upsert_snapshot(
     spy_close: float | None,
     provisional: bool = False,
     composition: dict | None = None,
+    estimated_inputs: list[dict] | None = None,
 ) -> models.NavSnapshot:
     """Find-or-create the (portfolio, day) snapshot and set its fields. Does NOT commit
-    — the caller batches the commit (one per refresh, one per reconstruction run)."""
+    — the caller batches the commit (one per refresh, one per reconstruction run).
+
+    ``estimated_inputs`` is always written (metron-ops-I370): a live record of today's
+    value, which prices every leg as of today, clears a reconstruction's estimate stamp
+    rather than inheriting it. Any value this overwrites is preserved in
+    ``nav_snapshot_revisions`` by the session's flush hook."""
     row = session.scalars(
         select(models.NavSnapshot).where(
             models.NavSnapshot.tenant_id == tenant_id,
@@ -402,6 +408,7 @@ def _upsert_snapshot(
     row.provisional = provisional
     if composition is not None:
         row.composition = composition
+    row.estimated_inputs = estimated_inputs or None
     return row
 
 
@@ -1933,6 +1940,18 @@ def _no_lot_flat_value(held, tickers_with_lots: set[str]) -> tuple[float, float,
     return nav, cost, tickers
 
 
+def _dedupe_estimates(estimates: list[dict]) -> list[dict]:
+    """Stable, de-duplicated estimate stamps (one per distinct leg/input/reason)."""
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for e in estimates:
+        key = tuple(sorted(e.items()))
+        if key not in seen:
+            seen.add(key)
+            out.append(e)
+    return sorted(out, key=lambda e: tuple(sorted(e.items())))
+
+
 def nav_history_estimated(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> tuple[bool, str | None]:
     """Is the reconstructed NAV history an ESTIMATE (incomplete lot coverage)?
 
@@ -1941,9 +1960,27 @@ def nav_history_estimated(session: Session, tenant_id: uuid.UUID, portfolio_id: 
     (e.g. a SnapTrade/E*TRADE account with no lot detail, or partial activity history)
     can't have its past positions reconstructed → the series is an estimate, flagged with
     the affected tickers so the page can say so honestly (metron-ops#74)."""
+    # metron-ops-I370: a STORED dated valuation that used an input from after its own
+    # date (a carried-back price, a later FX rate) or excluded an unconvertible leg is an
+    # estimate, whatever the lot coverage says — the headline must not call it exact.
+    stamped = session.execute(
+        select(models.NavSnapshot.snap_date)
+        .where(
+            models.NavSnapshot.tenant_id == tenant_id,
+            models.NavSnapshot.portfolio_id == portfolio_id,
+            models.NavSnapshot.estimated_inputs.isnot(None),
+        )
+        .order_by(models.NavSnapshot.snap_date)
+    ).scalars().all()
+    stamped_note = (
+        f"{len(stamped)} dated valuation(s) through {stamped[-1].isoformat()} used a price or FX rate "
+        "from after their own date, or excluded a holding with no FX rate."
+        if stamped
+        else None
+    )
     held = analytics.holdings(session, tenant_id, portfolio_id)
     if not held:
-        return False, None
+        return (True, f"NAV history is estimated — {stamped_note}") if stamped_note else (False, None)
     lot_qty: dict[str, float] = defaultdict(float)
     for ticker, qty, _cb, _od in _load_lot_timeline(session, tenant_id, portfolio_id)[0]:
         lot_qty[ticker] += qty
@@ -1952,9 +1989,10 @@ def nav_history_estimated(session: Session, tenant_id: uuid.UUID, portfolio_id: 
         if h.quantity > 0 and abs(lot_qty.get(h.ticker, 0.0) - h.quantity) > 0.01 * max(h.quantity, 1.0)
     ]
     if not uncovered:
-        return False, None
+        return (True, f"NAV history is estimated — {stamped_note}") if stamped_note else (False, None)
     shown = ", ".join(sorted(uncovered)[:6]) + ("…" if len(uncovered) > 6 else "")
-    return True, f"NAV history is estimated — incomplete lot data for {len(uncovered)} holding(s): {shown}."
+    note = f"NAV history is estimated — incomplete lot data for {len(uncovered)} holding(s): {shown}."
+    return True, f"{note} {stamped_note}" if stamped_note else note
 
 
 def reconstruct_snapshots(
@@ -1986,6 +2024,7 @@ def reconstruct_snapshots(
         _upsert_snapshot(
             session, tenant_id, portfolio_id, p.when,
             nav=p.nav, cost_basis=p.cost_basis, flow=p.flow, spy_close=p.spy_close,
+            estimated_inputs=p.estimated_inputs,
         )
         written += 1
     session.commit()
@@ -2015,6 +2054,9 @@ class _NavPoint:
     cost_basis: float
     flow: float
     spy_close: float | None = None
+    # Legs NOT valued from inputs dated on/before ``when`` (metron-ops-I370) — see
+    # ``models.NavSnapshot.estimated_inputs``. Empty = an exact as-of valuation.
+    estimated_inputs: list[dict] = field(default_factory=list)
 
 
 def _reconstruct_nav_points(
@@ -2129,26 +2171,54 @@ def _reconstruct_nav_points(
     foreign = sorted({c for c in ticker_ccy.values() if c and c != "USD"})
     if backfill and foreign:
         fx_service.backfill_fx_rates(session, foreign, first, today, base="USD")
-    _rate_cache: dict[tuple[str, date], float] = {}
+    _rate_cache: dict[tuple[str, date], tuple[float | None, str | None]] = {}
     # Every foreign rate this reconstruction can ask for, read once (after the backfill
     # above, so it sees what that wrote) — not one query per (currency, valuation date).
     if fx_history is None:
         fx_history = fx_service.rate_history(session, foreign)
 
-    def _rate(ccy: str, when: date) -> float:
+    def _rate(ccy: str, when: date) -> tuple[float | None, str | None]:
+        """``(rate, None)`` from a rate dated on/before ``when``; otherwise a labelled
+        fallback (metron-ops-I370). ``(later_rate, "after_date")`` when the only rates
+        cached postdate ``when`` — an ESTIMATE, stamped on the point, never exact. ``(None,
+        "unavailable")`` when no rate exists at all: the leg is excluded, exactly as the
+        live valuation excludes a holding with no cached rate. There is no 1.0 parity
+        fallback — that fabricated a rate for a real foreign currency."""
         if not ccy or ccy == "USD":
-            return 1.0
+            return 1.0, None
         key = (ccy, when)
         if key not in _rate_cache:
             if fx_history.covers(ccy):
-                _rate_cache[key] = fx_history.rate_as_of(ccy, when) or fx_history.latest(ccy) or 1.0
+                asof, later = fx_history.rate_as_of(ccy, when), fx_history.latest(ccy)
             else:
-                _rate_cache[key] = (
-                    fx_service.rate_as_of(session, ccy, when)
-                    or fx_service.latest_rate_to_base(session, ccy)
-                    or 1.0
-                )
+                asof = fx_service.rate_as_of(session, ccy, when)
+                later = None if asof is not None else fx_service.latest_rate_to_base(session, ccy)
+            if asof is not None:
+                _rate_cache[key] = (asof, None)
+            elif later is not None:
+                _rate_cache[key] = (later, "after_date")
+            else:
+                _rate_cache[key] = (None, "unavailable")
         return _rate_cache[key]
+
+    def _value_leg(ticker: str, qty: float, d: date, estimates: list[dict]) -> float | None:
+        """Base value of ``qty`` of ``ticker`` on ``d``; appends to ``estimates`` every input
+        that was not dated on/before ``d``. None when the leg cannot be valued at all."""
+        px = _asof_close(history.get(ticker), d)
+        if px is None:
+            px = current_px.get(ticker)
+            if px is None:
+                return None
+            if d < today:
+                # The documented flat-backward fallback: TODAY's price on a past date.
+                estimates.append({"ticker": ticker, "input": "price", "reason": "after_date"})
+        ccy = ticker_ccy.get(ticker, "USD")
+        rate, why = _rate(ccy, d)
+        if why is not None:
+            estimates.append({"ticker": ticker, "input": "fx", "currency": ccy, "reason": why})
+        if rate is None:
+            return None
+        return qty * px * rate
 
     # Capital in/out for the lot-valued (snapshot-sourced) positions — a lot opening is the
     # moment a position enters a no-trade-feed account, a realized lot closing the moment it
@@ -2165,12 +2235,12 @@ def _reconstruct_nav_points(
     if ledger_purchases is None:
         ledger_purchases = _net_purchase_rows_by_account(session, tenant_id, ledger_account_ids)
 
-    def _event_mv(ticker: str, qty: float, d: date) -> float:
+    def _event_mv(ticker: str, qty: float, d: date, estimates: list[dict]) -> float:
         """Base-currency MARKET value of ``qty`` of ``ticker`` on ``d`` — valued IDENTICALLY
         to NAV (same close, same FX), so a lot entering/leaving moves the flow by exactly the
         NAV step it causes → no spurious return from the composition change (#89)."""
-        px = _asof_close(history.get(ticker), d) or current_px.get(ticker)
-        return qty * px * _rate(ticker_ccy.get(ticker, "USD"), d) if px is not None else 0.0
+        value = _value_leg(ticker, qty, d, estimates)
+        return value if value is not None else 0.0
 
     # TWR sub-periods break on every external flow: cash deposits/withdrawals AND each lot
     # open/close (so a contribution lands on a period boundary, not mid-step).
@@ -2196,13 +2266,14 @@ def _reconstruct_nav_points(
         nav = 0.0
         cost_basis = 0.0
         valued_any = False
+        estimates: list[dict] = []
         for ticker, shares in pos.items():
             if shares <= 0:
                 continue
             cost_basis += cost[ticker]
-            px = _asof_close(history.get(ticker), when) or current_px.get(ticker)
-            if px is not None:
-                nav += shares * px * _rate(ticker_ccy.get(ticker, "USD"), when)
+            value = _value_leg(ticker, shares, when, estimates)
+            if value is not None:
+                nav += value
                 valued_any = True
         # No-lot holdings carried flat at current value (in addition to the lot-valued set).
         nav += flat_nav
@@ -2213,13 +2284,21 @@ def _reconstruct_nav_points(
         # (market value of lots closed this sub-period), valued exactly as NAV values them,
         # PLUS the trade-ledger net purchases for genuinely ledger-sourced accounts only.
         lo, hi = prev, when  # sub-period (lo, hi]; lo None on the first (ignored) point
+        flow_estimates: list[dict] = []
         flow = (
-            sum(_event_mv(t, q, d) for t, d, q in lot_opens if (lo is None or d > lo) and d <= hi)
-            - sum(_event_mv(t, q, d) for t, d, q in lot_closes if (lo is None or d > lo) and d <= hi)
+            sum(_event_mv(t, q, d, flow_estimates) for t, d, q in lot_opens if (lo is None or d > lo) and d <= hi)
+            - sum(_event_mv(t, q, d, flow_estimates) for t, d, q in lot_closes if (lo is None or d > lo) and d <= hi)
             + _windowed_net_purchases(ledger_purchases, ledger_account_ids, after=prev, through=when)
         )
+        estimates += [{**e, "leg": "flow"} for e in flow_estimates]
+        if flat_nav and when < today:
+            # No-lot holdings are carried flat-backward at CURRENT value (metron-ops#74).
+            estimates.append({"ticker": "*no-lot holdings*", "input": "price", "reason": "after_date"})
         points.append(
-            _NavPoint(when=when, nav=nav, cost_basis=cost_basis, flow=flow, spy_close=_asof_close(spy_series, when))
+            _NavPoint(
+                when=when, nav=nav, cost_basis=cost_basis, flow=flow, spy_close=_asof_close(spy_series, when),
+                estimated_inputs=_dedupe_estimates(estimates),
+            )
         )
         prev = when
     return points
