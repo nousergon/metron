@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     JSON,
@@ -26,9 +27,13 @@ from sqlalchemy import (
     Numeric,
     String,
     UniqueConstraint,
+    event,
     func,
+    select,
 )
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.types import Uuid
 
 from api.db.session import Base
@@ -367,20 +372,28 @@ class NavSnapshot(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
     snap_date: Mapped[date] = mapped_column(index=True)
-    nav: Mapped[float] = mapped_column(Numeric(28, 10))
-    cost_basis: Mapped[float] = mapped_column(Numeric(28, 10), default=0)
-    external_flow: Mapped[float] = mapped_column(Numeric(28, 10), default=0)
-    spy_close: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    nav: Mapped[float] = mapped_column(Numeric(28, 10), active_history=True)
+    cost_basis: Mapped[float] = mapped_column(Numeric(28, 10), default=0, active_history=True)
+    external_flow: Mapped[float] = mapped_column(Numeric(28, 10), default=0, active_history=True)
+    spy_close: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True, active_history=True)
     # Provisional = recorded while ≥1 held FUND leg still carried a pre-snap_date (stale)
     # NAV — its true NAV strikes hours after the EOD run. NULL/False = final/struck. The
     # reconcile pass flips it to False once every fund leg's struck NAV is captured. Nullable
     # so it auto-ALTERs onto the existing SQLite DB (api/db/session._sync_additive_columns).
-    provisional: Mapped[bool | None] = mapped_column(nullable=True, default=None)
+    provisional: Mapped[bool | None] = mapped_column(nullable=True, default=None, active_history=True)
     # Priced per-holding composition AS OF snap_date — the exact legs that summed to ``nav``,
     # so a restatement swaps one stale leg's price WITHOUT re-deriving composition (which is
     # impossible for snapshot-only SnapTrade accounts with no trade ledger). JSON; see
     # performance._composition for the shape. Nullable → auto-ALTER.
-    composition: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    composition: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None, active_history=True)
+    # The legs of ``nav`` that were NOT valued from inputs dated on/before ``snap_date``
+    # (metron-ops-I370): a list of ``{"ticker", "input": "price"|"fx", "reason"}``. NULL or
+    # empty = every leg used an as-of close and an as-of FX rate, i.e. an EXACT historical
+    # valuation. Non-empty = an ESTIMATE (a current price carried back, a later FX rate, or
+    # an unconvertible leg excluded) — never presented as exact. Nullable → auto-ALTER.
+    estimated_inputs: Mapped[list | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None, active_history=True
+    )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
@@ -403,14 +416,160 @@ class AccountNavSnapshot(Base):
     portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
     account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
     snap_date: Mapped[date] = mapped_column(index=True)
-    nav: Mapped[float] = mapped_column(Numeric(28, 10))
-    cost_basis: Mapped[float] = mapped_column(Numeric(28, 10), default=0)
-    external_flow: Mapped[float] = mapped_column(Numeric(28, 10), default=0)
-    spy_close: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    nav: Mapped[float] = mapped_column(Numeric(28, 10), active_history=True)
+    cost_basis: Mapped[float] = mapped_column(Numeric(28, 10), default=0, active_history=True)
+    external_flow: Mapped[float] = mapped_column(Numeric(28, 10), default=0, active_history=True)
+    spy_close: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True, active_history=True)
     # See NavSnapshot — same provisional/composition semantics at account grain.
-    provisional: Mapped[bool | None] = mapped_column(nullable=True, default=None)
-    composition: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    provisional: Mapped[bool | None] = mapped_column(nullable=True, default=None, active_history=True)
+    composition: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None, active_history=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class NavSnapshotRevision(Base):
+    """The append-only record of every dated valuation a NAV snapshot row ever SERVED
+    (metron-ops-I370).
+
+    ``nav_snapshots`` / ``account_nav_snapshots`` hold one row per day, and several writers
+    rewrite that row in place: nightly reconstruction re-upserts month-end and flow dates,
+    the provisional pass restates a fund leg, the repair pass deletes an outlier, maintenance
+    scripts re-price a gap. Before this table each of those erased the value that had been
+    served for that date — there was no way to say what a user saw yesterday or to replay
+    it. Now the prior values are appended here, in the same flush, every time a tracked
+    field changes or the row is deleted (``api.db.models._record_nav_revisions``, a
+    ``before_flush`` hook, so no writer can bypass it). The live row is the CURRENT revision;
+    this table is every superseded one, numbered per (kind, scope, snap_date).
+
+    Never updated or deleted by application code. ``snapshot_id`` deliberately carries no FK,
+    so a revision outlives a deleted snapshot row; tenant/portfolio deletion still cascades.
+    """
+
+    __tablename__ = "nav_snapshot_revisions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
+    # NULL for a portfolio-grain snapshot; the account for an account-grain one.
+    account_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # "portfolio" | "account"
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    snap_date: Mapped[date] = mapped_column(index=True)
+    # 1 = the first value this date ever served, 2 = the one after that, ...
+    revision: Mapped[int] = mapped_column()
+    change: Mapped[str] = mapped_column(String(16))  # "update" | "delete"
+    nav: Mapped[float] = mapped_column(Numeric(28, 10))
+    cost_basis: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    external_flow: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    spy_close: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    provisional: Mapped[bool | None] = mapped_column(nullable=True)
+    composition: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    estimated_inputs: Mapped[list | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    # When the superseded value was first written, and when it stopped being served.
+    recorded_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    superseded_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+#: The fields whose change makes a served valuation a different valuation.
+_NAV_REVISION_FIELDS = (
+    "nav", "cost_basis", "external_flow", "spy_close", "provisional", "composition", "estimated_inputs",
+)
+_NAV_QUANTUM = Decimal("1e-10")  # Numeric(28, 10): compare at the precision actually stored
+
+
+def _same(field: str, old, new) -> bool:
+    if old is None or new is None:
+        return old is None and new is None
+    if field in ("nav", "cost_basis", "external_flow", "spy_close"):
+        return Decimal(str(old)).quantize(_NAV_QUANTUM) == Decimal(str(new)).quantize(_NAV_QUANTUM)
+    return old == new
+
+
+def _prior_values(obj) -> dict | None:
+    """The committed values of ``obj``'s tracked fields, or None when none changed."""
+    state = sa_inspect(obj)
+    prior: dict = {}
+    changed = False
+    for field in _NAV_REVISION_FIELDS:
+        if field not in state.attrs:
+            continue
+        hist = state.attrs[field].history
+        current = getattr(obj, field)
+        if hist.deleted:
+            old = hist.deleted[0]
+            # The estimate stamp is carried on the revision but does not by itself make a
+            # different valuation: re-stamping an unchanged value is not a restatement.
+            if field != "estimated_inputs" and not _same(field, old, current):
+                changed = True
+            prior[field] = old
+        else:
+            prior[field] = current
+    return prior if changed else None
+
+
+def _committed_values(obj) -> dict:
+    state = sa_inspect(obj)
+    out: dict = {}
+    for field in _NAV_REVISION_FIELDS:
+        if field not in state.attrs:
+            continue
+        hist = state.attrs[field].history
+        out[field] = hist.deleted[0] if hist.deleted else getattr(obj, field)
+    return out
+
+
+def _record_nav_revisions(session, flush_context, instances) -> None:
+    """Append the superseded valuation of every changed/deleted NAV snapshot row."""
+    # The tracked columns are mapped with ``active_history=True``, so an attribute that was
+    # expired (e.g. after a commit) still loads its old value before being overwritten —
+    # without that, ``history.deleted`` would be empty and the change would go unrecorded.
+    pending: list[tuple[object, str, dict]] = []
+    for obj in session.dirty:
+        if isinstance(obj, (NavSnapshot, AccountNavSnapshot)) and sa_inspect(obj).has_identity:
+            prior = _prior_values(obj)
+            if prior is not None:
+                pending.append((obj, "update", prior))
+    for obj in session.deleted:
+        if isinstance(obj, (NavSnapshot, AccountNavSnapshot)):
+            pending.append((obj, "delete", _committed_values(obj)))
+    if not pending:
+        return
+    next_rev: dict[tuple, int] = {}
+    with session.no_autoflush:
+        for obj, change, values in pending:
+            account_id = getattr(obj, "account_id", None)
+            kind = "account" if isinstance(obj, AccountNavSnapshot) else "portfolio"
+            scope = (kind, obj.tenant_id, obj.portfolio_id, account_id, obj.snap_date)
+            if scope not in next_rev:
+                current_max = session.execute(
+                    select(func.max(NavSnapshotRevision.revision)).where(
+                        NavSnapshotRevision.tenant_id == obj.tenant_id,
+                        NavSnapshotRevision.portfolio_id == obj.portfolio_id,
+                        NavSnapshotRevision.kind == kind,
+                        (NavSnapshotRevision.account_id == account_id)
+                        if account_id is not None
+                        else NavSnapshotRevision.account_id.is_(None),
+                        NavSnapshotRevision.snap_date == obj.snap_date,
+                    )
+                ).scalar()
+                next_rev[scope] = (current_max or 0) + 1
+            session.add(
+                NavSnapshotRevision(
+                    tenant_id=obj.tenant_id,
+                    portfolio_id=obj.portfolio_id,
+                    account_id=account_id,
+                    kind=kind,
+                    snapshot_id=obj.id,
+                    snap_date=obj.snap_date,
+                    revision=next_rev[scope],
+                    change=change,
+                    recorded_at=getattr(obj, "created_at", None),
+                    **values,
+                )
+            )
+            next_rev[scope] += 1
+
+
+event.listen(OrmSession, "before_flush", _record_nav_revisions)
 
 
 class IntradayLegSnapshot(Base):
