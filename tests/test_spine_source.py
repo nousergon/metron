@@ -57,8 +57,8 @@ class TestLatest:
 class TestHistory:
     def test_close_and_fx_history_filtered_to_window(self):
         s3 = _s3_with({
-            "market_data/close_history/AAPL.json": {"closes": [["2026-06-09", 198.0], ["2026-06-10", 200.0], ["2026-06-11", 201.5]]},
-            "market_data/fx_history/HKD.json": {"rates": [["2026-06-10", 0.128], ["2026-06-11", 0.1282]]},
+            "market_data/close_history/AAPL.json": {"schema_version": 1, "adjustment_basis": "dividend_adjusted", "closes": [["2026-06-09", 198.0], ["2026-06-10", 200.0], ["2026-06-11", 201.5]]},
+            "market_data/fx_history/HKD.json": {"schema_version": 1, "base": "USD", "rates": [["2026-06-10", 0.128], ["2026-06-11", 0.1282]]},
         })
         out = spine_source.spine_close_history(["AAPL", "HKDUSD=X"], date(2026, 6, 10), date(2026, 6, 11), s3=s3)
         assert out["AAPL"] == [ClosePoint(date(2026, 6, 10), 200.0), ClosePoint(date(2026, 6, 11), 201.5)]
@@ -74,6 +74,7 @@ class TestHistory:
         s3 = _s3_with({
             spine_source.CLOSE_HISTORY_CONSOLIDATED_KEY: {
                 "schema_version": 1,
+                "adjustment_basis": "dividend_adjusted",
                 "series": {
                     "AAPL": [["2026-06-09", 198.0], ["2026-06-10", 200.0], ["2026-06-11", 201.5]],
                     "MSFT": [["2026-06-10", 350.0], ["2026-06-11", 355.0]],
@@ -89,7 +90,7 @@ class TestHistory:
         # Without the consolidated artifact, spine_close_history degrades to per-ticker
         # reads (transition period or producer lag).
         s3 = _s3_with({
-            "market_data/close_history/AAPL.json": {"closes": [["2026-06-09", 198.0], ["2026-06-10", 200.0], ["2026-06-11", 201.5]]},
+            "market_data/close_history/AAPL.json": {"schema_version": 1, "adjustment_basis": "dividend_adjusted", "closes": [["2026-06-09", 198.0], ["2026-06-10", 200.0], ["2026-06-11", 201.5]]},
         })
         out = spine_source.spine_close_history(["AAPL"], date(2026, 6, 10), date(2026, 6, 11), s3=s3)
         assert out["AAPL"] == [ClosePoint(date(2026, 6, 10), 200.0), ClosePoint(date(2026, 6, 11), 201.5)]
@@ -100,10 +101,11 @@ class TestHistory:
         s3 = _s3_with({
             spine_source.CLOSE_HISTORY_CONSOLIDATED_KEY: {
                 "schema_version": 1,
+                "adjustment_basis": "dividend_adjusted",
                 "series": {"AAPL": [["2026-06-11", 201.5]]},
                 "currency": {"AAPL": "USD"},
             },
-            "market_data/fx_history/HKD.json": {"rates": [["2026-06-11", 0.1282]]},
+            "market_data/fx_history/HKD.json": {"schema_version": 1, "base": "USD", "rates": [["2026-06-11", 0.1282]]},
         })
         out = spine_source.spine_close_history(["AAPL", "HKDUSD=X"], date(2026, 6, 11), date(2026, 6, 11), s3=s3)
         assert out["AAPL"] == [ClosePoint(date(2026, 6, 11), 201.5)]

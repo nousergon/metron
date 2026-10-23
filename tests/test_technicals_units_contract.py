@@ -74,7 +74,8 @@ _VALID_FIXTURE: dict[str, float] = {
 
 
 def _artifact(body: dict) -> dict:
-    return {"schema_version": 1, "as_of": "2026-09-12", "technicals": {"AAPL": body}}
+    # The producer version the reader is pinned to; any other is refused (metron-ops-I373).
+    return {"schema_version": 4, "as_of": "2026-09-12", "technicals": {"AAPL": body}}
 
 
 def test_the_pinned_schema_is_itself_valid_json_schema():
