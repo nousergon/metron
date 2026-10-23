@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -872,6 +873,18 @@ def main(argv: list[str] | None = None) -> int:
             r.breaks_resolved,
             len(r.fetch_failures),
             len(r.stale_fetches),
+        )
+        # Custodian NAV observation (MET-01) -- OBSERVE mode: reported here and in the
+        # service's per-account WARNING lines, never part of the exit code below.
+        nav_status = Counter(o.status for o in r.nav_observations)
+        logger.info(
+            "reconcile nav-observe (observe mode): %d account(s) — %d match, %d break, "
+            "%d unmeasured, %d error(s)",
+            len(r.nav_observations),
+            nav_status[reconciliation.NAV_MATCH],
+            nav_status[reconciliation.NAV_BREAK],
+            nav_status[reconciliation.NAV_UNMEASURED],
+            len(r.nav_observe_errors),
         )
         # Fail loud (config: "the job fails loud rather than silently continuing on an
         # unreconciled account"), but on the condition that actually means something.
