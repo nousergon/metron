@@ -59,6 +59,38 @@ class _Break:
     tolerance: float
 
 
+#: The three outcomes of a custodian NAV observation.
+NAV_MATCH = "match"
+NAV_BREAK = "break"
+NAV_UNMEASURED = "unmeasured"
+
+
+@dataclass(frozen=True)
+class NavObservation:
+    """One account's custodian-reported total value against Metron's own (MET-01).
+
+    ``metron_nav`` is the account's recorded ``AccountNavSnapshot`` for the custodian's
+    as-of date (holdings value) plus the account's persisted cash -- the same two
+    quantities Metron serves -- so the comparison is total against total.
+    ``unmeasured`` names a missing input (no as-of date, no snapshot for that date);
+    it is reported, never read as a match."""
+
+    account_id: uuid.UUID
+    broker: str
+    as_of: date | None
+    custodian_nav: float
+    metron_nav: float | None
+    metron_holdings_nav: float | None
+    metron_cash: float | None
+    tolerance: float
+    status: str
+    reason: str = ""
+
+    @property
+    def delta(self) -> float | None:
+        return None if self.metron_nav is None else self.metron_nav - self.custodian_nav
+
+
 @dataclass
 class ReconcileResult:
     portfolios_checked: int = 0
@@ -73,6 +105,12 @@ class ReconcileResult:
     # CLI, so a busy upstream for one night and a reconciliation that has been dead
     # for a week stop producing the identical CRITICAL page (metron-ops#274).
     stale_fetches: list[str] = field(default_factory=list)
+    # Custodian NAV observations (MET-01). OBSERVE mode: never persisted, never alerted,
+    # never part of the exit code -- see ``_observe_account_nav``.
+    nav_observations: list[NavObservation] = field(default_factory=list)
+    # An observation pass that raised. Logged with its traceback; it never costs the
+    # layer-1 checks above, which run first and commit on their own.
+    nav_observe_errors: list[str] = field(default_factory=list)
 
 
 def _diff_snapshot(
@@ -167,6 +205,91 @@ def _diff_snapshot(
             breaks.append(_Break(db_account.id, "cash", None, metron_cash, acct.cash_usd, tol))
 
     return breaks, covered_account_ids
+
+
+def _nav_tolerance(custodian_nav: float) -> float:
+    """Same absolute-or-relative band shape as ``_cost_basis_tolerance``."""
+    return max(
+        settings.reconciliation_cash_tolerance_usd,
+        abs(custodian_nav) * settings.reconciliation_nav_tolerance_bps / 10_000,
+    )
+
+
+def _observe_account_nav(
+    session: Session, portfolio: models.Portfolio, snapshot: ConnectorSnapshot
+) -> list[NavObservation]:
+    """Compare each account's custodian total value with Metron's for the same date.
+
+    MET-01 (2026-10-22 core audit): the layer-2 NAV invariant compares Metron's NAV
+    series only with itself, so 100 -> 150 with no independent P&L passes. The
+    custodian's own total is an independent reference, and layer 1 already holds a
+    fresh, unpersisted read of it. OBSERVE mode: this returns observations and logs
+    every non-match; it writes nothing and alerts nobody."""
+    observations: list[NavObservation] = []
+    numbers = [a.number for a in snapshot.accounts if a.number]
+    if not numbers:
+        return observations
+    db_accounts = {
+        row.external_id: row
+        for row in session.scalars(
+            select(models.Account).where(
+                models.Account.tenant_id == portfolio.tenant_id,
+                models.Account.broker == snapshot.source,
+                models.Account.external_id.in_(numbers),
+            )
+        ).all()
+    }
+    for acct in snapshot.accounts:
+        db_account = db_accounts.get(acct.number)
+        if db_account is None:
+            continue  # brand-new account this run -- the same skip _diff_snapshot makes
+        custodian = float(acct.nav_usd)
+        tol = _nav_tolerance(custodian)
+        if acct.as_of is None:
+            observations.append(
+                NavObservation(
+                    db_account.id, snapshot.source, None, custodian, None, None, None, tol,
+                    NAV_UNMEASURED, "custodian reported no as-of date",
+                )
+            )
+            continue
+        as_of = acct.as_of.date()
+        snap = session.scalars(
+            select(models.AccountNavSnapshot).where(
+                models.AccountNavSnapshot.tenant_id == portfolio.tenant_id,
+                models.AccountNavSnapshot.account_id == db_account.id,
+                models.AccountNavSnapshot.snap_date == as_of,
+            )
+        ).first()
+        if snap is None:
+            observations.append(
+                NavObservation(
+                    db_account.id, snapshot.source, as_of, custodian, None, None, None, tol,
+                    NAV_UNMEASURED, f"no Metron account NAV snapshot for {as_of}",
+                )
+            )
+            continue
+        holdings = float(snap.nav)
+        cash = float(db_account.cash_balance_usd) if db_account.cash_balance_usd is not None else 0.0
+        metron = holdings + cash
+        status = NAV_MATCH if abs(metron - custodian) <= tol else NAV_BREAK
+        observations.append(
+            NavObservation(db_account.id, snapshot.source, as_of, custodian, metron, holdings, cash, tol, status)
+        )
+    for obs in observations:
+        if obs.status == NAV_BREAK:
+            logger.warning(
+                "[nav-observe] BREAK account=%s broker=%s as_of=%s metron=%.2f "
+                "(holdings %.2f + cash %.2f) custodian=%.2f delta=%.2f tol=%.2f",
+                obs.account_id, obs.broker, obs.as_of, obs.metron_nav, obs.metron_holdings_nav,
+                obs.metron_cash, obs.custodian_nav, obs.delta, obs.tolerance,
+            )
+        elif obs.status == NAV_UNMEASURED:
+            logger.warning(
+                "[nav-observe] UNMEASURED account=%s broker=%s custodian=%.2f: %s",
+                obs.account_id, obs.broker, obs.custodian_nav, obs.reason,
+            )
+    return observations
 
 
 def _persist_breaks(
@@ -299,6 +422,7 @@ def reconcile_portfolio(session: Session, portfolio: models.Portfolio, *, today:
     result = ReconcileResult(portfolios_checked=1)
     all_breaks: list[_Break] = []
     covered_account_ids: set[uuid.UUID] = set()
+    snapshots: list[ConnectorSnapshot] = []
 
     fetchers = {
         "ibkr_flex": broker_sync.fetch_flex_snapshot_for_portfolio,
@@ -335,6 +459,7 @@ def reconcile_portfolio(session: Session, portfolio: models.Portfolio, *, today:
         breaks, covered = _diff_snapshot(session, portfolio, snapshot)
         all_breaks.extend(breaks)
         covered_account_ids |= covered
+        snapshots.append(snapshot)
 
     rows, new_count = _persist_breaks(session, portfolio.tenant_id, all_breaks, today)
     still_open_keys = {row.break_key for row in rows}
@@ -353,6 +478,16 @@ def reconcile_portfolio(session: Session, portfolio: models.Portfolio, *, today:
             for row in new_rows:
                 row.alerted_at = now
             session.commit()
+
+    # Custodian NAV observation (MET-01) -- AFTER layer 1 has committed and alerted, so
+    # nothing here can cost or delay it. Read-only; an error is recorded, not raised.
+    for snapshot in snapshots:
+        try:
+            result.nav_observations.extend(_observe_account_nav(session, portfolio, snapshot))
+        except Exception as e:  # noqa: BLE001 -- observe mode must never break layer 1
+            msg = f"nav observation failed -- portfolio={portfolio.id} broker={snapshot.source}: {e}"
+            logger.exception(msg)
+            result.nav_observe_errors.append(msg)
 
     return result
 
@@ -374,4 +509,6 @@ def reconcile_all(session: Session) -> ReconcileResult:
         total.breaks_resolved += r.breaks_resolved
         total.fetch_failures.extend(r.fetch_failures)
         total.stale_fetches.extend(r.stale_fetches)
+        total.nav_observations.extend(r.nav_observations)
+        total.nav_observe_errors.extend(r.nav_observe_errors)
     return total

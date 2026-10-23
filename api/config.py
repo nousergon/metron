@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     # nightly cadence plus headroom: a single missed run is a busy upstream, two in a
     # row is the detector being down, and only the second is worth a CRITICAL page.
     reconciliation_stale_hours: float = 36.0
+    # Custodian NAV observation (MET-01, EPIC metron-ops#210 layer 1): each account's
+    # custodian-reported total value vs Metron's own recorded account NAV for the same
+    # date, an independent reference the layer-2 invariants lack. OBSERVE mode: the
+    # result is logged and counted, never persisted as a break, alerted or allowed to
+    # change the job's exit code, until a measured run shows what its systematic
+    # differences are. Same absolute-or-relative band shape as the tolerances above.
+    reconciliation_nav_tolerance_bps: float = 10.0
     # Shadow-recompute divergence tolerances (metron-ops#218, dashboard-accuracy layer 3)
     # — NAV/realized-P&L allow a small absolute-or-relative band (broker-rounding /
     # as-of-price-staleness noise between the two independent valuation passes), same

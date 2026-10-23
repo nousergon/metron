@@ -403,3 +403,170 @@ def test_never_successful_broker_still_escalates(db_session, monkeypatch):
     assert result.stale_fetches
     row = db_session.query(models.ReconciliationFetchStatus).one()
     assert row.last_success_at is None
+
+
+# ── Custodian NAV observation (MET-01, observe mode) ─────────────────────────────
+# The Flex fixture's latest EquitySummaryByReportDateInBase is reportDate 20260605,
+# total 10000, cash 600. Metron's side is the account NAV snapshot for that date
+# (holdings value) plus the account's persisted cash.
+
+NAV_DATE = datetime(2026, 6, 5).date()
+
+
+def _account_snapshot(session, account, *, snap_date, nav):
+    session.add(
+        models.AccountNavSnapshot(
+            tenant_id=account.tenant_id, portfolio_id=account.portfolio_id, account_id=account.id,
+            snap_date=snap_date, nav=nav,
+        )
+    )
+    session.flush()
+
+
+def _seed_matching_layer1(session):
+    """A portfolio whose layer-1 checks are clean, so only the NAV observation varies."""
+    pf = _seed_portfolio(session, broker="ibkr_flex")
+    account = select_account(session, pf, "ibkr_flex", FLEX_ACCT)
+    account.cash_balance_usd = 600
+    rklb = _security(session, "RKLB")
+    spy = _security(session, "SPY")
+    _position(session, account=account, security=rklb, quantity=100, avg_cost=20, as_of=pf.created_at.date())
+    _position(session, account=account, security=spy, quantity=10, avg_cost=450, as_of=pf.created_at.date())
+    return pf, account
+
+
+def test_nav_observation_matches_custodian_total(db_session, flex_ok):
+    pf, account = _seed_matching_layer1(db_session)
+    _account_snapshot(db_session, account, snap_date=NAV_DATE, nav=9400)  # + 600 cash = 10000
+    db_session.commit()
+
+    result = reconciliation.reconcile_portfolio(db_session, pf)
+
+    (obs,) = result.nav_observations
+    assert obs.status == reconciliation.NAV_MATCH
+    assert obs.as_of == NAV_DATE
+    assert obs.custodian_nav == 10000
+    assert obs.metron_nav == 10000 and obs.metron_holdings_nav == 9400 and obs.metron_cash == 600
+    assert obs.delta == 0
+    assert obs.tolerance == 10.0  # 10 bps of 10000 beats the $1 floor
+    assert result.breaks_open == 0
+
+
+def test_nav_break_is_observed_but_never_persisted_or_alerted(db_session, flex_ok, monkeypatch, caplog):
+    """A planted NAV error far below the layer-2 '>100% daily move' guard is caught, and
+    observe mode keeps it out of the break store, the alert path and the exit code."""
+    alerts = []
+    monkeypatch.setattr(reconciliation, "send_alert", lambda text: alerts.append(text) or True)
+    pf, account = _seed_matching_layer1(db_session)
+    _account_snapshot(db_session, account, snap_date=NAV_DATE, nav=9000)  # 4% low
+    db_session.commit()
+
+    with caplog.at_level("WARNING", logger="api.services.reconciliation"):
+        result = reconciliation.reconcile_portfolio(db_session, pf)
+
+    (obs,) = result.nav_observations
+    assert obs.status == reconciliation.NAV_BREAK
+    assert obs.delta == -400
+    assert db_session.query(models.ReconciliationBreak).count() == 0
+    assert alerts == []
+    assert result.breaks_open == 0 and not result.stale_fetches
+    assert any("[nav-observe] BREAK" in r.getMessage() for r in caplog.records)
+
+
+def test_nav_within_tolerance_is_a_match(db_session, flex_ok):
+    pf, account = _seed_matching_layer1(db_session)
+    _account_snapshot(db_session, account, snap_date=NAV_DATE, nav=9409.99)  # 9.99 over, tol 10
+    db_session.commit()
+    (obs,) = reconciliation.reconcile_portfolio(db_session, pf).nav_observations
+    assert obs.status == reconciliation.NAV_MATCH
+
+
+def test_missing_snapshot_for_the_custodian_date_is_unmeasured_not_a_match(db_session, flex_ok, caplog):
+    pf, account = _seed_matching_layer1(db_session)
+    # A snapshot exists, but for the wrong day: it must not be used.
+    _account_snapshot(db_session, account, snap_date=datetime(2026, 6, 4).date(), nav=9400)
+    db_session.commit()
+
+    with caplog.at_level("WARNING", logger="api.services.reconciliation"):
+        (obs,) = reconciliation.reconcile_portfolio(db_session, pf).nav_observations
+
+    assert obs.status == reconciliation.NAV_UNMEASURED
+    assert obs.metron_nav is None and obs.delta is None
+    assert "2026-06-05" in obs.reason
+    assert any("[nav-observe] UNMEASURED" in r.getMessage() for r in caplog.records)
+
+
+def test_custodian_without_as_of_is_unmeasured(db_session):
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+    from portfolio_analytics.ingestion.schema import CanonicalAccount
+
+    pf = _seed_portfolio(db_session, broker="ibkr_flex")
+    account = select_account(db_session, pf, "ibkr_flex", FLEX_ACCT)
+    snap = ConnectorSnapshot(
+        source="ibkr_flex",
+        accounts=[
+            CanonicalAccount(number=FLEX_ACCT, nav_usd=5000.0, as_of=None),
+            CanonicalAccount(number="U-UNKNOWN", nav_usd=1.0, as_of=None),  # not in Metron: skipped
+        ],
+    )
+    (obs,) = reconciliation._observe_account_nav(db_session, pf, snap)
+    assert obs.account_id == account.id
+    assert obs.status == reconciliation.NAV_UNMEASURED
+    assert obs.reason == "custodian reported no as-of date"
+    assert obs.tolerance == 5.0
+
+
+def test_snapshot_with_no_accounts_observes_nothing(db_session):
+    from portfolio_analytics.ingestion.base import ConnectorSnapshot
+
+    pf = _seed_portfolio(db_session, broker="ibkr_flex")
+    assert reconciliation._observe_account_nav(db_session, pf, ConnectorSnapshot(source="ibkr_flex")) == []
+
+
+def test_nav_observation_error_never_costs_layer1(db_session, flex_ok, monkeypatch):
+    alerts = []
+    monkeypatch.setattr(reconciliation, "send_alert", lambda text: alerts.append(text) or True)
+
+    def boom(*a, **k):
+        raise RuntimeError("db hiccup")
+
+    monkeypatch.setattr(reconciliation, "_observe_account_nav", boom)
+    pf, account = _seed_matching_layer1(db_session)
+    account.cash_balance_usd = 0  # a real layer-1 cash break must still persist and alert
+    db_session.commit()
+
+    result = reconciliation.reconcile_portfolio(db_session, pf)
+
+    assert result.breaks_new == 1 and len(alerts) == 1
+    assert result.nav_observations == []
+    (err,) = result.nav_observe_errors
+    assert "db hiccup" in err and "ibkr_flex" in err
+
+
+def test_reconcile_all_aggregates_nav_observations(db_session, flex_ok):
+    pf, account = _seed_matching_layer1(db_session)
+    _account_snapshot(db_session, account, snap_date=NAV_DATE, nav=9400)
+    db_session.commit()
+    total = reconciliation.reconcile_all(db_session)
+    assert [o.status for o in total.nav_observations] == [reconciliation.NAV_MATCH]
+    assert total.nav_observe_errors == []
+
+
+def test_cli_reports_nav_observations_without_changing_the_exit_code(session_factory, monkeypatch, caplog):
+    from api import maintenance
+
+    obs = reconciliation.NavObservation(
+        account_id=__import__("uuid").uuid4(), broker="ibkr_flex", as_of=NAV_DATE, custodian_nav=100.0,
+        metron_nav=50.0, metron_holdings_nav=50.0, metron_cash=0.0, tolerance=1.0,
+        status=reconciliation.NAV_BREAK,
+    )
+    canned = reconciliation.ReconcileResult(portfolios_checked=1, nav_observations=[obs])
+    monkeypatch.setattr(maintenance, "SessionLocal", session_factory)
+    monkeypatch.setattr(maintenance, "create_all", lambda: None)
+    monkeypatch.setattr(maintenance.reconciliation, "reconcile_all", lambda session: canned)
+
+    with caplog.at_level("INFO", logger="api.maintenance"):
+        assert maintenance.main(["reconcile"]) == 0
+
+    assert any("nav-observe (observe mode): 1 account(s)" in r.getMessage() and "1 break" in r.getMessage()
+               for r in caplog.records)
