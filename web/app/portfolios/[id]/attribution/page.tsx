@@ -20,6 +20,15 @@ function ret(v: number | null): string {
   return v != null ? percent(v) : "—";
 }
 
+// Why a priced holding is outside the attribution (metron-ops-I372).
+const UNATTRIBUTED_REASON: Record<string, string> = {
+  no_sector: "no resolved GICS sector",
+  no_history: "no price history",
+  short_history: "price history starts after the window start",
+  stale: "no price at the window end",
+  invalid_price: "unusable price",
+};
+
 export default async function AttributionPage(
   props: {
     params: Promise<{ id: string }>;
@@ -125,12 +134,21 @@ export default async function AttributionPage(
           </Section>
 
           {attr.coverage < 1 ? (
-            <Section title="Coverage" note="market value attributed to a GICS sector">
+            <Section title="Coverage" note="market value attributed over the whole window">
               <p className="text-sm text-muted">
-                {(attr.coverage * 100).toFixed(0)}% of priced market value is sector-classified; the remainder is held in
-                positions without a resolved sector (e.g. cash, funds, or an unclassifiable ticker) and is excluded from
-                the decomposition rather than attributed to a guess.
+                {(attr.coverage * 100).toFixed(0)}% of priced market value is attributed: it has a resolved GICS sector
+                and a price history spanning the whole window. The remainder is excluded from the decomposition rather
+                than attributed to a guess or measured over a shorter interval.
               </p>
+              {attr.unattributed && attr.unattributed.length > 0 ? (
+                <ul className="mt-2 text-sm text-muted">
+                  {attr.unattributed.map((u) => (
+                    <li key={u.ticker}>
+                      {u.ticker}: {UNATTRIBUTED_REASON[u.reason] ?? u.reason}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </Section>
           ) : null}
         </>

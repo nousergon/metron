@@ -17,6 +17,17 @@ Inputs, all sourced (never fabricated):
 
 A sector with no priced holding, or a window the cache can't span, drops out WITH a
 reason rather than producing a bogus effect.
+
+**One window for every leg** (metron-ops-I372). Every return here — each holding, each
+sector ETF — is measured over the SAME dated interval ``[start_date, as_of]``: the anchor
+is the first session every sector-ETF series reaches on/after the requested start, the end
+is the last session EVERY one of them reaches. A holding whose cached series does not span
+that interval (short history, or stale) is not measured over its own shorter interval —
+it is left out of the attributable population and named in ``unattributed`` with the
+reason. ``coverage`` is the share of portfolio market value that was actually attributed
+(classified AND returnable), and the sector weights are over that same population, so
+weights and returns describe one set of holdings. ``as_of`` is the common end — the
+freshness of the stalest required leg, never the freshest.
 """
 
 from __future__ import annotations
@@ -62,6 +73,17 @@ class SectorEffect:
 
 
 @dataclass
+class UnattributedHolding:
+    """A priced holding whose market value is NOT in the attribution, and why."""
+
+    ticker: str
+    market_value: float
+    # "no_sector" | "no_history" | "short_history" (no close on/before the window start) |
+    # "stale" (no close at the window end) | "invalid_price"
+    reason: str
+
+
+@dataclass
 class AttributionSummary:
     computable: bool
     benchmark: str = BENCHMARK
@@ -69,10 +91,14 @@ class AttributionSummary:
     # Set only when not computable because the product tier / data feed excludes the
     # feature — the cheapest tier that would unlock it (drives the entitlement upsell).
     required_tier: str | None = None
+    # The common window every return was measured over (metron-ops-I372): ``start_date`` is
+    # the actual anchor session and ``as_of`` the common end session. ``requested_start``
+    # is ``today - lookback_days``, kept so a short cache is visible rather than implied.
     as_of: date | None = None
     start_date: date | None = None
+    requested_start: date | None = None
     lookback_days: int = 0
-    coverage: float = 0.0  # priced-and-classified MV / total MV
+    coverage: float = 0.0  # attributed (classified AND returnable over the window) MV / total priced MV
     n_sectors: int = 0
     portfolio_return: float | None = None
     benchmark_return: float | None = None
@@ -81,22 +107,56 @@ class AttributionSummary:
     selection: float | None = None
     interaction: float | None = None
     sectors: list[SectorEffect] = field(default_factory=list)
+    unattributed: list[UnattributedHolding] = field(default_factory=list)
 
 
-def _window_return(series: list[ClosePoint] | None, start: date) -> float | None:
-    """Total return over ``[start, latest]`` from a date-ascending close series.
+def _close_on_or_before(series: list[ClosePoint], when: date) -> ClosePoint | None:
+    found = None
+    for p in series:
+        if p.bar_date > when:
+            break
+        found = p
+    return found
 
-    Anchors on the first close on/after ``start`` (falling back to the earliest
-    available close when the cache doesn't reach ``start``), against the latest close.
-    None if there aren't ≥2 points or the anchor is non-positive."""
-    if not series or len(series) < 2:
+
+def _common_window(reference: list[list[ClosePoint]], start: date) -> tuple[date, date] | None:
+    """``(anchor, end)`` every reference series spans, or None when they share no interval.
+
+    ``anchor`` = the latest of the series' first sessions on/after ``start`` (so every
+    reference series has a close on it or before it within the read); ``end`` = the
+    earliest of their last sessions (so every one has a close there). Freshness is the
+    stalest required leg's, by construction."""
+    firsts = []
+    for series in reference:
+        after = [p.bar_date for p in series if p.bar_date >= start]
+        if not after:
+            return None
+        firsts.append(after[0])
+    if not firsts:
         return None
-    after = [p for p in series if p.bar_date >= start]
-    first = after[0].close if after else series[0].close
-    last = series[-1].close
-    if first <= 0:
-        return None
-    return last / first - 1.0
+    anchor = max(firsts)
+    end = min(series[-1].bar_date for series in reference)
+    return (anchor, end) if end > anchor else None
+
+
+def _window_return(series: list[ClosePoint] | None, anchor: date, end: date) -> tuple[float | None, str | None]:
+    """Return over exactly ``[anchor, end]``, or ``(None, reason)``.
+
+    Both ends are the close on/before that date, and the series must actually reach both:
+    a first bar after ``anchor`` is ``short_history`` and a last bar before ``end`` is
+    ``stale`` — measuring such a series over the part it does cover would put a different
+    interval into the same sum as every other leg."""
+    if not series:
+        return None, "no_history"
+    if series[0].bar_date > anchor:
+        return None, "short_history"
+    if series[-1].bar_date < end:
+        return None, "stale"
+    first = _close_on_or_before(series, anchor)
+    last = _close_on_or_before(series, end)
+    if first is None or last is None or first.close <= 0 or last.close <= 0:
+        return None, "invalid_price"
+    return last.close / first.close - 1.0, None
 
 
 def _portfolio_sector_aggregates(
@@ -106,31 +166,28 @@ def _portfolio_sector_aggregates(
 ) -> tuple[dict[str, float], dict[str, float], float]:
     """Portfolio sector weights + market-value-weighted sector returns + coverage.
 
-    Only holdings whose sector maps to a known GICS sector are attributable; weights
-    are over that covered market value (so they sum to 1), and ``coverage`` is covered
-    MV / total priced MV (an unmapped or sector-less holding is surfaced, not dropped).
-    A sector's return weights its holdings by their MV share *among holdings that have
-    a computed return* — a sector with no priced-and-returnable holding is omitted from
-    the returns map (its weight still counts toward allocation)."""
+    One population (metron-ops-I372): a holding is ATTRIBUTABLE when its sector maps to a
+    known GICS sector AND it has a window return. Weights are over attributable market
+    value (they sum to 1), each sector's return is the MV-weighted return of its
+    attributable holdings, and ``coverage`` is attributable MV / total priced MV. Before,
+    weights counted classified holdings with NO return while the returns renormalized
+    over the ones with a return, and coverage counted them as attributed."""
     total_mv = sum(h.market_value for h in holdings)
+    attributable = [
+        h for h in holdings if sector_of.get(h.ticker) in SECTOR_ETF and h.ticker in returns_of
+    ]
     by_sector_mv: dict[str, float] = {}
-    for h in holdings:
-        sec = sector_of.get(h.ticker)
-        if sec in SECTOR_ETF:
-            by_sector_mv[sec] = by_sector_mv.get(sec, 0.0) + h.market_value
+    for h in attributable:
+        sec = sector_of[h.ticker]
+        by_sector_mv[sec] = by_sector_mv.get(sec, 0.0) + h.market_value
     covered_mv = sum(by_sector_mv.values())
     if covered_mv <= 0:
         return {}, {}, 0.0
     weights = {s: mv / covered_mv for s, mv in by_sector_mv.items()}
-
-    returns: dict[str, float] = {}
-    for sec in by_sector_mv:
-        priced = [h for h in holdings if sector_of.get(h.ticker) == sec and h.ticker in returns_of]
-        mv = sum(h.market_value for h in priced)
-        if mv <= 0:
-            continue
-        returns[sec] = sum(h.market_value / mv * returns_of[h.ticker] for h in priced)
-
+    returns = {
+        sec: sum(h.market_value / mv * returns_of[h.ticker] for h in attributable if sector_of[h.ticker] == sec)
+        for sec, mv in by_sector_mv.items()
+    }
     coverage = covered_mv / total_mv if total_mv > 0 else 0.0
     return weights, returns, coverage
 
@@ -192,36 +249,64 @@ def compute_attribution(
         )
 
     sector_of = sector_service.sectors_by_symbol(session, tickers)
-    # Bounded at ``start`` (metron-ops-I343): ``_window_return`` anchors on the first close
-    # on/after ``start``, so earlier bars never change a result that has two closes in the
-    # window. Unbounded, this read every cached bar of every held ticker and sector ETF.
+    # Bounded at ``start`` (metron-ops-I343): every return is measured from the common
+    # anchor on/after ``start``, so earlier bars never change a result. Unbounded, this
+    # read every cached bar of every held ticker and sector ETF.
     hist = price_service.close_history_by_symbol(session, [*tickers, *etfs], start_date=start)
-    holding_returns = {t: r for t in tickers if (r := _window_return(hist.get(t), start)) is not None}
-
-    w_p, r_p, coverage = _portfolio_sector_aggregates(priced, sector_of, holding_returns)
-    if not w_p:
+    # The common window (metron-ops-I372), set by the sector-ETF legs that carry benchmark
+    # weight — the benchmark side cannot be measured without them, so they bound it.
+    required_etfs = [SECTOR_ETF[sec] for sec in w_b if hist.get(SECTOR_ETF[sec])]
+    window = _common_window([hist[etf] for etf in required_etfs], start)
+    if window is None:
         return AttributionSummary(
             False,
             benchmark=benchmark,
-            reason="No holdings map to a GICS sector yet — compute attribution to classify them.",
+            reason="Not enough price history yet — compute attribution to backfill it.",
+            requested_start=start,
             lookback_days=lookback_days,
         )
-    r_b = {sec: r for sec, etf in SECTOR_ETF.items() if (r := _window_return(hist.get(etf), start)) is not None}
+    anchor, end = window
+
+    holding_returns: dict[str, float] = {}
+    unattributed: list[UnattributedHolding] = []
+    for h in priced:
+        if sector_of.get(h.ticker) not in SECTOR_ETF:
+            unattributed.append(UnattributedHolding(h.ticker, h.market_value, "no_sector"))
+            continue
+        ret, why = _window_return(hist.get(h.ticker), anchor, end)
+        if ret is None:
+            unattributed.append(UnattributedHolding(h.ticker, h.market_value, why or "no_history"))
+        else:
+            holding_returns[h.ticker] = ret
+
+    w_p, r_p, coverage = _portfolio_sector_aggregates(priced, sector_of, holding_returns)
+    if not w_p:
+        classified = any(sector_of.get(h.ticker) in SECTOR_ETF for h in priced)
+        return AttributionSummary(
+            False,
+            benchmark=benchmark,
+            reason=(
+                "No classified holding has a price history spanning the window yet — compute "
+                "attribution to backfill it."
+                if classified
+                else "No holdings map to a GICS sector yet — compute attribution to classify them."
+            ),
+            requested_start=start,
+            lookback_days=lookback_days,
+            unattributed=unattributed,
+        )
+    r_b = {
+        sec: r for sec, etf in SECTOR_ETF.items() if (r := _window_return(hist.get(etf), anchor, end)[0]) is not None
+    }
     if not r_p or not r_b:
         return AttributionSummary(
             False,
             benchmark=benchmark,
             reason="Not enough price history yet — compute attribution to backfill it.",
+            requested_start=start,
             lookback_days=lookback_days,
+            unattributed=unattributed,
         )
-
-    # The decomposition's true data horizon: the freshest close bar across the held +
-    # sector-ETF series the window returns were computed from. Reported as ``as_of``
-    # — the compute-call date would overstate freshness off a stale price cache.
-    data_through = max(
-        (s[-1].bar_date for s in (hist.get(sym) for sym in [*tickers, *etfs]) if s),
-        default=today,
-    )
 
     result: BrinsonResult = brinson_fachler(w_p, r_p, w_b, r_b)
     effects = [
@@ -242,8 +327,9 @@ def compute_attribution(
     return AttributionSummary(
         computable=True,
         benchmark=benchmark,
-        as_of=data_through,
-        start_date=start,
+        as_of=end,
+        start_date=anchor,
+        requested_start=start,
         lookback_days=lookback_days,
         coverage=coverage,
         n_sectors=len(effects),
@@ -254,4 +340,5 @@ def compute_attribution(
         selection=result.selection,
         interaction=result.interaction,
         sectors=effects,
+        unattributed=sorted(unattributed, key=lambda u: -u.market_value),
     )

@@ -278,13 +278,17 @@ export default function MethodologyPage() {
         <Bullets>
           <li>
             <strong>Portfolio weights</strong> w<sub>p,i</sub>: each GICS sector&rsquo;s share of the market value
-            of holdings that have a resolved sector. The share of market value that is covered this way is shown
-            as coverage; holdings without a sector are reported, not assigned to one.
+            of the holdings that are attributed &mdash; those with a resolved sector <em>and</em> a price history
+            spanning the whole window. The share of market value attributed is shown as coverage; every other
+            holding is listed with the reason (no sector, history too short, or stale), never assigned a sector or
+            measured over a shorter interval.
           </li>
           <li>
             <strong>Portfolio sector returns</strong> r<sub>p,i</sub>: the market-value-weighted average of each
-            holding&rsquo;s price return over the window, from the first close on or after the window start to
-            the latest close.
+            holding&rsquo;s price return over one common window: from the first session every sector ETF has
+            reached on or after the requested start, to the last session all of them have reached. Every leg,
+            portfolio and benchmark, is measured over that same interval, and the result is dated by its end
+            &mdash; the freshness of the stalest leg, not the freshest.
           </li>
           <li>
             <strong>Benchmark weights</strong> w<sub>b,i</sub>: the benchmark ETF&rsquo;s published sector

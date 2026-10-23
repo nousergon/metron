@@ -1047,12 +1047,22 @@ export type SectorEffect = {
   total: number;
 };
 
+// A priced holding left out of the attribution, and why (metron-ops-I372).
+export type UnattributedHolding = {
+  ticker: string;
+  market_value: number;
+  reason: "no_sector" | "no_history" | "short_history" | "stale" | "invalid_price" | string;
+};
+
 export type Attribution = {
   computable: boolean;
   benchmark: string;
   reason: string | null;
+  // The common window every return was measured over: start_date = actual anchor session,
+  // as_of = common end session; requested_start = today − lookback_days.
   as_of: string | null;
   start_date: string | null;
+  requested_start?: string | null;
   lookback_days: number;
   coverage: number;
   n_sectors: number;
@@ -1063,6 +1073,7 @@ export type Attribution = {
   selection: number | null;
   interaction: number | null;
   sectors: SectorEffect[];
+  unattributed?: UnattributedHolding[];
 };
 
 export const getAttribution = (apiAuth: string, id: string, accountIds?: string[]) =>
