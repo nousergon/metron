@@ -512,3 +512,62 @@ def reconcile_all(session: Session) -> ReconcileResult:
         total.nav_observations.extend(r.nav_observations)
         total.nav_observe_errors.extend(r.nav_observe_errors)
     return total
+
+
+def status_summary(session: Session, *, now: datetime | None = None) -> dict:
+    """The ``reconciliation`` block of ``GET /meta/status`` (metron-ops#210, layer 6 ↔ layer 1).
+
+    System-wide COUNTS only — never a symbol, account or portfolio — because /status is
+    unauthenticated-shaped and system-wide; the per-portfolio view is the glance
+    integrity zone. Read straight from the two durable layer-1 tables, so it reports
+    what the nightly job persisted, not what one worker process last saw.
+
+    ``state`` is the worst of: ``never`` (no broker has ever been fetched successfully),
+    ``stale`` (some broker is past ``reconciliation_stale_hours`` without a good fetch),
+    ``breaks`` (open breaks exist), else ``reconciled``. Staleness outranks breaks on
+    purpose: a zero break count from a detector that has stopped running is not evidence.
+
+    The custodian NAV comparison (metron#566) is observe-only: it is logged, never
+    persisted, so it cannot be counted here, and the block says so rather than implying
+    the open-break count covers NAV.
+    """
+    now = now or datetime.now(UTC)
+    fetches = session.scalars(select(models.ReconciliationFetchStatus)).all()
+    open_rows = session.execute(
+        select(models.ReconciliationBreak.break_type, models.ReconciliationBreak.break_date).where(
+            models.ReconciliationBreak.resolved_at.is_(None)
+        )
+    ).all()
+    by_type: dict[str, int] = {}
+    for break_type, _ in open_rows:
+        by_type[break_type] = by_type.get(break_type, 0) + 1
+    oldest = min((d for _, d in open_rows), default=None)
+
+    successes = [f.last_success_at for f in fetches if f.last_success_at is not None]
+    last_ok = max(successes) if successes else None
+    if last_ok is not None and last_ok.tzinfo is None:  # SQLite hands back naive datetimes
+        last_ok = last_ok.replace(tzinfo=UTC)
+    stale = sum(1 for f in fetches if _is_stale(f, now=now))
+
+    if last_ok is None:
+        state = "never"
+    elif stale:
+        state = "stale"
+    elif open_rows:
+        state = "breaks"
+    else:
+        state = "reconciled"
+
+    return {
+        "available": True,
+        "state": state,
+        "mode": "detect-and-alert",  # breaks are persisted and alerted; data is never altered
+        "last_successful_fetch_at": last_ok.isoformat() if last_ok else None,
+        "brokers_tracked": len(fetches),
+        "stale_fetches": stale,
+        "stale_after_hours": settings.reconciliation_stale_hours,
+        "open_breaks": len(open_rows),
+        "open_breaks_by_type": dict(sorted(by_type.items())),
+        "oldest_open_break_date": oldest.isoformat() if oldest else None,
+        "nav_check": {"mode": "observe", "persisted": False},
+    }
