@@ -16,7 +16,7 @@ from api.config import settings
 from api.db import models
 from api.db.session import get_session
 from api.plugins import active_plugins
-from api.services import data_quality, external_demo_release_gate, glance_latency
+from api.services import data_quality, external_demo_release_gate, glance_latency, reconciliation
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +130,8 @@ def system_status(session: Session = Depends(get_session)) -> dict:
     entitlement state — the machine-readable /status surface every served analytics
     payload carries provenance markers for individually (the ``as_of`` / ``last_price_date``
     / ``estimated`` / ``stale`` fields on `HoldingOut`, `IntradayStatusOut`, `PerformanceOut`,
-    etc.). Reconciliation-run and open-break-count fields are explicitly gated on the
-    layer-1 break store (metron-ops#210 layer 1) and will be added once it lands.
+    etc.). The ``reconciliation`` block reads the layer-1 break store and fetch clock
+    (metron-ops#210 layer 1), counts only.
     """
     # Account counts by broker source — the number of distinct connected accounts
     # across all tenants, plus a breakdown by broker type.
@@ -186,10 +186,8 @@ def system_status(session: Session = Depends(get_session)) -> dict:
         },
         # Layer 5 (metron-ops#219): ingestion data-quality gates, flag mode. Counts only.
         "data_quality": _data_quality_block(session),
-        "reconciliation": {
-            "available": False,
-            "note": "Layer 1 (break store) not yet deployed — reconciliation-run and open-break-count fields will be added once metron-ops#210 layer 1 lands.",
-        },
+        # Layer 1 (metron-ops#216/#274): the custodian break store + fetch clock. Counts only.
+        "reconciliation": _reconciliation_block(session),
         # Stage A exit gate O2 (metron-ops-I327): the glance aggregate endpoint's p95
         # server-side latency over the most recently measured trading day. "not-measured"
         # (never zero, never green) until `scripts/glance_p95.py --record` has run once.
@@ -197,6 +195,15 @@ def system_status(session: Session = Depends(get_session)) -> dict:
             "glance_p95": glance_latency.latest(session),
         },
     }
+
+
+def _reconciliation_block(session: Session) -> dict:
+    """The layer-1 block, isolated the same way as ``_data_quality_block``."""
+    try:
+        return reconciliation.status_summary(session)
+    except Exception as exc:  # noqa: BLE001 — /status must answer even if this block can't
+        logger.warning("[reconcile] /status summary failed: %s", exc, exc_info=True)
+        return {"available": False, "error": type(exc).__name__}
 
 
 def _data_quality_block(session: Session) -> dict:

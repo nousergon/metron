@@ -570,3 +570,102 @@ def test_cli_reports_nav_observations_without_changing_the_exit_code(session_fac
 
     assert any("nav-observe (observe mode): 1 account(s)" in r.getMessage() and "1 break" in r.getMessage()
                for r in caplog.records)
+
+
+# ── /meta/status reconciliation block (metron-ops#210) ───────────────────────────
+
+
+def _fetch_row(session, pf, *, last_success_at, broker="ibkr_flex"):
+    session.add(
+        models.ReconciliationFetchStatus(
+            tenant_id=pf.tenant_id,
+            portfolio_id=pf.id,
+            broker=broker,
+            last_success_at=last_success_at,
+            first_seen_at=datetime(2026, 10, 1),
+        )
+    )
+    session.flush()
+
+
+def _open_break(session, pf, *, break_type, break_date, resolved=False):
+    account = db_account(session, pf)
+    session.add(
+        models.ReconciliationBreak(
+            tenant_id=pf.tenant_id,
+            account_id=account.id,
+            break_type=break_type,
+            break_key=f"{account.id}:{break_type}:{break_date}",
+            break_date=break_date,
+            resolved_at=datetime(2026, 10, 20) if resolved else None,
+        )
+    )
+    session.flush()
+
+
+def db_account(session, pf):
+    return session.query(models.Account).filter_by(portfolio_id=pf.id).one()
+
+
+NOW = datetime(2026, 10, 24, 6, 0, tzinfo=UTC)
+
+
+def test_status_summary_never_reconciled(db_session):
+    s = reconciliation.status_summary(db_session, now=NOW)
+    assert s["available"] is True
+    assert s["state"] == "never"
+    assert s["open_breaks"] == 0 and s["brokers_tracked"] == 0
+    assert s["last_successful_fetch_at"] is None
+    assert s["nav_check"] == {"mode": "observe", "persisted": False}
+
+
+def test_status_summary_reconciled_when_fresh_and_clean(db_session):
+    pf = _seed_portfolio(db_session, broker="ibkr_flex")
+    _fetch_row(db_session, pf, last_success_at=datetime(2026, 10, 23, 23, 15))
+    _open_break(db_session, pf, break_type="cash", break_date=datetime(2026, 10, 2).date(), resolved=True)
+    s = reconciliation.status_summary(db_session, now=NOW)
+    assert s["state"] == "reconciled"
+    assert s["open_breaks"] == 0  # a resolved break is history, not an open count
+    assert s["last_successful_fetch_at"] == "2026-10-23T23:15:00+00:00"
+
+
+def test_status_summary_counts_open_breaks_without_identifiers(db_session):
+    pf = _seed_portfolio(db_session, broker="ibkr_flex")
+    _fetch_row(db_session, pf, last_success_at=datetime(2026, 10, 23, 23, 15))
+    _open_break(db_session, pf, break_type="quantity", break_date=datetime(2026, 10, 20).date())
+    _open_break(db_session, pf, break_type="quantity", break_date=datetime(2026, 10, 22).date())
+    _open_break(db_session, pf, break_type="cash", break_date=datetime(2026, 10, 21).date())
+    s = reconciliation.status_summary(db_session, now=NOW)
+    assert s["state"] == "breaks"
+    assert s["open_breaks"] == 3
+    assert s["open_breaks_by_type"] == {"cash": 1, "quantity": 2}
+    assert s["oldest_open_break_date"] == "2026-10-20"
+    assert str(pf.id) not in repr(s) and FLEX_ACCT not in repr(s)
+
+
+def test_status_summary_stale_outranks_breaks(db_session):
+    """A clean break count from a detector that stopped running is not evidence."""
+    pf = _seed_portfolio(db_session, broker="ibkr_flex")
+    _fetch_row(db_session, pf, last_success_at=NOW.replace(tzinfo=None) - timedelta(days=5))
+    _open_break(db_session, pf, break_type="cash", break_date=datetime(2026, 10, 18).date())
+    s = reconciliation.status_summary(db_session, now=NOW)
+    assert s["state"] == "stale"
+    assert s["stale_fetches"] == 1 and s["open_breaks"] == 1
+
+
+def test_status_endpoint_carries_the_reconciliation_block(client):
+    body = client.get("/meta/status").json()
+    rec = body["reconciliation"]
+    assert rec["available"] is True
+    assert rec["state"] == "never"
+    assert "not yet deployed" not in repr(rec)
+
+
+def test_status_survives_a_failing_reconciliation_summary(client, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("db hiccup")
+
+    monkeypatch.setattr(reconciliation, "status_summary", boom)
+    r = client.get("/meta/status")
+    assert r.status_code == 200
+    assert r.json()["reconciliation"] == {"available": False, "error": "RuntimeError"}
