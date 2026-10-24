@@ -6,6 +6,7 @@ from datetime import date, timedelta
 
 import pytest
 
+from api import entitlements
 from api.config import settings
 from api.routers import research_intel as router_mod
 from portfolio_analytics.ingestion.research_intel_connector import (
@@ -33,6 +34,29 @@ def _snapshot(*, as_of: str | None = None) -> ResearchIntelSnapshot:
             },
         }
     )
+
+
+@pytest.fixture(autouse=True)
+def _producer_restored(request, monkeypatch):
+    """research_intel is retired by default (producer gone, alpha-engine-config-I11008).
+    The route's tier/stale behaviour below is kept covered for the day a v2 successor
+    artifact re-enters, so every test except the default-retirement ones runs with the
+    producer treated as present."""
+    if not request.node.name.startswith("test_retired_by_default"):
+        monkeypatch.setattr(entitlements, "PRODUCER_GONE_FEATURES", frozenset())
+
+
+@pytest.mark.parametrize("tier", ["personal", "beta"])
+def test_retired_by_default_on_every_tier_no_intel_served(client, monkeypatch, tier):
+    monkeypatch.setattr(settings, "tier_simulator", False)
+    monkeypatch.setattr(settings, "default_tier", tier)
+    monkeypatch.setattr(router_mod, "load_research_intel", lambda: _snapshot())
+    body = client.get("/research-intel").json()
+    assert body["available"] is False
+    assert body["reason"] == "retired"
+    assert body["retired"] is True
+    assert body["required_tier"] is None
+    assert body["intel"] is None
 
 
 @pytest.fixture()

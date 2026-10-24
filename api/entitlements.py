@@ -169,6 +169,23 @@ PINNED_TIER_KEY = "external_demo"
 # empty universe via its own settings check.
 V1_RETIRED_FEATURES: frozenset[str] = frozenset({"research_intel", "alpha_engine"})
 
+# Retired NOW, whatever the phase-4 flag says, because the producer is already gone:
+# ``research_intel/latest.json`` has had no writer since 2026-07-23 (the SignalsEnvelope
+# cutover removed its only caller), so Metron was rendering a months-old file as current.
+# Brian ruled R4 (c) on 2026-09-14 (retire the view); alpha-engine-config-I11008 executes it.
+# The feature key stays in the catalog so the insight registry's facets still name a valid
+# feature, and those facets drop out of the candidate pool through ``in_tier`` below. It
+# re-enters only when a v2 arm publishes a successor artifact.
+PRODUCER_GONE_FEATURES: frozenset[str] = frozenset({"research_intel"})
+
+
+def is_retired(feature_key: str) -> bool:
+    """True when a feature is terminally retired: its producer is already gone, or it is
+    v1-fed and the phase-4 cutover flag (``settings.retired_v1_surfaces``) is on."""
+    if feature_key in PRODUCER_GONE_FEATURES:
+        return True
+    return settings.retired_v1_surfaces and feature_key in V1_RETIRED_FEATURES
+
 
 @dataclass(frozen=True)
 class Pin:
@@ -285,7 +302,7 @@ def resolve(tier: str, *, feed_enabled: bool) -> dict:
     prov = provisioned_sources(feed_enabled)
     features = []
     for f in FEATURES:
-        retired = settings.retired_v1_surfaces and f.key in V1_RETIRED_FEATURES
+        retired = is_retired(f.key)
         in_tier = f.key in active and not retired
         missing = tuple(r for r in f.requires if r not in prov)
         computable = not missing

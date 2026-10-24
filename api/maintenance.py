@@ -169,17 +169,10 @@ def daily_refresh(
             logger.warning("reference-rate sync failed (non-fatal): %s", e)
             session.rollback()
 
-    # Refresh the neutral research-intel snapshot from the crucible-research artifact
-    # (config#1499 Phase 1). Global, DB-free last-good cache; same S3-toggle gate + best-
-    # effort posture as the showcase above — a missing/unreadable artifact keeps last-good.
-    if settings.market_data_sync_enabled:
-        from portfolio_analytics.ingestion import research_intel_store
-
-        try:
-            updated = research_intel_store.sync_research_intel()
-            logger.info("research-intel sync: %s", "updated" if updated else "no artifact (kept last-good)")
-        except Exception as e:  # noqa: BLE001 - best-effort intel sync; never fatal
-            logger.warning("research-intel sync failed (non-fatal): %s", e)
+    # The research-intel snapshot is no longer synced: its producer has been gone since
+    # 2026-07-23 and the feature is retired (api.entitlements.PRODUCER_GONE_FEATURES,
+    # alpha-engine-config-I11008). Reading the dead file every run only refreshed a stale
+    # cache.
 
     # Demo household live pricing: carry each ``DEMO-<SYM>`` forward by ``<SYM>``'s real
     # daily closes past the fixture's last month (see demo_household.refresh_live_prices),

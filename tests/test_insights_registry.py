@@ -166,6 +166,8 @@ def test_retirement_drops_research_intel_and_alpha_engine_facets(monkeypatch):
     ``entitlements.resolve``'s ``in_tier`` override — never re-derived here."""
     from api.config import settings
 
+    # Measure the flag alone: treat the already-gone research_intel producer as present.
+    monkeypatch.setattr(entitlements, "PRODUCER_GONE_FEATURES", frozenset())
     before = {f.key for f in candidate_facets("personal", feed_enabled=True, max_level=LEVEL_L2)}
     assert {"narrative_read", "security_attractiveness", "held_buy_sell_signal"} <= before
 
@@ -180,3 +182,12 @@ def test_retirement_drops_research_intel_and_alpha_engine_facets(monkeypatch):
     # Every facet NOT gated on a retired feature still survives.
     unrelated_before = {f.key for f in CATALOG if f.feature not in entitlements.V1_RETIRED_FEATURES} & before
     assert unrelated_before <= after
+
+
+def test_research_intel_facets_are_dropped_by_default():
+    """research_intel's producer is gone (alpha-engine-config-I11008): no facet grounded in
+    it may be a candidate, flag or no flag, while the alpha_engine facet survives."""
+    keys = {f.key for f in candidate_facets("personal", feed_enabled=True, max_level=LEVEL_L2)}
+    ri = {f.key for f in CATALOG if f.feature == "research_intel"}
+    assert ri and not (ri & keys)
+    assert "held_buy_sell_signal" in keys
