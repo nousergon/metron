@@ -250,7 +250,9 @@ def test_owner_view_is_unchanged(raw_client, seeded, monkeypatch):
     monkeypatch.setattr(settings, "default_tier", "personal")
     body = raw_client.get("/meta/entitlements").json()
     assert body["tier"] == "personal" and body["external_demo"] is False
-    assert _features(body)["research_intel"] is True
+    assert _features(body)["alpha_engine"] is True
+    # research_intel is retired for the owner too (producer gone, alpha-engine-config-I11008).
+    assert _features(body)["research_intel"] is False
 
 
 def test_portfolio_list_is_the_household_only(raw_client, demo_headers):

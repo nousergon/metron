@@ -54,10 +54,11 @@ def test_beta_no_feed_is_the_free_derivable_set():
         assert feats[k]["required_tier"] == "personal"
     assert not feats["ai_advisor"]["available"]
     assert feats["ai_advisor"]["reason"] == "tier"
-    # research_intel (paid AI-Advisor edge output) is not in the beta tier either.
+    # research_intel is retired on every tier (producer gone, alpha-engine-config-I11008):
+    # a terminal state, never an upsell.
     assert not feats["research_intel"]["available"]
-    assert feats["research_intel"]["reason"] == "tier"
-    assert feats["research_intel"]["required_tier"] == "personal"
+    assert feats["research_intel"]["reason"] == "retired"
+    assert feats["research_intel"]["required_tier"] is None
 
 
 def test_full_tier_without_feed_blocks_the_wedge_on_data_not_tier():
@@ -77,15 +78,27 @@ def test_full_tier_without_feed_blocks_the_wedge_on_data_not_tier():
     # (agentic_research still needs the feed, so it stays unavailable).
     assert feats["ai_advisor"]["available"]
     assert feats["alpha_engine"]["available"]
-    # research_intel is tier-gated only (no data source) → available even with the feed off.
-    assert feats["research_intel"]["available"]
+    # research_intel is retired whatever the feed (producer gone, alpha-engine-config-I11008).
+    assert feats["research_intel"]["reason"] == "retired"
     assert not feats["agentic_research"]["available"]
     assert feats["agentic_research"]["reason"] == "feed"
 
 
-def test_personal_with_feed_is_everything():
+def test_personal_with_feed_is_everything_not_retired():
     feats = _by_key(ent.resolve("personal", feed_enabled=True))
-    assert all(f["available"] for f in feats.values())
+    assert all(f["available"] for k, f in feats.items() if not ent.is_retired(k))
+    # The only unavailable features are the retired ones, and they say so.
+    assert {k for k, f in feats.items() if not f["available"]} == set(ent.PRODUCER_GONE_FEATURES)
+
+
+def test_producer_gone_features_are_retired_with_the_flag_off():
+    assert not settings.retired_v1_surfaces
+    for tier in ent.TIER_ORDER:
+        feats = _by_key(ent.resolve(tier, feed_enabled=True))
+        for key in ent.PRODUCER_GONE_FEATURES:
+            assert feats[key]["reason"] == "retired", (tier, key)
+            assert not feats[key]["in_tier"], (tier, key)
+            assert feats[key]["required_tier"] is None, (tier, key)
 
 
 def test_resolve_unknown_tier_raises():
@@ -95,10 +108,9 @@ def test_resolve_unknown_tier_raises():
 
 # ── v1 surface retirement (metron-ops-I308, Brian R4) ────────────────────────
 
-def test_retirement_flag_off_by_default_everything_still_available():
+def test_retirement_flag_off_by_default_alpha_engine_still_available():
     assert not settings.retired_v1_surfaces
     feats = _by_key(ent.resolve("personal", feed_enabled=True))
-    assert feats["research_intel"]["available"]
     assert feats["alpha_engine"]["available"]
 
 
