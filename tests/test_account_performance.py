@@ -1,8 +1,11 @@
-"""Golden examples for the account-basis performance engine (metron-ops#371, slice 1).
+"""Golden examples for the account-basis performance engine (metron-ops#371, slices 1-2).
 
 Each fixture is a synthetic statement worked by hand: the end wealth and every
 period's P&L components are written out below and must reconcile to the cent. The
 FX fixture (design §6 item 7) waits on metron-ops#370's as-of FX and is not here.
+
+Every observation carries its positions (slice 2's position gate). A fixture with no
+trades holds one unchanged position, ``HELD``.
 """
 
 from __future__ import annotations
@@ -23,9 +26,13 @@ def d(i: int) -> date:
     return D0 + timedelta(days=i)
 
 
+HELD = {"HELD": 1.0}
+
+
 def obs(i: int, mv: float, cash: float | None, *, accrued: float | None = 0.0,
-        debit: float | None = 0.0, source: str = "custodian") -> WealthObservation:
-    return WealthObservation(d(i), mv, cash, source, accrued, debit)
+        debit: float | None = 0.0, source: str = "custodian",
+        pos: dict[str, float] | None = HELD) -> WealthObservation:
+    return WealthObservation(d(i), mv, cash, source, accrued, debit, positions=pos)
 
 
 def cents(x: float | None) -> float:
@@ -65,9 +72,11 @@ def test_golden_3_reinvested_dividend_is_never_external_capital_on_the_account_b
         Transaction(d(1), TxnType.REINVESTMENT, "ABC", quantity=2, price=10.0),
     ]
     events = [ap.from_transaction(t) for t in txns]
-    perf = ap.account_performance([obs(0, 1000, 0), obs(1, 1020, 0)], events)
+    perf = ap.account_performance(
+        [obs(0, 1000, 0, pos={"ABC": 100}), obs(1, 1020, 0, pos={"ABC": 102})], events
+    )
     (p,) = perf.periods
-    assert p.external == 0.0
+    assert p.status == "reconciled" and p.external == 0.0
     assert (cents(p.income), cents(p.price_pnl), cents(p.net_pnl)) == (20.00, 0.00, 20.00)
     assert all(ap.account_external_flow(e) == 0.0 for e in events)
     # The holdings sleeve counts that same buy as capital in. The two bases disagree on
@@ -80,10 +89,10 @@ def test_golden_4_commission_and_fee_separate_gross_from_net():
     # Statement: cash 1,000.00; buy 10 @ 50.00 with 1.00 commission; 5.00 account fee;
     # close at 51.00. Cash 1,000 - 501 - 5 = 494.00; holdings 510.00.
     events = [
-        AccountEvent(d(1), EventKind.BUY, 500.0, fees=1.0),
+        AccountEvent(d(1), EventKind.BUY, 500.0, fees=1.0, symbol="X", quantity=10),
         AccountEvent(d(1), EventKind.FEE, 5.0),
     ]
-    perf = ap.account_performance([obs(0, 0, 1000), obs(1, 510, 494)], events)
+    perf = ap.account_performance([obs(0, 0, 1000, pos={}), obs(1, 510, 494, pos={"X": 10})], events)
     (p,) = perf.periods
     assert cents(p.wealth_end) == 1004.00
     assert (cents(p.price_pnl), cents(p.explicit_costs)) == (10.00, 6.00)
@@ -98,11 +107,13 @@ def test_golden_5_margin_financing_accrued_then_paid_is_counted_once():
     # Day 1: buy 500.00 on margin (cash -500.00), holdings close 1,530.00, 2.00 interest
     # accrued unpaid. Day 2: the 2.00 is paid from cash; nothing else moves.
     events = [
-        AccountEvent(d(1), EventKind.BUY, 500.0),
+        AccountEvent(d(1), EventKind.BUY, 500.0, symbol="X", quantity=10),
         AccountEvent(d(2), EventKind.FINANCING, 2.0),
     ]
+    held_x = {"HELD": 1.0, "X": 10}
     perf = ap.account_performance(
-        [obs(0, 1000, 0), obs(1, 1530, -500, debit=2.0), obs(2, 1530, -502, debit=0.0)], events
+        [obs(0, 1000, 0), obs(1, 1530, -500, debit=2.0, pos=held_x),
+         obs(2, 1530, -502, debit=0.0, pos=held_x)], events
     )
     p1, p2 = perf.periods
     assert (cents(p1.wealth_end), cents(p1.price_pnl), cents(p1.explicit_costs)) == (1028.00, 30.00, 2.00)
@@ -168,9 +179,12 @@ def test_a_cash_source_switch_closes_the_period():
 
 
 def test_a_transfer_in_kind_is_external_at_transfer_date_value():
-    events = [AccountEvent(d(1), EventKind.TRANSFER_IN, 300.0)]
-    perf = ap.account_performance([obs(0, 1000, 0), obs(1, 1320, 0)], events)
+    events = [AccountEvent(d(1), EventKind.TRANSFER_IN, 300.0, symbol="T", quantity=3)]
+    perf = ap.account_performance(
+        [obs(0, 1000, 0), obs(1, 1320, 0, pos={"HELD": 1.0, "T": 3})], events
+    )
     (p,) = perf.periods
+    assert p.status == "reconciled"
     assert (p.external, cents(p.price_pnl), cents(p.net_pnl)) == (300.0, 20.00, 20.00)
     out = AccountEvent(d(1), EventKind.TRANSFER_OUT, 50.0)
     assert ap.account_external_flow(out) == -50.0
@@ -190,10 +204,11 @@ def test_corporate_action_cash_and_fx_translation_enter_the_identity():
 def test_from_transaction_maps_the_canonical_ledger():
     buy = ap.from_transaction(Transaction(d(1), TxnType.BUY, "A", quantity=3, price=10.0, fees=1.0))
     assert (buy.kind, buy.amount, buy.fees) == (EventKind.BUY, 30.0, 1.0)
+    assert (buy.symbol, buy.quantity) == ("A", 3)
     reinv = ap.from_transaction(Transaction(d(1), TxnType.REINVESTMENT, "A", quantity=1, price=5.0))
     assert reinv.kind is EventKind.BUY
     split = ap.from_transaction(Transaction(d(1), TxnType.SPLIT, "A", quantity=2.0))
-    assert (split.kind, split.amount) == (EventKind.SPLIT, 0.0)
+    assert (split.kind, split.amount, split.symbol, split.quantity) == (EventKind.SPLIT, 0.0, "A", 2.0)
     dep = ap.from_transaction(Transaction(d(1), TxnType.DEPOSIT, amount=100.0))
     assert ap.account_external_flow(dep) == 100.0
     assert {ap.from_transaction(Transaction(d(1), t, "A")).kind for t in TxnType} <= set(EventKind)
@@ -213,3 +228,63 @@ def test_non_positive_capital_at_work_is_unavailable():
 def test_fewer_than_two_observations_is_an_error():
     with pytest.raises(ValueError):
         ap.account_performance([obs(0, 1000, 0)], [])
+
+
+# ── the position gate (slice 2) ──────────────────────────────────────────────
+
+
+def test_a_position_that_arrives_with_no_event_is_unreconciled_not_return():
+    # 100 shares worth 10,000.00 land by a transfer in kind the ledger cannot record
+    # (metron-ops#378). The cash identity closes, because price P&L is derived from the
+    # holdings move; only the position gate stops this reading as +1,000% return.
+    perf = ap.account_performance(
+        [obs(0, 1000, 0), obs(1, 11000, 0, pos={"HELD": 1.0, "NEW": 100})], []
+    )
+    (p,) = perf.periods
+    assert p.residual == 0 and cents(p.price_pnl) == 10000.00
+    assert p.status == ap.UNRECONCILED and p.net_pnl is None
+    assert "no classifying event (NEW +100)" in (p.unavailable_reason or "")
+    assert "metron-ops#378" in (p.unavailable_reason or "")
+    for metric in perf.metrics.values():
+        assert metric.value is None
+
+
+def test_a_position_that_leaves_with_no_event_is_unreconciled():
+    perf = ap.account_performance(
+        [obs(0, 1000, 0, pos={"A": 10, "B": 5}), obs(1, 600, 0, pos={"A": 10})], []
+    )
+    assert "B -5" in (perf.periods[0].unavailable_reason or "")
+
+
+def test_unobserved_positions_are_unavailable_never_clean():
+    perf = ap.account_performance([obs(0, 1000, 0), obs(1, 1000, 0, pos=None)], [])
+    (p,) = perf.periods
+    assert p.status == "unavailable"
+    assert "positions not observed" in (p.unavailable_reason or "")
+    assert perf.metrics["twr_net"].value is None
+
+
+def test_a_split_explains_its_quantity_change():
+    events = [ap.from_transaction(Transaction(d(1), TxnType.SPLIT, "A", quantity=2.0))]
+    perf = ap.account_performance([obs(0, 1000, 0, pos={"A": 10}), obs(1, 1000, 0, pos={"A": 20})], events)
+    assert perf.periods[0].status == "reconciled"
+
+
+def test_events_apply_in_order_split_then_buy():
+    events = [
+        AccountEvent(d(1), EventKind.SPLIT, symbol="A", quantity=2.0),
+        AccountEvent(d(1), EventKind.BUY, 50.0, symbol="A", quantity=5),
+        AccountEvent(d(1), EventKind.SELL, 30.0, symbol="A", quantity=3),
+    ]
+    assert ap.unexplained_position_changes({"A": 10}, {"A": 22}, events) == {}
+    assert ap.unexplained_position_changes({"A": 10}, {"A": 12}, events) == {"A": -10.0}
+
+
+def test_a_fractional_difference_inside_the_quantity_tolerance_is_clean():
+    assert ap.unexplained_position_changes({"A": 1.0}, {"A": 1.0 + 1e-9}, []) == {}
+    assert ap.unexplained_position_changes({"A": 1.0}, {"A": 1.001}, []) == {"A": pytest.approx(0.001)}
+
+
+def test_a_split_of_a_symbol_not_held_is_ignored():
+    events = [AccountEvent(d(1), EventKind.SPLIT, symbol="Z", quantity=3.0)]
+    assert ap.unexplained_position_changes({}, {}, events) == {}
