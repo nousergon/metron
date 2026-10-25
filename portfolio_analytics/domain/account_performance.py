@@ -1,4 +1,4 @@
-"""Full-account performance engine, ``account_performance.v1`` (metron-ops#371, slice 1).
+"""Full-account performance engine, ``account_performance.v1`` (metron-ops#371, slices 1-2).
 
 The holdings-sleeve figures in ``api.services.performance`` value priced holdings only
 and treat net purchases as the flow. That is right for the sleeve and wrong for an
@@ -27,13 +27,20 @@ The contract, from the design on metron-ops#371:
 Not in this slice: FX translation is accepted as an input amount but nothing derives
 it yet (the FX fixture waits on metron-ops#370's as-of FX). Factor residual alpha is
 slice 4. The NE-book consumer is slice 5. The canonical ledger has no transfer-in-kind
-member yet, so ``from_transaction`` never produces one. A transfer can only come from
-a caller that knows it is one.
+member yet (metron-ops#378), so ``from_transaction`` never produces one. A transfer can
+only come from a caller that knows it is one.
+
+**Position gate (slice 2).** Price P&L is derived from the holdings move, so a position
+that arrives with no classifying event (a transfer in kind the ledger cannot record)
+would otherwise read as investment return. Every observation therefore carries its
+positions, and a period whose quantity change its events do not explain is
+``unreconciled``. Positions that are not observed make the period unavailable: a
+transfer in kind cannot be ruled out, and an unchecked period never counts as clean.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
@@ -45,6 +52,7 @@ from portfolio_analytics.domain.ledger import Transaction, TxnType
 CONTRACT = "account_performance.v1"
 BASIS_ACCOUNT = "account"
 DEFAULT_TOLERANCE = 0.01  # one cent
+DEFAULT_QUANTITY_TOLERANCE = 1e-6  # shares; fractional-share brokers report to 1e-4 or finer
 UNRECONCILED = "unreconciled"
 
 
@@ -77,12 +85,18 @@ EXTERNAL_KINDS: frozenset[EventKind] = frozenset(
 class AccountEvent:
     """One dated account event. ``amount`` is a positive magnitude whose direction the
     kind sets. For BUY/SELL it is the gross trade value (quantity × price) and ``fees``
-    is the commission. For a transfer it is the transfer-date market value."""
+    is the commission. For a transfer it is the transfer-date market value.
+
+    ``symbol`` and ``quantity`` are what the position gate reads: shares for
+    BUY/SELL/TRANSFER_IN/TRANSFER_OUT, the new:old ratio for SPLIT. Other kinds move no
+    position."""
 
     when: date
     kind: EventKind
     amount: float = 0.0
     fees: float = 0.0
+    symbol: str = ""
+    quantity: float = 0.0
 
 
 _TXN_KIND: dict[TxnType, EventKind] = {
@@ -102,10 +116,11 @@ def from_transaction(txn: Transaction) -> AccountEvent:
     """Map a canonical ledger transaction onto the account-basis vocabulary."""
     kind = _TXN_KIND[txn.type]
     if kind in (EventKind.BUY, EventKind.SELL):
-        return AccountEvent(txn.when, kind, amount=txn.quantity * txn.price, fees=txn.fees)
+        return AccountEvent(txn.when, kind, amount=txn.quantity * txn.price, fees=txn.fees,
+                            symbol=txn.ticker, quantity=txn.quantity)
     if kind is EventKind.SPLIT:
-        return AccountEvent(txn.when, kind)
-    return AccountEvent(txn.when, kind, amount=txn.amount, fees=txn.fees)
+        return AccountEvent(txn.when, kind, symbol=txn.ticker, quantity=txn.quantity)
+    return AccountEvent(txn.when, kind, amount=txn.amount, fees=txn.fees, symbol=txn.ticker)
 
 
 def account_external_flow(event: AccountEvent) -> float:
@@ -119,9 +134,49 @@ def account_external_flow(event: AccountEvent) -> float:
     return 0.0
 
 
+_POSITION_SIGN: dict[EventKind, float] = {
+    EventKind.BUY: 1.0,
+    EventKind.TRANSFER_IN: 1.0,
+    EventKind.SELL: -1.0,
+    EventKind.TRANSFER_OUT: -1.0,
+}
+
+
+def unexplained_position_changes(
+    start: Mapping[str, float],
+    end: Mapping[str, float],
+    events: Iterable[AccountEvent],
+    *,
+    tolerance: float = DEFAULT_QUANTITY_TOLERANCE,
+) -> dict[str, float]:
+    """The account-basis flow classifier's position half: for each symbol, the quantity
+    change between two position observations that ``events`` do not explain.
+
+    Events are applied in the order given, which the callers keep as date order: a SPLIT
+    scales the running quantity by its ratio, and BUY/TRANSFER_IN add while SELL/
+    TRANSFER_OUT subtract. A symbol absent from a mapping holds zero. Only differences
+    beyond ``tolerance`` are returned, signed as ``observed − explained``."""
+    expected: dict[str, float] = {s: float(q) for s, q in start.items()}
+    for e in events:
+        if e.kind is EventKind.SPLIT:
+            if e.symbol in expected:
+                expected[e.symbol] *= e.quantity
+        elif e.kind in _POSITION_SIGN:
+            expected[e.symbol] = expected.get(e.symbol, 0.0) + _POSITION_SIGN[e.kind] * e.quantity
+    out: dict[str, float] = {}
+    for symbol in sorted(set(expected) | set(end)):
+        gap = float(end.get(symbol, 0.0)) - expected.get(symbol, 0.0)
+        if abs(gap) > tolerance:
+            out[symbol] = gap
+    return out
+
+
 @dataclass(frozen=True)
 class WealthObservation:
-    """Account components observed at one date's close. ``None`` means not observed."""
+    """Account components observed at one date's close. ``None`` means not observed.
+
+    ``positions`` is quantity by symbol at the same close. It is not a wealth component,
+    so it does not make ``wealth`` unavailable; :func:`decompose_period` gates on it."""
 
     when: date
     holdings_mv: float
@@ -129,6 +184,7 @@ class WealthObservation:
     cash_source: str | None = None  # "custodian" | "ledger"
     accrued_income: float | None = 0.0
     financing_debit: float | None = 0.0
+    positions: Mapping[str, float] | None = None
 
     @property
     def unavailable_reason(self) -> str | None:
@@ -198,17 +254,27 @@ def decompose_period(
     events: Iterable[AccountEvent],
     *,
     tolerance: float = DEFAULT_TOLERANCE,
+    quantity_tolerance: float = DEFAULT_QUANTITY_TOLERANCE,
 ) -> PeriodPnL:
-    """Decompose ``(start.when, end.when]`` and gate it on the wealth identity.
+    """Decompose ``(start.when, end.when]`` and gate it on the wealth identity and on
+    positions.
 
     The cash source may not switch inside a period: a switch closes one period and
     opens the next, so here it makes the period unavailable rather than letting two
-    cash series meet in one difference."""
+    cash series meet in one difference. A quantity change the period's events do not
+    explain makes it unreconciled even when the cash identity closes, because the
+    identity derives price P&L from the holdings move and would absorb it."""
     evs = [e for e in events if start.when < e.when <= end.when]
     external = sum(account_external_flow(e) for e in evs)
     for obs in (start, end):
         if obs.unavailable_reason is not None:
             return _unavailable(start, end, external, obs.unavailable_reason)
+        if obs.positions is None:
+            return _unavailable(
+                start, end, external,
+                f"positions not observed on {obs.when.isoformat()}: "
+                "a transfer in kind cannot be ruled out",
+            )
     if start.cash_source != end.cash_source:
         return _unavailable(
             start, end, external,
@@ -241,17 +307,31 @@ def decompose_period(
     )
     explained = price_pnl + income + ca_cash - costs + fx
     residual = round(end.wealth - start.wealth - external - explained, 10)
-    reconciled = abs(residual) <= tolerance
+    assert start.positions is not None and end.positions is not None
+    jumps = unexplained_position_changes(
+        start.positions, end.positions, evs, tolerance=quantity_tolerance
+    )
+    reconciled = abs(residual) <= tolerance and not jumps
+    if jumps:
+        listed = ", ".join(f"{s} {q:+.6g}" for s, q in jumps.items())
+        why = (
+            f"{UNRECONCILED}: position change with no classifying event ({listed}); "
+            "a transfer in kind has no ledger member yet (metron-ops#378)"
+        )
+    elif not reconciled:
+        why = (
+            f"{UNRECONCILED}: wealth identity residual {residual:+.2f} exceeds "
+            f"tolerance {tolerance:.2f}"
+        )
+    else:
+        why = None
     return PeriodPnL(
         start=start.when, end=end.when,
         wealth_start=start.wealth, wealth_end=end.wealth, external=external,
         price_pnl=price_pnl, income=income, corporate_action_cash=ca_cash,
         explicit_costs=costs, fx_translation=fx, residual=residual,
         status="reconciled" if reconciled else UNRECONCILED,
-        unavailable_reason=None if reconciled else (
-            f"{UNRECONCILED}: wealth identity residual {residual:+.2f} exceeds "
-            f"tolerance {tolerance:.2f}"
-        ),
+        unavailable_reason=why,
     )
 
 
@@ -283,6 +363,7 @@ def account_performance(
     events: Iterable[AccountEvent],
     *,
     tolerance: float = DEFAULT_TOLERANCE,
+    quantity_tolerance: float = DEFAULT_QUANTITY_TOLERANCE,
 ) -> AccountPerformance:
     """Daily-linked account-basis performance over consecutive observations.
 
@@ -294,7 +375,10 @@ def account_performance(
     evs = sorted(events, key=lambda e: e.when)
     if len(obs) < 2:
         raise ValueError("account_performance needs at least two observations")
-    periods = tuple(decompose_period(a, b, evs, tolerance=tolerance) for a, b in zip(obs, obs[1:], strict=False))
+    periods = tuple(
+        decompose_period(a, b, evs, tolerance=tolerance, quantity_tolerance=quantity_tolerance)
+        for a, b in zip(obs, obs[1:], strict=False)
+    )
     start, end, n = obs[0].when, obs[-1].when, len(periods)
 
     def metric(name: str, value: float | None, units: str, why: str | None) -> Metric:
