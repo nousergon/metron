@@ -468,6 +468,11 @@ def record_account_snapshots(
     by_account = analytics.valued_holdings_by_account(session, tenant_id, portfolio_id)
     spy_point = fetch_latest_closes(["SPY"], source=source).get("SPY")
     spy_close = spy_point.close if spy_point else None
+    # The account-basis inputs (metron-ops#371): cash beside the holdings NAV, with its
+    # source. Forward-only history, like the NAV itself; unobserved stays NULL.
+    cash = analytics.cash_with_source_by_account(
+        session, tenant_id, portfolio_id, account_ids=list(by_account)
+    ) if by_account else {}
     written = 0
     for account_id, held in by_account.items():
         priced = [h for h in held if h.market_value is not None]
@@ -483,6 +488,7 @@ def record_account_snapshots(
             session, tenant_id, portfolio_id, account_id, today,
             nav=nav, cost_basis=cost_basis, flow=flow, spy_close=spy_close,
             provisional=_fund_legs_stale(held, today), composition=_composition(held, today),
+            cash=cash.get(account_id, (None, None)),
         )
         written += 1
     if written:
@@ -503,6 +509,7 @@ def _upsert_account_snapshot(
     spy_close: float | None,
     provisional: bool = False,
     composition: dict | None = None,
+    cash: tuple[float | None, str | None] = (None, None),
 ) -> models.AccountNavSnapshot:
     """Find-or-create the (account, day) snapshot and set its fields. Does NOT commit."""
     row = session.scalars(
@@ -525,6 +532,7 @@ def _upsert_account_snapshot(
     row.provisional = provisional
     if composition is not None:
         row.composition = composition
+    row.cash_usd, row.cash_source = cash
     return row
 
 

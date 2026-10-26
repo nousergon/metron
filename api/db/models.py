@@ -423,6 +423,12 @@ class AccountNavSnapshot(Base):
     # See NavSnapshot — same provisional/composition semantics at account grain.
     provisional: Mapped[bool | None] = mapped_column(nullable=True, default=None, active_history=True)
     composition: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None, active_history=True)
+    # Account-basis inputs (metron-ops#371, MET-03 slice 3). ``nav`` above is priced holdings
+    # only; the account basis needs the cash the same day and where it came from, and that
+    # history can only accrue forward. NULL = not observed (a row from before this column, or
+    # a snapshot-sourced account that has not synced a balance). Never read NULL as zero.
+    cash_usd: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True, default=None)
+    cash_source: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
