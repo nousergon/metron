@@ -427,6 +427,73 @@ class TestShadowRecomputeEndToEnd:
         assert result.breaks_open == 0
         assert db_session.query(models.ShadowRecomputeBreak).count() == 0
 
+    # ── alpha-engine-config-I12439: the TWR is diffed over production's window ──────
+
+    def _seed_valued_after_last_trade(self, db_session, name, *, terminal_nav):
+        """Two buys (01-01, 02-01), then no activity while the price moves +10% by
+        03-01 — production keeps recording snapshots after the last trade, the way the
+        Demo household does after its fixture anchor."""
+        tenant, pf = _seed_portfolio(db_session, name)
+        acct = _add_account(db_session, tenant, pf)
+        sec = _add_security(db_session, name.upper().replace("-", ""))
+        _add_txn(db_session, tenant, acct, sec, txn_type="BUY", qty=10, price=100.0, amount=1000.0,
+                 when=date(2025, 1, 1), key=f"{name}-1")
+        _add_txn(db_session, tenant, acct, sec, txn_type="BUY", qty=10, price=100.0, amount=1000.0,
+                 when=date(2025, 2, 1), key=f"{name}-2")
+        _add_price(db_session, sec, date(2025, 1, 1), 100.0)
+        _add_price(db_session, sec, date(2025, 2, 1), 100.0)
+        _add_price(db_session, sec, date(2025, 3, 1), 110.0)
+        for when, nav, flow in (
+            (date(2025, 1, 1), 1000.0, 1000.0),
+            (date(2025, 2, 1), 2000.0, 1000.0),
+            (date(2025, 3, 1), terminal_nav, 0.0),
+        ):
+            db_session.add(models.NavSnapshot(
+                tenant_id=tenant.id, portfolio_id=pf.id, snap_date=when, nav=nav, external_flow=flow,
+            ))
+        db_session.commit()
+        return tenant, pf
+
+    def test_shadow_is_valued_through_productions_last_snapshot(self, db_session):
+        tenant, pf = self._seed_valued_after_last_trade(db_session, "vt", terminal_nav=2200.0)
+        points, _unpriced, _incomplete = shadow_nav_series(
+            db_session, tenant.id, pf.id, through=date(2025, 3, 31), value_through=date(2025, 3, 1),
+        )
+        assert [p.when for p in points] == [date(2025, 1, 1), date(2025, 2, 1), date(2025, 3, 1)]
+        assert points[-1].nav == pytest.approx(2200.0)
+        assert points[-1].flow == 0.0
+        assert points[-1].complete
+        assert shadow_twr(points) == pytest.approx(0.10)
+
+    def test_value_through_on_or_before_last_trade_adds_no_point(self, db_session):
+        tenant, pf = self._seed_valued_after_last_trade(db_session, "vt-noop", terminal_nav=2200.0)
+        points, _u, _i = shadow_nav_series(
+            db_session, tenant.id, pf.id, through=date(2025, 3, 31), value_through=date(2025, 2, 1),
+        )
+        assert [p.when for p in points] == [date(2025, 1, 1), date(2025, 2, 1)]
+
+    def test_no_twr_break_when_production_is_valued_after_the_last_trade(self, db_session, monkeypatch):
+        # Before the fix the shadow stopped at 02-01 (TWR 0.0) and was diffed against
+        # production's TWR through 03-01 (0.10) under as_of=02-01 — a false divergence.
+        monkeypatch.setattr(shadow_recompute, "send_alert", lambda text: True)
+        _tenant, pf = self._seed_valued_after_last_trade(db_session, "vt-e2e", terminal_nav=2200.0)
+
+        result = shadow_recompute.shadow_recompute_portfolio(db_session, pf, today=date(2025, 3, 31))
+
+        assert result.errors == []
+        assert result.breaks_open == 0
+        assert db_session.query(models.ShadowRecomputeBreak).count() == 0
+
+    def test_wrong_nav_after_the_last_trade_is_now_compared(self, db_session, monkeypatch):
+        monkeypatch.setattr(shadow_recompute, "send_alert", lambda text: True)
+        _tenant, pf = self._seed_valued_after_last_trade(db_session, "vt-wrong", terminal_nav=2600.0)
+
+        shadow_recompute.shadow_recompute_portfolio(db_session, pf, today=date(2025, 3, 31))
+
+        breaks = {(b.break_type, b.as_of_date) for b in db_session.query(models.ShadowRecomputeBreak).all()}
+        assert ("nav", date(2025, 3, 1)) in breaks
+        assert ("twr", date(2025, 3, 1)) in breaks
+
     def test_shadow_recompute_all_excludes_reference_portfolio(self, db_session, monkeypatch):
         """Mirrors reconciliation.reconcile_all's / daily_refresh's exclusion (metron-ops#141):
         the Showcase Portfolio's NAV series is sole-sourced from the engine's published
