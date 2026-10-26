@@ -162,11 +162,24 @@ def _txn_flow(txn: Transaction) -> float:
 
 
 def shadow_nav_series(
-    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, through: date
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    through: date,
+    value_through: date | None = None,
 ) -> tuple[list[ShadowPoint], list[str], dict[str, str]]:
     """The shadow-recomputed NAV/realized series, one point per distinct transaction
     date up to and including ``through``. See the module docstring for how this
     aggregation differs structurally from ``performance.reconstruct_snapshots``.
+
+    ``value_through`` (on or before ``through``) adds one valuation-only point on that
+    date when it falls after the last transaction date: the final ledger re-valued at
+    the latest cached close on or before it, with zero flow. Without it the series ends
+    on the last transaction date, so a portfolio that stops trading but keeps being
+    valued (the Demo household after its fixture anchor) has a shadow TWR that stops
+    months before production's — and the two cumulative figures would be diffed over
+    different windows (alpha-engine-config-I12439).
 
     Returns ``(points, unpriced_tickers, incomplete_history)``:
 
@@ -219,6 +232,14 @@ def shadow_nav_series(
         unpriced_all.update(unpriced)
         points.append(ShadowPoint(
             when=d, nav=mv, cumulative_realized=cumulative_realized, flow=day_flow,
+            complete=not unpriced and not incomplete_history,
+        ))
+
+    if value_through is not None and dates_in_order[-1] < value_through <= through:
+        mv, unpriced = _position_market_value(ledger, history, value_through)
+        unpriced_all.update(unpriced)
+        points.append(ShadowPoint(
+            when=value_through, nav=mv, cumulative_realized=cumulative_realized, flow=0.0,
             complete=not unpriced and not incomplete_history,
         ))
 
@@ -468,11 +489,6 @@ def shadow_recompute_portfolio(
     today = today or datetime.now(UTC).date()
     result = ShadowRecomputeResult(portfolios_checked=1)
     try:
-        shadow_points, unpriced_tickers, incomplete_history = shadow_nav_series(
-            session, portfolio.tenant_id, portfolio.id, through=today
-        )
-        uncompared_nav_dates = {p.when for p in shadow_points if not p.complete}
-        twr_compared = False
         prod_rows = session.execute(
             select(models.NavSnapshot.snap_date, models.NavSnapshot.nav).where(
                 models.NavSnapshot.tenant_id == portfolio.tenant_id,
@@ -480,6 +496,17 @@ def shadow_recompute_portfolio(
             )
         ).all()
         production_points = [(row[0], float(row[1])) for row in prod_rows]
+        # Production's cumulative TWR runs through its LAST snapshot, so the shadow is
+        # valued through that same date — never only through its last transaction date
+        # (alpha-engine-config-I12439: a 2026-08-15 shadow diffed against a 2026-10-18
+        # production figure and labelled as_of=2026-08-15).
+        prod_last = max((d for d, _ in production_points), default=None)
+        shadow_points, unpriced_tickers, incomplete_history = shadow_nav_series(
+            session, portfolio.tenant_id, portfolio.id, through=today,
+            value_through=prod_last if prod_last is not None and prod_last <= today else None,
+        )
+        uncompared_nav_dates = {p.when for p in shadow_points if not p.complete}
+        twr_compared = False
 
         divergences = diff_nav_series(portfolio.id, production_points, shadow_points)
 
