@@ -3,7 +3,9 @@
 The holdings-sleeve figures in ``api.services.performance`` value priced holdings only
 and treat net purchases as the flow. That is right for the sleeve and wrong for an
 account. This module is the *account* basis. It is pure, stdlib plus the published
-quant core, and it changes no API. Slice 3 persists it behind ``?basis=account``.
+quant core, and it changes no API. Slice 3 records its inputs (cash and cash source) on
+each per-account snapshot and maps a stored row onto :class:`WealthObservation`
+(``api.services.account_basis``); the ``?basis=account`` route is the slice after.
 
 The contract, from the design on metron-ops#371:
 

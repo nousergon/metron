@@ -787,6 +787,34 @@ def _cash_by_account(
     return out
 
 
+CASH_SOURCE_CUSTODIAN = "custodian"
+CASH_SOURCE_LEDGER = "ledger"
+
+
+def cash_with_source_by_account(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    account_ids: Collection[uuid.UUID] | None = None,
+) -> dict[uuid.UUID, tuple[float | None, str | None]]:
+    """``_cash_by_account`` plus WHERE each figure came from (metron-ops#371): the
+    account-basis engine refuses a period whose two ends read cash from different
+    sources, so the source is recorded beside the value. ``custodian`` = the connector-
+    reported balance of a snapshot-sourced account; ``ledger`` = accrued from the
+    transaction ledger. An unobserved balance is ``(None, None)``, never ``(0.0, ...)``."""
+    cash = _cash_by_account(session, tenant_id, portfolio_id, account_ids=account_ids)
+    if not cash:
+        return {}
+    snapshot_ids = _snapshot_sourced_account_ids(session, tenant_id, portfolio_id)
+    out: dict[uuid.UUID, tuple[float | None, str | None]] = {}
+    for aid, value in cash.items():
+        if value is None:
+            out[aid] = (None, None)
+        else:
+            out[aid] = (value, CASH_SOURCE_CUSTODIAN if aid in snapshot_ids else CASH_SOURCE_LEDGER)
+    return out
+
+
 def holdings(
     session: Session,
     tenant_id: uuid.UUID,
