@@ -34,6 +34,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 
+from portfolio_analytics.log_safe import log_safe
+
 logger = logging.getLogger(__name__)
 
 
@@ -129,7 +131,9 @@ def _parse(raw: dict) -> IndexContributionsArtifact | None:
             constituents=constituents,
         )
     except (KeyError, TypeError, ValueError) as e:
-        logger.warning("index-contributions artifact malformed for %r: %s", raw.get("index"), e)
+        logger.warning(
+            "index-contributions artifact malformed for %s: %s", log_safe(repr(raw.get("index"))), log_safe(e)
+        )
         return None
 
 
@@ -151,6 +155,11 @@ def fetch_index_contributions(
         # Defensive: a source (e.g. a stale `latest.json` fallback) returning a
         # different day's decomposition than asked for is a mismatch, not a hit — never
         # silently substitute one day's story for another's.
-        logger.warning("index-contributions artifact for %s dated %s, expected %s", index, art.trading_day, as_of)
+        logger.warning(
+            "index-contributions artifact for %s dated %s, expected %s",
+            log_safe(index),
+            art.trading_day,
+            as_of,
+        )
         return None
     return art
