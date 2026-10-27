@@ -32,6 +32,7 @@ from api.config import settings
 from api.db import models
 from api.db.session import get_session
 from api.services import (
+    account_basis,
     account_meta,
     analytics,
     attribution,
@@ -599,6 +600,52 @@ class RollingRiskOut(BaseModel):
     cvar: float | None
 
 
+class AccountBasisMetricOut(BaseModel):
+    """One ``account_performance.v1`` metric. ``value`` is null exactly when
+    ``unavailable_reason`` says why (metron-ops#371)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    value: float | None
+    basis: str
+    units: str
+    start: date
+    end: date
+    n: int
+    uncertainty: float | None = None
+    unavailable_reason: str | None = None
+    contract: str
+
+
+class AccountBasisAccountOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: uuid.UUID
+    n_snapshots: int
+    n_provisional_excluded: int
+    first_date: date | None
+    last_date: date | None
+    periods_reconciled: int
+    periods_unreconciled: int
+    periods_unavailable: int
+    unavailable_reason: str | None = None
+    metrics: list[AccountBasisMetricOut] = []
+
+
+class AccountBasisOut(BaseModel):
+    """The opt-in account basis (``?basis=account``): per-account wealth = holdings + cash,
+    external capital at the account boundary only, every metric self-describing. Not
+    blended with the holdings-sleeve fields beside it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    contract: str
+    basis: str
+    conventions: dict[str, str]
+    accounts: list[AccountBasisAccountOut]
+
+
 class PerformanceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -625,6 +672,8 @@ class PerformanceOut(BaseModel):
     rolling: list[RollingRiskOut] = []
     points: list[PerfPointOut]
     estimated: bool = False
+    # Only with ``?basis=account`` (metron-ops#371 slice 3b); null on the default response.
+    account_basis: AccountBasisOut | None = None
     estimated_note: str | None = None
 
 
@@ -2335,13 +2384,18 @@ def get_performance(
     portfolio: models.Portfolio = Depends(_owned_portfolio),
     account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
     session: Session = Depends(get_session),
-) -> performance.PerformanceSummary:
+    basis: Literal["holdings_sleeve", "account"] = Query(default="holdings_sleeve"),
+) -> PerformanceOut:
     """Time-weighted + cumulative return over the recorded NAV snapshot series.
 
     History builds forward as prices are refreshed; metrics are null until ≥2
     snapshots exist (never a fabricated number). A non-empty ``account_id`` selection
     scopes the series to those accounts' own forward-recorded NAV history (metron-ops#9 —
-    per-account NAV can't be reconstructed, so it accrues forward only)."""
+    per-account NAV can't be reconstructed, so it accrues forward only).
+
+    The top-level fields are the holdings sleeve, unchanged. ``?basis=account`` adds the
+    opt-in ``account_basis`` block (metron-ops#371): ``account_performance.v1`` per account
+    in the selection, with its declared conventions. The two bases are never blended."""
     result = performance.performance(session, portfolio.tenant_id, portfolio.id, account_ids=account_ids)
     # Layer-2 invariant checks (metron-ops#217) — run against every served
     # response; violations log at WARNING for CloudWatch observability.
@@ -2352,7 +2406,14 @@ def get_performance(
                 cumulative_return=result.cumulative_return, twr=result.twr,
             )),
         ])
-    return result
+    out = PerformanceOut.model_validate(result)
+    if basis == "account":
+        out.account_basis = AccountBasisOut.model_validate(
+            account_basis.account_basis_performance(
+                session, portfolio.tenant_id, portfolio.id, account_ids=account_ids
+            )
+        )
+    return out
 
 
 @router.post("/{portfolio_id}/performance/reconstruct", response_model=PerformanceOut)
