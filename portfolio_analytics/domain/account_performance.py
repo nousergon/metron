@@ -5,7 +5,8 @@ and treat net purchases as the flow. That is right for the sleeve and wrong for 
 account. This module is the *account* basis. It is pure, stdlib plus the published
 quant core, and it changes no API. Slice 3 records its inputs (cash and cash source) on
 each per-account snapshot and maps a stored row onto :class:`WealthObservation`
-(``api.services.account_basis``); the ``?basis=account`` route is the slice after.
+(``api.services.account_basis``), and slice 3b serves it, opt-in, as
+``GET /portfolios/{id}/performance?basis=account``.
 
 The contract, from the design on metron-ops#371:
 
