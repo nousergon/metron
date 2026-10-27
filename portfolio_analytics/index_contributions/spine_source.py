@@ -18,6 +18,8 @@ import logging
 import os
 from datetime import date
 
+from portfolio_analytics.log_safe import log_safe
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,7 +37,7 @@ def _read_json(s3, key: str) -> dict | None:
         obj = s3.get_object(Bucket=_bucket(), Key=key)
         return json.loads(obj["Body"].read())
     except Exception as e:  # missing object / no creds / parse error
-        logger.warning("data-spine read failed %s: %s", key, e)
+        logger.warning("data-spine read failed %s: %s", log_safe(key), log_safe(e))
         return None
 
 
