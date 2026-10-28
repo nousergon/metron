@@ -39,7 +39,7 @@ vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api"
 
 import { HoldingsView } from "@/components/holdings-view";
 import { FilteredPortfolioTotal, HiddenTypesProvider } from "@/components/holdings-filter-context";
-import type { Holding, IntradayStatus } from "@/lib/api";
+import type { Account, Holding, IntradayStatus } from "@/lib/api";
 
 const h = (ticker: string, security_type = "equity", mv = 1200): Holding =>
   ({
@@ -145,6 +145,29 @@ describe("HoldingsView on the landing page", () => {
     );
     expect(screen.queryByText("Portfolio total")).not.toBeInTheDocument();
     expect(screen.getByText("Columns")).toBeInTheDocument();
+  });
+
+  it("hoisted mode: Equities open, other types minimized, Balance by account last and minimized (Brian, 2026-10-28)", () => {
+    const accounts = [
+      { id: "a1", label: "Brokerage", market_value: 1200 },
+    ] as unknown as Account[];
+    render(
+      <HoldingsView
+        holdings={[h("AAPL", "equity"), h("SPY", "etf"), h("CD1", "cd")]}
+        baseCurrency="USD"
+        priced
+        medians={null}
+        portfolioId="p1"
+        accounts={accounts}
+        hoistTotalAndNotes
+      />,
+    );
+    const order = screen.getAllByRole("heading", { level: 3 }).map((n) => n.textContent!.replace(/\d.*/, "").trim());
+    expect(order).toEqual(["Equities", "ETFs", "CDs", "Balance by account"]);
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+    expect(screen.queryByText("SPY")).not.toBeInTheDocument();
+    expect(screen.queryByText("CD1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Brokerage")).not.toBeInTheDocument();
   });
 
   it("the hoisted total sums the same type-filtered rows as the table", () => {

@@ -4,10 +4,10 @@
 // pattern already used by BalanceByAccountPanel (holdings-view.tsx) and HoldingsWhatIfPanel:
 // onClick (not the native <details> toggle event) drives open/closed via React state, and the
 // body is only rendered while open, rather than relying on <details>'s native hidden-content
-// behavior. Adds a ▾/▸ glyph so a bare (unboxed) heading still reads as collapsible — the two
-// existing bordered-panel adopters don't need it (the box itself is the affordance) and are
-// left on their own inline markup rather than migrated, to keep this change scoped to the new
-// callers (Holdings' per-group sections: by asset class, by account, by sector).
+// behavior. Adds a ▾/▸ glyph so a bare (unboxed) heading still reads as collapsible. Callers:
+// Holdings' per-group sections (by asset class, by account, by sector) and, since 2026-10-28,
+// the Balance by account panel, which moved under the asset-class sections with the same
+// heading. HoldingsWhatIfPanel keeps its own bordered-box markup.
 import { useState, type ReactNode } from "react";
 
 export function CollapsibleSection({
