@@ -1528,6 +1528,8 @@ class AccountInfo:
     overnight_pct: float | None = None
     intraday_pct: float | None = None
     day_pct: float | None = None
+    # Half-width of the ~95% range for day_pct given the quote delay (performance.delay_band).
+    day_band_pct: float | None = None
     ytd_pct: float | None = None
     ltm_pct: float | None = None
 

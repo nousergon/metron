@@ -295,6 +295,8 @@ export type Account = {
   overnight_pct: number | null;
   intraday_pct: number | null;
   day_pct: number | null;
+  /** ± half-width of the ~95% range for day_pct given the quote delay; null when closed. */
+  day_band_pct?: number | null;
   ytd_pct: number | null;
   ltm_pct: number | null;
 };

@@ -318,3 +318,17 @@ describe("AccountPanel narrow-viewport layout", () => {
     expect(rows.contains(nameCell)).toBe(true);
   });
 });
+
+describe("Day % delay band (Brian, 2026-10-28)", () => {
+  it("shows the ~95% half-width under the Day % when the API sends one", () => {
+    const a = { ...acct("a1", "Lending Growth"), day_pct: 0.008, day_band_pct: 0.0044 } as Account;
+    render(<AccountPanel accounts={[a]} baseCurrency="USD" portfolioId="p" />);
+    const band = screen.getByText("±0.44%");
+    expect(band.getAttribute("title")).toMatch(/95% range/);
+  });
+
+  it("shows no band when the API sends none (session closed)", () => {
+    render(<AccountPanel accounts={[acct("a1", "Brokerage")]} baseCurrency="USD" portfolioId="p" />);
+    expect(screen.queryByText(/^±/)).not.toBeInTheDocument();
+  });
+});

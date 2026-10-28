@@ -140,9 +140,22 @@ function MetricHeader({ showDay = true }: { showDay?: boolean }) {
 
 /** A single period-return cell: signed % when a number, "—" when null (no data), blank when
  *  undefined (a subtotal/total row, where period returns don't aggregate). */
-function PeriodCell({ pct }: { pct?: number | null }) {
+function PeriodCell({ pct, band }: { pct?: number | null; band?: number | null }) {
   if (pct === undefined) return <div className={COL_PERIOD} />;
-  return <div className={`${COL_PERIOD} ${pct != null ? signClass(pct) : "text-muted"}`}>{pct != null ? accountingPercent(pct) : "—"}</div>;
+  return (
+    <div className={`${COL_PERIOD} ${pct != null ? signClass(pct) : "text-muted"}`}>
+      {pct != null ? accountingPercent(pct) : "—"}
+      {/* ~95% range for the delayed quote (Brian, 2026-10-28): an estimate, labeled as one. */}
+      {pct != null && band != null ? (
+        <div
+          className="text-[10px] text-muted"
+          title={`Estimated 95% range for the true Day %, given ~15-min delayed quotes: ${accountingPercent(pct - band)} to ${accountingPercent(pct + band)}`}
+        >
+          ±{(band * 100).toFixed(2)}%
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /** Decomposition leg (O/N or Intra): same signed % format, but smaller and muted, matching
@@ -169,6 +182,7 @@ function MetricCells({
   baseCurrency,
   muted,
   dayPct,
+  dayBand,
   overnightPct,
   intradayPct,
   ytdPct,
@@ -181,6 +195,8 @@ function MetricCells({
   baseCurrency: string;
   muted?: boolean;
   dayPct?: number | null;
+  /** ± half-width of the ~95% delay range for dayPct (account rows only). */
+  dayBand?: number | null;
   overnightPct?: number | null;
   intradayPct?: number | null;
   ytdPct?: number | null;
@@ -203,7 +219,7 @@ function MetricCells({
       <div className={`${COL_COST} ${muted ? "text-muted" : ""}`}>
         {cost != null ? moneyWhole(cost, baseCurrency) : "—"}
       </div>
-      {showDay ? <PeriodCell pct={dayPct} /> : null}
+      {showDay ? <PeriodCell pct={dayPct} band={dayBand} /> : null}
       {showDay ? <PeriodCellSub pct={overnightPct} /> : null}
       {showDay ? <PeriodCellSub pct={intradayPct} /> : null}
       <PeriodCell pct={ytdPct} />
@@ -465,6 +481,7 @@ export function AccountPanel({
           mv={mv}
           baseCurrency={baseCurrency}
           dayPct={a.day_pct}
+          dayBand={a.day_band_pct}
           overnightPct={a.overnight_pct}
           intradayPct={a.intraday_pct}
           ytdPct={a.ytd_pct}

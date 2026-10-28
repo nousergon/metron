@@ -431,6 +431,8 @@ class AccountOut(BaseModel):
     overnight_pct: float | None = None
     intraday_pct: float | None = None
     day_pct: float | None = None
+    # ± half-width of the ~95% range for day_pct given the quote delay; null when closed.
+    day_band_pct: float | None = None
     ytd_pct: float | None = None
     ltm_pct: float | None = None
 
@@ -2381,6 +2383,7 @@ def get_accounts(
         if r is None:
             continue
         a.overnight_pct, a.intraday_pct, a.day_pct = r.overnight_pct, r.intraday_pct, r.day_pct
+        a.day_band_pct = r.day_band_pct
         a.ytd_pct, a.ltm_pct = r.ytd_pct, r.ltm_pct
     return accts
 
