@@ -20,7 +20,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from krepis.trading_calendar import last_closed_trading_day, previous_trading_day
@@ -1411,6 +1411,7 @@ class AccountPeriodReturns:
     overnight_pct: float | None = None
     intraday_pct: float | None = None
     day_pct: float | None = None
+    day_band_pct: float | None = None  # ± ~95% half-width for day_pct (delay_band)
     ytd_pct: float | None = None
     ltm_pct: float | None = None
 
@@ -1457,6 +1458,7 @@ def account_period_returns(
     when it already has one (the ``/accounts`` route values every account first); both
     passes below read it instead of valuing every account again."""
     out: dict[uuid.UUID, AccountPeriodReturns] = {}
+    vol: dict[uuid.UUID, float | None] = {}
     series = account_performance_series(
         session, tenant_id, portfolio_id, today=today, account_ids=account_ids, with_benchmarks=False,
         held_by_account=held_by_account,
@@ -1464,6 +1466,7 @@ def account_period_returns(
     for a in series.accounts:
         ytd, ltm = _period_from_growth(a.points, today)
         out[a.account_id] = AccountPeriodReturns(ytd_pct=ytd, ltm_pct=ltm)
+        vol[a.account_id] = daily_vol(a.points)
 
     if feed_entitled:
         from api.services import intraday
@@ -1477,7 +1480,49 @@ def account_period_returns(
         for aid, t in by_acct.items():
             r = out.setdefault(aid, AccountPeriodReturns())
             r.day_pct, r.overnight_pct, r.intraday_pct = t.day_pct, t.overnight_pct, t.intraday_pct
+            if r.day_pct is not None and not t.stale:
+                r.day_band_pct = delay_band(vol.get(aid), t.as_of_utc, now=now)
     return out
+
+
+#: The ~95% two-sided z-score, regular-session minutes, and the vendor's quote delay.
+_Z95 = 1.96
+_SESSION_MINUTES = 390.0
+QUOTE_DELAY_MINUTES = 15.0
+#: Daily returns the volatility estimate reads (≈ one quarter) and the minimum it needs.
+_VOL_LOOKBACK = 63
+_VOL_MIN_RETURNS = 20
+
+
+def daily_vol(points: list[SeriesPoint]) -> float | None:
+    """Sample standard deviation of the account's daily returns over the last
+    ``_VOL_LOOKBACK`` points of its growth index; None with fewer than
+    ``_VOL_MIN_RETURNS`` returns (too little history to say)."""
+    g = [p.g for p in points[-(_VOL_LOOKBACK + 1):] if p.g and p.g > 0]
+    rets = [g[i] / g[i - 1] - 1.0 for i in range(1, len(g))]
+    if len(rets) < _VOL_MIN_RETURNS:
+        return None
+    mean = sum(rets) / len(rets)
+    return (sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)) ** 0.5
+
+
+def delay_band(sigma_daily: float | None, as_of_utc: str | None, *, now: datetime | None = None) -> float | None:
+    """± half-width of the ~95% range the TRUE Day % sits in, given that the quotes are
+    stale by the vendor delay plus the snapshot's age (Brian, 2026-10-28).
+
+    Treats the unseen minutes as a random walk at the account's own daily volatility:
+    ``1.96 · σ_daily · √(minutes / 390)``. An estimate, labeled as one; None when the
+    volatility or the snapshot time is unknown."""
+    if sigma_daily is None or not as_of_utc:
+        return None
+    try:
+        beat = datetime.fromisoformat(str(as_of_utc).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    now = now or datetime.now(UTC)
+    minutes = max(0.0, (now - beat).total_seconds() / 60.0) + QUOTE_DELAY_MINUTES
+    minutes = min(minutes, _SESSION_MINUTES)
+    return _Z95 * sigma_daily * (minutes / _SESSION_MINUTES) ** 0.5
 
 
 def _growth_from_navpoints(points: list[_NavPoint]) -> list[SeriesPoint]:

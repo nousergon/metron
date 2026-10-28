@@ -280,6 +280,8 @@ export type Account = {
   account_type: string | null;
   tax_treatment: string | null;
   taxable: boolean;
+  /** Effective class derived server-side when tax_treatment is unset (account_meta.tax_class). */
+  tax_class?: string | null;
   // Per-account valuation (base currency); null until prices are cached.
   cost_basis_base: number | null;
   market_value: number | null;
@@ -293,6 +295,8 @@ export type Account = {
   overnight_pct: number | null;
   intraday_pct: number | null;
   day_pct: number | null;
+  /** ± half-width of the ~95% range for day_pct given the quote delay; null when closed. */
+  day_band_pct?: number | null;
   ytd_pct: number | null;
   ltm_pct: number | null;
 };
@@ -312,6 +316,8 @@ export type AccountMeta = {
   account_type: string | null;
   tax_treatment: string | null;
   taxable: boolean;
+  /** Effective class derived server-side when tax_treatment is unset (account_meta.tax_class). */
+  tax_class?: string | null;
 };
 
 export type AccountDetail = {

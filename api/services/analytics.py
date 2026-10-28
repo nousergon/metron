@@ -1506,6 +1506,8 @@ class AccountInfo:
     account_type: str | None = None
     tax_treatment: str | None = None
     taxable: bool = True
+    # Effective tax class (account_meta.tax_class) — groups an untagged account by what it is.
+    tax_class: str | None = None
     # Per-account valuation (base currency), from valued_holdings_by_account. cost_basis
     # is price-free (always known when convertible); market_value / unrealized_gain are
     # None until priced. n_unconverted flags holdings excluded for want of a cached FX rate.
@@ -1526,6 +1528,8 @@ class AccountInfo:
     overnight_pct: float | None = None
     intraday_pct: float | None = None
     day_pct: float | None = None
+    # Half-width of the ~95% range for day_pct given the quote delay (performance.delay_band).
+    day_band_pct: float | None = None
     ytd_pct: float | None = None
     ltm_pct: float | None = None
 
@@ -1547,6 +1551,7 @@ class AccountMeta:
     account_type: str | None = None
     tax_treatment: str | None = None
     taxable: bool = True
+    tax_class: str | None = None
 
 
 def accounts_meta(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[AccountMeta]:
@@ -1573,6 +1578,7 @@ def accounts_meta(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUI
             account_type=a.account_type,
             tax_treatment=a.tax_treatment,
             taxable=account_meta.is_taxable(a),
+            tax_class=account_meta.tax_class(a),
         )
         for a in rows
     ]
@@ -1791,6 +1797,7 @@ def accounts(
                 account_type=a.account_type,
                 tax_treatment=a.tax_treatment,
                 taxable=account_meta.is_taxable(a),
+                tax_class=account_meta.tax_class(a),
                 # Sum only over convertible/priced holdings (a foreign holding with no
                 # cached FX rate is excluded + counted, never summed at native face value).
                 cost_basis_base=sum(h.cost_basis_base for h in convertible) if convertible else None,

@@ -85,6 +85,24 @@ def is_tax_deferred(account: models.Account) -> bool:
     return any(kw in haystack for kw in _TAX_DEFERRED_KEYWORDS)
 
 
+def tax_class(account: models.Account) -> str | None:
+    """The account's effective tax class: ``"taxable"`` / ``"tax_deferred"`` /
+    ``"tax_exempt"``, derived the same way ``is_taxable`` / ``is_tax_deferred`` are, so an
+    account with no explicit ``tax_treatment`` still groups by what it is (a "Roth IRA"
+    with no tag is tax-exempt, alongside a tagged one — Brian, 2026-10-28). ``None`` only
+    when the account is not taxable but nothing says which wrapper it is (a bare
+    ``taxable_override=False``)."""
+    if is_taxable(account):
+        return "taxable"
+    if is_tax_deferred(account):
+        return "tax_deferred"
+    treatment = (account.tax_treatment or "").strip().lower()
+    haystack = f"{account.account_type or ''} {account.name or ''}".lower()
+    if treatment in {"tax_exempt", "tax-exempt"} or any(kw in haystack for kw in _TAX_EXEMPT_KEYWORDS):
+        return "tax_exempt"
+    return None
+
+
 def taxable_account_ids(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> set[uuid.UUID]:
     """The ids of a portfolio's taxable accounts (per ``is_taxable``)."""
     rows = session.scalars(

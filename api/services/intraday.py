@@ -460,7 +460,7 @@ class ExcludedRow:
 
     ticker: str
     label: str
-    reason: str  # "suspect" / "no_quote" / "no_fx"
+    reason: str  # "suspect" / "no_quote" / "lagging_session" / "no_fx"
 
 
 @dataclass
@@ -534,6 +534,33 @@ def today_view(
     return _today_summary(held, quotes, yf_by_ticker, base, as_of=as_of, stale=stale)
 
 
+def _is_us_listing(yf_symbol: str) -> bool:
+    """yfinance keys foreign listings with an exchange suffix (``1299.HK``, ``RIO.L``);
+    US listings carry none (share classes use a dash: ``BRK-B``)."""
+    return "." not in yf_symbol and not yf_symbol.startswith("^") and not yf_symbol.endswith("=X")
+
+
+def _us_session_date(quotes: dict) -> str | None:
+    """The session the snapshot's US quotes are on: the most common ``session_date`` among
+    US listings (ties → the later date). ``None`` when no US quote carries one."""
+    counts: dict[str, int] = {}
+    for sym, q in quotes.items():
+        if isinstance(q, dict) and _is_us_listing(str(sym)) and q.get("session_date"):
+            sd = str(q["session_date"])
+            counts[sd] = counts.get(sd, 0) + 1
+    if not counts:
+        return None
+    return max(counts, key=lambda d: (counts[d], d))
+
+
+def _lags_us_session(yf_symbol: str, q: dict, us_session: str | None) -> bool:
+    """True when a US listing's quote is on an EARLIER session than the snapshot's US
+    session — its last/prev_close pair is a past day's move, not today's. Foreign listings
+    legitimately sit on their own exchange's last session and are never flagged."""
+    sd = q.get("session_date")
+    return bool(us_session and sd and _is_us_listing(yf_symbol) and str(sd) < us_session)
+
+
 def _today_summary(
     held: list,
     quotes: dict,
@@ -549,18 +576,29 @@ def _today_summary(
     rows: list[TodayRow] = []
     excluded_rows: list[ExcludedRow] = []
     tot_prev_mv = tot_on = tot_id = tot_day = 0.0
+    us_session = _us_session_date(quotes)
     for h in held:
-        q = quotes.get(yf_by_ticker.get(h.ticker, h.ticker))
+        yf_sym = yf_by_ticker.get(h.ticker, h.ticker)
+        q = quotes.get(yf_sym)
         prev = _f(q, "prev_close") if isinstance(q, dict) else None
         opn = _f(q, "open") if isinstance(q, dict) else None
         last = _f(q, "last") if isinstance(q, dict) else None
         fx = h.fx_rate if h.fx_rate is not None else (1.0 if (h.currency or "USD") == base else None)
         suspect = bool(q.get("suspect")) if isinstance(q, dict) else False
-        if suspect or prev is None or opn is None or last is None or not prev or not opn or fx is None:
+        lagging = isinstance(q, dict) and _lags_us_session(yf_sym, q, us_session)
+        missing = prev is None or opn is None or last is None or not prev or not opn
+        if suspect or missing or lagging or fx is None:
             # Named + reasoned exclusion (metron-ops#152): covered basis only — never
             # blended in flat. Reason priority: a suspect quote is a quote problem even
             # when fields are also missing; FX only matters once the quote is decomposable.
-            reason = "suspect" if suspect else ("no_quote" if (prev is None or opn is None or last is None or not prev or not opn) else "no_fx")
+            # A US quote still on an earlier session than the rest of the snapshot would
+            # report YESTERDAY's move as today's (2026-10-28), so it is excluded too.
+            reason = (
+                "suspect" if suspect
+                else "no_quote" if missing
+                else "lagging_session" if lagging
+                else "no_fx"
+            )
             excluded_rows.append(ExcludedRow(ticker=h.ticker, label=h.user_label or h.ticker, reason=reason))
             continue
         qty = h.quantity

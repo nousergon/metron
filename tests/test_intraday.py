@@ -600,6 +600,46 @@ class TestCoveredBasisConvention:
         assert t.n_priced == 1 and t.covered_prev_mv == 1000.0
 
 
+class TestLaggingSessionExcluded:
+    """A US quote still on an earlier session than the rest of the snapshot carries a past
+    day's move. Counting it as today's inflated the account Day % (2026-10-28)."""
+
+    def test_us_quote_on_prior_session_is_excluded_and_named(self, db_session):
+        tid, pid = _seed_portfolio_multi(db_session, [
+            {"symbol": "AAPL", "qty": 10, "buy_px": 50.0, "eod_close": 100.0},
+            {"symbol": "MSFT", "qty": 10, "buy_px": 50.0, "eod_close": 100.0},
+            {"symbol": "KO", "qty": 10, "buy_px": 50.0, "eod_close": 100.0},
+        ])
+        t = intraday.today_view(
+            db_session, tid, pid, feed_entitled=True, now=_NOW,
+            reader=lambda: _art({
+                "AAPL": {"prev_close": 100.0, "open": 100.0, "last": 101.0, "session_date": "2026-06-12"},
+                "KO": {"prev_close": 100.0, "open": 100.0, "last": 100.0, "session_date": "2026-06-12"},
+                "MSFT": {"prev_close": 100.0, "open": 100.0, "last": 105.0, "session_date": "2026-06-11"},
+            }),
+        )
+        assert [(e.ticker, e.reason) for e in t.excluded_rows] == [("MSFT", "lagging_session")]
+        assert t.n_priced == 2 and t.covered_prev_mv == 2000.0
+        assert t.day_pct == pytest.approx(0.005)
+
+    def test_foreign_listing_on_its_own_earlier_session_is_kept(self):
+        q = {"session_date": "2026-06-11"}
+        assert intraday._lags_us_session("1299.HK", q, "2026-06-12") is False
+        assert intraday._lags_us_session("AAPL", q, "2026-06-12") is True
+        assert intraday._lags_us_session("AAPL", {}, "2026-06-12") is False
+
+    def test_us_session_is_the_most_common_us_date(self):
+        quotes = {
+            "AAPL": {"session_date": "2026-06-12"},
+            "KO": {"session_date": "2026-06-12"},
+            "MSFT": {"session_date": "2026-06-11"},
+            "0005.HK": {"session_date": "2026-06-11"},
+            "1299.HK": {"session_date": "2026-06-11"},
+        }
+        assert intraday._us_session_date(quotes) == "2026-06-12"
+        assert intraday._us_session_date({"0005.HK": {"session_date": "2026-06-11"}}) is None
+
+
 class TestHoldingsEndpointIsEstimated:
     """``GET .../holdings`` stamps ``is_estimated`` (metron-ops#112) on a late-striking
     fund's row when its live price came from the tracking-proxy same-day estimate, and

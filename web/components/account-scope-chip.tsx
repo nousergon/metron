@@ -23,6 +23,10 @@ function typeLabel(a: Account): string {
   if (a.tax_treatment === "taxable") return "Taxable";
   if (a.tax_treatment === "tax_deferred") return "Tax-deferred";
   if (a.tax_treatment === "tax_exempt") return "Tax-exempt";
+  // No explicit tag: group by the server-derived class (a "Roth IRA" is tax-exempt
+  // whether or not it was tagged — Brian, 2026-10-28).
+  if (a.tax_class === "tax_exempt") return "Tax-exempt";
+  if (a.tax_class === "tax_deferred") return "Tax-deferred";
   return a.taxable ? "Taxable" : "Tax-advantaged";
 }
 
