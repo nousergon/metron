@@ -133,6 +133,22 @@ class TestBuildUniverse:
         # Only non-USD currencies listed for the FX producer.
         assert payload["currencies"] == ["HKD"]
 
+    def test_publishes_the_held_currency_row_not_a_stray_duplicate(self, db_session):
+        """A stray ``("1299", "USD")`` Security with no yf_symbol and a LOWER id must not
+        outvote the held ``("1299", "HKD")`` → ``1299.HK`` row. The old first-by-id pick
+        published a bare ``1299`` the spine could not price, so AIA's close froze
+        (2026-08-12 → 2026-10-28)."""
+        import uuid as _uuid
+
+        db_session.add(models.Security(id=_uuid.UUID(int=0), symbol="1299", currency="USD"))
+        db_session.commit()
+        _seed_holding(db_session, pf_name="P1", symbol="1299", currency="HKD", yf_symbol="1299.HK")
+
+        payload = data_spine.build_holdings_universe(db_session, today=date(2024, 6, 3))
+
+        assert payload["holdings"] == [{"yf_symbol": "1299.HK", "currency": "HKD"}]
+        assert payload["currencies"] == ["HKD"]
+
     def test_empty_when_no_holdings(self, db_session):
         payload = data_spine.build_holdings_universe(db_session, today=date(2024, 6, 3))
         assert payload["holdings"] == []
