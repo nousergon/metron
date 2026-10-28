@@ -29,9 +29,9 @@ const TYPE_LABELS: [string, string][] = [
   ["other", "Other"],
 ];
 
-/** Partition into [label, holdings] groups in the canonical display order, with any
+/** Partition into [type, label, holdings] groups in the canonical display order, with any
  *  unrecognized security_type appended (so a holding is never silently dropped). */
-function groupByType(holdings: Holding[]): [string, Holding[]][] {
+function groupByType(holdings: Holding[]): [string, string, Holding[]][] {
   const byType = new Map<string, Holding[]>();
   for (const h of holdings) {
     const key = h.security_type || "other";
@@ -39,17 +39,17 @@ function groupByType(holdings: Holding[]): [string, Holding[]][] {
     if (bucket) bucket.push(h);
     else byType.set(key, [h]);
   }
-  const out: [string, Holding[]][] = [];
+  const out: [string, string, Holding[]][] = [];
   const seen = new Set<string>();
   for (const [key, label] of TYPE_LABELS) {
     const hs = byType.get(key);
     if (hs) {
-      out.push([label, hs]);
+      out.push([key, label, hs]);
       seen.add(key);
     }
   }
   for (const [key, hs] of byType) {
-    if (!seen.has(key)) out.push([key, hs]); // unrecognized type → its raw key as the label
+    if (!seen.has(key)) out.push([key, key, hs]); // unrecognized type → its raw key as the label
   }
   return out;
 }
@@ -64,6 +64,7 @@ export function GroupedHoldings({
   belowTotal,
   showTotal = true,
   freshnessCaptions = true,
+  openTypes,
 }: {
   holdings: Holding[];
   baseCurrency: string;
@@ -82,6 +83,11 @@ export function GroupedHoldings({
   /** false → omit the plain "prices as of" / "positions synced" captions (the landing page
    *  renders them in its bottom notes). Stale WARNINGS always render inline. */
   freshnessCaptions?: boolean;
+  /** Security types whose section starts EXPANDED; every other section starts collapsed.
+   *  Omitted → every section starts expanded. The Holdings landing page passes ["equity"]
+   *  (Brian, 2026-10-28): Equities open under the session strip, ETFs / Funds / Treasuries /
+   *  CDs / … minimized beneath it. */
+  openTypes?: string[];
 }) {
   const groups = groupByType(holdings);
   // Show the total bar whenever there's a control to anchor or multiple groups to summarize.
@@ -99,9 +105,10 @@ export function GroupedHoldings({
       {groups.length <= 1 ? (
         <HoldingsTable holdings={holdings} baseCurrency={baseCurrency} priced={priced} portfolioId={portfolioId} visibleBands={visibleBands} accountColumn={accountColumn} />
       ) : (
-        groups.map(([label, hs]) => (
+        groups.map(([type, label, hs]) => (
           <CollapsibleSection
-            key={label}
+            key={type}
+            defaultOpen={openTypes ? openTypes.includes(type) : true}
             summary={
               <h3 className="mb-2 flex items-baseline gap-2 text-sm font-medium">
                 {label}

@@ -185,4 +185,13 @@ describe("GroupedHoldings", () => {
     await user.click(screen.getByRole("heading", { level: 3, name: /Equities/ }));
     expect(screen.getByText("AAPL")).toBeInTheDocument();
   });
+
+  it("openTypes starts only the named types expanded, the rest minimized (Brian, 2026-10-28)", () => {
+    const holdings = [h("AAPL", "equity"), h("SPY", "etf"), h("VTSAX", "fund"), h("912828", "treasury"), h("CD1", "cd")];
+    render(<GroupedHoldings holdings={holdings} baseCurrency="USD" priced openTypes={["equity"]} />);
+    const order = screen.getAllByRole("heading", { level: 3 }).map((n) => n.textContent!.replace(/\d.*/, "").trim());
+    expect(order).toEqual(["Equities", "ETFs", "Funds", "Treasuries", "CDs"]);
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+    for (const t of ["SPY", "VTSAX", "912828", "CD1"]) expect(screen.queryByText(t)).not.toBeInTheDocument();
+  });
 });

@@ -36,6 +36,7 @@ import { GroupedHoldings } from "@/components/grouped-holdings";
 import { TypeFilterChips } from "@/components/holdings-type-filter";
 import { AccountScopeChip } from "@/components/account-scope-chip";
 import { AccountPanel } from "@/components/account-panel";
+import { CollapsibleSection } from "@/components/collapsible-section";
 import { ColumnPresetControl } from "@/components/holdings-column-presets";
 import { type ColumnBand } from "@/components/holdings-table";
 import { useColumnBands } from "@/components/column-bands-context";
@@ -43,62 +44,61 @@ import { useHiddenTypes } from "@/components/holdings-filter-context";
 import { saveHoldingsViewAction } from "@/app/portfolios/[id]/actions";
 import type { Account, Holding, ValuationMedians } from "@/lib/api";
 
-// Balance-by-account tie-out panel (metron-ops, Brian 2026-07-20) — a collapsible
-// section pinned to the TOP of Holdings, above the toolbar, so the per-account balances
-// used to reconcile against brokerage statements are always the first thing on the page
-// instead of buried in the AccountScopeChip popover (which only has room for a compact
-// list and was getting visually cut off by the table's sticky header — see the z-index
-// fix on AccountScopeChip's panel). Reuses AccountPanel's grouping/subtotal logic
-// (same component the Overview's Accounts panel uses) so the numbers can never drift
-// between the two surfaces; selectable=false because account SCOPING already lives in
-// the toolbar's AccountScopeChip — this panel is for reconciliation, not filtering.
-// editableClassification=true (Brian 2026-07-20): a per-row pencil lets you fix a
-// mis-tagged taxable/tax-deferred/tax-exempt account right where the mismatch is spotted,
-// without a trip to Settings. Defaults open (the point is to have it visible without an
-// extra click); collapsible so it can be tucked away once tied out.
+// Balance-by-account tie-out panel (metron-ops, Brian 2026-07-20) — the per-account
+// balances used to reconcile against brokerage statements. Reuses AccountPanel's
+// grouping/subtotal logic (same component the Overview's Accounts panel uses) so the numbers
+// can never drift between the two surfaces; selectable=false because account SCOPING lives
+// in the toolbar's AccountScopeChip — this panel is for reconciliation, not filtering.
+// editableClassification=true (Brian 2026-07-20): a per-row pencil fixes a mis-tagged
+// taxable/tax-deferred/tax-exempt account right where the mismatch is spotted.
+//
+// Placement (Brian, 2026-10-28): it used to be pinned OPEN at the top of Holdings. It now
+// sits LAST, after the asset-class sections, collapsed like ETFs / Funds / Treasuries / CDs,
+// with the same disclosure heading, so the page reads: session strip → Equities (open) →
+// the minimized sections → Balance by account.
 function BalanceByAccountPanel({
   accounts,
   baseCurrency,
   portfolioId,
   showDay,
+  defaultOpen,
 }: {
   accounts: Account[];
   baseCurrency: string;
   portfolioId: string;
   showDay: boolean;
+  defaultOpen: boolean;
 }) {
-  const [open, setOpen] = useState(true);
   return (
-    <details className="rounded-lg border border-line" open={open}>
-      {/* onClick (not the native <details> toggle event) so open/closed is driven by
-          React state, same pattern as HoldingsWhatIfPanel — see that file's comment. */}
-      <summary
-        className="cursor-pointer list-none rounded-lg px-4 py-3 text-sm font-medium text-ink"
-        onClick={(e) => {
-          e.preventDefault();
-          setOpen((v) => !v);
-        }}
-      >
-        Balance by account
-      </summary>
-      {open ? (
-        <div className="border-t border-line p-3">
-          <AccountPanel
-            accounts={accounts}
-            baseCurrency={baseCurrency}
-            portfolioId={portfolioId}
-            selectable={false}
-            deletable={false}
-            showDay={showDay}
-            editableClassification
-          />
-        </div>
-      ) : null}
-    </details>
+    <CollapsibleSection
+      defaultOpen={defaultOpen}
+      summary={
+        <h3 className="mb-2 flex items-baseline gap-2 text-sm font-medium">
+          Balance by account
+          <span className="text-xs text-muted">
+            {accounts.length} {accounts.length === 1 ? "account" : "accounts"}
+          </span>
+        </h3>
+      }
+    >
+      <AccountPanel
+        accounts={accounts}
+        baseCurrency={baseCurrency}
+        portfolioId={portfolioId}
+        selectable={false}
+        deletable={false}
+        showDay={showDay}
+        editableClassification
+      />
+    </CollapsibleSection>
   );
 }
 
 type Mode = "account" | "asset" | "classification";
+
+// On the landing page only Equities starts expanded under the session strip; ETFs, Funds,
+// Treasuries, CDs and the rest start minimized (Brian, 2026-10-28).
+const LANDING_OPEN_TYPES = ["equity"];
 
 const ALL_MODES: Mode[] = ["account", "asset", "classification"];
 
@@ -300,14 +300,6 @@ export function HoldingsView({
 
   return (
     <div className="space-y-3">
-      {accounts && accounts.length > 0 && portfolioId ? (
-        <BalanceByAccountPanel
-          accounts={accounts}
-          baseCurrency={baseCurrency}
-          portfolioId={portfolioId}
-          showDay={valuation === "live"}
-        />
-      ) : null}
       <div className="flex flex-wrap items-center gap-2">
         {liveAvailable && priced ? (
           <ValuationToggle live={valuation === "live"} sessionState={sessionState} onChange={changeValuation} />
@@ -357,6 +349,7 @@ export function HoldingsView({
           belowTotal={columnControl}
           showTotal={!hoistTotalAndNotes}
           freshnessCaptions={!hoistTotalAndNotes}
+          openTypes={hoistTotalAndNotes ? LANDING_OPEN_TYPES : undefined}
         />
       ) : (
         <GroupedByClassification
@@ -371,6 +364,15 @@ export function HoldingsView({
           showTotal={!hoistTotalAndNotes}
         />
       )}
+      {accounts && accounts.length > 0 && portfolioId ? (
+        <BalanceByAccountPanel
+          accounts={accounts}
+          baseCurrency={baseCurrency}
+          portfolioId={portfolioId}
+          showDay={valuation === "live"}
+          defaultOpen={!hoistTotalAndNotes}
+        />
+      ) : null}
     </div>
   );
 }
