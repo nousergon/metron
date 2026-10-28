@@ -32,6 +32,7 @@ import { LocalAsOf } from "@/components/local-as-of";
 const EXCLUDED_REASON: Record<string, string> = {
   suspect: "quote failed the outlier guard",
   no_quote: "no live quote",
+  lagging_session: "quote still on an earlier session",
   no_fx: "no FX rate to base currency",
 };
 

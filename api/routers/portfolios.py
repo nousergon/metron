@@ -417,6 +417,7 @@ class AccountOut(BaseModel):
     account_type: str | None = None
     tax_treatment: str | None = None
     taxable: bool = True
+    tax_class: str | None = None
     # Per-account valuation (base currency); None until priced (cost basis is price-free).
     cost_basis_base: float | None = None
     market_value: float | None = None
@@ -450,6 +451,7 @@ class AccountMetaOut(BaseModel):
     account_type: str | None = None
     tax_treatment: str | None = None
     taxable: bool = True
+    tax_class: str | None = None
 
 
 class SummaryOut(BaseModel):

@@ -280,6 +280,8 @@ export type Account = {
   account_type: string | null;
   tax_treatment: string | null;
   taxable: boolean;
+  /** Effective class derived server-side when tax_treatment is unset (account_meta.tax_class). */
+  tax_class?: string | null;
   // Per-account valuation (base currency); null until prices are cached.
   cost_basis_base: number | null;
   market_value: number | null;
@@ -312,6 +314,8 @@ export type AccountMeta = {
   account_type: string | null;
   tax_treatment: string | null;
   taxable: boolean;
+  /** Effective class derived server-side when tax_treatment is unset (account_meta.tax_class). */
+  tax_class?: string | null;
 };
 
 export type AccountDetail = {

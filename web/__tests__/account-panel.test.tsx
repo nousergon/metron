@@ -267,6 +267,17 @@ describe("tax-status grouping", () => {
     expect(screen.getByLabelText("Include IRA")).toBeInTheDocument();
   });
 
+  it("an untagged Roth groups with a tagged one via the derived tax_class (Brian, 2026-10-28)", () => {
+    const mixed = [
+      taxed("a1", "Brokerage", "taxable"),
+      taxed("a2", "Roth IRA", "tax_exempt"),
+      { ...acct("a3", "BrokerageLink Roth"), taxable: false, tax_class: "tax_exempt" } as Account,
+    ];
+    render(<AccountPanel accounts={mixed} baseCurrency="USD" portfolioId="p" />);
+    expect(screen.getByText("Tax-exempt · 2")).toBeInTheDocument();
+    expect(screen.queryByText(/Tax-advantaged/)).not.toBeInTheDocument();
+  });
+
   it("a single tax status shows the grand total but no per-group subtotals", () => {
     renderPanel(); // ACCOUNTS are all taxable → one group
     expect(screen.getByText("All accounts total")).toBeInTheDocument();

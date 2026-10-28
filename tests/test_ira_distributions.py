@@ -74,6 +74,22 @@ def test_is_tax_deferred(kwargs, expected):
     assert account_meta.is_tax_deferred(_acct(**kwargs)) is expected
 
 
+@pytest.mark.parametrize(
+    "kwargs, expected",
+    [
+        # An untagged Roth groups with a tagged one (Brian, 2026-10-28: "Roth IRA" was
+        # Tax-exempt but an untagged "BrokerageLink Roth" showed as Tax-advantaged).
+        ({"name": "BrokerageLink Roth"}, "tax_exempt"),
+        ({"treatment": "tax_exempt", "name": "Roth IRA"}, "tax_exempt"),
+        ({"name": "Trad IRA"}, "tax_deferred"),
+        ({"name": "Brokerage"}, "taxable"),
+        ({"override": False, "name": "Joint"}, None),  # not taxable, wrapper unknown
+    ],
+)
+def test_tax_class(kwargs, expected):
+    assert account_meta.tax_class(_acct(**kwargs)) == expected
+
+
 # --- income wiring (API) ----------------------------------------------------------------
 
 def test_ira_withdrawal_is_taxable_distribution(client, tenant):
