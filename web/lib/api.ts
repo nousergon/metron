@@ -887,6 +887,19 @@ export type Tax = {
 export const getTax = (apiAuth: string, id: string, accountIds?: string[]) =>
   get<Tax>(apiAuth, `/portfolios/${id}/tax${acctParams(accountIds)}`);
 
+export type TearsheetAccountPosition = {
+  account_id: string;
+  account_label: string;
+  account_type: string | null;
+  quantity: number;
+  avg_cost: number;
+  cost_basis: number | null;
+  market_value: number | null;
+  unrealized_gain: number | null;
+  unrealized_pct: number | null;
+  share_pct: number | null;
+};
+
 export type Tearsheet = {
   ticker: string;
   base_currency: string;
@@ -902,6 +915,8 @@ export type Tearsheet = {
     unrealized_pct: number | null;
     weight_pct: number | null;
     accounts: string[];
+    // Per-account slices of this holding, largest market value first.
+    by_account?: TearsheetAccountPosition[];
   };
   performance: {
     return_vs_cost: number | null;

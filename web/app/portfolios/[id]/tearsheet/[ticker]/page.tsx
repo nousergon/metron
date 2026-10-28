@@ -4,6 +4,7 @@ import { accountingPercent, isoDate, money, moneyWhole, percent, quantity, signC
 import { Empty, Section, StatCard, Table } from "@/components/ui";
 import { requireApiAuth } from "@/lib/session";
 import { TearsheetFactorScore } from "@/components/tearsheet-factor-score";
+import { TearsheetAccounts } from "@/components/tearsheet-accounts";
 
 export const dynamic = "force-dynamic";
 
@@ -85,6 +86,9 @@ export default async function TearsheetPage(props: { params: Promise<{ id: strin
           {p.currency !== ccy ? ` · native ${p.currency}` : ""}
         </p>
       </Section>
+
+      {/* 1b — Which accounts hold it: each account's own quantity, value and return. */}
+      <TearsheetAccounts legs={p.by_account ?? []} baseCurrency={ccy} nativeCurrency={p.currency} />
 
       {/* 2 — Performance */}
       <Section title="Performance" note={hasHistory ? `data spine as of ${perf.history_from ? isoDate(perf.history_from) : "—"} (${perf.n_bars} bars)` : "return vs cost only — market metrics require feed entitlement"}>

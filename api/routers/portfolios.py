@@ -2774,6 +2774,21 @@ def get_tax_if_sold(
         raise HTTPException(status_code=422, detail=str(e)) from None
 
 
+class TearsheetAccountPositionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: uuid.UUID
+    account_label: str
+    account_type: str | None = None
+    quantity: float
+    avg_cost: float
+    cost_basis: float | None
+    market_value: float | None
+    unrealized_gain: float | None
+    unrealized_pct: float | None
+    share_pct: float | None
+
+
 class TearsheetPositionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -2787,6 +2802,7 @@ class TearsheetPositionOut(BaseModel):
     unrealized_pct: float | None
     weight_pct: float | None
     accounts: list[str] = []
+    by_account: list[TearsheetAccountPositionOut] = []
 
 
 class TearsheetPerformanceOut(BaseModel):
