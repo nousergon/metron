@@ -39,6 +39,25 @@ TRACK_RECORD_SEGMENT = "all"
 
 
 @dataclass
+class TearsheetAccountPosition:
+    """One account's slice of the holding — the "which accounts hold this?" breakdown.
+
+    Valued on the per-account path (FIFO replayed per account), so avg cost / unrealized
+    are that account's own lots, not the consolidated average."""
+
+    account_id: uuid.UUID
+    account_label: str
+    account_type: str | None
+    quantity: float
+    avg_cost: float                 # native per-share cost
+    cost_basis: float | None        # base currency
+    market_value: float | None      # base currency
+    unrealized_gain: float | None
+    unrealized_pct: float | None
+    share_pct: float | None         # this account's share of the holding's market value
+
+
+@dataclass
 class TearsheetPosition:
     ticker: str
     currency: str
@@ -50,6 +69,7 @@ class TearsheetPosition:
     unrealized_pct: float | None
     weight_pct: float | None        # share of the portfolio's priced market value
     accounts: list[str] = field(default_factory=list)
+    by_account: list[TearsheetAccountPosition] = field(default_factory=list)
 
 
 @dataclass
@@ -264,6 +284,34 @@ def _yf_symbol_map(session: Session, symbols: list[str]) -> dict[str, str]:
     return {sym: (yf or sym) for sym, yf in rows}
 
 
+def _account_positions(
+    ticker: str,
+    by_account: dict[uuid.UUID, list[analytics.Holding]],
+    acct_rows: dict[uuid.UUID, analytics.AccountMeta],
+) -> list[TearsheetAccountPosition]:
+    """Per-account slices of ``ticker``, largest market value first (unpriced last)."""
+    legs: list[tuple[uuid.UUID, analytics.Holding]] = [
+        (aid, h) for aid, hs in by_account.items() if aid in acct_rows for h in hs if h.ticker == ticker
+    ]
+    total_mv = sum(h.market_value for _, h in legs if h.market_value is not None)
+    out = [
+        TearsheetAccountPosition(
+            account_id=aid,
+            account_label=acct_rows[aid].nickname or acct_rows[aid].name or acct_rows[aid].external_id,
+            account_type=acct_rows[aid].account_type,
+            quantity=h.quantity,
+            avg_cost=h.avg_cost,
+            cost_basis=h.cost_basis_base,
+            market_value=h.market_value,
+            unrealized_gain=h.unrealized_gain,
+            unrealized_pct=h.unrealized_pct,
+            share_pct=(h.market_value / total_mv) if (h.market_value is not None and total_mv) else None,
+        )
+        for aid, h in legs
+    ]
+    return sorted(out, key=lambda a: (a.market_value is None, -(a.market_value or 0.0), a.account_label))
+
+
 def tearsheet(
     session: Session,
     tenant_id: uuid.UUID,
@@ -294,12 +342,10 @@ def tearsheet(
     weight = holding.market_value / total_mv if (holding.market_value is not None and total_mv) else None
 
     by_account = analytics.valued_holdings_by_account(session, tenant_id, portfolio_id)
-    acct_rows = {a.account_id: a for a in analytics.accounts(session, tenant_id, portfolio_id)}
-    account_names = [
-        (acct_rows[aid].nickname or acct_rows[aid].name or acct_rows[aid].external_id)
-        for aid, hs in by_account.items()
-        if aid in acct_rows and any(h.ticker == ticker for h in hs)
-    ]
+    # Metadata only — ``analytics.accounts`` would re-value every account a second time.
+    acct_rows = {a.account_id: a for a in analytics.accounts_meta(session, tenant_id, portfolio_id)}
+    account_positions = _account_positions(ticker, by_account, acct_rows)
+    account_names = [a.account_label for a in account_positions]
 
     position = TearsheetPosition(
         ticker=ticker,
@@ -312,6 +358,7 @@ def tearsheet(
         unrealized_pct=holding.unrealized_pct,
         weight_pct=weight,
         accounts=sorted(account_names),
+        by_account=account_positions,
     )
     as_of = security_perf_service.market_today()
 

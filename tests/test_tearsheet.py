@@ -346,6 +346,61 @@ def test_tearsheet_fundamentals_omitted_when_feed_off(db_session):
     assert sheet.fundamentals is None
 
 
+def test_tearsheet_breaks_position_down_by_account(db_session):
+    """A ticker held in two accounts lists each account's own quantity, value and return,
+    largest first — the "which accounts hold this?" breakdown."""
+    tenant_id, pid = _seed(db_session)
+    aapl = db_session.query(models.Security).filter_by(symbol="AAPL").one()
+    ira = models.Account(
+        tenant_id=tenant_id, portfolio_id=pid, broker="csv", external_id="CSV-2",
+        nickname="Roth IRA", account_type="ira", currency="USD",
+    )
+    db_session.add(ira)
+    db_session.flush()
+    # 30 shares at a higher cost than CSV-1's 10 @ 100 — a different per-account return.
+    db_session.add(
+        models.Transaction(
+            tenant_id=tenant_id, account_id=ira.id, security_id=aapl.id, txn_type="BUY",
+            quantity=30, price=150.0, amount=4500.0, currency="USD",
+            trade_date=date(2025, 1, 2), source_key="buy-aapl-ira",
+        )
+    )
+    db_session.commit()
+
+    sheet = tearsheet.tearsheet(db_session, tenant_id, pid, "AAPL")
+    assert sheet is not None
+    assert sheet.position.quantity == pytest.approx(40)
+    legs = sheet.position.by_account
+    assert [a.account_label for a in legs] == ["Roth IRA", "CSV-1"]
+    assert sheet.position.accounts == ["CSV-1", "Roth IRA"]
+    ira_leg, csv_leg = legs
+    assert ira_leg.account_type == "ira"
+    assert ira_leg.quantity == pytest.approx(30)
+    assert csv_leg.quantity == pytest.approx(10)
+    assert ira_leg.avg_cost == pytest.approx(150.0)
+    assert csv_leg.avg_cost == pytest.approx(100.0)
+    assert ira_leg.cost_basis == pytest.approx(4500.0)
+    assert ira_leg.market_value is not None and csv_leg.market_value is not None
+    assert ira_leg.market_value == pytest.approx(3 * csv_leg.market_value)
+    # Bought higher, so the IRA leg's return is below the CSV leg's.
+    assert ira_leg.unrealized_pct < csv_leg.unrealized_pct
+    assert ira_leg.share_pct + csv_leg.share_pct == pytest.approx(1.0)
+    assert ira_leg.share_pct == pytest.approx(0.75)
+
+
+def test_tearsheet_endpoint_serializes_account_breakdown(client):
+    tenant = str(uuid.uuid4())
+    h = {"X-Tenant-Id": tenant}
+    pid = client.post("/portfolios", json={"name": "P"}, headers=h).json()["id"]
+    r = client.post(f"/portfolios/{pid}/import/csv", files={"file": ("t.csv", CSV_AAPL, "text/csv")}, headers=h)
+    assert r.status_code in (200, 201), r.text
+    body = client.get(f"/portfolios/{pid}/tearsheet/AAPL", headers=h).json()
+    legs = body["position"]["by_account"]
+    assert len(legs) == 1
+    assert legs[0]["quantity"] == pytest.approx(10)
+    assert {"account_id", "account_label", "market_value", "unrealized_pct", "share_pct"} <= set(legs[0])
+
+
 def test_tearsheet_none_when_not_held(db_session):
     tenant_id, pid = _seed(db_session)
     assert tearsheet.tearsheet(db_session, tenant_id, pid, "TSLA") is None
