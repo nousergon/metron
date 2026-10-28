@@ -237,7 +237,9 @@ class TestRelieveLotsSharedWithTheLedger:
         ]
         realized = build_ledger(txns).realized
         sale = hypothetical_sale(_lots()[:2], quantity=12, price=180.0, asof=ASOF, rates=RATES)
-        assert [(r.quantity, r.gain) for r in realized] == pytest.approx([(s.quantity, s.gain) for s in sale.lots])
+        # Flat lists: pytest 9.2 refuses approx() over nested tuples (a TypeError, not a mismatch).
+        assert [r.quantity for r in realized] == pytest.approx([s.quantity for s in sale.lots])
+        assert [r.gain for r in realized] == pytest.approx([s.gain for s in sale.lots])
 
     def test_relieve_lots_pops_closed_lots_and_stops_when_exhausted(self):
         lots = _lots()
