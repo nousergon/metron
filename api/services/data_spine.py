@@ -152,20 +152,24 @@ def _assert_no_demo_symbols(symbols: set[str] | dict[str, str], *, context: str)
         )
 
 
-def _securities_by_symbol(session: Session, symbols: list[str]) -> dict[str, models.Security]:
-    """Held symbol → its global Security row (first by id per symbol — stable). Carries
-    ``yf_symbol`` (foreign listings → exchange-suffixed) + native ``currency``."""
+def _securities_by_symbol(
+    session: Session, symbols: list[str], *, currency_by_symbol: dict[str, str] | None = None
+) -> dict[str, models.Security]:
+    """Held symbol → its global Security row. Carries ``yf_symbol`` (foreign listings →
+    exchange-suffixed) + native ``currency``.
+
+    ``securities`` is keyed ``(symbol, currency)``, so one broker symbol can have more than
+    one row. Delegates to ``prices._securities_by_symbol``, which matches EXACTLY on the
+    currency each symbol is held in. The old "first row by id" pick published a stray
+    ``("1299", "USD")`` row with no ``yf_symbol`` instead of the real ``("1299", "HKD")``
+    → ``1299.HK`` one, so the data spine fetched a bare ``1299`` it could not price and
+    AIA's close froze at 2026-08-12 (the same defect metron-I399 fixed in prices.py and
+    analytics.py, missed here)."""
     if not symbols:
         return {}
-    rows = session.scalars(
-        select(models.Security)
-        .where(models.Security.symbol.in_(symbols))
-        .order_by(models.Security.symbol, models.Security.id)
-    ).all()
-    out: dict[str, models.Security] = {}
-    for row in rows:
-        out.setdefault(row.symbol, row)
-    return out
+    from api.services import prices  # local import: keep this module's import graph light
+
+    return prices._securities_by_symbol(session, symbols, currency_by_symbol=currency_by_symbol)
 
 
 def build_holdings_universe(session: Session, *, today: date | None = None) -> dict:
@@ -191,7 +195,9 @@ def build_holdings_universe(session: Session, *, today: date | None = None) -> d
     for p in session.scalars(select(models.Portfolio).where(models.Portfolio.tenant_id != DEMO_TENANT_ID)).all():
         held = analytics.holdings(session, p.tenant_id, p.id)
         symbols = [h.ticker for h in held if h.ticker]
-        secs = _securities_by_symbol(session, symbols)
+        secs = _securities_by_symbol(
+            session, symbols, currency_by_symbol={h.ticker: h.currency for h in held if h.ticker and h.currency},
+        )
         for h in held:
             sec = secs.get(h.ticker)
             if sec is None:
