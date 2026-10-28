@@ -159,3 +159,76 @@ def test_selection_scopes_the_accounts(client, db_session, seeded):
     tenant, pid, acct = seeded
     rows = _by_account(_perf(client, tenant, pid, f"?basis=account&account_id={acct['IRA']}"))
     assert set(rows) == {acct["IRA"]}
+
+
+# --- Slice 3c: the scope as one book ---------------------------------------------------
+
+
+def _rollup_metrics(block):
+    return {x["name"]: x for x in block["rollup"]["metrics"]}
+
+
+def test_rollup_sums_accounts_and_keeps_the_scope_boundary(client, db_session, seeded):
+    """Brokerage as in the dividend test; the IRA holds 10 MSFT, 200 -> 210, no cash.
+    Rollup wealth 3100 -> 3415 with the 100 deposit external: TWR = 3415 / 3200 − 1,
+    net P&L = 110 + 100 price + 5 dividend."""
+    tenant, pid, acct = seeded
+    b, ira = acct["Brokerage"], acct["IRA"]
+    _snap(db_session, tenant, pid, b, date(2024, 1, 3), qty=10, price=110.0, cash=0.0)
+    _snap(db_session, tenant, pid, b, date(2024, 1, 4), qty=10, price=121.0, cash=105.0)
+    _snap(db_session, tenant, pid, ira, date(2024, 1, 3), qty=10, price=200.0, cash=0.0, ticker="MSFT")
+    _snap(db_session, tenant, pid, ira, date(2024, 1, 4), qty=10, price=210.0, cash=0.0, ticker="MSFT")
+
+    block = _perf(client, tenant, pid, "?basis=account")["account_basis"]
+    assert "rollup" in block["conventions"]
+    r = block["rollup"]
+    assert set(r["account_ids"]) == {b, ira}
+    assert (r["n_dates"], r["n_dates_skipped"], r["periods_reconciled"]) == (2, 0, 1)
+    assert (r["first_date"], r["last_date"]) == ("2024-01-03", "2024-01-04")
+    m = _rollup_metrics(block)
+    assert m["twr_net"]["value"] == pytest.approx(3415.0 / 3200.0 - 1.0)
+    assert m["net_pnl"]["value"] == pytest.approx(215.0)
+    assert m["twr_net"]["basis"] == "account" and m["twr_net"]["unavailable_reason"] is None
+
+
+def test_rollup_uses_only_dates_every_account_has(client, db_session, seeded):
+    tenant, pid, acct = seeded
+    b, ira = acct["Brokerage"], acct["IRA"]
+    for day, price, cash in ((3, 110.0, 0.0), (4, 121.0, 105.0), (5, 121.0, 105.0)):
+        _snap(db_session, tenant, pid, b, date(2024, 1, day), qty=10, price=price, cash=cash)
+    for day in (3, 5):
+        _snap(db_session, tenant, pid, ira, date(2024, 1, day), qty=10, price=200.0, cash=0.0, ticker="MSFT")
+    r = _perf(client, tenant, pid, "?basis=account")["account_basis"]["rollup"]
+    assert (r["n_dates"], r["n_dates_skipped"], r["periods_reconciled"]) == (2, 1, 1)
+    assert (r["first_date"], r["last_date"]) == ("2024-01-03", "2024-01-05")
+
+
+def test_rollup_never_drops_an_account_without_snapshots(client, db_session, seeded):
+    tenant, pid, acct = seeded
+    b = acct["Brokerage"]
+    _snap(db_session, tenant, pid, b, date(2024, 1, 3), qty=10, price=110.0, cash=0.0)
+    _snap(db_session, tenant, pid, b, date(2024, 1, 4), qty=10, price=121.0, cash=105.0)
+    r = _perf(client, tenant, pid, "?basis=account")["account_basis"]["rollup"]
+    assert r["metrics"] == [] and r["n_dates"] == 0 and r["n_dates_skipped"] == 2
+    assert acct["IRA"] in r["unavailable_reason"] and "left out of the sum" in r["unavailable_reason"]
+    # Scoped to the one account that has rows, the rollup is that account.
+    one = _perf(client, tenant, pid, f"?basis=account&account_id={b}")["account_basis"]
+    assert _rollup_metrics(one)["twr_net"]["value"] == pytest.approx(1315.0 / 1200.0 - 1.0)
+
+
+def test_rollup_needs_two_common_dates(client, db_session, seeded):
+    tenant, pid, acct = seeded
+    b, ira = acct["Brokerage"], acct["IRA"]
+    _snap(db_session, tenant, pid, b, date(2024, 1, 3), qty=10, price=110.0, cash=0.0)
+    _snap(db_session, tenant, pid, b, date(2024, 1, 4), qty=10, price=121.0, cash=105.0)
+    _snap(db_session, tenant, pid, ira, date(2024, 1, 4), qty=10, price=200.0, cash=0.0, ticker="MSFT")
+    r = _perf(client, tenant, pid, "?basis=account")["account_basis"]["rollup"]
+    assert r["n_dates"] == 1 and r["first_date"] == "2024-01-04"
+    assert "needs two" in r["unavailable_reason"] and r["metrics"] == []
+
+
+def test_rollup_is_null_for_a_portfolio_with_no_accounts(client):
+    tenant = str(uuid.uuid4())
+    pid = client.post("/portfolios", json={"name": "Empty"}, headers=_hdr(tenant)).json()["id"]
+    block = _perf(client, tenant, pid, "?basis=account")["account_basis"]
+    assert block["accounts"] == [] and block["rollup"] is None

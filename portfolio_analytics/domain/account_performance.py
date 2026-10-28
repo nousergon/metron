@@ -1,4 +1,4 @@
-"""Full-account performance engine, ``account_performance.v1`` (metron-ops#371, slices 1-2).
+"""Full-account performance engine, ``account_performance.v1`` (metron-ops#371, slices 1-3c).
 
 The holdings-sleeve figures in ``api.services.performance`` value priced holdings only
 and treat net purchases as the flow. That is right for the sleeve and wrong for an
@@ -6,7 +6,8 @@ account. This module is the *account* basis. It is pure, stdlib plus the publish
 quant core, and it changes no API. Slice 3 records its inputs (cash and cash source) on
 each per-account snapshot and maps a stored row onto :class:`WealthObservation`
 (``api.services.account_basis``), and slice 3b serves it, opt-in, as
-``GET /portfolios/{id}/performance?basis=account``.
+``GET /portfolios/{id}/performance?basis=account``. Slice 3c adds the portfolio-level
+rollup across accounts (:func:`combine_observations`).
 
 The contract, from the design on metron-ops#371:
 
@@ -209,6 +210,51 @@ class WealthObservation:
         assert self.cash is not None and self.accrued_income is not None
         assert self.financing_debit is not None
         return self.holdings_mv + self.cash + self.accrued_income - self.financing_debit
+
+
+def combine_observations(observations: Sequence[WealthObservation]) -> WealthObservation:
+    """Several accounts' observations at ONE close as one observation, for the
+    portfolio-level rollup (metron-ops#371, slice 3c).
+
+    Every monetary component is summed, and a component that any account did not observe
+    leaves the combined one unobserved: an account's missing cash is never read as zero,
+    so the whole-portfolio wealth is unavailable rather than understated. Positions are
+    summed by symbol, so a transfer in kind between two accounts in the rollup leaves
+    the combined positions unchanged and is not a break at this level.
+
+    ``cash_source`` is the shared source when every account has the same one. Otherwise
+    it is the per-account sources in the order given, so the engine's same-source rule
+    still closes a period when any single account switches source. Callers keep the
+    order stable across dates."""
+    if not observations:
+        raise ValueError("combine_observations needs at least one observation")
+    dates = {o.when for o in observations}
+    if len(dates) != 1:
+        raise ValueError(f"observations span {len(dates)} dates; a rollup combines one close")
+
+    def summed(values: Iterable[float | None]) -> float | None:
+        vals = list(values)
+        return None if any(v is None for v in vals) else float(sum(v for v in vals if v is not None))
+
+    positions: dict[str, float] | None = {}
+    for o in observations:
+        if o.positions is None:
+            positions = None
+            break
+        for symbol, qty in o.positions.items():
+            positions[symbol] = positions.get(symbol, 0.0) + float(qty)
+    sources = [o.cash_source or "" for o in observations]
+    cash_source = sources[0] if len(set(sources)) == 1 else "mixed:" + ",".join(sources)
+    cash = summed(o.cash for o in observations)
+    return WealthObservation(
+        when=observations[0].when,
+        holdings_mv=float(sum(o.holdings_mv for o in observations)),
+        cash=cash,
+        cash_source=cash_source if cash is not None else None,
+        accrued_income=summed(o.accrued_income for o in observations),
+        financing_debit=summed(o.financing_debit for o in observations),
+        positions=positions,
+    )
 
 
 @dataclass(frozen=True)

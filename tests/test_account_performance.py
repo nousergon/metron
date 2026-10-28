@@ -288,3 +288,65 @@ def test_a_fractional_difference_inside_the_quantity_tolerance_is_clean():
 def test_a_split_of_a_symbol_not_held_is_ignored():
     events = [AccountEvent(d(1), EventKind.SPLIT, symbol="Z", quantity=3.0)]
     assert ap.unexplained_position_changes({}, {}, events) == {}
+
+
+# --- Slice 3c: the portfolio-level rollup combines accounts at one close -----------------
+
+
+def test_combine_sums_wealth_components_and_positions():
+    a = obs(0, 1000.0, 50.0, pos={"AAPL": 10.0})
+    b = obs(0, 2000.0, -30.0, pos={"AAPL": 2.0, "MSFT": 5.0})
+    c = ap.combine_observations([a, b])
+    assert (c.when, c.holdings_mv, c.cash, c.cash_source) == (d(0), 3000.0, 20.0, "custodian")
+    assert c.positions == {"AAPL": 12.0, "MSFT": 5.0}
+    assert c.wealth == 3020.0
+
+
+@pytest.mark.parametrize("kw", [{"cash": None}, {"accrued": None}, {"debit": None}])
+def test_combine_leaves_a_component_unobserved_when_any_account_lacks_it(kw):
+    cash = kw.pop("cash", 5.0)
+    c = ap.combine_observations([obs(0, 100.0, 1.0), obs(0, 100.0, cash, **kw)])
+    assert c.wealth is None and c.unavailable_reason is not None
+
+
+def test_combine_leaves_positions_unobserved_when_any_account_lacks_them():
+    c = ap.combine_observations([obs(0, 100.0, 0.0), obs(0, 100.0, 0.0, pos=None)])
+    assert c.positions is None and c.wealth == 200.0
+
+
+def test_combine_refuses_mixed_dates_and_empty_input():
+    with pytest.raises(ValueError, match="dates"):
+        ap.combine_observations([obs(0, 1.0, 0.0), obs(1, 1.0, 0.0)])
+    with pytest.raises(ValueError, match="at least one"):
+        ap.combine_observations([])
+
+
+def test_a_transfer_in_kind_between_rolled_up_accounts_is_not_a_break():
+    """5 AAPL move from account A to account B with no ledger event. Each account alone is
+    unreconciled (slice 2's gate); the two together hold the same 10 shares, so the
+    rollup reconciles and reads the period's price move as return."""
+    a0, a1 = obs(0, 1000.0, 0.0, pos={"AAPL": 10.0}), obs(1, 550.0, 0.0, pos={"AAPL": 5.0})
+    b0, b1 = obs(0, 0.0, 0.0, pos={}), obs(1, 550.0, 0.0, pos={"AAPL": 5.0})
+    assert ap.decompose_period(a0, a1, []).status == ap.UNRECONCILED
+    assert ap.decompose_period(b0, b1, []).status == ap.UNRECONCILED
+    p = ap.decompose_period(ap.combine_observations([a0, b0]), ap.combine_observations([a1, b1]), [])
+    assert p.status == "reconciled" and cents(p.price_pnl) == 100.0
+
+
+def test_a_cash_transfer_between_rolled_up_accounts_nets_to_zero_external():
+    a0, a1 = obs(0, 0.0, 500.0), obs(1, 0.0, 400.0)
+    b0, b1 = obs(0, 0.0, 0.0), obs(1, 0.0, 100.0)
+    events = [AccountEvent(d(1), EventKind.WITHDRAWAL, 100.0), AccountEvent(d(1), EventKind.DEPOSIT, 100.0)]
+    p = ap.decompose_period(ap.combine_observations([a0, b0]), ap.combine_observations([a1, b1]), events)
+    assert p.external == 0.0 and p.status == "reconciled" and cents(p.net_pnl) == 0.0
+
+
+def test_one_account_switching_cash_source_closes_the_rollup_period():
+    a0, a1 = obs(0, 0.0, 10.0, source="custodian"), obs(1, 0.0, 10.0, source="custodian")
+    b0, b1 = obs(0, 0.0, 10.0, source="ledger"), obs(1, 0.0, 10.0, source="custodian")
+    start, end = ap.combine_observations([a0, b0]), ap.combine_observations([a1, b1])
+    assert start.cash_source == "mixed:custodian,ledger" and end.cash_source == "custodian"
+    p = ap.decompose_period(start, end, [])
+    assert p.status == "unavailable" and "cash source switches" in (p.unavailable_reason or "")
+    steady = ap.decompose_period(start, ap.combine_observations([a1, obs(1, 0.0, 10.0, source="ledger")]), [])
+    assert steady.status == "reconciled"
