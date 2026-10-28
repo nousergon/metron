@@ -29,8 +29,16 @@ not carry are DECLARED, in :data:`CONVENTIONS`, rather than defaulted silently:
   connector balance and for ledger-accrued cash, so there is no separate financing debit.
 
 Provisional rows (a fund leg still on a stale NAV) are not final valuations and are left
-out; the period then spans to the next final row, which the engine handles. Not in this
-slice: the portfolio-level rollup across accounts, and the methodology page labels.
+out; the period then spans to the next final row, which the engine handles.
+
+Slice 3c adds the **rollup** (:class:`AccountBasisRollup`): the same engine over the scope
+as one book. Its wealth on a date is the sum of every in-scope account's wealth, so it is
+computed only on dates where EVERY account in scope has a final row; a date some account
+lacks is skipped (counted, never filled), and an account with no final row at all makes
+the rollup unavailable by name rather than silently dropping its wealth. A cash transfer
+between two in-scope accounts nets to zero external capital, and a transfer in kind
+between them leaves the summed positions unchanged. Not in this slice: the methodology
+page labels.
 """
 
 from __future__ import annotations
@@ -53,6 +61,7 @@ from portfolio_analytics.domain.account_performance import (
     Metric,
     WealthObservation,
     account_performance,
+    combine_observations,
     from_transaction,
 )
 
@@ -116,6 +125,11 @@ CONVENTIONS: dict[str, str] = {
     ),
     "provisional_snapshots": "excluded: a row with a stale fund NAV is not a final valuation",
     "twr": "daily-linked between final snapshots; external flows at the start of the day",
+    "rollup": (
+        "the scope as one book: wealth is the sum of its accounts' wealth, only on dates "
+        "where every account in scope has a final snapshot; external capital is the "
+        "scope's boundary, so transfers between accounts in scope net to zero"
+    ),
 }
 CASH_BASIS_ACCRUED_INCOME = 0.0
 FINANCING_IN_CASH = 0.0
@@ -138,11 +152,88 @@ class AccountBasisAccount:
 
 
 @dataclass(frozen=True)
+class AccountBasisRollup:
+    """``account_performance.v1`` for the whole scope as one book, or the reason there is
+    none. ``n_dates_skipped`` counts final-row dates that some account in scope lacks."""
+
+    account_ids: list[uuid.UUID]
+    n_dates: int
+    n_dates_skipped: int
+    first_date: date | None
+    last_date: date | None
+    periods_reconciled: int = 0
+    periods_unreconciled: int = 0
+    periods_unavailable: int = 0
+    unavailable_reason: str | None = None
+    metrics: list[Metric] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class AccountBasisSummary:
     accounts: list[AccountBasisAccount]
+    rollup: AccountBasisRollup | None = None
     contract: str = CONTRACT
     basis: str = BASIS_ACCOUNT
     conventions: dict[str, str] = field(default_factory=lambda: dict(CONVENTIONS))
+
+
+def _observations(rows: list[Any]) -> list[WealthObservation]:
+    return [
+        observation_from_account_snapshot(
+            r, accrued_income=CASH_BASIS_ACCRUED_INCOME, financing_debit=FINANCING_IN_CASH
+        )
+        for r in rows
+    ]
+
+
+def _period_counts(periods: Any) -> dict[str, int]:
+    status = [p.status for p in periods]
+    return {
+        "periods_reconciled": status.count("reconciled"),
+        "periods_unreconciled": status.count("unreconciled"),
+        "periods_unavailable": status.count("unavailable"),
+    }
+
+
+def _rollup_result(
+    scope: list[uuid.UUID],
+    rows_by_account: Mapping[uuid.UUID, list[Any]],
+    events_by_account: Mapping[uuid.UUID, list[AccountEvent]],
+) -> AccountBasisRollup:
+    """The scope as one book: the engine over combined observations on the dates every
+    account has a final row, and every account's events together."""
+    final = {a: {r.snap_date: r for r in rows_by_account[a] if not r.provisional} for a in scope}
+    all_dates: set[date] = set().union(*(set(d) for d in final.values()))
+    missing = [str(a) for a in scope if not final[a]]
+    if missing:
+        return AccountBasisRollup(
+            list(scope), 0, len(all_dates), None, None,
+            unavailable_reason=(
+                f"no final account snapshot for {len(missing)} account(s) in scope "
+                f"({', '.join(missing)}); their wealth cannot be left out of the sum"
+            ),
+        )
+    common = sorted(set.intersection(*(set(d) for d in final.values())))
+    skipped = len(all_dates) - len(common)
+    first, last = (common[0], common[-1]) if common else (None, None)
+    if len(common) < 2:
+        return AccountBasisRollup(
+            list(scope), len(common), skipped, first, last,
+            unavailable_reason=(
+                f"{len(common)} date(s) on which every account in scope has a final "
+                "snapshot; the rollup needs two"
+            ),
+        )
+    combined = [
+        combine_observations(_observations([final[a][d] for a in scope])) for d in common
+    ]
+    events = [e for a in scope for e in events_by_account.get(a, [])]
+    result = account_performance(combined, events)
+    return AccountBasisRollup(
+        list(scope), len(common), skipped, first, last,
+        **_period_counts(result.periods),
+        metrics=list(result.metrics.values()),
+    )
 
 
 def _account_result(
@@ -159,19 +250,10 @@ def _account_result(
                 f"{len(final)} final account snapshot(s); the account basis needs two"
             ),
         )
-    observations = [
-        observation_from_account_snapshot(
-            r, accrued_income=CASH_BASIS_ACCRUED_INCOME, financing_debit=FINANCING_IN_CASH
-        )
-        for r in final
-    ]
-    result = account_performance(observations, events)
-    status = [p.status for p in result.periods]
+    result = account_performance(_observations(final), events)
     return AccountBasisAccount(
         account_id, len(final), excluded, first, last,
-        periods_reconciled=status.count("reconciled"),
-        periods_unreconciled=status.count("unreconciled"),
-        periods_unavailable=status.count("unavailable"),
+        **_period_counts(result.periods),
         metrics=list(result.metrics.values()),
     )
 
@@ -185,7 +267,8 @@ def account_basis_performance(
 ) -> AccountBasisSummary:
     """``account_performance.v1`` for each account in scope (the selection, or every
     account in the portfolio), from its stored per-account snapshots and its ledger
-    events. An account that cannot be computed is listed with its reason, never dropped."""
+    events, plus the rollup of the whole scope as one book. An account that cannot be
+    computed is listed with its reason, never dropped."""
     acct_q = select(models.Account.id).where(
         models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id
     )
@@ -211,5 +294,6 @@ def account_basis_performance(
     ):
         events_by_account.setdefault(account_id, []).append(from_transaction(txn))
     return AccountBasisSummary(
-        accounts=[_account_result(a, rows_by_account[a], events_by_account[a]) for a in scope]
+        accounts=[_account_result(a, rows_by_account[a], events_by_account[a]) for a in scope],
+        rollup=_rollup_result(scope, rows_by_account, events_by_account),
     )

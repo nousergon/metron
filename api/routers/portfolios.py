@@ -633,6 +633,24 @@ class AccountBasisAccountOut(BaseModel):
     metrics: list[AccountBasisMetricOut] = []
 
 
+class AccountBasisRollupOut(BaseModel):
+    """The scope as one book (metron-ops#371 slice 3c): wealth summed across its accounts on
+    the dates every one of them has a final snapshot."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    account_ids: list[uuid.UUID]
+    n_dates: int
+    n_dates_skipped: int
+    first_date: date | None
+    last_date: date | None
+    periods_reconciled: int
+    periods_unreconciled: int
+    periods_unavailable: int
+    unavailable_reason: str | None = None
+    metrics: list[AccountBasisMetricOut] = []
+
+
 class AccountBasisOut(BaseModel):
     """The opt-in account basis (``?basis=account``): per-account wealth = holdings + cash,
     external capital at the account boundary only, every metric self-describing. Not
@@ -644,6 +662,8 @@ class AccountBasisOut(BaseModel):
     basis: str
     conventions: dict[str, str]
     accounts: list[AccountBasisAccountOut]
+    # Null only when the scope has no accounts.
+    rollup: AccountBasisRollupOut | None = None
 
 
 class PerformanceOut(BaseModel):
@@ -2395,7 +2415,8 @@ def get_performance(
 
     The top-level fields are the holdings sleeve, unchanged. ``?basis=account`` adds the
     opt-in ``account_basis`` block (metron-ops#371): ``account_performance.v1`` per account
-    in the selection, with its declared conventions. The two bases are never blended."""
+    in the selection and for the selection as one book, with its declared conventions. The
+    two bases are never blended."""
     result = performance.performance(session, portfolio.tenant_id, portfolio.id, account_ids=account_ids)
     # Layer-2 invariant checks (metron-ops#217) — run against every served
     # response; violations log at WARNING for CloudWatch observability.
