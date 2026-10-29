@@ -557,6 +557,10 @@ class TodayOut(BaseModel):
     overnight_pct: float | None = None
     intraday_pct: float | None = None
     day_pct: float | None = None
+    # ± half-width of the ~95% range for intraday_pct and day_pct given the quote delay
+    # (both end at the delayed last price; overnight is open vs prior close, both exact).
+    # Null when the session is closed or there is too little history to estimate it.
+    delay_band_pct: float | None = None
     covered_prev_mv: float | None = None
     rows: list[TodayRowOut] = []
     excluded_rows: list[ExcludedRowOut] = []
@@ -3527,7 +3531,11 @@ def get_today(
     "as of close". ``?account_id=`` scopes the holdings like every other page. The request
     touches the data-spine UI heartbeat (via ``_owned_portfolio``) so the producer keeps
     publishing while the page is open."""
-    return intraday.today_view(
+    today = intraday.today_view(
         session, portfolio.tenant_id, portfolio.id,
         feed_entitled=settings.feed_entitled, account_ids=account_ids,
     )
+    if today.available and today.day_pct is not None and not today.stale:
+        vol = performance.scope_vol(session, portfolio.tenant_id, portfolio.id, account_ids)
+        today.delay_band_pct = performance.delay_band(vol, today.as_of_utc)
+    return today
