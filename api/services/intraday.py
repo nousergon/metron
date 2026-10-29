@@ -482,6 +482,8 @@ class TodaySummary:
     # the DECOMPOSABLE rows only — the % legs above are legs$/THIS. Excluded holdings are
     # in neither the numerator nor here (never blended); None when nothing decomposed.
     covered_prev_mv: float | None = None
+    # ± ~95% half-width for intraday_pct/day_pct from the quote delay (set by the route).
+    delay_band_pct: float | None = None
     rows: list[TodayRow] = None  # type: ignore[assignment]
     # Every excluded holding, named with its reason (metron-ops#152) — the disclosure
     # companion to ``n_excluded``.
