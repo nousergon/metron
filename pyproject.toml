@@ -92,7 +92,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.1.1",
+    "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
     "httpx>=0.28.1",            # FastAPI TestClient
     # Validates the realized-lots export against the pinned telos contract schema in CI
@@ -103,7 +103,7 @@ dev = [
     # (golden portfolios + property tests, metron-ops#210): generates randomized-but-valid
     # transaction histories to assert ledger invariants hold universally, not just on
     # hand-picked fixtures (tests/test_golden_portfolios.py).
-    "hypothesis>=6.169.3",
+    "hypothesis>=6.170.13",
     "alembic>=1.20.1",            # Postgres schema migrations
     # tests/test_dependency_exposure.py parses .github/dependabot.yml. PyYAML is already
     # present transitively (krepis, nousergon-lib), but a test that imports it must not
