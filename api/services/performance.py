@@ -1466,10 +1466,22 @@ def account_period_returns(
     for a in series.accounts:
         ytd, ltm = _period_from_growth(a.points, today)
         out[a.account_id] = AccountPeriodReturns(ytd_pct=ytd, ltm_pct=ltm)
-        vol[a.account_id] = daily_vol(a.points)
 
     if feed_entitled:
         from api.services import intraday
+
+        # Volatility for the delay band: each account's own daily NAV snapshots, else the
+        # whole portfolio's (a young account still gets a range, from the household's).
+        all_ids = list(session.scalars(
+            select(models.Account.id).where(
+                models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id,
+            )
+        ))
+        rows_by_acct = _account_nav_rows_by_account(session, tenant_id, all_ids)
+        all_rows = [r for rs in rows_by_acct.values() for r in rs]
+        fallback = snapshot_vol(all_rows)
+        for aid, rs in rows_by_acct.items():
+            vol[aid] = snapshot_vol(rs) or fallback
 
         # ONE pass over all (scoped) accounts — NOT a today_view() per account, which was an
         # O(accounts) N+1 (each call re-ran valued_holdings + decoded the intraday snapshot).
@@ -1481,7 +1493,7 @@ def account_period_returns(
             r = out.setdefault(aid, AccountPeriodReturns())
             r.day_pct, r.overnight_pct, r.intraday_pct = t.day_pct, t.overnight_pct, t.intraday_pct
             if r.day_pct is not None and not t.stale:
-                r.day_band_pct = delay_band(vol.get(aid), t.as_of_utc, now=now)
+                r.day_band_pct = delay_band(vol.get(aid, fallback), t.as_of_utc, now=now)
     return out
 
 
@@ -1504,6 +1516,41 @@ def daily_vol(points: list[SeriesPoint]) -> float | None:
         return None
     mean = sum(rets) / len(rets)
     return (sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)) ** 0.5
+
+
+def snapshot_vol(rows: list) -> float | None:
+    """Daily volatility of the flow-neutralized NAV built from account snapshot rows (one
+    account's, or several summed) — the sample stdev of the last ``_VOL_LOOKBACK`` daily
+    returns, None below ``_VOL_MIN_RETURNS``."""
+    points, _ = _account_perf_series_from_rows(rows)
+    rets = _flow_neutralized_returns(points)[-_VOL_LOOKBACK:]
+    if len(rets) < _VOL_MIN_RETURNS:
+        return None
+    mean = sum(rets) / len(rets)
+    return (sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)) ** 0.5
+
+
+def scope_vol(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID,
+    account_ids: Collection[uuid.UUID] | None = None,
+) -> float | None:
+    """Daily volatility for a scope of accounts (all of the portfolio's when ``None``),
+    falling back to the whole portfolio when the selection is too young."""
+    all_ids = list(session.scalars(
+        select(models.Account.id).where(
+            models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id,
+        )
+    ))
+    if not all_ids:
+        return None
+    rows_by_acct = _account_nav_rows_by_account(session, tenant_id, all_ids)
+    all_rows = [r for rs in rows_by_acct.values() for r in rs]
+    if account_ids:
+        picked = [r for aid in account_ids for r in rows_by_acct.get(aid, [])]
+        v = snapshot_vol(picked)
+        if v is not None:
+            return v
+    return snapshot_vol(all_rows)
 
 
 def delay_band(sigma_daily: float | None, as_of_utc: str | None, *, now: datetime | None = None) -> float | None:
