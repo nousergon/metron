@@ -63,6 +63,11 @@ function CoverageBanner({ status, today, ccy }: { status: IntradayStatus; today:
 /** The covered-basis Overnight/Intraday/Day strip — percentages over covered prior-close
  *  MV only (`covered_prev_mv`), never the whole portfolio. */
 function SessionStrip({ today, ccy }: { today: Today; ccy: string }) {
+  // ~95% delay range (Brian, 2026-10-28/29): Intraday and Day both end at the ~15-min
+  // delayed last price, so both carry it; Overnight is open vs prior close, both exact.
+  const band = today.delay_band_pct ?? null;
+  const withBand = (pct: number | null | undefined) =>
+    pct == null ? undefined : band != null ? `${percent(pct)} ±${(band * 100).toFixed(2)}%` : percent(pct);
   return (
     <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
       <StatCard
@@ -75,13 +80,13 @@ function SessionStrip({ today, ccy }: { today: Today; ccy: string }) {
         label="Intraday"
         value={today.intraday_gain != null ? accountingMoneyWhole(today.intraday_gain, ccy) : "—"}
         valueClass={signClass(today.intraday_gain ?? 0)}
-        hint={today.intraday_pct != null ? percent(today.intraday_pct) : undefined}
+        hint={withBand(today.intraday_pct)}
       />
       <StatCard
         label="Day"
         value={today.day_gain != null ? accountingMoneyWhole(today.day_gain, ccy) : "—"}
         valueClass={signClass(today.day_gain ?? 0)}
-        hint={today.day_pct != null ? percent(today.day_pct) : undefined}
+        hint={withBand(today.day_pct)}
       />
     </div>
   );
@@ -125,6 +130,12 @@ export function SessionNotes({
       {today.covered_prev_mv != null ? (
         <p className="text-xs text-muted">
           Session %s over the covered basis — {moneyWhole(today.covered_prev_mv, ccy)} of prior-close market value.
+        </p>
+      ) : null}
+      {today.delay_band_pct != null ? (
+        <p className="text-xs text-muted">
+          ± on Intraday and Day: estimated 95% range for the true figure, since quotes are ~15 minutes delayed
+          (from this scope&apos;s recent daily volatility). Overnight is exact.
         </p>
       ) : null}
       {today.excluded_rows.length > 0 ? (

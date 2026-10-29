@@ -69,6 +69,21 @@ describe("SessionPanel", () => {
   });
 });
 
+describe("delay band (Brian, 2026-10-29)", () => {
+  it("shows ± on Intraday and Day but not Overnight, and explains it in the notes", () => {
+    const banded = { ...today, delay_band_pct: 0.0044 } as Today;
+    render(<SessionPanel status={status} today={banded} ccy="USD" />);
+    expect(screen.getAllByText(/±0\.44%/)).toHaveLength(2);
+    render(<SessionNotes today={banded} legs={null} ccy="USD" />);
+    expect(screen.getByText(/estimated 95% range/)).toHaveTextContent("Overnight is exact");
+  });
+
+  it("shows no ± when the API sends no band", () => {
+    render(<SessionPanel status={status} today={today} ccy="USD" />);
+    expect(screen.queryByText(/±/)).not.toBeInTheDocument();
+  });
+});
+
 describe("SessionNotes", () => {
   it("renders the covered-basis, excluded-holdings and drift-split footnotes", () => {
     render(<SessionNotes today={today} legs={legs} ccy="USD" />);

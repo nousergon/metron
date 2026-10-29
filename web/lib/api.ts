@@ -2056,6 +2056,8 @@ export type Today = {
   overnight_pct: number | null;
   intraday_pct: number | null;
   day_pct: number | null;
+  /** ± half-width of the ~95% range for intraday_pct and day_pct given the quote delay. */
+  delay_band_pct?: number | null;
   // Covered-basis denominator (metron-ops#152): prior-close base-$ MV of the decomposable
   // rows only — excluded holdings are in neither the leg $ nor this.
   covered_prev_mv: number | null;
