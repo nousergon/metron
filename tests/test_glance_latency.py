@@ -41,6 +41,25 @@ def test_parse_line_ignores_an_unrelated_log_line():
     assert gl.parse_line(UNRELATED_LINE) is None
 
 
+def test_parse_line_reads_the_line_as_production_logging_formats_it():
+    """alpha-engine-config-I11642: metron-api's journal carries each message behind
+    krepis setup_logging's ``%(asctime)s %(levelname)s [metron] `` prefix, and
+    ``journalctl -o cat`` keeps it. A parser that only matches bare messages reads
+    every real day as not-measured."""
+    import logging
+
+    formatter = logging.Formatter("%(asctime)s %(levelname)s [metron] %(message)s")
+    for message, expected in ((SUCCESS_LINE, 812.3), (FAILURE_LINE, 45.0)):
+        record = logging.LogRecord("api.routers.glance", logging.INFO, __file__, 1, message, None, None)
+        line = formatter.format(record)
+        assert not line.startswith("glance")
+        assert gl.parse_line(line) == expected
+
+
+def test_parse_line_does_not_match_glance_inside_another_word():
+    assert gl.parse_line("INFO [metron] preglance composed x duration_ms=5.0") is None
+
+
 def test_p95_is_nearest_rank_over_a_fixture_set():
     # 20 values 1..20 -> ceil(20*0.95) = 19th smallest = 19.
     assert gl.p95([float(i) for i in range(1, 21)]) == 19.0

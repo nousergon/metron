@@ -40,7 +40,14 @@ from api.db import models
 # Matches both the router's success and failure timing lines — each carries
 # ``duration_ms=<float>`` regardless of outcome, so a request that 500'd still counts
 # toward latency (an error is not "fast"; excluding it would understate the gate).
-_DURATION_RE = re.compile(r"^glance (?:composed|failed) .*\bduration_ms=([0-9.]+)")
+#
+# NOT anchored at line start. In production every line reaches the journal through
+# krepis ``setup_logging("metron")``'s root handler, formatted
+# ``%(asctime)s %(levelname)s [metron] %(message)s`` -- so the message begins mid-line
+# (``2026-10-30 06:06:00,971 INFO [metron] glance composed ...``). The old ``^glance``
+# anchor matched only bare test fixtures, which is why every scheduled run since
+# 2026-09-23 read n=0 / not-measured (alpha-engine-config-I11642).
+_DURATION_RE = re.compile(r"(?:^|[\s\]])glance (?:composed|failed) .*\bduration_ms=([0-9.]+)")
 
 
 def parse_line(line: str) -> float | None:
