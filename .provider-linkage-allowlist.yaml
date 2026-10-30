@@ -1,0 +1,25 @@
+# .provider-linkage-allowlist.yaml — pre-cleared provider-linkage matches
+# (alpha-engine-config-I7777). Schema: nousergon-lib
+# scripts/provider_linkage_guard.py::load_allowlist.
+schema_version: 1
+entries:
+  - path: infrastructure/deploy-on-merge.sh
+    pattern: "openrouter:env_key"
+    reason: >-
+      Env WIRING, not a client: the deploy hydrates OPENROUTER_API_KEY from
+      SSM /metron/openrouter_api_key (optional) into the box env, where
+      krepis's router reads it for its OpenRouter upstream. No metron Python
+      module references the key or constructs a provider client; every model
+      call goes through krepis by model group.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I7777
+
+  - path: tests/test_declared_env.py
+    pattern: "anthropic:env_key"
+    reason: >-
+      A test asserting the key's ABSENCE: it pins that
+      infrastructure/declared-flags.env keeps `-ANTHROPIC_API_KEY` (the
+      retired direct-Anthropic key is removed from the box env on every
+      deploy). It is the guard's own intent expressed as a test, not a linkage.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I7777
