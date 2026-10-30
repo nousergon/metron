@@ -195,3 +195,34 @@ def test_watch_detaches_even_when_the_run_raises(tmp_path):
     with engine.connect() as conn:
         conn.execute(text("SELECT 1")).all()
     assert p.as_dict()["total_statements"] == 0
+
+
+def test_the_payload_reports_peak_rss_for_the_run_and_each_block():
+    """alpha-engine-config-I12814: how close a run got to its unit's MemoryMax is measured,
+    not inferred after the cap kills it. ru_maxrss is monotonic, so a block's value is the
+    peak so far at its exit, never above the run's."""
+    p = drp.ReadProfile("daily-refresh")
+    with p.block("small"):
+        pass
+    with p.block("big"):
+        ballast = bytearray(32 * 1024 * 1024)
+        ballast[::4096] = b"x" * len(ballast[::4096])
+    payload = p.as_dict()
+    blocks = {b["label"]: b for b in payload["blocks"]}
+    assert payload["peak_rss_mib"] > 0
+    assert 0 < blocks["small"]["peak_rss_mib"] <= blocks["big"]["peak_rss_mib"] <= payload["peak_rss_mib"]
+    del ballast
+
+
+def test_peak_rss_is_none_where_it_cannot_be_read(monkeypatch):
+    import builtins
+
+    real = builtins.__import__
+
+    def no_resource(name, *a, **k):
+        if name == "resource":
+            raise ImportError(name)
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_resource)
+    assert drp._peak_rss_mib() is None

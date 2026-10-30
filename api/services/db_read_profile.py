@@ -63,10 +63,32 @@ from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
+
+def _peak_rss_mib() -> float | None:
+    """This process's high-water resident set in MiB, or None where it is unknowable.
+
+    ``ru_maxrss`` is monotonic, so read at a block's exit it is the peak SO FAR: the
+    block whose exit first shows the run's peak is the one that set it. Linux reports
+    KiB (the box); macOS reports bytes, so the unit is chosen by platform.
+    """
+    try:
+        import resource  # noqa: PLC0415 - POSIX only
+        import sys  # noqa: PLC0415
+
+        raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except (ImportError, OSError, ValueError):
+        return None
+    return round(raw / (1024 * 1024 if sys.platform == "darwin" else 1024), 1)
+
 #: Bumped when a field is added, removed, or changes meaning. A reader keys off
 #: this rather than guessing from shape. v2 added per-block ``statements`` and
-#: ``db_rows`` from the driver, plus the ``(outside any block)`` entry.
-SCHEMA_VERSION = 2
+#: ``db_rows`` from the driver, plus the ``(outside any block)`` entry. v3 added
+#: ``peak_rss_mib`` (the run's high-water resident set) and each block's
+#: ``peak_rss_mib`` at its last exit, so a run nearing its unit's ``MemoryMax`` is
+#: visible, and attributable to a block, before the cap kills it
+#: (alpha-engine-config-I12814: three OOM-killed fires on 2026-10-28 with no
+#: measurement of how close the successful ones ran).
+SCHEMA_VERSION = 3
 
 #: Label for driver-counted reads made while no block is open, so the payload's
 #: ``total_db_rows`` covers the whole run and not just the instrumented regions.
@@ -91,6 +113,8 @@ class _Block:
     #: code being measured, so a block like ``best_effort:risk`` that returns a domain
     #: object is no longer a 170-second region with zero rows against it.
     db_rows: int = 0
+    #: The process's high-water RSS (MiB) when this block last exited (see _peak_rss_mib).
+    peak_rss_mib: float | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -100,6 +124,7 @@ class _Block:
             "seconds": round(self.seconds, 3),
             "statements": self.statements,
             "db_rows": self.db_rows,
+            "peak_rss_mib": self.peak_rss_mib,
         }
 
 
@@ -149,6 +174,7 @@ class ReadProfile:
             entry.calls += 1
             entry.rows += counted
             entry.seconds += time.monotonic() - start
+            entry.peak_rss_mib = _peak_rss_mib()
 
     def count_statement(self, statement: str, rowcount: int) -> None:
         """Charge one executed statement to the innermost open block.
@@ -201,6 +227,7 @@ class ReadProfile:
             "total_seconds": round(sum(b.seconds for b in ordered), 3),
             "total_statements": sum(b.statements for b in ordered),
             "total_db_rows": sum(b.db_rows for b in ordered),
+            "peak_rss_mib": _peak_rss_mib(),
             "blocks": [b.as_dict() for b in ordered],
         }
 
@@ -213,9 +240,10 @@ class ReadProfile:
         """
         payload = self.as_dict()
         logger.info(
-            "db-read-profile %s: %d rows (%d db rows over %d SELECTs) in %.1fs across %d blocks",
+            "db-read-profile %s: %d rows (%d db rows over %d SELECTs) in %.1fs across %d blocks, peak RSS %s MiB",
             payload["command"], payload["total_rows"], payload["total_db_rows"],
             payload["total_statements"], payload["total_seconds"], len(payload["blocks"]),
+            payload["peak_rss_mib"],
         )
         for b in payload["blocks"]:
             logger.info(
