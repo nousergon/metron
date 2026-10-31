@@ -143,4 +143,10 @@ class SnapTradeConnector:
             )
 
         snapshot.securities = list(seen_securities.values())
+        # Holdings are complete only for accounts whose holdings call succeeded; a reader
+        # that does not report that declares nothing (metron-ops#382).
+        fetched = getattr(self._reader, "last_holdings_fetched_accounts", None)
+        if isinstance(fetched, set):
+            numbers = {a.number for a in snapshot.accounts}
+            snapshot.holdings_complete_for = frozenset((fetched & numbers) - {""})
         return snapshot

@@ -128,6 +128,12 @@ class Account(Base):
     # since this column shipped. Nullable so it auto-ALTERs onto an existing SQLite DB
     # (api/db/session._sync_additive_columns).
     cash_balance_usd: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    # Last successful snapshot that stated this account's holdings / open lots in full
+    # (metron-ops#382), stamped whether the stated set was populated or EMPTY. Before
+    # these, ``Position.as_of`` was the only sync stamp, so an account that sold
+    # everything had no freshness signal at all. NULL = never stated since this shipped.
+    holdings_synced_on: Mapped[date | None] = mapped_column(nullable=True)
+    open_lots_synced_on: Mapped[date | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     portfolio: Mapped[Portfolio] = relationship(back_populates="accounts")
