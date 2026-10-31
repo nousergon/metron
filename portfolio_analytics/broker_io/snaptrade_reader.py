@@ -256,6 +256,11 @@ class SnapTradeReader:
         """Get all positions across all accounts."""
         accounts = self.get_accounts()
         all_holdings = []
+        # Account numbers whose holdings call SUCCEEDED on this pass. A failure is logged
+        # and skipped so one account cannot cost the rest, which makes its absence from
+        # the frame look exactly like an empty account; the connector declares holdings
+        # complete only for accounts in this set (metron-ops#382).
+        self.last_holdings_fetched_accounts: set[str] = set()
         for acct in accounts:
             try:
                 holdings = self.get_holdings(acct["id"])
@@ -264,6 +269,7 @@ class SnapTradeReader:
                     h["account_number"] = acct.get("number", "")
                     h["account_type"] = acct["type"]
                 all_holdings.extend(holdings)
+                self.last_holdings_fetched_accounts.add(acct.get("number", "") or "")
             except Exception as e:
                 logger.warning("Failed to fetch holdings for account %s: %s", _log_safe(acct["name"]), _log_safe(e))
         df = pd.DataFrame(all_holdings)

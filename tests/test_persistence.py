@@ -337,8 +337,9 @@ def test_resync_does_not_reparent_csv_account_with_colliding_label(db_session):
     accounts = db_session.scalars(
         select(models.Account).where(models.Account.tenant_id == tenant_id, models.Account.external_id == "Roth")
     ).all()
-    assert len(accounts) == 1  # DB uniqueness (tenant_id, broker, external_id) forbids a second row
-    assert accounts[0].portfolio_id == portfolio_a  # left where it was, not moved to B
+    # A CSV label is unique per portfolio (metron-ops#383): B gets its own "Roth" account
+    # and A's is neither moved nor written into.
+    assert sorted(str(a.portfolio_id) for a in accounts) == sorted([str(portfolio_a), str(portfolio_b.id)])
 
 
 def test_persists_foreign_symbology_and_account_metadata(db_session):
