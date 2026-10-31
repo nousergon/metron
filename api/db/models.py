@@ -92,17 +92,51 @@ class Portfolio(Base):
     accounts: Mapped[list[Account]] = relationship(back_populates="portfolio", cascade="all, delete-orphan")
 
 
+# Account identity scope (metron-ops#383). A brokerage-assigned account number names one
+# real account across the whole tenant, so those sources are unique per tenant and a
+# re-sync into another portfolio moves the row. CSV and manual entry carry a free-text
+# label the user types per import ("CSV", "Roth"), which names nothing outside the
+# portfolio it was imported into, so those are unique per portfolio: two portfolios that
+# both import a default "CSV" account get two accounts, not one shared row.
+TENANT_SCOPE = "tenant"
+PORTFOLIO_SCOPED_SOURCES = frozenset({"csv", "manual"})
+
+
+def account_identity_scope(broker: str, portfolio_id: uuid.UUID) -> str:
+    """The ``Account.identity_scope`` value for an account of ``broker`` created under
+    ``portfolio_id``: the portfolio id's 32-hex form for label sources, ``"tenant"``
+    otherwise. The hex form is what both SQLite's UUID storage and the Postgres backfill
+    (``replace(portfolio_id::text, '-', '')``) produce, so all three agree."""
+    if broker in PORTFOLIO_SCOPED_SOURCES:
+        return portfolio_id.hex
+    return TENANT_SCOPE
+
+
+def _default_identity_scope(context) -> str:
+    params = context.get_current_parameters()
+    portfolio_id = params["portfolio_id"]
+    if not isinstance(portfolio_id, uuid.UUID):
+        portfolio_id = uuid.UUID(str(portfolio_id))
+    return account_identity_scope(params["broker"], portfolio_id)
+
+
 class Account(Base):
     """A connected brokerage account (the FDX ``CanonicalAccount`` grain)."""
 
     __tablename__ = "accounts"
-    __table_args__ = (UniqueConstraint("tenant_id", "broker", "external_id", name="uq_account_source"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "broker", "external_id", "identity_scope", name="uq_account_identity"),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
     broker: Mapped[str] = mapped_column(String(50))         # "ibkr_flex" | "snaptrade" | "csv" | "ofx"
     external_id: Mapped[str] = mapped_column(String(120))   # broker-side account number
+    # Where ``external_id`` is unique: ``"tenant"`` or the creating portfolio's id (hex).
+    # See ``account_identity_scope``. Set at insert from broker + portfolio_id; it does
+    # NOT follow a later reparent, because only tenant-scoped rows are ever reparented.
+    identity_scope: Mapped[str] = mapped_column(String(64), default=_default_identity_scope)
     name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # User-set display label (Settings). Distinct from broker ``name`` so a re-sync never
     # clobbers it; persistence never writes this column. NULL = fall back to name/external_id.
