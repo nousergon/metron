@@ -188,3 +188,64 @@ def test_legacy_sqlite_accounts_table_is_rebuilt_without_moving_a_row():
         assert len(_accounts(session, b)) == 1, "the old tenant-wide constraint is gone"
 
     create_all(engine)  # a second start is a no-op
+
+
+def _alembic(env, *args):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *args],
+        cwd=Path(__file__).resolve().parent.parent, env=env, capture_output=True, text=True,
+    )
+
+
+def test_migration_scopes_existing_rows_in_place_and_reports_ambiguity(tmp_path):
+    """The real migration on a populated DB: no row moves, label rows take the scope of
+    the portfolio they already sit in, and the ambiguous one is reported, not guessed."""
+    import os
+
+    db = tmp_path / "m.sqlite"
+    env = {**os.environ, "DATABASE_URL": f"sqlite:///{db}", "ENV": "test"}
+    assert _alembic(env, "upgrade", "a8c3e5f71d24").returncode == 0
+    engine = create_engine(f"sqlite:///{db}")
+    tenant, a, b, csv_id, flex_id = (uuid.uuid4().hex for _ in range(5))
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO tenants (id, name, created_at) VALUES (:t, 't', '2026-01-01')"), {"t": tenant})
+        for pid in (a, b):
+            conn.execute(
+                text(
+                    "INSERT INTO portfolios (id, tenant_id, name, base_currency, created_at) "
+                    "VALUES (:p, :t, 'P', 'USD', '2026-01-01')"
+                ),
+                {"p": pid, "t": tenant},
+            )
+        conn.execute(
+            text(
+                "INSERT INTO accounts (id, tenant_id, portfolio_id, broker, external_id, currency, created_at) "
+                "VALUES (:c, :t, :a, 'csv', 'CSV', 'USD', '2026-01-01'), "
+                "(:f, :t, :a, 'ibkr_flex', 'U1', 'USD', '2026-01-01')"
+            ),
+            {"c": csv_id, "f": flex_id, "t": tenant, "a": a},
+        )
+
+    upgraded = _alembic(env, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    assert "1 CSV/manual account(s) are AMBIGUOUS" in upgraded.stderr
+    assert csv_id in upgraded.stderr.replace("-", "")
+    with engine.connect() as conn:
+        rows = dict(conn.execute(text("SELECT broker, identity_scope || '|' || portfolio_id FROM accounts")).all())
+    assert rows == {"csv": f"{a}|{a}", "ibkr_flex": f"tenant|{a}"}
+
+    with engine.begin() as conn:  # the same label now also exists in portfolio B
+        conn.execute(
+            text(
+                "INSERT INTO accounts (id, tenant_id, portfolio_id, broker, external_id, identity_scope, currency,"
+                " created_at) VALUES (:i, :t, :b, 'csv', 'CSV', :b, 'USD', '2026-01-01')"
+            ),
+            {"i": uuid.uuid4().hex, "t": tenant, "b": b},
+        )
+    refused = _alembic(env, "downgrade", "a8c3e5f71d24")
+    assert refused.returncode != 0
+    assert "would merge them" in refused.stderr

@@ -52,11 +52,14 @@ def upgrade() -> None:
         f"WHEN broker IN {_LABEL_SOURCES} THEN replace(CAST(portfolio_id AS TEXT), '-', '') "
         "ELSE 'tenant' END"
     )
-    op.alter_column('accounts', 'identity_scope', existing_type=sa.String(length=64), nullable=False)
-    op.drop_constraint('uq_account_source', 'accounts', type_='unique')
-    op.create_unique_constraint(
-        'uq_account_identity', 'accounts', ['tenant_id', 'broker', 'external_id', 'identity_scope']
-    )
+    # Batch mode: plain ALTERs on Postgres, a table copy on SQLite (which cannot alter
+    # a column's nullability or drop a table constraint in place).
+    with op.batch_alter_table('accounts') as batch:
+        batch.alter_column('identity_scope', existing_type=sa.String(length=64), nullable=False)
+        batch.drop_constraint('uq_account_source', type_='unique')
+        batch.create_unique_constraint(
+            'uq_account_identity', ['tenant_id', 'broker', 'external_id', 'identity_scope']
+        )
     rows = op.get_bind().execute(
         sa.text(
             "SELECT a.id, a.broker FROM accounts a "
@@ -89,6 +92,7 @@ def downgrade() -> None:
             f"{clashes} account label(s) now exist in more than one portfolio; restoring "
             "the tenant-wide uq_account_source would merge them. Resolve them first."
         )
-    op.drop_constraint('uq_account_identity', 'accounts', type_='unique')
-    op.create_unique_constraint('uq_account_source', 'accounts', ['tenant_id', 'broker', 'external_id'])
-    op.drop_column('accounts', 'identity_scope')
+    with op.batch_alter_table('accounts') as batch:
+        batch.drop_constraint('uq_account_identity', type_='unique')
+        batch.create_unique_constraint('uq_account_source', ['tenant_id', 'broker', 'external_id'])
+        batch.drop_column('identity_scope')
