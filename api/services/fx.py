@@ -200,6 +200,16 @@ class RateHistory:
         i = bisect.bisect_right(dates, on_date)
         return rates[i - 1] if i else None
 
+    def observed_as_of(self, currency: str | None, on_date: date) -> date | None:
+        """The DATE of the rate :meth:`rate_as_of` returns, so a caller can tell a fresh
+        rate from one carried forward over a gap. ``on_date`` itself for the base."""
+        ccy = (currency or self._base).strip().upper()
+        if ccy == self._base:
+            return on_date
+        dates, _rates = self._series.get(ccy, ([], []))
+        i = bisect.bisect_right(dates, on_date)
+        return dates[i - 1] if i else None
+
     def latest(self, currency: str | None) -> float | None:
         ccy = (currency or self._base).strip().upper()
         if ccy == self._base:
