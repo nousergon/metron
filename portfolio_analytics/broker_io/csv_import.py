@@ -95,7 +95,9 @@ _TYPE_SYNONYMS: dict[str, TxnType] = {
 
 # Types that require a non-empty symbol; cash events (deposit/withdrawal/fee/interest)
 # do not. DIVIDEND keeps its symbol when present but tolerates a blank (cash sweep).
-_SECURITY_REQUIRED = {TxnType.BUY, TxnType.REINVESTMENT, TxnType.SELL, TxnType.SPLIT}
+_SECURITY_REQUIRED = {
+    TxnType.BUY, TxnType.REINVESTMENT, TxnType.SELL, TxnType.SPLIT, TxnType.TRANSFER_IN, TxnType.TRANSFER_OUT,
+}
 
 
 class CsvImportError(FileImportError):

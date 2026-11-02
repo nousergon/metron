@@ -101,6 +101,7 @@ _TAX_TREATMENTS = frozenset({"", TAX_TAXABLE, TAX_DEFERRED, TAX_EXEMPT})
 # REINVESTMENT is a purchase (metron-ops#335): the ledger applies it through the BUY path.
 _TRADE_TYPES = frozenset({TxnType.BUY, TxnType.REINVESTMENT, TxnType.SELL})
 _CASH_TYPES = frozenset({TxnType.DIVIDEND, TxnType.INTEREST, TxnType.DEPOSIT, TxnType.WITHDRAWAL, TxnType.FEE})
+_TRANSFER_TYPES = frozenset({TxnType.TRANSFER_IN, TxnType.TRANSFER_OUT})
 
 
 @dataclass(frozen=True)
@@ -266,6 +267,18 @@ def _check_activity(c: _Collector, s: str, act, account_numbers: set[str], secur
             c.flag(s, f"{t} quantity={act.quantity} is not positive (the ledger skips it)", observed=act.quantity)
         if _finite(act.price) and act.price < 0:
             c.flag(s, f"{t} price={act.price} is negative", observed=act.price)
+    elif t in _TRANSFER_TYPES:
+        if not act.security_id:
+            c.flag(s, f"{t} has no security")
+        if _finite(act.quantity) and act.quantity <= 0:
+            c.flag(s, f"{t} quantity={act.quantity} is not positive (the ledger skips it)", observed=act.quantity)
+        if _finite(act.amount) and act.amount <= 0:
+            # metron-ops#378: the transfer-date market value IS the external capital. Without
+            # it the account basis cannot tell the arriving shares from return.
+            c.flag(s, f"{t} amount={act.amount} carries no transfer-date market value "
+                      "(the account basis holds the period unreconciled)", observed=act.amount)
+        if _finite(act.price) and act.price < 0:
+            c.flag(s, f"{t} price={act.price} (carried cost per share) is negative", observed=act.price)
     elif t is TxnType.SPLIT:
         if not act.security_id:
             c.flag(s, "SPLIT has no security")

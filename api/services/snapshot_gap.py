@@ -127,7 +127,7 @@ from api.db import models
 from api.services import fx as fx_service
 from api.services import performance
 from api.services import prices as price_service
-from portfolio_analytics.domain.ledger import TxnType
+from portfolio_analytics.domain.ledger import POSITION_SIGN, TxnType
 
 logger = logging.getLogger(__name__)
 
@@ -1052,7 +1052,7 @@ def _trade_records(session: Session, plan: SeriesPlan, a, b) -> dict[str, list[t
     lo, hi = a.snap_date, b.snap_date
     txn, opened, closed = models.Transaction, models.OpenLot, models.RealizedLot
     ledger = [
-        (d, sym, (-1.0 if t == TxnType.SELL.value else 1.0) * abs(float(q)))
+        (d, sym, POSITION_SIGN[TxnType(t)] * abs(float(q)))
         for d, t, q, sym in session.execute(
             select(txn.trade_date, txn.txn_type, txn.quantity, models.Security.symbol)
             .join(models.Security, txn.security_id == models.Security.id)
