@@ -105,9 +105,15 @@ def test_a_valuation_before_the_first_fx_rate_is_stamped_as_using_a_later_rate(d
     late = [p for p in points if p.when >= date(2024, 3, 15)]
     assert early and late
     for p in early:
-        assert _fx_stamps(p, "after_date") == [
+        assert [e for e in _fx_stamps(p, "after_date") if "leg" not in e] == [
             {"ticker": "0700.HK", "input": "fx", "currency": "HKD", "reason": "after_date"}
         ], f"{p.when} used a rate from after its own date without saying so"
+    # The HKD buy's flow is converted by the same rule, so the BUY point stamps it too
+    # (metron-ops-I389).
+    buy_point = next(p for p in early if p.when == BUY)
+    assert {"ticker": "0700.HK", "input": "fx", "currency": "HKD", "reason": "after_date", "leg": "flow"} in (
+        buy_point.estimated_inputs
+    )
     for p in late:
         assert not p.estimated_inputs, f"{p.when} had an as-of rate and is exact"
 
