@@ -594,6 +594,8 @@ class PerfPointOut(BaseModel):
     nav: float
     external_flow: float
     spy_close: float | None
+    # Per-leg estimate stamps for this dated valuation (metron-ops-I370); null = exact.
+    estimated_inputs: list[dict] | None = None
 
 
 class RollingRiskOut(BaseModel):

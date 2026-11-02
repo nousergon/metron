@@ -747,6 +747,10 @@ class PerfPoint:
     nav: float
     external_flow: float
     spy_close: float | None
+    # The stored point's estimate stamps (``NavSnapshot.estimated_inputs``, metron-ops-I370):
+    # which legs were NOT valued from inputs observed on/before ``snap_date``, and why.
+    # None = an exact as-of valuation, or a grain that does not record them (account).
+    estimated_inputs: list[dict] | None = None
 
 
 @dataclass
@@ -1040,6 +1044,7 @@ def performance(
                 nav=float(s.nav),
                 external_flow=float(s.external_flow),
                 spy_close=float(s.spy_close) if s.spy_close is not None else None,
+                estimated_inputs=s.estimated_inputs or None,
             )
             for s in snaps
         ]
@@ -1240,6 +1245,7 @@ def _load_perf_points(
             nav=float(s.nav),
             external_flow=float(s.external_flow),
             spy_close=float(s.spy_close) if s.spy_close is not None else None,
+            estimated_inputs=s.estimated_inputs or None,
         )
         for s in snaps
     ]
@@ -1783,6 +1789,15 @@ def _account_performance_series(
 # take years to accumulate.
 
 
+def _asof_bar(series: list[ClosePoint] | None, when: date) -> ClosePoint | None:
+    """The bar :func:`_asof_close` reads — the most recent on or before ``when`` — so a
+    caller can also see HOW OLD the admitted close is (metron-ops-I370)."""
+    if not series:
+        return None
+    idx = bisect.bisect_right(series, when, key=lambda p: p.bar_date)
+    return series[idx - 1] if idx > 0 else None
+
+
 def _asof_close(series: list[ClosePoint] | None, when: date) -> float | None:
     """Most recent close on or before ``when`` (carry-forward over non-trading days).
     ``series`` is ascending by date. None if nothing is on/before ``when``.
@@ -2079,7 +2094,8 @@ def nav_history_estimated(session: Session, tenant_id: uuid.UUID, portfolio_id: 
     ).scalars().all()
     stamped_note = (
         f"{len(stamped)} dated valuation(s) through {stamped[-1].isoformat()} used a price or FX rate "
-        "from after their own date, or excluded a holding with no FX rate."
+        f"from after their own date, carried one across a gap of more than {_STALE_INPUT_DAYS} days, "
+        "or excluded a holding with no FX rate."
         if stamped
         else None
     )
@@ -2150,6 +2166,14 @@ def _profiled(profile, label: str):
         return
     with profile.block(label) as record:
         yield record
+
+
+# An as-of close or FX rate more than this many calendar days older than the date it values
+# is a GAP carried forward, not an observation of that date (metron-ops-I370): the leg is
+# still valued at it — dropping it would understate NAV — but the point is stamped as an
+# estimate (``reason: "stale"``, with the ``observed`` date). Ten days clears every routine
+# market closure, the longest being multi-day exchange holidays plus their weekends.
+_STALE_INPUT_DAYS = 10
 
 
 @dataclass
@@ -2282,44 +2306,62 @@ def _reconstruct_nav_points(
     if fx_history is None:
         fx_history = fx_service.rate_history(session, foreign)
 
-    def _rate(ccy: str, when: date) -> tuple[float | None, str | None]:
-        """``(rate, None)`` from a rate dated on/before ``when``; otherwise a labelled
-        fallback (metron-ops-I370). ``(later_rate, "after_date")`` when the only rates
+    def _rate(ccy: str, when: date) -> tuple[float | None, str | None, date | None]:
+        """``(rate, None, None)`` from a rate dated on/before ``when``; otherwise a labelled
+        fallback (metron-ops-I370). ``(later_rate, "after_date", None)`` when the only rates
         cached postdate ``when`` — an ESTIMATE, stamped on the point, never exact. ``(None,
-        "unavailable")`` when no rate exists at all: the leg is excluded, exactly as the
-        live valuation excludes a holding with no cached rate. There is no 1.0 parity
-        fallback — that fabricated a rate for a real foreign currency."""
+        "unavailable", None)`` when no rate exists at all: the leg is excluded, exactly as
+        the live valuation excludes a holding with no cached rate. There is no 1.0 parity
+        fallback — that fabricated a rate for a real foreign currency. ``(rate, "stale",
+        observed)`` when the as-of rate is more than ``_STALE_INPUT_DAYS`` older than
+        ``when`` — a gap in the rate history, carried forward: used, but an estimate."""
         if not ccy or ccy == "USD":
-            return 1.0, None
+            return 1.0, None, None
         key = (ccy, when)
         if key not in _rate_cache:
+            observed: date | None = None
             if fx_history.covers(ccy):
                 asof, later = fx_history.rate_as_of(ccy, when), fx_history.latest(ccy)
+                observed = fx_history.observed_as_of(ccy, when)
             else:
                 asof = fx_service.rate_as_of(session, ccy, when)
                 later = None if asof is not None else fx_service.latest_rate_to_base(session, ccy)
-            if asof is not None:
-                _rate_cache[key] = (asof, None)
+            if asof is not None and observed is not None and (when - observed).days > _STALE_INPUT_DAYS:
+                _rate_cache[key] = (asof, "stale", observed)
+            elif asof is not None:
+                _rate_cache[key] = (asof, None, None)
             elif later is not None:
-                _rate_cache[key] = (later, "after_date")
+                _rate_cache[key] = (later, "after_date", None)
             else:
-                _rate_cache[key] = (None, "unavailable")
+                _rate_cache[key] = (None, "unavailable", None)
         return _rate_cache[key]
 
     def _value_leg(ticker: str, qty: float, d: date, estimates: list[dict]) -> float | None:
         """Base value of ``qty`` of ``ticker`` on ``d``; appends to ``estimates`` every input
         that was not dated on/before ``d``. None when the leg cannot be valued at all."""
-        px = _asof_close(history.get(ticker), d)
-        if px is None:
+        bar = _asof_bar(history.get(ticker), d)
+        if bar is None:
             px = current_px.get(ticker)
             if px is None:
                 return None
             if d < today:
                 # The documented flat-backward fallback: TODAY's price on a past date.
                 estimates.append({"ticker": ticker, "input": "price", "reason": "after_date"})
+        else:
+            px = bar.close
+            if (d - bar.bar_date).days > _STALE_INPUT_DAYS:
+                # A gap in the close history: the last close before it is carried forward.
+                # Dated on/before ``d``, so no look-ahead, but not an observation of ``d``.
+                estimates.append({
+                    "ticker": ticker, "input": "price", "reason": "stale", "observed": bar.bar_date.isoformat(),
+                })
         ccy = ticker_ccy.get(ticker, "USD")
-        rate, why = _rate(ccy, d)
-        if why is not None:
+        rate, why, observed = _rate(ccy, d)
+        if why == "stale":
+            estimates.append({
+                "ticker": ticker, "input": "fx", "currency": ccy, "reason": why, "observed": observed.isoformat(),
+            })
+        elif why is not None:
             estimates.append({"ticker": ticker, "input": "fx", "currency": ccy, "reason": why})
         if rate is None:
             return None
