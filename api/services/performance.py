@@ -76,23 +76,27 @@ PERIOD_TILES: list[tuple[str, str]] = [("today", "Today"), ("ytd", "YTD"), ("ltm
 _BENCH_COVERAGE_SLACK_DAYS = 4
 
 
-# Stored ``txn_type`` values that count toward net purchases: every purchase type
-# (BUY and a dividend REINVESTMENT — "a reinvested dividend is a buy", metron-ops#44)
-# plus SELL. A reinvestment carries a distinct type only for display (metron-ops#335);
-# its flow arithmetic is exactly a BUY's.
+# Stored ``txn_type`` values that count toward the holdings flow ("net purchases"): every
+# purchase type (BUY and a dividend REINVESTMENT — "a reinvested dividend is a buy",
+# metron-ops#44) plus SELL, plus a security transfer in or out in kind at its
+# transfer-date market value (metron-ops#378). A reinvestment carries a distinct type
+# only for display (metron-ops#335); its flow arithmetic is exactly a BUY's. A transfer
+# is neither a purchase nor return: it is capital entering or leaving the holdings.
 _PURCHASE_TYPE_VALUES = frozenset(t.value for t in PURCHASE_TYPES)
-_NET_PURCHASE_TYPE_VALUES = sorted(_PURCHASE_TYPE_VALUES | {TxnType.SELL.value})
+_INFLOW_TYPE_VALUES = _PURCHASE_TYPE_VALUES | {TxnType.TRANSFER_IN.value}
+_OUTFLOW_TYPE_VALUES = frozenset({TxnType.SELL.value, TxnType.TRANSFER_OUT.value})
+_NET_PURCHASE_TYPE_VALUES = sorted(_INFLOW_TYPE_VALUES | _OUTFLOW_TYPE_VALUES)
 
 
 def _purchase_flow(rows: list[tuple[str, float]]) -> float:
     """Net purchases for a set of (txn_type, amount) rows: a BUY (or a dividend
-    REINVESTMENT, which is a buy) brings capital INTO the holdings (+amount), a SELL takes
-    it OUT (−amount)."""
+    REINVESTMENT, which is a buy) or a TRANSFER_IN brings capital INTO the holdings
+    (+amount), a SELL or a TRANSFER_OUT takes it OUT (−amount)."""
     flow = 0.0
     for txn_type, amount in rows:
-        if txn_type in _PURCHASE_TYPE_VALUES:
+        if txn_type in _INFLOW_TYPE_VALUES:
             flow += float(amount)
-        elif txn_type == TxnType.SELL.value:
+        elif txn_type in _OUTFLOW_TYPE_VALUES:
             flow -= float(amount)
     return flow
 
@@ -151,7 +155,8 @@ def _account_net_purchases(
 def _net_purchase_rows_by_account(
     session: Session, tenant_id: uuid.UUID, account_ids: Collection[uuid.UUID]
 ) -> dict[uuid.UUID, tuple[list[date], list[tuple[str, float]]]]:
-    """Every net-purchase row (BUY / REINVESTMENT / SELL) of ``account_ids`` in ONE read,
+    """Every net-purchase row (BUY / REINVESTMENT / SELL / TRANSFER_IN / TRANSFER_OUT) of
+    ``account_ids`` in ONE read,
     grouped per account and sorted by trade date — ``(dates, (txn_type, amount) rows)``.
 
     The set-based input to :func:`_windowed_net_purchases`. A NAV reconstruction takes the

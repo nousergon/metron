@@ -30,9 +30,11 @@ The contract, from the design on metron-ops#371:
 
 Not in this slice: FX translation is accepted as an input amount but nothing derives
 it yet (the FX fixture waits on metron-ops#370's as-of FX). Factor residual alpha is
-slice 4. The NE-book consumer is slice 5. The canonical ledger has no transfer-in-kind
-member yet (metron-ops#378), so ``from_transaction`` never produces one. A transfer can
-only come from a caller that knows it is one.
+slice 4. The NE-book consumer is slice 5. A canonical ``TRANSFER_IN``/``TRANSFER_OUT``
+(metron-ops#378) maps onto the matching event at its transfer-date market value. A
+transfer whose market value the source did not report is mapped with no quantity, so
+the position gate below still holds its period ``unreconciled`` rather than counting
+the arriving shares as return.
 
 **Position gate (slice 2).** Price P&L is derived from the holdings move, so a position
 that arrives with no classifying event (a transfer in kind the ledger cannot record)
@@ -62,8 +64,8 @@ UNRECONCILED = "unreconciled"
 
 class EventKind(StrEnum):
     """The account-basis event vocabulary. It is wider than ``TxnType`` on purpose:
-    transfers in kind, financing charges, corporate-action cash and FX translation have
-    no canonical ledger member yet, and the engine must be able to say what they are."""
+    financing charges, corporate-action cash and FX translation have no canonical ledger
+    member yet, and the engine must be able to say what they are."""
 
     DEPOSIT = "DEPOSIT"
     WITHDRAWAL = "WITHDRAWAL"
@@ -113,6 +115,8 @@ _TXN_KIND: dict[TxnType, EventKind] = {
     TxnType.WITHDRAWAL: EventKind.WITHDRAWAL,
     TxnType.FEE: EventKind.FEE,
     TxnType.SPLIT: EventKind.SPLIT,
+    TxnType.TRANSFER_IN: EventKind.TRANSFER_IN,
+    TxnType.TRANSFER_OUT: EventKind.TRANSFER_OUT,
 }
 
 
@@ -124,6 +128,14 @@ def from_transaction(txn: Transaction) -> AccountEvent:
                             symbol=txn.ticker, quantity=txn.quantity)
     if kind is EventKind.SPLIT:
         return AccountEvent(txn.when, kind, symbol=txn.ticker, quantity=txn.quantity)
+    if kind in (EventKind.TRANSFER_IN, EventKind.TRANSFER_OUT):
+        # External capital at transfer-date market value. Unvalued, the transfer would
+        # move shares with zero external capital and its whole value would read as price
+        # P&L; carrying no quantity instead leaves the shares unexplained, so the
+        # position gate marks the period unreconciled (metron-ops#378).
+        valued = txn.amount > 0
+        return AccountEvent(txn.when, kind, amount=txn.amount if valued else 0.0, fees=txn.fees,
+                            symbol=txn.ticker, quantity=txn.quantity if valued else 0.0)
     return AccountEvent(txn.when, kind, amount=txn.amount, fees=txn.fees, symbol=txn.ticker)
 
 
@@ -365,7 +377,8 @@ def decompose_period(
         listed = ", ".join(f"{s} {q:+.6g}" for s, q in jumps.items())
         why = (
             f"{UNRECONCILED}: position change with no classifying event ({listed}); "
-            "a transfer in kind has no ledger member yet (metron-ops#378)"
+            "a transfer in kind that no source recorded, or recorded with no "
+            "transfer-date market value, reads this way (metron-ops#378)"
         )
     elif not reconciled:
         why = (

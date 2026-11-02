@@ -339,7 +339,9 @@ export type TxnType =
   | "DEPOSIT"
   | "WITHDRAWAL"
   | "FEE"
-  | "SPLIT";
+  | "SPLIT"
+  | "TRANSFER_IN" // securities received in kind (metron-ops#378)
+  | "TRANSFER_OUT";
 
 export type Transaction = {
   trade_date: string; // ISO date
