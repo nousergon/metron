@@ -435,6 +435,12 @@ def daily_refresh(
             watchlist_universe_published = True
         except Exception as e:  # noqa: BLE001 - best-effort secondary path; never fatal
             logger.warning("watchlist-universe publish failed (non-fatal): %s", e)
+        # Personal-portfolio returns for the console performance tracker (Brian 2026-11-03).
+        # Its own try/except: a failure never costs the universe publishes above.
+        try:
+            data_spine.publish_personal_returns(session)
+        except Exception as e:  # noqa: BLE001 - best-effort secondary path; never fatal
+            logger.warning("personal-returns publish failed (non-fatal): %s", e)
 
     return RefreshResult(
         portfolios=len(portfolios),
