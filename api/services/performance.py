@@ -65,10 +65,17 @@ _ROLLING_MIN_OBS = 20
 # the tradeable ETF close is an ordinary equity price, so the ETF is the proxy. The
 # benchmark comparison is FEED-GATED (Pro): the no-feed beta renders the tiles
 # portfolio-only (the caller passes with_benchmarks=False). (symbol, display label).
-BENCHMARKS: list[tuple[str, str]] = [("SPY", "S&P 500"), ("QQQ", "Nasdaq 100"), ("IWM", "Russell 2000")]
+# The five indexes Brian tracks (2026-11-04), as ETF proxies.
+BENCHMARKS: list[tuple[str, str]] = [
+    ("DIA", "Dow Jones"),
+    ("SPY", "S&P 500"),
+    ("ONEQ", "Nasdaq Composite"),
+    ("QQQ", "Nasdaq 100"),
+    ("IWM", "Russell 2000"),
+]
 
 # The Overview hero windows (metron-ops#83): (period_key, display label).
-PERIOD_TILES: list[tuple[str, str]] = [("today", "Today"), ("ytd", "YTD"), ("ltm", "LTM")]
+PERIOD_TILES: list[tuple[str, str]] = [("today", "Today"), ("mtd", "MTD"), ("ytd", "YTD"), ("ltm", "LTM")]
 
 # Benchmark history is read from the price_bars cache; before computing a window we ensure
 # the cache spans it (feed path only — gated by the caller). The latest cached bar may lag
@@ -1299,7 +1306,13 @@ def _window_indices(
     end_i = n - 1
     if period == "today":
         return _today_window_indices(points, _tile_now(today, now))
-    if period == "ytd":
+    if period == "mtd":
+        end_d = points[end_i].snap_date
+        base = next(
+            (i for i in range(end_i, -1, -1) if (points[i].snap_date.year, points[i].snap_date.month) < (end_d.year, end_d.month)),
+            0,
+        )
+    elif period == "ytd":
         year = points[end_i].snap_date.year
         base = next((i for i in range(end_i, -1, -1) if points[i].snap_date.year < year), 0)
     elif period == "ltm":

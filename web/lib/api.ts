@@ -1953,6 +1953,7 @@ export type IndexQuote = {
   session_date: string | null;
   suspect: boolean;
   // Period returns from cached daily closes (metron-ops#87); null when unavailable.
+  mtd_pct?: number | null;
   ytd_pct: number | null;
   ltm_pct: number | null;
 };

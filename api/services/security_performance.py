@@ -23,6 +23,7 @@ SECURITY_PERFORMANCE_KEY = "market_data/security_performance/latest.json"
 class TickerPerformance:
     yf_symbol: str
     period_returns: dict[str, float] = field(default_factory=dict)  # 1Y/3Y/5Y/10Y
+    mtd_pct: float | None = None  # from the prior month's last close
     ytd_pct: float | None = None
     ltm_pct: float | None = None
     volatility: float | None = None
@@ -83,6 +84,7 @@ def _parse(yf_symbol: str, d: dict) -> TickerPerformance:
     return TickerPerformance(
         yf_symbol=yf_symbol,
         period_returns=period_returns,
+        mtd_pct=_f(d, "mtd_pct"),
         ytd_pct=_f(d, "ytd_pct"),
         ltm_pct=_f(d, "ltm_pct"),
         volatility=_f(d, "volatility"),

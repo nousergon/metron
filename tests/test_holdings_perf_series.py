@@ -72,7 +72,7 @@ class TestAccountSeries:
             _asnap(db_session, tenant, pid, a1, when, nav)
         for when, nav in zip(_DATES, [2000.0, 1900.0, 2090.0], strict=True):
             _asnap(db_session, tenant, pid, a2, when, nav)
-        for sym in ("SPY", "QQQ", "IWM"):
+        for sym in ("DIA", "SPY", "ONEQ", "QQQ", "IWM"):
             _bars(db_session, sym, list(zip(_DATES, [400.0, 440.0, 484.0], strict=True)))
 
         # today = the last data date so seeded coverage is fresh (no backfill / network).
@@ -302,7 +302,7 @@ class TestEndpoint:
         a1 = _account(db_session, tenant, puid, "Brokerage")
         for when, nav in zip(_DATES, [1000.0, 1100.0, 1210.0], strict=True):
             _asnap(db_session, tenant, puid, a1, when, nav)
-        for sym in ("SPY", "QQQ", "IWM"):
+        for sym in ("DIA", "SPY", "ONEQ", "QQQ", "IWM"):
             _bars(db_session, sym, list(zip(_DATES, [400.0, 440.0, 484.0], strict=True)))
 
         r = client.get(f"/portfolios/{pid}/holdings/performance-series", headers={"X-Tenant-Id": tenant})
