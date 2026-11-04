@@ -123,8 +123,8 @@ def _alert_text(finding: dict) -> str:
             "Trading and Crucible are unaffected.\n"
             "Auto-fix: none; a reading needs real glance traffic.\n"
             "Resolution: metron-ops-I341.\n"
-            "You: open the Metron glance screen on a trading day, or nothing while "
-            "Metron is paused."
+            "You: open a portfolio's Glance tab at https://metron.nousergon.ai on a "
+            "trading day; the next morning's run measures it."
         )
     return (
         f"Metron glance p95 job is broken: {detail}.\n"
