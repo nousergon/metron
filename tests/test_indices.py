@@ -229,13 +229,13 @@ class TestIndexPeriodReturnsFromSpine:
     def test_reads_ytd_ltm_from_security_performance_artifact(self, monkeypatch):
         art = {
             "performance": {
-                "SPY": {"ytd_pct": 0.08, "ltm_pct": 0.15},
+                "SPY": {"mtd_pct": 0.01, "ytd_pct": 0.08, "ltm_pct": 0.15},
                 "ONEQ": {"ytd_pct": 0.09, "ltm_pct": 0.16},
             },
         }
         periods = security_perf.index_period_returns(
             ["SPY", "ONEQ", "QQQ"], performance_reader=lambda: art,
         )
-        assert periods["SPY"] == (pytest.approx(0.08), pytest.approx(0.15))
-        assert periods["ONEQ"] == (pytest.approx(0.09), pytest.approx(0.16))
+        assert periods["SPY"] == (pytest.approx(0.01), pytest.approx(0.08), pytest.approx(0.15))
+        assert periods["ONEQ"] == (None, pytest.approx(0.09), pytest.approx(0.16))
         assert "QQQ" not in periods

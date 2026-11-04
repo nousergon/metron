@@ -37,6 +37,7 @@ class IndexQuoteOut(BaseModel):
     change_pct: float | None  # "Today" return
     session_date: str | None
     suspect: bool
+    mtd_pct: float | None = None
     ytd_pct: float | None = None
     ltm_pct: float | None = None
 
@@ -71,14 +72,14 @@ def get_indices_intraday(
         return IndicesOut(available=False, reason=feat["reason"], required_tier=feat["required_tier"])
 
     snap = indices.load_indices()
-    # YTD/LTM from the security_performance spine (SP1500 ∪ index proxies on the producer).
+    # MTD/YTD/LTM from the security_performance spine (SP1500 ∪ index proxies on the producer).
     if snap.available and snap.indices:
         syms = [q.symbol for q in snap.indices]
         periods = security_perf.index_period_returns(syms)
         for q in snap.indices:
             r = periods.get(q.symbol)
             if r is not None:
-                q.ytd_pct, q.ltm_pct = r
+                q.mtd_pct, q.ytd_pct, q.ltm_pct = r
     return IndicesOut(
         available=snap.available,
         reason=snap.reason,

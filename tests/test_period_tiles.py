@@ -97,7 +97,12 @@ class TestWindows:
         assert res.benchmarks_available is False
         assert res.last_date == date(2024, 6, 28)
         tiles = {t.period: t for t in res.tiles}
-        assert [t.period for t in res.tiles] == ["today", "ytd", "ltm"]
+        assert [t.period for t in res.tiles] == ["today", "mtd", "ytd", "ltm"]
+
+        # MTD anchors on the last May snapshot.
+        may = [(d, n) for d, n in _SERIES if (d.year, d.month) < (2024, 6)][-1]
+        assert tiles["mtd"].start_date == may[0]
+        assert tiles["mtd"].twr == pytest.approx(1320 / may[1] - 1)
 
         # Today = Fri close-to-close (Thu 1300 → Fri 1320).
         assert tiles["today"].gain == pytest.approx(20.0)
@@ -141,7 +146,7 @@ class TestBenchmarks:
             (date(2023, 6, 1), 400.0), (date(2023, 12, 29), 440.0),
             (date(2024, 6, 27), 480.0), (date(2024, 6, 28), 484.0),
         ]
-        for sym in ("SPY", "QQQ", "IWM"):
+        for sym in ("DIA", "SPY", "ONEQ", "QQQ", "IWM"):
             _bars(db_session, sym, spy_bars)
 
         res = perf.period_tiles(
@@ -149,7 +154,7 @@ class TestBenchmarks:
         )
         assert res.benchmarks_available is True
         tiles = {t.period: t for t in res.tiles}
-        assert [b.symbol for b in tiles["ytd"].benchmarks] == ["SPY", "QQQ", "IWM"]
+        assert [b.symbol for b in tiles["ytd"].benchmarks] == ["DIA", "SPY", "ONEQ", "QQQ", "IWM"]
 
         spy_ytd = next(b for b in tiles["ytd"].benchmarks if b.symbol == "SPY")
         assert spy_ytd.ret == pytest.approx(484 / 440 - 1)
@@ -169,7 +174,7 @@ class TestBenchmarks:
         )
         assert res.benchmarks_available is False
         ytd = next(t for t in res.tiles if t.period == "ytd")
-        assert {b.symbol for b in ytd.benchmarks} == {"SPY", "QQQ", "IWM"}
+        assert {b.symbol for b in ytd.benchmarks} == {"DIA", "SPY", "ONEQ", "QQQ", "IWM"}
         assert all(b.ret is None and b.alpha is None for b in ytd.benchmarks)
 
 
@@ -314,13 +319,13 @@ class TestEndpoint:
         puid = uuid.UUID(pid)
         _snap(db_session, tenant, puid, date(2024, 5, 1), 1000.0)
         _snap(db_session, tenant, puid, date(2024, 5, 31), 1100.0)
-        for sym in ("SPY", "QQQ", "IWM"):
+        for sym in ("DIA", "SPY", "ONEQ", "QQQ", "IWM"):
             _bars(db_session, sym, [(date(2024, 5, 1), 400.0), (date(2024, 5, 31), 440.0)])
 
         r = client.get(f"/portfolios/{pid}/performance/tiles", headers={"X-Tenant-Id": tenant})
         assert r.status_code == 200
         body = r.json()
-        assert [t["period"] for t in body["tiles"]] == ["today", "ytd", "ltm"]
+        assert [t["period"] for t in body["tiles"]] == ["today", "mtd", "ytd", "ltm"]
         assert body["benchmarks_available"] is True
 
     def test_endpoint_wires_index_strip_into_the_settled_today_tile(self, client, db_session, tenant, monkeypatch):

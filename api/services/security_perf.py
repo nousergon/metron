@@ -70,16 +70,16 @@ def index_period_returns(
     symbols: Collection[str],
     *,
     performance_reader=None,
-) -> dict[str, tuple[float | None, float | None]]:
-    """``{symbol: (ytd_pct, ltm_pct)}`` for index/ETF proxies from the
+) -> dict[str, tuple[float | None, float | None, float | None]]:
+    """``{symbol: (mtd_pct, ytd_pct, ltm_pct)}`` for index/ETF proxies from the
     ``security_performance`` spine (metron-ops#87). Symbols absent from the artifact
     are omitted — never locally recomputed from ``price_bars``."""
     snap = performance_service.load_security_performance(reader=performance_reader)
-    out: dict[str, tuple[float | None, float | None]] = {}
+    out: dict[str, tuple[float | None, float | None, float | None]] = {}
     for sym in symbols:
         row = snap.by_symbol.get(sym)
         if row is not None:
-            out[sym] = (row.ytd_pct, row.ltm_pct)
+            out[sym] = (row.mtd_pct, row.ytd_pct, row.ltm_pct)
     return out
 
 

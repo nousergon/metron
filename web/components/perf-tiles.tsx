@@ -1,7 +1,7 @@
 "use client";
 
 // The Overview hero (metron-ops#83): aggregate holdings performance vs the market over
-// Today / YTD / LTM. Each tile shows the $ investment gain, the %TWR (flow-neutralized),
+// Today / MTD / YTD / LTM. Each tile shows the $ investment gain, the %TWR (flow-neutralized),
 // and — per user-toggled benchmark — the alpha (portfolio %TWR − index %).
 //
 // Benchmark comparison is feed-gated (Pro): in the no-feed beta the server passes
@@ -35,7 +35,7 @@ function AlphaRow({ b }: { b: BenchmarkReturn }) {
 function Tile({ tile, selected, sessionHref }: { tile: PeriodTile; selected: Set<string>; sessionHref?: string }) {
   const has = tile.twr != null || tile.mwr != null || tile.gain != null;
   const shown = tile.benchmarks.filter((b) => selected.has(b.symbol));
-  // Only YTD/LTM carry a meaningful span worth labeling; Today is self-evident.
+  // Only MTD/YTD/LTM carry a meaningful span worth labeling; Today is self-evident.
   const span = tile.period !== "today" && tile.start_date ? isoDate(tile.start_date) : null;
 
   return (
@@ -138,7 +138,7 @@ export function PerfTiles({
           <span className="text-[11px] text-muted/70">Benchmarks: Pro</span>
         )}
       </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {tiles.map((t) => (
           <Tile key={t.period} tile={t} selected={selected} sessionHref={sessionHref} />
         ))}

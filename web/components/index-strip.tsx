@@ -1,7 +1,8 @@
 "use client";
 
-// The Overview "markets" strip: intraday levels for the major indices (SPY/ONEQ/QQQ/IWM
-// proxies for the S&P 500 / Nasdaq Composite / Nasdaq 100 / Russell 2000), auto-refreshed
+// The "markets" strip (Overview and the top of Holdings): intraday levels for the major
+// indices (DIA/SPY/ONEQ/QQQ/IWM proxies for the Dow / S&P 500 / Nasdaq Composite /
+// Nasdaq 100 / Russell 2000), auto-refreshed
 // every ~5 min.
 //
 // Feed-gated (Pro): the server component renders this only when the `indices` feature is
@@ -56,7 +57,7 @@ export function IndexStrip({ initial }: { initial: Indices }) {
 
   return (
     <Section title="Markets" note={note}>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {data.indices.map((q) => (
           <div key={q.symbol} className="rounded-lg border border-line p-3">
             <div className="flex items-baseline justify-between gap-1">
@@ -66,11 +67,12 @@ export function IndexStrip({ initial }: { initial: Indices }) {
               <span className="text-[10px] tabular-nums text-muted/70">{q.symbol}</span>
             </div>
             <div className="mt-0.5 text-lg font-semibold tabular-nums">{level(q.last)}</div>
-            {/* Today / YTD / LTM returns — TWR-comparable to the performance tiles below
+            {/* Today / MTD / YTD / LTM returns — TWR-comparable to the performance tiles below
                 (metron-ops#87). Today = change vs prior close; YTD/LTM from cached closes. */}
-            <div className="mt-1 grid grid-cols-3 gap-1 text-right">
+            <div className="mt-1 grid grid-cols-4 gap-1 text-right">
               {([
                 ["Today", q.change_pct],
+                ["MTD", q.mtd_pct ?? null],
                 ["YTD", q.ytd_pct],
                 ["LTM", q.ltm_pct],
               ] as [string, number | null][]).map(([lbl, v], i) => (

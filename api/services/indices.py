@@ -28,12 +28,13 @@ logger = logging.getLogger(__name__)
 # proxies are shown — ONEQ tracks the broad Nasdaq Composite (the "Nasdaq" the financial
 # press headlines), QQQ the mega-cap Nasdaq-100; the two routinely diverge on breadth.
 INDEX_LABELS: dict[str, str] = {
+    "DIA": "Dow Jones",
     "SPY": "S&P 500",
     "ONEQ": "Nasdaq Composite",
     "QQQ": "Nasdaq 100",
     "IWM": "Russell 2000",
 }
-INDEX_ORDER: list[str] = ["SPY", "ONEQ", "QQQ", "IWM"]
+INDEX_ORDER: list[str] = ["DIA", "SPY", "ONEQ", "QQQ", "IWM"]
 
 # The producer writes every 5 min during the session; flag the snapshot stale once it's
 # older than this (e.g. the market closed, or the demand-gated feed paused) so the UI can
@@ -54,6 +55,7 @@ class IndexQuote:
     suspect: bool              # producer flagged a >40% move vs prior close (bad scrape?)
     # Period returns from cached daily closes (metron-ops#87) — enriched by the endpoint
     # (the service is a pure S3 consumer; close history lives in the DB). None until set.
+    mtd_pct: float | None = None
     ytd_pct: float | None = None
     ltm_pct: float | None = None
 
