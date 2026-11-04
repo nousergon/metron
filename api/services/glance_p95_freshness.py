@@ -124,7 +124,7 @@ def _alert_text(finding: dict) -> str:
             "Auto-fix: none; a reading needs real glance traffic.\n"
             "Resolution: metron-ops-I341.\n"
             "You: on a trading day open https://metron.nousergon.ai/dash, pick a "
-            "portfolio, choose Glance in the page menu (top right); the next "
+            "portfolio, choose Insights in the page menu (top right); the next "
             "morning's run measures it."
         )
     return (

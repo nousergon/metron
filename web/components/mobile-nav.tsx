@@ -75,10 +75,10 @@ export function MobileNav() {
         </div>
 
         <div className="mt-8 space-y-4">
-          {/* Glance (metron-ops#248): one tap to the phone landing screen from any portfolio page. */}
+          {/* Insights (formerly Glance, metron-ops#248): one tap from any portfolio page. */}
           {pathname?.match(/^\/portfolios\/[^/]+/) ? (
-            <Link href={`${pathname.match(/^\/portfolios\/[^/]+/)![0]}/glance`} className="block rounded border border-line px-3 py-2 text-sm font-medium hover:bg-white/5">
-              Glance
+            <Link href={`${pathname.match(/^\/portfolios\/[^/]+/)![0]}/insights`} className="block rounded border border-line px-3 py-2 text-sm font-medium hover:bg-white/5">
+              Insights
             </Link>
           ) : null}
           {isPending ? (

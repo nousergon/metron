@@ -73,7 +73,7 @@ const STEPS: Step[] = [
   {
     n: 1,
     name: "glance",
-    href: `/portfolios/${HOUSEHOLD}/glance`,
+    href: `/portfolios/${HOUSEHOLD}/insights`,
     marker: /reconciled|as of|glance/i,
     say: "This is the one screen I'd check. Every number says how fresh it is.",
     dwell: 12,
