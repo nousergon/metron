@@ -9,7 +9,8 @@ export const EXTERNAL_DEMO_COOKIE = "metron-xdemo";
 export const EXTERNAL_DEMO_CREDENTIAL_PREFIX = "xdemo:";
 /** Mirrors api/services/demo_household.py::DEMO_HOUSEHOLD_PORTFOLIO_ID — keep in lockstep. */
 export const DEMO_HOUSEHOLD_PORTFOLIO_ID = "00000000-0000-0000-0000-00000000de63";
-export const EXTERNAL_DEMO_LANDING = `/portfolios/${DEMO_HOUSEHOLD_PORTFOLIO_ID}/glance`;
+// Holdings is the landing page (Brian, 2026-11-04).
+export const EXTERNAL_DEMO_LANDING = `/portfolios/${DEMO_HOUSEHOLD_PORTFOLIO_ID}`;
 
 export function isExternalDemoCredential(apiAuth: string): boolean {
   return apiAuth.startsWith(EXTERNAL_DEMO_CREDENTIAL_PREFIX);
@@ -22,7 +23,8 @@ export function externalDemoToken(apiAuth: string): string {
 // Household pages an external viewer may open. Everything else redirects to the landing
 // page (default deny): advice pages, settings, crypto, other portfolios.
 const ALLOWED_SEGMENTS = new Set([
-  "glance",
+  "insights",
+  "glance", // redirects to insights
   "overview",
   "diagnostics",
   "performance",

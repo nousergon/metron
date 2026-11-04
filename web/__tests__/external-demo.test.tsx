@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
-vi.mock("next/navigation", () => ({ usePathname: () => "/portfolios/p/glance" }));
+vi.mock("next/navigation", () => ({ usePathname: () => "/portfolios/p/insights" }));
 
 import { authHeaders, cacheIdentity } from "@/lib/api";
 import {
@@ -17,7 +17,7 @@ const H = `/portfolios/${DEMO_HOUSEHOLD_PORTFOLIO_ID}`;
 
 describe("isExternalDemoPageAllowed", () => {
   it("allows the household's no-advice pages", () => {
-    for (const p of [H, `${H}/glance`, `${H}/risk`, `${H}/plan`, `${H}/tearsheet/DEMO-AAPL`, `${H}/in-development`, "/methodology"]) {
+    for (const p of [H, `${H}/insights`, `${H}/glance`, `${H}/risk`, `${H}/plan`, `${H}/tearsheet/DEMO-AAPL`, `${H}/in-development`, "/methodology"]) {
       expect(isExternalDemoPageAllowed(p)).toBe(true);
     }
   });
@@ -73,7 +73,7 @@ describe("PortfolioNav external mode", () => {
     );
     fireEvent.click(screen.getByRole("button"));
     const labels = screen.getAllByRole("menuitem").map((el) => el.textContent);
-    expect(labels).toContain("Glance");
+    expect(labels).toContain("Insights");
     expect(labels).toContain("Risk");
     expect(labels).toContain("Watchlist");
     expect(labels).toContain("In development");
