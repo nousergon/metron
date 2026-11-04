@@ -46,6 +46,7 @@ from api.services import (
     indices,
     intraday,
     labels,
+    market_note,
     metrics_enrichment,
     performance,
     persistence,
@@ -3139,6 +3140,58 @@ def get_benchmark_gap(
     tile = next((t for t in tiles.tiles if t.period == "today"), None)
     return benchmark_gap.compute_benchmark_gap(
         session, portfolio.tenant_id, portfolio.id, index=index, tile=tile, account_ids=account_ids,
+    )
+
+
+class MarketNoteOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    available: bool
+    session_date: date | None = None
+    sentences: list[str] = []
+    missing: list[str] = []
+    portfolio_return: float | None = None
+    lead_return: float | None = None
+    gap: float | None = None
+
+
+@router.get("/{portfolio_id}/market-note", response_model=MarketNoteOut)
+def get_market_note(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
+    session: Session = Depends(get_session),
+    x_preview_tier: str | None = Header(default=None),
+    x_preview_feed: str | None = Header(default=None),
+) -> market_note.MarketNote:
+    """The Holdings market note (Brian 2026-11-04): two or three sentences on why
+    the portfolio moved differently from the indexes over the settled TODAY session.
+    Computed only when the page asks for it and cached per portfolio per session, so a
+    day nobody opens Holdings costs nothing. Built from the same TODAY tile the strip
+    shows, sector attribution over that session, and the name-level benchmark gap; a
+    leg the tier or the data cannot supply is left out and named in ``missing``."""
+    with_benchmarks = _external_market_data_allowed(x_preview_feed)
+    today_bench: dict[str, tuple[float | None, float | None]] = {}
+    if with_benchmarks:
+        idx_snap = indices.load_indices()
+        if idx_snap.available:
+            today_bench = {
+                q.symbol: (q.last, q.prev_close) for q in idx_snap.indices if q.change_pct is not None
+            }
+    tiles = performance.period_tiles(
+        session,
+        portfolio.tenant_id,
+        portfolio.id,
+        today=date.today(),
+        account_ids=account_ids,
+        with_benchmarks=with_benchmarks,
+        today_bench=today_bench,
+        now=datetime.now(UTC),
+    )
+    tile = next((t for t in tiles.tiles if t.period == "today"), None)
+    return market_note.market_note(
+        session, portfolio.tenant_id, portfolio.id, tile=tile, account_ids=account_ids,
+        attr_enabled=_effective_entitlement("attribution", x_preview_tier, x_preview_feed)["available"],
+        gap_enabled=_effective_entitlement("benchmark_gap", x_preview_tier, x_preview_feed)["available"],
     )
 
 
