@@ -1,5 +1,5 @@
 // MarketNoteView — the Holdings "portfolio vs market" note. Renders the API's sentences
-// as one paragraph, names what was left out, and is hidden when unavailable.
+// as one paragraph, names what was left out, and says why when there is no note.
 
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -27,10 +27,15 @@ describe("MarketNoteView", () => {
     expect(screen.getByText(/Not included: names: index artifact missing/)).toBeTruthy();
   });
 
-  it("is hidden when unavailable", () => {
-    const { container } = render(<MarketNoteView note={{ ...NOTE, available: false }} />);
-    expect(container.innerHTML).toBe("");
-    const { container: c2 } = render(<MarketNoteView note={null} />);
-    expect(c2.innerHTML).toBe("");
+  it("still shows, with the reason, when there is no note", () => {
+    render(<MarketNoteView note={{ ...NOTE, available: false, sentences: [],
+      missing: ["today's session is not in the portfolio's history yet"] }} />);
+    expect(screen.getByText(/Portfolio vs market/)).toBeTruthy();
+    expect(screen.getByText(/not in the portfolio's history yet/)).toBeTruthy();
+  });
+
+  it("says it could not load rather than vanishing", () => {
+    render(<MarketNoteView note={null} />);
+    expect(screen.getByText(/could not be loaded/)).toBeTruthy();
   });
 });
