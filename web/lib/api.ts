@@ -849,8 +849,19 @@ export type MarketNote = {
   lead_return: number | null;
   gap: number | null;
 };
-export const getMarketNote = (apiAuth: string, id: string, accountIds?: string[]) =>
-  get<MarketNote>(apiAuth, `/portfolios/${id}/market-note${acctParams(accountIds)}`);
+/** Bounded: the note is optional, so a slow one gives up after 8s and the card says so,
+ *  instead of holding the page's stream open (Brian 2026-11-04: "takes forever to load"). */
+export const MARKET_NOTE_TIMEOUT_MS = 8000;
+export async function getMarketNote(apiAuth: string, id: string, accountIds?: string[]): Promise<MarketNote> {
+  const path = `/portfolios/${id}/market-note${acctParams(accountIds)}`;
+  const res = await apiFetch(path, {
+    headers: authHeaders(apiAuth),
+    cache: "no-store",
+    signal: AbortSignal.timeout(MARKET_NOTE_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new MetronApiError(res.status, `GET ${path} → ${res.status}`);
+  return res.json() as Promise<MarketNote>;
+}
 export const getHoldingsPerformanceSeries = (apiAuth: string, id: string, accountIds?: string[]) =>
   get<HoldingsPerfSeries>(apiAuth, `/portfolios/${id}/holdings/performance-series${acctParams(accountIds)}`);
 

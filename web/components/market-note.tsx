@@ -11,7 +11,7 @@ const TITLE = "Portfolio vs market";
 export function MarketNoteView({ note }: { note: MarketNote | null }) {
   const ready = note?.available && note.sentences.length > 0;
   const why = !note
-    ? "The note could not be loaded. Reload the page to try again."
+    ? "The note did not load in time. Reload in a minute to try again."
     : (note.missing[0] ?? "No note for this session yet.");
   return (
     <div className="mt-3 rounded-lg border border-line p-4" aria-label="Why the portfolio moved">

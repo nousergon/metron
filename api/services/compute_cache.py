@@ -40,6 +40,11 @@ from api.db.session import REQUEST_SCOPED
 T = TypeVar("T")
 
 _TTL_S = 300.0  # disk-eviction backstop only; correctness comes from the fingerprint key
+#: How long a compute lock can outlive its holder. Without it a worker killed mid-compute
+#: (a deploy restart) leaves the lock on disk forever, and every later request for that key
+#: waits on it for good while holding its DB connection (Brian 2026-11-04: Holdings "takes
+#: forever to load"). Longer than any one compute should take.
+LOCK_EXPIRE_S = 120.0
 _CACHE_DIR = os.environ.get(
     "METRON_COMPUTE_CACHE_DIR",
     os.path.join(tempfile.gettempdir(), "metron-compute-cache"),
@@ -160,7 +165,7 @@ def cached(key: str, compute: Callable[[], T]) -> T:
     if entry is not _MISS:
         return entry  # type: ignore[return-value]
 
-    lock = dc.Lock(_cache, f"lck:{key}")
+    lock = dc.Lock(_cache, f"lck:{key}", expire=LOCK_EXPIRE_S)
     with lock:
         # Re-check inside the cross-process lock: a racing worker may have just populated it.
         entry = _cache.get(key, _MISS)
