@@ -98,11 +98,49 @@ def test_report_dry_run_detects_for_real_but_suppresses_the_send(db_session, mon
 def test_unhealthy_when_trading_days_run_but_nothing_was_ever_measured(db_session):
     # metron-ops-I344: a not-measured run now exits 0, so this monitor is where a run of
     # silent trading days is graded. Nothing measured + two quiet trading days = finding.
-    gl.record_run(db_session, target_day=date(2026, 9, 21), status="not-measured", n=0)  # Mon
-    gl.record_run(db_session, target_day=date(2026, 9, 22), status="not-measured", n=0)  # Tue
-    finding = freshness.check(db_session, now=datetime(2026, 9, 23, 12, 0, tzinfo=_NY))
+    gl.record_run(db_session, target_day=date(2026, 11, 2), status="not-measured", n=0)  # Mon
+    gl.record_run(db_session, target_day=date(2026, 11, 3), status="not-measured", n=0)  # Tue
+    finding = freshness.check(db_session, now=datetime(2026, 11, 4, 12, 0, tzinfo=_NY))
     assert finding is not None
-    assert any("no trading day has ever been measured" in r for r in finding["reasons"])
+    assert finding["kind"] == "no_traffic"
+    assert any("no glance requests on 2 trading day(s)" in r for r in finding["reasons"])
+
+
+def test_days_before_the_parser_fix_are_not_evidence(db_session):
+    # Until metron#593 (2026-10-30) the parser could not match production lines, so
+    # those not-measured days say nothing about traffic.
+    gl.record_run(db_session, target_day=date(2026, 10, 28), status="not-measured", n=0)
+    gl.record_run(db_session, target_day=date(2026, 10, 29), status="not-measured", n=0)
+    gl.record_run(db_session, target_day=date(2026, 10, 30), status="not-measured", n=0)
+    assert freshness.check(db_session, now=datetime(2026, 10, 31, 12, 0, tzinfo=_NY)) is None
+
+
+def test_alert_says_issue_impact_fix_and_action(db_session, monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        "api.services.alerting.send_alert",
+        lambda *a, **k: sent.append(a[0]) or True,
+    )
+    gl.record_run(db_session, target_day=date(2026, 11, 2), status="not-measured", n=0)
+    gl.record_run(db_session, target_day=date(2026, 11, 3), status="not-measured", n=0)
+    freshness.report(db_session, now=datetime(2026, 11, 4, 12, 0, tzinfo=_NY))
+    lines = sent[0].splitlines()
+    assert lines[0].startswith("Metron glance p95 has no reading: no glance requests")
+    assert [ln.split(":")[0] for ln in lines[1:]] == [
+        "Impact", "Auto-fix", "Resolution", "You",
+    ]
+
+
+def test_broken_job_alert_names_the_sweep(db_session, monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        "api.services.alerting.send_alert",
+        lambda *a, **k: sent.append(a[0]) or True,
+    )
+    freshness.report(db_session, now=datetime(2026, 9, 17, 12, 0, tzinfo=_NY))
+    assert sent[0].startswith("Metron glance p95 job is broken:")
+    assert "Auto-fix: tonight's sweep" in sent[0]
+    assert sent[0].endswith("You: nothing.")
 
 
 def test_quiet_weekend_never_pages_when_nothing_was_ever_measured(db_session):

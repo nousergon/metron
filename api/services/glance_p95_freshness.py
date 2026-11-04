@@ -36,6 +36,13 @@ _NO_RUN_GRACE_DAYS = 2
 # count, so a quiet Saturday cannot page.
 _NEVER_MEASURED_TRADING_DAYS = 2
 
+# Not-measured days BEFORE this target day are not evidence of missing traffic: until
+# metron#593 (merged 2026-10-30) the parser was anchored at line start and could not
+# match the production log format, so every run read n=0 whatever the traffic
+# (alpha-engine-config-I11642). Counting those days made the alert read "33 trading
+# days never measured" when 29 of them were the parser bug, not the screen.
+_PARSER_FIX_DAY = date(2026, 10, 30)
+
 
 def check(session, *, now: datetime | None = None) -> dict | None:
     """Return a finding dict when the glance p95 surface is unhealthy, else ``None``.
@@ -57,20 +64,26 @@ def check(session, *, now: datetime | None = None) -> dict | None:
 
     latest = glance_latency.latest(session, now=now)
     reasons: list[str] = []
+    # "no_traffic": the job works, but no glance request reached the API (every glance
+    # request logs a timing line, and since metron#593 the parser matches it).
+    # "job_broken": stale figure, or the job has stopped running.
+    kind = None
 
     if latest["status"] == "stale":
+        kind = "job_broken"
         reasons.append(
             f"the last measured trading day ({latest['trading_day']}) has fallen behind "
             "the daily cadence -- the p95 figure /meta/status serves is stale, not current"
         )
 
     if latest["status"] == "not-measured":
-        quiet = _not_measured_trading_days(session)
+        quiet = [d for d in _not_measured_trading_days(session)
+                 if d >= _PARSER_FIX_DAY.isoformat()]
         if len(quiet) >= _NEVER_MEASURED_TRADING_DAYS:
+            kind = kind or "no_traffic"
             reasons.append(
-                f"no trading day has ever been measured, and the job has reported "
-                f"not-measured for {len(quiet)} trading day(s) (latest {quiet[-1]}) -- "
-                "either nobody opened the glance screen or its timing line no longer matches"
+                f"no glance requests on {len(quiet)} trading day(s) since the log-parser "
+                f"fix (metron#593, {_PARSER_FIX_DAY.isoformat()}), latest {quiet[-1]}"
             )
 
     last_run = latest["last_run"]
@@ -80,11 +93,13 @@ def check(session, *, now: datetime | None = None) -> dict | None:
     else:
         ref_date = ref  # pragma: no cover - now is always a datetime in practice
     if last_run is None:
+        kind = "job_broken"
         reasons.append("scripts/glance_p95.py --record has never run -- no run-log entry exists at all")
     else:
         last_run_date = date.fromisoformat(last_run["at"][:10])
         age_days = (ref_date - last_run_date).days
         if age_days > _NO_RUN_GRACE_DAYS:
+            kind = "job_broken"
             reasons.append(
                 f"scripts/glance_p95.py --record last ran {age_days} day(s) ago "
                 f"({last_run['at']}, status={last_run['status']}) -- the scheduled timer "
@@ -93,7 +108,32 @@ def check(session, *, now: datetime | None = None) -> dict | None:
 
     if not reasons:
         return None
-    return {"reasons": reasons, "latest": latest, "last_run": last_run}
+    return {"reasons": reasons, "kind": kind, "latest": latest, "last_run": last_run}
+
+
+def _alert_text(finding: dict) -> str:
+    """Issue, why it matters, what fixes it, what Brian does (Brian, 2026-11-04;
+    observability-policy § Notification — auto-fix line). Written into the body so it
+    renders the same on every krepis version."""
+    detail = "; ".join(finding["reasons"])
+    if finding.get("kind") == "no_traffic":
+        return (
+            f"Metron glance p95 has no reading: {detail}.\n"
+            "Impact: Metron Stage A exit gate O2 (glance p95 <= 1s) cannot be graded. "
+            "Trading and Crucible are unaffected.\n"
+            "Auto-fix: none; a reading needs real glance traffic.\n"
+            "Resolution: metron-ops-I341.\n"
+            "You: open the Metron glance screen on a trading day, or nothing while "
+            "Metron is paused."
+        )
+    return (
+        f"Metron glance p95 job is broken: {detail}.\n"
+        "Impact: the Metron exit-gate figure on /meta/status is missing or stale.\n"
+        "Auto-fix: tonight's sweep (7pm PT) root-causes it from the alert intake "
+        "(journalctl -u metron-glance-p95.service).\n"
+        "Resolution: metron-ops-I341.\n"
+        "You: nothing."
+    )
 
 
 def _not_measured_trading_days(session) -> list[str]:
@@ -128,9 +168,7 @@ def report(session, *, now: datetime | None = None, dry_run: bool = False) -> di
     logger.error("glance p95 freshness check FAILED: %s", detail)
     alert_dedup_name = "metron-glance-p95-freshness"
     send_alert(
-        f"Metron: the glance p95 exit-gate measurement (metron-ops-I327/I341) looks broken:\n"
-        f"  {detail}\n"
-        f"Check metron-glance-p95.timer on the box (journalctl -u metron-glance-p95.service).",
+        _alert_text(finding),
         severity="error",
         dedup_key=alert_dedup_name,
         dedup_window_min=720,  # twice-daily paging ceiling for a condition that persists
