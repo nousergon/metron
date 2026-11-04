@@ -36,6 +36,6 @@ describe("MarketNoteView", () => {
 
   it("says it could not load rather than vanishing", () => {
     render(<MarketNoteView note={null} />);
-    expect(screen.getByText(/could not be loaded/)).toBeTruthy();
+    expect(screen.getByText(/did not load in time/)).toBeTruthy();
   });
 });

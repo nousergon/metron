@@ -46,7 +46,7 @@ LEAD_LABEL = "S&P 500"
 IN_LINE = 0.0005
 #: How many names to name on each side.
 NAMES_PER_SIDE = 2
-CACHE_VERSION = "v1"
+CACHE_VERSION = "v2"  # v2: steps past any v1 lock orphaned before locks expired (2026-11-04)
 
 
 @dataclass
