@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { acctParams, getAccounts, getHoldings, getIndices, getPerformanceTiles, type Indices, type PeriodTiles, getHoldingsView, getIntradayLegs, getIntradayStatus, getSummary, getToday, getValuationMedians, getWatchlist, MetronApiError, type Entitlements, type Holding, type HoldingsViewPrefs, type IntradayLegHistory, type IntradayStatus, type Summary, type Today, type ValuationMedians, type WatchlistEntry } from "@/lib/api";
+import { acctParams, getAccounts, getHoldings, getIndices, getMarketNote, getPerformanceTiles, type Indices, type PeriodTiles, getHoldingsView, getIntradayLegs, getIntradayStatus, getSummary, getToday, getValuationMedians, getWatchlist, MetronApiError, type Entitlements, type Holding, type HoldingsViewPrefs, type IntradayLegHistory, type IntradayStatus, type Summary, type Today, type ValuationMedians, type WatchlistEntry } from "@/lib/api";
 import { Empty, Section } from "@/components/ui";
 import { HoldingsView } from "@/components/holdings-view";
 import { LiveValuationProvider } from "@/components/live-valuation-context";
@@ -16,6 +16,7 @@ import { DEFAULT_VISIBLE_GROUPS, INTRADAY_VISIBLE_GROUPS } from "@/components/ho
 import { featureEntitlement, loadEntitlements, navFeatureStates, previewFromCookies } from "@/lib/entitlements";
 import { IndexStrip } from "@/components/index-strip";
 import { PerfTiles } from "@/components/perf-tiles";
+import { MarketNoteView } from "@/components/market-note";
 import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
@@ -170,6 +171,12 @@ export default async function HoldingsPage(
           portfolio over Today / MTD / YTD / LTM. Streamed so it never delays the table. */}
       <Suspense fallback={<Bar className="mt-3 h-24 w-full animate-pulse" />}>
         <StatsSection apiAuth={apiAuth} id={id} accountIds={accountIds} entitlements={entitlements} />
+      </Suspense>
+
+      {/* Portfolio vs market note (Brian, 2026-11-04): made only when this page is opened,
+          streamed under its own boundary so a slow note never holds up anything else. */}
+      <Suspense fallback={null}>
+        <MarketNoteSection apiAuth={apiAuth} id={id} accountIds={accountIds} />
       </Suspense>
 
       {/* Portfolio total — first on the page (Brian, 2026-09-28). Same type-filtered rows as
@@ -359,6 +366,19 @@ async function WatchlistSection({ apiAuth, id, ccy }: { apiAuth: string; id: str
 
 /** Index strip + portfolio period tiles (Brian, 2026-11-04). Each read is best-effort: a
  *  failure hides that half rather than breaking Holdings. The index strip is feed-gated. */
+async function MarketNoteSection({
+  apiAuth,
+  id,
+  accountIds,
+}: {
+  apiAuth: string;
+  id: string;
+  accountIds: string[];
+}) {
+  const note = await getMarketNote(apiAuth, id, accountIds).catch(() => null);
+  return <MarketNoteView note={note} />;
+}
+
 async function StatsSection({
   apiAuth,
   id,

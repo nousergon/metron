@@ -837,6 +837,20 @@ export const getPerformance = (apiAuth: string, id: string, accountIds?: string[
   get<Performance>(apiAuth, `/portfolios/${id}/performance${acctParams(accountIds)}`);
 export const getPerformanceTiles = (apiAuth: string, id: string, accountIds?: string[]) =>
   get<PeriodTiles>(apiAuth, `/portfolios/${id}/performance/tiles${acctParams(accountIds)}`);
+// Holdings market note (Brian, 2026-11-04): why the portfolio moved differently from the
+// indexes over the settled TODAY session. Computed on request and cached per portfolio per
+// session by the API, so a day nobody opens Holdings costs nothing.
+export type MarketNote = {
+  available: boolean;
+  session_date: string | null;
+  sentences: string[];
+  missing: string[];
+  portfolio_return: number | null;
+  lead_return: number | null;
+  gap: number | null;
+};
+export const getMarketNote = (apiAuth: string, id: string, accountIds?: string[]) =>
+  get<MarketNote>(apiAuth, `/portfolios/${id}/market-note${acctParams(accountIds)}`);
 export const getHoldingsPerformanceSeries = (apiAuth: string, id: string, accountIds?: string[]) =>
   get<HoldingsPerfSeries>(apiAuth, `/portfolios/${id}/holdings/performance-series${acctParams(accountIds)}`);
 
