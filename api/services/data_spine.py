@@ -270,7 +270,8 @@ def build_personal_returns(session: Session, *, now: datetime | None = None) -> 
     ``(nav_t - flow_t) / nav_t-1 - 1``, summed over the portfolios present on BOTH dates, so
     a portfolio that opens or closes is neither a gain nor a loss. A date on which an active
     portfolio has no snapshot is skipped rather than summed short, and the next return spans
-    it. A row is ``estimated`` when either end carries a provisional or estimated snapshot.
+    it: the flows recorded on the skipped dates are netted out of that spanning return too,
+    so a deposit on a skipped date is never read as growth. A row is ``estimated`` when either end carries a provisional or estimated snapshot.
 
     Raises ``ValueError`` when the portfolios do not share one base currency: summing NAVs
     across currencies would be a fabricated number."""
@@ -305,17 +306,25 @@ def build_personal_returns(session: Session, *, now: datetime | None = None) -> 
     skipped = 0
     prev_day: date | None = None
     prev: dict[uuid.UUID, models.NavSnapshot] = {}
+    # Flows recorded on skipped dates since ``prev_day``, per portfolio: the next return
+    # spans those dates, so it nets their flows as well as its own end date's.
+    skipped_flow: dict[uuid.UUID, float] = {}
     for day in sorted(by_day):
         cur = by_day[day]
         active = {pid for pid in first if first[pid] <= day <= last[pid]}
         if not active <= set(cur):
             skipped += 1
+            for pid, snap in cur.items():
+                skipped_flow[pid] = skipped_flow.get(pid, 0.0) + float(snap.external_flow or 0)
             continue
         common = set(cur) & set(prev)
         if prev_day is not None and common:
             base = sum(float(prev[pid].nav) for pid in common)
             if base > 0:
-                grown = sum(float(cur[pid].nav) - float(cur[pid].external_flow or 0) for pid in common)
+                grown = sum(
+                    float(cur[pid].nav) - float(cur[pid].external_flow or 0) - skipped_flow.get(pid, 0.0)
+                    for pid in common
+                )
                 rows.append({
                     "start": prev_day.isoformat(),
                     "end": day.isoformat(),
@@ -323,6 +332,7 @@ def build_personal_returns(session: Session, *, now: datetime | None = None) -> 
                     "estimated": any(_estimated(prev[pid]) or _estimated(cur[pid]) for pid in common),
                 })
         prev_day, prev = day, cur
+        skipped_flow = {}
     return {
         "schema_version": PERSONAL_RETURNS_SCHEMA_VERSION,
         "generated_utc": (now or datetime.now(UTC)).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),

@@ -459,6 +459,20 @@ class TestPersonalReturns:
         assert rows[0]["return"] == pytest.approx(0.01)
         assert rows[1]["return"] == pytest.approx(6120.0 / 6010.0 - 1)
 
+    def test_a_flow_on_a_skipped_date_is_not_counted_as_return(self, db_session):
+        # codex finding 510e92b8fb9843ea: A deposits 50 on 06-05, a date skipped because
+        # B has no snapshot; the 06-04 -> 06-06 span must net that deposit, not read +50%.
+        a = _seed_holding(db_session, pf_name="A", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        b = _seed_holding(db_session, pf_name="B", symbol="MSFT", currency="USD", yf_symbol="MSFT", external_id="B1")
+        self._snap(db_session, a, date(2024, 6, 4), 100.0)
+        self._snap(db_session, b, date(2024, 6, 4), 100.0)
+        self._snap(db_session, a, date(2024, 6, 5), 150.0, flow=50.0)  # B missing: skipped
+        self._snap(db_session, a, date(2024, 6, 6), 150.0)
+        self._snap(db_session, b, date(2024, 6, 6), 100.0)
+        rows = data_spine.build_personal_returns(db_session)["returns"]
+        assert [(r["start"], r["end"]) for r in rows] == [("2024-06-04", "2024-06-06")]
+        assert rows[0]["return"] == pytest.approx(0.0)
+
     def test_publish_writes_the_pinned_key(self, db_session):
         pf = _seed_holding(db_session, pf_name="P1", symbol="AAPL", currency="USD", yf_symbol="AAPL")
         self._snap(db_session, pf, date(2024, 6, 3), 1000.0)
