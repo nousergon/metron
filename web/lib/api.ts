@@ -143,6 +143,11 @@ export type Holding = {
   // one (account, ticker). null on the default consolidated view (metron-ops#114).
   account_id: string | null;
   account_label: string | null;
+  // Holding period (Brian 2026-11-04): the oldest open lot's buy date, the share-weighted
+  // average days held, and the fraction of shares those lots cover. null = no lots known.
+  first_acquired?: string | null;
+  avg_days_held?: number | null;
+  held_coverage?: number | null;
   // User-set display label/alias (so a numeric-CUSIP bond is legible). null when unset.
   user_label: string | null;
   // Per-security period returns (metron-ops#87). Day legs (overnight/intraday/day) need the

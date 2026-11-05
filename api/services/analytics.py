@@ -99,6 +99,11 @@ class Holding:
     # ticker). None on the default consolidated path (one row per ticker across accounts).
     account_id: uuid.UUID | None = None
     account_label: str | None = None  # nickname / name / external_id, resolved once
+    # Holding period (Brian 2026-11-04): the oldest open lot's buy date, the share-weighted
+    # average days held, and the share of the position those lots cover (None = no lots).
+    first_acquired: date | None = None
+    avg_days_held: float | None = None
+    held_coverage: float | None = None
     # User-set display label/alias (so a numeric-CUSIP bond is legible). None when unset.
     user_label: str | None = None
     # Per-security period returns — populated only by the Holdings endpoint via
