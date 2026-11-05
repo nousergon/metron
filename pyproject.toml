@@ -32,7 +32,7 @@ dependencies = [
     # lock. Replaces the original in-process ``dict`` + ``threading.Lock``.
     "diskcache>=5.6.3",
     # Multipart parsing for CSV/OFX file uploads (FastAPI UploadFile requires it).
-    "python-multipart>=0.0.32",
+    "python-multipart>=0.0.33",
     "sqlalchemy>=2.1.4",
     "pydantic>=2.14.1",
     "pydantic-settings>=2.16.2",
