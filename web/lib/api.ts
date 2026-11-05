@@ -1145,6 +1145,25 @@ export type Attribution = {
   interaction: number | null;
   sectors: SectorEffect[];
   unattributed?: UnattributedHolding[];
+  // Today's holdings held through the window, not realized attribution (metron-ops-I372).
+  basis?: string;
+  reconciliation?: AttributionReconciliation | null;
+};
+
+// The attribution against what actually happened over the same window (metron-ops-I372):
+// the portfolio's observed TWR from its NAV snapshots, the benchmark's own close return,
+// and the named residuals between them and the attributed figures. Return fractions.
+export type AttributionReconciliation = {
+  available: boolean;
+  reason: string | null;
+  observed_portfolio_return: number | null;
+  observed_benchmark_return: number | null;
+  observed_active_return: number | null;
+  portfolio_residual: number | null; // observed TWR − attributed holdings return
+  benchmark_residual: number | null; // observed benchmark − sector-ETF composite
+  active_residual: number | null; // observed active − attributed active
+  within_tolerance: boolean;
+  tolerance: number;
 };
 
 export const getAttribution = (apiAuth: string, id: string, accountIds?: string[]) =>
