@@ -17,7 +17,8 @@
     },
     "as_of": {
       "type": "string",
-      "format": "date"
+      "format": "date",
+      "x-provenance": true
     },
     "source": {
       "type": "string",
@@ -44,6 +45,12 @@
                 "null"
               ]
             }
+          },
+          "mtd_pct": {
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "ytd_pct": {
             "type": [
@@ -95,5 +102,26 @@
         }
       }
     }
+  },
+  "x-settling-bar": {
+    "basis": "same_day_snapshot",
+    "rationale": "market_data/security_performance/latest.json is an undated in-place snapshot of per-security return/performance computed from the session's own bar; same reasoning and the same prior_day_settled gotcha as market_data/technicals/latest.json (alpha-engine-config-I11351)."
+  },
+  "x-key-pattern": "market_data/security_performance/latest.json",
+  "x-comparison-class": "vendor_live",
+  "x-vendor-live": {
+    "value_band": {
+      "relative": 0.05,
+      "absolute": 0.0
+    },
+    "coverage_floor": 0.98
+  },
+  "x-pit": {
+    "event_time": "as_of",
+    "available_at_basis": "collection_time",
+    "admissible_when": "available_at_or_before_decision",
+    "revisions": "overwritten",
+    "rule": "Derived from the run's own closes; available_at is that run's data_pit stamp. latest.json is rewritten each run.",
+    "tracker": "alpha-engine-config-I12567"
   }
 }

@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { acctParams, getAccounts, getHoldings, getHoldingsView, getIntradayLegs, getIntradayStatus, getSummary, getToday, getValuationMedians, getWatchlist, MetronApiError, type Entitlements, type Holding, type HoldingsViewPrefs, type IntradayLegHistory, type IntradayStatus, type Summary, type Today, type ValuationMedians, type WatchlistEntry } from "@/lib/api";
+import { acctParams, getAccounts, getHoldings, getIndices, getMarketNote, getPerformanceTiles, type Indices, type PeriodTiles, getHoldingsView, getIntradayLegs, getIntradayStatus, getSummary, getToday, getValuationMedians, getWatchlist, MetronApiError, type Entitlements, type Holding, type HoldingsViewPrefs, type IntradayLegHistory, type IntradayStatus, type Summary, type Today, type ValuationMedians, type WatchlistEntry } from "@/lib/api";
 import { Empty, Section } from "@/components/ui";
 import { HoldingsView } from "@/components/holdings-view";
 import { LiveValuationProvider } from "@/components/live-valuation-context";
@@ -13,7 +13,10 @@ import { PortfolioNav } from "@/components/portfolio-nav";
 import { WatchlistCompareTable } from "@/components/watchlist-compare-table";
 import { ColumnBandsProvider } from "@/components/column-bands-context";
 import { DEFAULT_VISIBLE_GROUPS, INTRADAY_VISIBLE_GROUPS } from "@/components/holdings-column-presets";
-import { loadEntitlements, navFeatureStates } from "@/lib/entitlements";
+import { featureEntitlement, loadEntitlements, navFeatureStates, previewFromCookies } from "@/lib/entitlements";
+import { IndexStrip } from "@/components/index-strip";
+import { PerfTiles } from "@/components/perf-tiles";
+import { MarketNoteView } from "@/components/market-note";
 import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
@@ -163,6 +166,18 @@ export default async function HoldingsPage(
             an all-day-open tab still catches the EOD snapshot advance (metron-ops#154). */}
         {valuation === "live" ? <IntradayRefresher portfolioId={id} /> : <SettledRefresher />}
       </div>
+
+      {/* Market + portfolio stats at the top (Brian, 2026-11-04): the five indexes and this
+          portfolio over Today / MTD / YTD / LTM. Streamed so it never delays the table. */}
+      <Suspense fallback={<Bar className="mt-3 h-24 w-full animate-pulse" />}>
+        <StatsSection apiAuth={apiAuth} id={id} accountIds={accountIds} entitlements={entitlements} />
+      </Suspense>
+
+      {/* Portfolio vs market note (Brian, 2026-11-04): made only when this page is opened,
+          streamed under its own boundary so a slow note never holds up anything else. */}
+      <Suspense fallback={null}>
+        <MarketNoteSection apiAuth={apiAuth} id={id} accountIds={accountIds} />
+      </Suspense>
 
       {/* Portfolio total — first on the page (Brian, 2026-09-28). Same type-filtered rows as
           the table below (HiddenTypesProvider), so the two can never disagree. */}
@@ -346,5 +361,50 @@ async function WatchlistSection({ apiAuth, id, ccy }: { apiAuth: string; id: str
     <Section title="Watchlist" note="tracked tickers, compared side-by-side · metrics as of last close — never affects NAV or performance">
       <WatchlistCompareTable portfolioId={id} baseCurrency={ccy} entries={entries} />
     </Section>
+  );
+}
+
+/** Index strip + portfolio period tiles (Brian, 2026-11-04). Each read is best-effort: a
+ *  failure hides that half rather than breaking Holdings. The index strip is feed-gated. */
+async function MarketNoteSection({
+  apiAuth,
+  id,
+  accountIds,
+}: {
+  apiAuth: string;
+  id: string;
+  accountIds: string[];
+}) {
+  const note = await getMarketNote(apiAuth, id, accountIds).catch(() => null);
+  return <MarketNoteView note={note} />;
+}
+
+async function StatsSection({
+  apiAuth,
+  id,
+  accountIds,
+  entitlements,
+}: {
+  apiAuth: string;
+  id: string;
+  accountIds: string[];
+  entitlements: Entitlements | null;
+}) {
+  const indicesEnt = featureEntitlement(entitlements, "indices");
+  const [indices, tiles] = await Promise.all([
+    indicesEnt?.available
+      ? getIndices(apiAuth, previewFromCookies()).catch((): Indices | null => null)
+      : Promise.resolve(null),
+    getPerformanceTiles(apiAuth, id, accountIds).catch((): PeriodTiles | null => null),
+  ]);
+  const showTiles = tiles?.tiles.some((t) => t.twr != null || t.mwr != null || t.gain != null) ?? false;
+  if (!indices?.available && !showTiles) return null;
+  return (
+    <div>
+      {indices?.available ? <IndexStrip initial={indices} /> : null}
+      {showTiles && tiles ? (
+        <PerfTiles tiles={tiles.tiles} benchmarksAvailable={tiles.benchmarks_available} />
+      ) : null}
+    </div>
   );
 }

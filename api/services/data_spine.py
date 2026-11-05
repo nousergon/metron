@@ -252,6 +252,121 @@ def publish_holdings_universe(
     return payload
 
 
+# Personal-portfolio returns for the console performance tracker (Brian, 2026-11-03: "track
+# performance of crucible vs my own portfolio"). nousergon-data's ``perf_tracker`` chains
+# these over each window and prints Crucible vs personal beside the index comparisons. Only
+# flow-neutralised daily RETURNS leave Metron, never a NAV or a flow in dollars: the tracker
+# needs nothing more, and its output is a console page.
+PERSONAL_RETURNS_SCHEMA_VERSION = "metron_personal_returns.v1"
+PERSONAL_RETURNS_KEY = "metron/perf/personal_returns.json"
+
+
+def build_personal_returns(session: Session, *, now: datetime | None = None) -> dict:
+    """The household's flow-neutralised return between consecutive NAV-snapshot dates.
+
+    The household is every portfolio outside the demo tenant (the Showcase and the demo
+    household live there, so the Crucible showcase can never be counted as "personal").
+    Each return uses Metron's own TWR convention (``performance._flow_neutralized_returns``):
+    ``(nav_t - flow_t) / nav_t-1 - 1``, summed over the portfolios present on BOTH dates, so
+    a portfolio that opens or closes is neither a gain nor a loss. A date on which an active
+    portfolio has no snapshot is skipped rather than summed short, and the next return spans
+    it: the flows recorded on the skipped dates are netted out of that spanning return too,
+    so a deposit on a skipped date is never read as growth. A row is ``estimated`` when either end carries a provisional or estimated snapshot.
+
+    Raises ``ValueError`` when the portfolios do not share one base currency: summing NAVs
+    across currencies would be a fabricated number."""
+    portfolios = session.scalars(
+        select(models.Portfolio).where(models.Portfolio.tenant_id != DEMO_TENANT_ID)
+    ).all()
+    ids = [p.id for p in portfolios]
+    currencies = sorted({(p.base_currency or "USD").upper() for p in portfolios})
+    if len(currencies) > 1:
+        raise ValueError(f"personal returns: portfolios span base currencies {currencies}")
+    snaps = (
+        session.scalars(
+            select(models.NavSnapshot)
+            .where(models.NavSnapshot.portfolio_id.in_(ids))
+            .order_by(models.NavSnapshot.snap_date)
+        ).all()
+        if ids
+        else []
+    )
+    by_day: dict[date, dict[uuid.UUID, models.NavSnapshot]] = {}
+    first: dict[uuid.UUID, date] = {}
+    last: dict[uuid.UUID, date] = {}
+    last_nav: dict[uuid.UUID, float] = {}
+    for snap in snaps:
+        by_day.setdefault(snap.snap_date, {})[snap.portfolio_id] = snap
+        first.setdefault(snap.portfolio_id, snap.snap_date)
+        last[snap.portfolio_id] = snap.snap_date
+        last_nav[snap.portfolio_id] = float(snap.nav or 0)
+    # A portfolio's latest snapshot ends its active span only when it closed (NAV 0). A
+    # portfolio whose newest refresh is merely missing stays active, so those dates are
+    # skipped rather than summed without it (codex finding 745c29c5eaaa1fe5).
+    closed = {pid for pid, nav in last_nav.items() if nav <= 0}
+
+    def _estimated(snap: models.NavSnapshot) -> bool:
+        return bool(snap.provisional) or bool(snap.estimated_inputs)
+
+    rows: list[dict] = []
+    skipped = 0
+    prev_day: date | None = None
+    prev: dict[uuid.UUID, models.NavSnapshot] = {}
+    # Flows recorded on skipped dates since ``prev_day``, per portfolio: the next return
+    # spans those dates, so it nets their flows as well as its own end date's.
+    skipped_flow: dict[uuid.UUID, float] = {}
+    for day in sorted(by_day):
+        cur = by_day[day]
+        active = {pid for pid in first if first[pid] <= day and (pid not in closed or day <= last[pid])}
+        if not active <= set(cur):
+            skipped += 1
+            for pid, snap in cur.items():
+                skipped_flow[pid] = skipped_flow.get(pid, 0.0) + float(snap.external_flow or 0)
+            continue
+        common = set(cur) & set(prev)
+        if prev_day is not None and common:
+            base = sum(float(prev[pid].nav) for pid in common)
+            if base > 0:
+                grown = sum(
+                    float(cur[pid].nav) - float(cur[pid].external_flow or 0) - skipped_flow.get(pid, 0.0)
+                    for pid in common
+                )
+                rows.append({
+                    "start": prev_day.isoformat(),
+                    "end": day.isoformat(),
+                    "return": round(grown / base - 1.0, 10),
+                    "estimated": any(_estimated(prev[pid]) or _estimated(cur[pid]) for pid in common),
+                })
+        prev_day, prev = day, cur
+        skipped_flow = {}
+    return {
+        "schema_version": PERSONAL_RETURNS_SCHEMA_VERSION,
+        "generated_utc": (now or datetime.now(UTC)).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "base_currency": currencies[0] if currencies else "USD",
+        "portfolios": len(ids),
+        "first_date": rows[0]["start"] if rows else None,
+        "as_of": rows[-1]["end"] if rows else None,
+        "dates_skipped_incomplete": skipped,
+        "returns": rows,
+    }
+
+
+def publish_personal_returns(
+    session: Session, *, s3_client=None, now: datetime | None = None, bucket: str | None = None
+) -> dict:
+    """Publish ``build_personal_returns`` to S3. Raises ``DataSpineUnavailable`` on S3
+    failure and ``ValueError`` on mixed base currencies; the daily refresh treats both as
+    best-effort. Logs counts and dates only."""
+    payload = build_personal_returns(session, now=now)
+    _write_s3_json(bucket or settings.market_data_bucket, PERSONAL_RETURNS_KEY, payload, s3_client=s3_client)
+    logger.info(
+        "published personal returns: %d rows, %s..%s, %d portfolios → s3://%s/%s",
+        len(payload["returns"]), payload["first_date"], payload["as_of"], payload["portfolios"],
+        bucket or settings.market_data_bucket, PERSONAL_RETURNS_KEY,
+    )
+    return payload
+
+
 # `alpha-engine-data`'s per-ticker Holdings-metrics collectors (fundamentals / technicals /
 # analyst / sentiment — Holdings metrics) fetch ONLY over the held-ticker universe above, so a
 # watchlist-only ticker (tracked but never bought — metron-ops#42/#121) got no metrics at all

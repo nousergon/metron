@@ -49,7 +49,7 @@ class StaleBrokerAccount:
     account_id: uuid.UUID
     account_name: str
     broker: str
-    as_of: date              # latest Position.as_of for the account
+    as_of: date              # latest of Position.as_of and Account.holdings_synced_on
     sessions_behind: int     # NYSE sessions between ``as_of`` and today
 
     def __str__(self) -> str:
@@ -72,12 +72,12 @@ def stale_broker_accounts(session: Session, *, today: date | None = None) -> lis
     returned a 503 on 2026-08-02 and self-healed the next run) and fires only once a
     whole session's worth of share counts has actually been missed.
 
-    **Known blind spot, stated rather than hidden:** an account holding NO positions is
-    not flagged. ``Position.as_of`` is the only sync timestamp Metron persists — there is
-    no ``Account.last_synced_at`` — so a legitimately empty (all-cash) account and one
-    whose rows were wiped are indistinguishable here. Flagging them would page on the
-    former; skipping them under-reports the latter, and under-reporting an edge case
-    beats a recurring false page that trains the operator to ignore this alert.
+    An account holding NO positions is still measured: ``Account.holdings_synced_on`` is
+    stamped by every snapshot that states the account's holdings in full, empty or not
+    (metron-ops#382), so an all-cash account that keeps syncing stays fresh and one whose
+    sync stopped goes stale like any other. The remaining blind spot is an empty account
+    that has not been stated once since that column shipped: it has neither stamp and
+    is not flagged.
 
     Read-only. Returns ``[]`` when everything is current, so ``if stale:`` is the
     caller's gate.
@@ -88,17 +88,24 @@ def stale_broker_accounts(session: Session, *, today: date | None = None) -> lis
             models.Account.id.label("account_id"),
             models.Account.name.label("account_name"),
             models.Account.broker.label("broker"),
+            models.Account.holdings_synced_on.label("synced_on"),
             func.max(models.Position.as_of).label("as_of"),
         )
         .select_from(models.Account)
-        .join(models.Position, models.Position.account_id == models.Account.id)
-        .group_by(models.Account.id, models.Account.name, models.Account.broker)
+        .outerjoin(models.Position, models.Position.account_id == models.Account.id)
+        .group_by(
+            models.Account.id, models.Account.name, models.Account.broker, models.Account.holdings_synced_on
+        )
     )
     stale: list[StaleBrokerAccount] = []
     for row in session.execute(latest):
         if not any(row.broker.startswith(p) for p in _SNAPSHOT_BROKER_PREFIXES):
             continue
-        behind = sessions_behind(row.as_of, today)
+        stamps = [d for d in (row.as_of, row.synced_on) if d is not None]
+        if not stamps:
+            continue  # never stated since holdings_synced_on shipped, and holds nothing
+        as_of = max(stamps)
+        behind = sessions_behind(as_of, today)
         if behind < STALE_AFTER_SESSIONS:
             continue
         stale.append(
@@ -106,7 +113,7 @@ def stale_broker_accounts(session: Session, *, today: date | None = None) -> lis
                 account_id=row.account_id,
                 account_name=row.account_name or str(row.account_id),
                 broker=row.broker,
-                as_of=row.as_of,
+                as_of=as_of,
                 sessions_behind=behind,
             )
         )

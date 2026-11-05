@@ -143,6 +143,11 @@ export type Holding = {
   // one (account, ticker). null on the default consolidated view (metron-ops#114).
   account_id: string | null;
   account_label: string | null;
+  // Holding period (Brian 2026-11-04): the oldest open lot's buy date, the share-weighted
+  // average days held, and the fraction of shares those lots cover. null = no lots known.
+  first_acquired?: string | null;
+  avg_days_held?: number | null;
+  held_coverage?: number | null;
   // User-set display label/alias (so a numeric-CUSIP bond is legible). null when unset.
   user_label: string | null;
   // Per-security period returns (metron-ops#87). Day legs (overnight/intraday/day) need the
@@ -339,7 +344,9 @@ export type TxnType =
   | "DEPOSIT"
   | "WITHDRAWAL"
   | "FEE"
-  | "SPLIT";
+  | "SPLIT"
+  | "TRANSFER_IN" // securities received in kind (metron-ops#378)
+  | "TRANSFER_OUT";
 
 export type Transaction = {
   trade_date: string; // ISO date
@@ -448,6 +455,23 @@ export type BenchmarkReturn = {
   label: string;
   ret: number | null;   // benchmark % return over the window
   alpha: number | null; // portfolio %TWR − benchmark %
+  start_close?: number | null; // the closes `ret` is computed from
+  end_close?: number | null;
+};
+
+/** One snapshot-to-snapshot step inside a tile window. */
+export type TileDay = { when: string; prev_nav: number; nav: number; flow: number; ret: number };
+
+/** The inputs behind a tile: gain = end_nav − start_nav − net_flows; TWR links `steps`
+ *  daily returns. `suspect_days` moved more than 8% in one step. */
+export type TileBasis = {
+  start_nav: number;
+  end_nav: number;
+  net_flows: number;
+  steps: number;
+  estimated_points: number;
+  largest_days: TileDay[];
+  suspect_days: TileDay[];
 };
 
 /** One Overview hero tile: aggregate holdings performance over a window. */
@@ -461,6 +485,7 @@ export type PeriodTile = {
   mwr: number | null;   // % money-weighted return (XIRR) over the window
   benchmarks: BenchmarkReturn[];
   note?: string | null; // honest empty-state reason (e.g. TODAY "as of <prior date>")
+  basis?: TileBasis | null; // the inputs behind the figures
 };
 
 /** Overview performance-vs-market tiles. Benchmark comparison is feed-gated (Pro):
@@ -835,6 +860,31 @@ export const getPerformance = (apiAuth: string, id: string, accountIds?: string[
   get<Performance>(apiAuth, `/portfolios/${id}/performance${acctParams(accountIds)}`);
 export const getPerformanceTiles = (apiAuth: string, id: string, accountIds?: string[]) =>
   get<PeriodTiles>(apiAuth, `/portfolios/${id}/performance/tiles${acctParams(accountIds)}`);
+// Holdings market note (Brian, 2026-11-04): why the portfolio moved differently from the
+// indexes over the settled TODAY session. Computed on request and cached per portfolio per
+// session by the API, so a day nobody opens Holdings costs nothing.
+export type MarketNote = {
+  available: boolean;
+  session_date: string | null;
+  sentences: string[];
+  missing: string[];
+  portfolio_return: number | null;
+  lead_return: number | null;
+  gap: number | null;
+};
+/** Bounded: the note is optional, so a slow one gives up after 8s and the card says so,
+ *  instead of holding the page's stream open (Brian 2026-11-04: "takes forever to load"). */
+export const MARKET_NOTE_TIMEOUT_MS = 8000;
+export async function getMarketNote(apiAuth: string, id: string, accountIds?: string[]): Promise<MarketNote> {
+  const path = `/portfolios/${id}/market-note${acctParams(accountIds)}`;
+  const res = await apiFetch(path, {
+    headers: authHeaders(apiAuth),
+    cache: "no-store",
+    signal: AbortSignal.timeout(MARKET_NOTE_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new MetronApiError(res.status, `GET ${path} → ${res.status}`);
+  return res.json() as Promise<MarketNote>;
+}
 export const getHoldingsPerformanceSeries = (apiAuth: string, id: string, accountIds?: string[]) =>
   get<HoldingsPerfSeries>(apiAuth, `/portfolios/${id}/holdings/performance-series${acctParams(accountIds)}`);
 
@@ -1095,6 +1145,25 @@ export type Attribution = {
   interaction: number | null;
   sectors: SectorEffect[];
   unattributed?: UnattributedHolding[];
+  // Today's holdings held through the window, not realized attribution (metron-ops-I372).
+  basis?: string;
+  reconciliation?: AttributionReconciliation | null;
+};
+
+// The attribution against what actually happened over the same window (metron-ops-I372):
+// the portfolio's observed TWR from its NAV snapshots, the benchmark's own close return,
+// and the named residuals between them and the attributed figures. Return fractions.
+export type AttributionReconciliation = {
+  available: boolean;
+  reason: string | null;
+  observed_portfolio_return: number | null;
+  observed_benchmark_return: number | null;
+  observed_active_return: number | null;
+  portfolio_residual: number | null; // observed TWR − attributed holdings return
+  benchmark_residual: number | null; // observed benchmark − sector-ETF composite
+  active_residual: number | null; // observed active − attributed active
+  within_tolerance: boolean;
+  tolerance: number;
 };
 
 export const getAttribution = (apiAuth: string, id: string, accountIds?: string[]) =>
@@ -1951,6 +2020,7 @@ export type IndexQuote = {
   session_date: string | null;
   suspect: boolean;
   // Period returns from cached daily closes (metron-ops#87); null when unavailable.
+  mtd_pct?: number | null;
   ytd_pct: number | null;
   ltm_pct: number | null;
 };

@@ -178,3 +178,25 @@ def test_unscoped_session_never_memoizes(db_session):
     finally:
         stop()
     assert len(seen) == 3
+
+
+def test_a_lock_left_by_a_killed_worker_expires() -> None:
+    """A worker killed mid-compute (deploy restart) leaves its lock on disk. It must
+    expire, or every later request for that key waits forever (2026-11-04)."""
+    import time
+
+    import diskcache as dc
+
+    compute_cache.clear()
+    key = "test:orphaned-lock"
+    dc.Lock(compute_cache._cache, f"lck:{key}", expire=0.2).acquire()  # holder "dies"
+    start = time.monotonic()
+    assert compute_cache.cached(key, lambda: 7) == 7
+    assert time.monotonic() - start < 5
+
+
+def test_the_compute_lock_carries_an_expiry() -> None:
+    import inspect
+
+    assert "expire=LOCK_EXPIRE_S" in inspect.getsource(compute_cache.cached)
+    assert 0 < compute_cache.LOCK_EXPIRE_S <= 300

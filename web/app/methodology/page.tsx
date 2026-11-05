@@ -196,7 +196,10 @@ export default function MethodologyPage() {
           register as a return. A holding with no lot or transaction history cannot be placed on past dates, so it
           is carried at its current value across the whole history rather than dropped. When the open lots of any
           current holding do not reconcile to its position quantity (within 1%), the Performance page labels the
-          history as estimated and names the affected holdings.
+          history as estimated and names the affected holdings. A dated point is also marked as an estimate when it
+          used a price or exchange rate from after its own date, or carried one forward across a gap of more than
+          ten days; each such point names the holding and input in the API&rsquo;s performance series. When later
+          data changes a dated value, the value shown before is kept in a revision log rather than overwritten.
         </p>
         <p>
           <strong>Data guards.</strong> A new snapshot is not recorded when its NAV is more than 3× or less than
@@ -306,6 +309,18 @@ export default function MethodologyPage() {
           R<sub>b</sub> is built from sector ETF returns at the benchmark&rsquo;s sector weights, so it can differ
           slightly from the benchmark ETF&rsquo;s own return. A sector the portfolio does not hold has zero
           selection effect; a sector the benchmark does not hold takes R<sub>b</sub> as its benchmark return.
+        </p>
+        <p>
+          <strong>Reconciliation.</strong> Because of that approximation, the page also measures what actually
+          happened over the same window and shows the gap. The observed portfolio return is the time-weighted
+          return from the portfolio&rsquo;s recorded daily values, with deposits and withdrawals removed, from the
+          window&rsquo;s first session to its last. The observed benchmark return is the benchmark ETF&rsquo;s own
+          close-to-close return over the same sessions. Three residuals are shown: observed portfolio return minus
+          R<sub>p</sub>, observed benchmark return minus R<sub>b</sub>, and observed active return minus
+          R<sub>p</sub> − R<sub>b</sub>. The portfolio residual includes trading during the window, weight drift,
+          cash and any holding left out of the attribution. The benchmark residual is the cost of the sector-ETF
+          approximation. If either observed return cannot be measured over exactly that window, for example
+          because no value was recorded on the first or last session, the page says so instead of using nearby dates.
         </p>
       </Section>
 

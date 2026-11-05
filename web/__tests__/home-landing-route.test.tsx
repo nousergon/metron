@@ -1,10 +1,7 @@
-// The post-auth landing route (metron-ops#248 / metron-ops-I328, Brian ruling 2026-07-30):
-// a signed-in tenant with exactly one portfolio lands on its glance screen, not the old
-// Holdings/picker route — the last unmet clause of the I248 epic. Covers both landing
-// cases named in the issue: a tenant with a populated portfolio (redirects into glance)
-// and a tenant with no connected accounts yet (keeps the create-portfolio empty state,
-// since there is nothing to glance at). A tenant holding more than one portfolio keeps
-// the existing picker list — the glance screen has no multi-portfolio aggregate.
+// The post-auth landing route: a signed-in tenant with exactly one portfolio lands on its
+// Holdings page (Brian, 2026-11-04; previously the glance screen, metron-ops-I328). A
+// tenant with no connected accounts keeps the create-portfolio empty state; a tenant with
+// more than one portfolio keeps the picker list.
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 
@@ -36,10 +33,10 @@ async function HomePage() {
 }
 
 describe("post-auth landing route (/)", () => {
-  it("redirects a tenant with a populated portfolio straight to its glance screen", async () => {
+  it("redirects a tenant with a populated portfolio straight to its Holdings page", async () => {
     mockGetPortfolios.mockResolvedValue([{ id: "port-1", name: "Main", base_currency: "USD" }]);
     await expect(HomePage()).rejects.toThrow(REDIRECT);
-    expect(mockRedirect).toHaveBeenCalledWith("/portfolios/port-1/glance");
+    expect(mockRedirect).toHaveBeenCalledWith("/portfolios/port-1");
   });
 
   it("renders the empty create-portfolio state for a tenant with no connected accounts, never a redirect", async () => {

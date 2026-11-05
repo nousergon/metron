@@ -97,7 +97,12 @@ class TestWindows:
         assert res.benchmarks_available is False
         assert res.last_date == date(2024, 6, 28)
         tiles = {t.period: t for t in res.tiles}
-        assert [t.period for t in res.tiles] == ["today", "ytd", "ltm"]
+        assert [t.period for t in res.tiles] == ["today", "mtd", "ytd", "ltm"]
+
+        # MTD anchors on the last May snapshot.
+        may = [(d, n) for d, n in _SERIES if (d.year, d.month) < (2024, 6)][-1]
+        assert tiles["mtd"].start_date == may[0]
+        assert tiles["mtd"].twr == pytest.approx(1320 / may[1] - 1)
 
         # Today = Fri close-to-close (Thu 1300 → Fri 1320).
         assert tiles["today"].gain == pytest.approx(20.0)
@@ -141,7 +146,7 @@ class TestBenchmarks:
             (date(2023, 6, 1), 400.0), (date(2023, 12, 29), 440.0),
             (date(2024, 6, 27), 480.0), (date(2024, 6, 28), 484.0),
         ]
-        for sym in ("SPY", "QQQ", "IWM"):
+        for sym in ("DIA", "SPY", "ONEQ", "QQQ", "IWM"):
             _bars(db_session, sym, spy_bars)
 
         res = perf.period_tiles(
@@ -149,7 +154,7 @@ class TestBenchmarks:
         )
         assert res.benchmarks_available is True
         tiles = {t.period: t for t in res.tiles}
-        assert [b.symbol for b in tiles["ytd"].benchmarks] == ["SPY", "QQQ", "IWM"]
+        assert [b.symbol for b in tiles["ytd"].benchmarks] == ["DIA", "SPY", "ONEQ", "QQQ", "IWM"]
 
         spy_ytd = next(b for b in tiles["ytd"].benchmarks if b.symbol == "SPY")
         assert spy_ytd.ret == pytest.approx(484 / 440 - 1)
@@ -158,6 +163,20 @@ class TestBenchmarks:
         spy_ltm = next(b for b in tiles["ltm"].benchmarks if b.symbol == "SPY")
         assert spy_ltm.ret == pytest.approx(484 / 400 - 1)
         assert spy_ltm.alpha == pytest.approx(0.32 - (484 / 400 - 1))
+
+    def test_an_uncoverable_benchmark_is_fetched_once_not_per_request(self, db_session, tenant, monkeypatch):
+        # Brian 2026-11-04: Holdings hung after DIA/ONEQ were added, because each page
+        # load re-read the spine's whole close history for symbols it could not supply.
+        calls = []
+        monkeypatch.setattr("api.services.prices.fetch_close_history", lambda syms, *a, **k: calls.append(list(syms)) or {})
+        pid = uuid.uuid4()
+        for when, nav in _SERIES:
+            _snap(db_session, tenant, pid, when, nav)
+        for _ in range(3):
+            perf.period_tiles(
+                db_session, uuid.UUID(tenant), pid, today=_TODAY, with_benchmarks=True, now=_FRIDAY_POST_CLOSE,
+            )
+        assert len(calls) == 1
 
     def test_alpha_none_when_benchmark_uncached(self, db_session, tenant, monkeypatch):
         monkeypatch.setattr("api.services.prices.fetch_close_history", lambda *a, **k: {})
@@ -169,7 +188,7 @@ class TestBenchmarks:
         )
         assert res.benchmarks_available is False
         ytd = next(t for t in res.tiles if t.period == "ytd")
-        assert {b.symbol for b in ytd.benchmarks} == {"SPY", "QQQ", "IWM"}
+        assert {b.symbol for b in ytd.benchmarks} == {"DIA", "SPY", "ONEQ", "QQQ", "IWM"}
         assert all(b.ret is None and b.alpha is None for b in ytd.benchmarks)
 
 
@@ -314,13 +333,13 @@ class TestEndpoint:
         puid = uuid.UUID(pid)
         _snap(db_session, tenant, puid, date(2024, 5, 1), 1000.0)
         _snap(db_session, tenant, puid, date(2024, 5, 31), 1100.0)
-        for sym in ("SPY", "QQQ", "IWM"):
+        for sym in ("DIA", "SPY", "ONEQ", "QQQ", "IWM"):
             _bars(db_session, sym, [(date(2024, 5, 1), 400.0), (date(2024, 5, 31), 440.0)])
 
         r = client.get(f"/portfolios/{pid}/performance/tiles", headers={"X-Tenant-Id": tenant})
         assert r.status_code == 200
         body = r.json()
-        assert [t["period"] for t in body["tiles"]] == ["today", "ytd", "ltm"]
+        assert [t["period"] for t in body["tiles"]] == ["today", "mtd", "ytd", "ltm"]
         assert body["benchmarks_available"] is True
 
     def test_endpoint_wires_index_strip_into_the_settled_today_tile(self, client, db_session, tenant, monkeypatch):
@@ -360,3 +379,35 @@ class TestEndpoint:
         today_tile = next(t for t in r.json()["tiles"] if t["period"] == "today")
         qqq = next(b for b in today_tile["benchmarks"] if b["symbol"] == "QQQ")
         assert qqq["ret"] == pytest.approx(-0.05)
+
+
+class TestBasis:
+    """Brian 2026-11-04: every tile figure must be checkable from the inputs it shows."""
+
+    def test_basis_reconciles_the_gain_and_flags_a_big_step(self, db_session, tenant):
+        pid = uuid.uuid4()
+        for when, nav in _SERIES:
+            _snap(db_session, tenant, pid, when, nav)
+        res = perf.period_tiles(db_session, uuid.UUID(tenant), pid, today=_TODAY, now=_FRIDAY_POST_CLOSE)
+        ytd = next(t for t in res.tiles if t.period == "ytd")
+        b = ytd.basis
+        assert (b.start_nav, b.end_nav, b.net_flows, b.steps) == (1100.0, 1320.0, 0.0, 3)
+        assert ytd.gain == pytest.approx(b.end_nav - b.start_nav - b.net_flows)
+        assert b.largest_days[0].when == date(2024, 6, 26)
+        assert b.largest_days[0].ret == pytest.approx(1280 / 1100 - 1)
+        assert [d.when for d in b.suspect_days] == [date(2024, 6, 26)]
+
+    def test_benchmark_carries_the_closes_it_was_computed_from(self, db_session, tenant, monkeypatch):
+        monkeypatch.setattr("api.services.prices.fetch_close_history", lambda *a, **k: {})
+        pid = uuid.uuid4()
+        for when, nav in _SERIES:
+            _snap(db_session, tenant, pid, when, nav)
+        bars = [(date(2023, 6, 1), 400.0), (date(2023, 12, 29), 440.0), (date(2024, 6, 28), 484.0)]
+        for sym in ("DIA", "SPY", "ONEQ", "QQQ", "IWM"):
+            _bars(db_session, sym, bars)
+        res = perf.period_tiles(
+            db_session, uuid.UUID(tenant), pid, today=_TODAY, with_benchmarks=True, now=_FRIDAY_POST_CLOSE,
+        )
+        ytd = next(t for t in res.tiles if t.period == "ytd")
+        spy = next(b for b in ytd.benchmarks if b.symbol == "SPY")
+        assert (spy.start_close, spy.end_close) == (440.0, 484.0)

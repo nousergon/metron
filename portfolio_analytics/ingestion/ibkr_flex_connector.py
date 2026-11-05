@@ -104,6 +104,34 @@ def parse_accounts(root: ET.Element) -> dict[str, dict]:
     return accts
 
 
+def replacement_scope(root: ET.Element) -> tuple[frozenset[str], frozenset[str] | None]:
+    """Which accounts this statement states current holdings / open lots for in full
+    (metron-ops#382).
+
+    Holdings: an account whose ``FlexStatement`` carries an ``OpenPositions`` section.
+    The section is present, possibly empty, whenever the query includes Open Positions,
+    so an empty one means the account holds nothing. A statement without the section
+    says nothing about holdings and its account is not declared.
+
+    Lots: lot detail is a query-wide option, and IBKR emits ``levelOfDetail="LOT"`` rows
+    only when it is on. If any LOT row appears, every account with an OpenPositions
+    section has its lot set stated in full. If none does, lot detail is off or
+    unknowable from this statement and nothing is declared (``None``); persistence still
+    clears lots for an account whose holdings are stated empty, since no position means
+    no open lot."""
+    holdings: set[str] = set()
+    for statement in root.iter():
+        if _tag(statement) != "FlexStatement":
+            continue
+        aid = statement.get("accountId", "") or ""
+        if aid and any(_tag(child) == "OpenPositions" for child in statement):
+            holdings.add(aid)
+    lot_detail = any(
+        _tag(e) == "OpenPosition" and (e.get("levelOfDetail") or "").upper() == "LOT" for e in root.iter()
+    )
+    return frozenset(holdings), (frozenset(holdings) if lot_detail else None)
+
+
 def parse_open_positions(root: ET.Element):
     """Yield ``(CanonicalHolding, CanonicalSecurity)`` for each open equity position."""
     out = []
@@ -300,4 +328,5 @@ class IbkrFlexConnector:
             securities.setdefault(sid, CanonicalSecurity(security_id=sid, ticker=rg.ticker))
 
         snapshot.securities = list(securities.values())
+        snapshot.holdings_complete_for, snapshot.open_lots_complete_for = replacement_scope(root)
         return snapshot

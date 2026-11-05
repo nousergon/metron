@@ -375,8 +375,13 @@ class TestDailyRefreshGate:
             data_spine, "publish_watchlist_universe",
             lambda *a, **k: watchlist_called.__setitem__("n", watchlist_called["n"] + 1),
         )
+        personal_called = {"n": 0}
+        monkeypatch.setattr(
+            data_spine, "publish_personal_returns",
+            lambda *a, **k: personal_called.__setitem__("n", personal_called["n"] + 1),
+        )
         result = maintenance.daily_refresh(db_session, today=date(2024, 6, 3))
-        assert called["n"] == 1 and watchlist_called["n"] == 1
+        assert called["n"] == 1 and watchlist_called["n"] == 1 and personal_called["n"] == 1
         assert result.universe_published is True
         assert result.watchlist_universe_published is True
 
@@ -390,10 +395,112 @@ class TestDailyRefreshGate:
 
         monkeypatch.setattr(data_spine, "publish_holdings_universe", _boom)
         monkeypatch.setattr(data_spine, "publish_watchlist_universe", _boom)
+        monkeypatch.setattr(data_spine, "publish_personal_returns", _boom)
         result = maintenance.daily_refresh(db_session, today=date(2024, 6, 3))
         assert result.universe_published is False
         assert result.watchlist_universe_published is False
         assert result.portfolios == 1  # the rest of the refresh still completed
+
+
+class TestPersonalReturns:
+    """The household return series the console performance tracker compares Crucible
+    against (Brian 2026-11-03). Returns only, never a dollar figure."""
+
+    @staticmethod
+    def _snap(session, pf, day, nav, flow=0.0, **kw):
+        session.add(models.NavSnapshot(
+            tenant_id=pf.tenant_id, portfolio_id=pf.id, snap_date=day, nav=nav, external_flow=flow, **kw,
+        ))
+        session.commit()
+
+    def test_flow_neutralised_returns_and_no_dollar_figure(self, db_session):
+        pf = _seed_holding(db_session, pf_name="P1", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        self._snap(db_session, pf, date(2024, 6, 3), 1000.0)
+        self._snap(db_session, pf, date(2024, 6, 4), 1010.0)
+        self._snap(db_session, pf, date(2024, 6, 5), 1520.0, flow=500.0, provisional=True)
+        payload = data_spine.build_personal_returns(db_session)
+        rows = payload["returns"]
+        assert [(r["start"], r["end"]) for r in rows] == [
+            ("2024-06-03", "2024-06-04"), ("2024-06-04", "2024-06-05"),
+        ]
+        assert rows[0]["return"] == pytest.approx(0.01)
+        # The 500 deposit is not performance.
+        assert rows[1]["return"] == pytest.approx(1020.0 / 1010.0 - 1)
+        assert [r["estimated"] for r in rows] == [False, True]
+        assert payload["schema_version"] == data_spine.PERSONAL_RETURNS_SCHEMA_VERSION
+        assert payload["as_of"] == "2024-06-05" and payload["portfolios"] == 1
+        body = json.dumps(payload)
+        assert "1010" not in body and "1520" not in body
+
+    def test_excludes_the_demo_tenant(self, db_session):
+        pf = _seed_holding(db_session, pf_name="P1", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        demo_pf = _seed_demo_holding(db_session)
+        for day, nav in ((date(2024, 6, 3), 100.0), (date(2024, 6, 4), 200.0)):
+            self._snap(db_session, demo_pf, day, nav)
+        self._snap(db_session, pf, date(2024, 6, 3), 1000.0)
+        self._snap(db_session, pf, date(2024, 6, 4), 1010.0)
+        payload = data_spine.build_personal_returns(db_session)
+        assert payload["portfolios"] == 1
+        assert payload["returns"][0]["return"] == pytest.approx(0.01)
+
+    def test_household_sums_portfolios_and_a_new_one_is_not_a_gain(self, db_session):
+        a = _seed_holding(db_session, pf_name="A", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        b = _seed_holding(db_session, pf_name="B", symbol="MSFT", currency="USD", yf_symbol="MSFT", external_id="B1")
+        self._snap(db_session, a, date(2024, 6, 3), 1000.0)
+        self._snap(db_session, a, date(2024, 6, 4), 1010.0)
+        self._snap(db_session, b, date(2024, 6, 4), 5000.0)       # B opens
+        self._snap(db_session, a, date(2024, 6, 5), 1010.0)       # B missing: date skipped
+        self._snap(db_session, a, date(2024, 6, 6), 1020.0)
+        self._snap(db_session, b, date(2024, 6, 6), 5100.0)
+        rows = data_spine.build_personal_returns(db_session)["returns"]
+        assert [(r["start"], r["end"]) for r in rows] == [
+            ("2024-06-03", "2024-06-04"), ("2024-06-04", "2024-06-06"),
+        ]
+        assert rows[0]["return"] == pytest.approx(0.01)
+        assert rows[1]["return"] == pytest.approx(6120.0 / 6010.0 - 1)
+
+    def test_a_flow_on_a_skipped_date_is_not_counted_as_return(self, db_session):
+        # codex finding 510e92b8fb9843ea: A deposits 50 on 06-05, a date skipped because
+        # B has no snapshot; the 06-04 -> 06-06 span must net that deposit, not read +50%.
+        a = _seed_holding(db_session, pf_name="A", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        b = _seed_holding(db_session, pf_name="B", symbol="MSFT", currency="USD", yf_symbol="MSFT", external_id="B1")
+        self._snap(db_session, a, date(2024, 6, 4), 100.0)
+        self._snap(db_session, b, date(2024, 6, 4), 100.0)
+        self._snap(db_session, a, date(2024, 6, 5), 150.0, flow=50.0)  # B missing: skipped
+        self._snap(db_session, a, date(2024, 6, 6), 150.0)
+        self._snap(db_session, b, date(2024, 6, 6), 100.0)
+        rows = data_spine.build_personal_returns(db_session)["returns"]
+        assert [(r["start"], r["end"]) for r in rows] == [("2024-06-04", "2024-06-06")]
+        assert rows[0]["return"] == pytest.approx(0.0)
+
+    def test_a_missing_latest_refresh_is_not_a_closure(self, db_session):
+        # codex finding 745c29c5eaaa1fe5: B's 06-05 refresh is missing; B must stay active,
+        # so 06-05 is skipped instead of reported as A's return alone.
+        a = _seed_holding(db_session, pf_name="A", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        b = _seed_holding(db_session, pf_name="B", symbol="MSFT", currency="USD", yf_symbol="MSFT", external_id="B1")
+        self._snap(db_session, a, date(2024, 6, 4), 100.0)
+        self._snap(db_session, b, date(2024, 6, 4), 100.0)
+        self._snap(db_session, a, date(2024, 6, 5), 110.0)
+        payload = data_spine.build_personal_returns(db_session)
+        assert payload["returns"] == [] and payload["dates_skipped_incomplete"] == 1
+
+    def test_a_portfolio_closed_at_zero_nav_leaves_the_household(self, db_session):
+        a = _seed_holding(db_session, pf_name="A", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        b = _seed_holding(db_session, pf_name="B", symbol="MSFT", currency="USD", yf_symbol="MSFT", external_id="B1")
+        self._snap(db_session, a, date(2024, 6, 4), 100.0)
+        self._snap(db_session, b, date(2024, 6, 4), 0.0)  # B closed
+        self._snap(db_session, a, date(2024, 6, 5), 110.0)
+        rows = data_spine.build_personal_returns(db_session)["returns"]
+        assert [(r["start"], r["end"]) for r in rows] == [("2024-06-04", "2024-06-05")]
+
+    def test_publish_writes_the_pinned_key(self, db_session):
+        pf = _seed_holding(db_session, pf_name="P1", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        self._snap(db_session, pf, date(2024, 6, 3), 1000.0)
+        self._snap(db_session, pf, date(2024, 6, 4), 1010.0)
+        fake = _FakeS3()
+        payload = data_spine.publish_personal_returns(db_session, s3_client=fake, bucket="b")
+        assert [p["Key"] for p in fake.puts] == ["metron/perf/personal_returns.json"]
+        assert json.loads(fake.puts[0]["Body"].decode()) == payload
 
 
 class TestUiHeartbeat:

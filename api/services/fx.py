@@ -150,6 +150,29 @@ def rate_as_of(session: Session, currency: str, on_date: date, *, base: str = "U
     return float(rate) if rate is not None else None
 
 
+def rate_and_date_as_of(
+    session: Session, currency: str, on_date: date, *, base: str = "USD"
+) -> tuple[float | None, date | None]:
+    """:func:`rate_as_of` plus the date the rate was observed, so a caller can tell a
+    carried-forward rate months old from today's. ``(1.0, None)`` for the base currency,
+    ``(None, None)`` when nothing is cached on or before ``on_date``."""
+    base = (base or "USD").strip().upper()
+    ccy = (currency or base).strip().upper()
+    if ccy == base:
+        return 1.0, None
+    row = session.execute(
+        select(models.FxRate.rate, models.FxRate.rate_date)
+        .where(
+            models.FxRate.currency == ccy,
+            models.FxRate.base == base,
+            models.FxRate.rate_date <= on_date,
+        )
+        .order_by(models.FxRate.rate_date.desc())
+        .limit(1)
+    ).first()
+    return (float(row[0]), row[1]) if row is not None else (None, None)
+
+
 def latest_rate_to_base(session: Session, currency: str, *, base: str = "USD") -> float | None:
     """Most recent cached rate converting 1 unit of ``currency`` into ``base``.
 
@@ -199,6 +222,16 @@ class RateHistory:
         dates, rates = self._series.get(ccy, ([], []))
         i = bisect.bisect_right(dates, on_date)
         return rates[i - 1] if i else None
+
+    def observed_as_of(self, currency: str | None, on_date: date) -> date | None:
+        """The DATE of the rate :meth:`rate_as_of` returns, so a caller can tell a fresh
+        rate from one carried forward over a gap. ``on_date`` itself for the base."""
+        ccy = (currency or self._base).strip().upper()
+        if ccy == self._base:
+            return on_date
+        dates, _rates = self._series.get(ccy, ([], []))
+        i = bisect.bisect_right(dates, on_date)
+        return dates[i - 1] if i else None
 
     def latest(self, currency: str | None) -> float | None:
         ccy = (currency or self._base).strip().upper()

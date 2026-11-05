@@ -47,6 +47,12 @@ class TxnType(StrEnum):
     WITHDRAWAL = "WITHDRAWAL"
     FEE = "FEE"
     SPLIT = "SPLIT"  # quantity = new:old ratio (2.0 = 2-for-1)
+    # Securities moved in or out IN KIND (ACATS, a journal between accounts, a transfer to
+    # another broker) — metron-ops#378. ``amount`` is the transfer-date market value: the
+    # external capital the transfer brings in or takes out. On TRANSFER_IN ``price`` is the
+    # carried cost basis per share (the custodian's), 0 when the source does not report it.
+    TRANSFER_IN = "TRANSFER_IN"
+    TRANSFER_OUT = "TRANSFER_OUT"
 
     @property
     def is_purchase(self) -> bool:
@@ -62,13 +68,31 @@ class TxnType(StrEnum):
 # this set (or ``TxnType.is_purchase``) so REINVESTMENT can never be half-handled.
 PURCHASE_TYPES: frozenset[TxnType] = frozenset({TxnType.BUY, TxnType.REINVESTMENT})
 
+# Security transfers in kind (metron-ops#378). External capital at transfer-date market
+# value, and never a purchase or a sale: a transfer opens or relieves lots without moving
+# cash and without realizing a gain.
+TRANSFER_TYPES: frozenset[TxnType] = frozenset({TxnType.TRANSFER_IN, TxnType.TRANSFER_OUT})
+
+# How each type moves a position's share count: +1 adds shares, -1 removes them. Types
+# absent here move no shares (SPLIT rescales; consumers handle it on its own). Anything
+# that signs a traded quantity reads this map, so a transfer out can never count as a buy.
+POSITION_SIGN: dict[TxnType, float] = {
+    TxnType.BUY: 1.0,
+    TxnType.REINVESTMENT: 1.0,
+    TxnType.TRANSFER_IN: 1.0,
+    TxnType.SELL: -1.0,
+    TxnType.TRANSFER_OUT: -1.0,
+}
+
 
 @dataclass(frozen=True)
 class Transaction:
     """A dated portfolio event. Cash amounts are positive magnitudes; the type
     determines direction. ``quantity``/``price`` apply to BUY/REINVESTMENT/SELL (shares,
     per-share); ``quantity`` is the ratio for SPLIT; ``amount`` is the cash
-    magnitude for DEPOSIT/WITHDRAWAL/DIVIDEND/FEE."""
+    magnitude for DEPOSIT/WITHDRAWAL/DIVIDEND/FEE. For TRANSFER_IN/TRANSFER_OUT
+    ``quantity`` is the shares moved, ``amount`` the transfer-date market value, and
+    ``price`` (TRANSFER_IN only) the carried cost basis per share, 0 when unknown."""
 
     when: date
     type: TxnType
@@ -188,6 +212,10 @@ def _apply(ledger: Ledger, txn: Transaction) -> None:
         _sell(ledger, txn)
     elif txn.type is TxnType.SPLIT:
         _split(ledger, txn)
+    elif txn.type is TxnType.TRANSFER_IN:
+        _transfer_in(ledger, txn)
+    elif txn.type is TxnType.TRANSFER_OUT:
+        _transfer_out(ledger, txn)
 
 
 def _buy(ledger: Ledger, txn: Transaction) -> None:
@@ -227,6 +255,43 @@ def _sell(ledger: Ledger, txn: Transaction) -> None:
         relieve_lots(lots, txn.quantity, close_date=txn.when, proceeds_per_share=net_proceeds_per_share)
     )
     ledger.cash += txn.quantity * txn.price - txn.fees
+
+
+def _transfer_in(ledger: Ledger, txn: Transaction) -> None:
+    """Open a lot for shares received in kind. No cash moves and nothing is purchased.
+
+    The lot carries the custodian's cost basis per share (``price``) when the source
+    reports it, so tax lots survive the move. Without it the basis falls back to the
+    transfer-date market value (``amount / quantity``), which is what the shares were
+    worth on arrival. The lot's open date is the transfer date: a source that knows the
+    original acquisition date carries it on its broker lots, not on this row."""
+    if txn.quantity <= 0:
+        return
+    if txn.price > 0:
+        cost_per_share = txn.price
+    elif txn.amount > 0:
+        cost_per_share = txn.amount / txn.quantity
+    else:
+        cost_per_share = 0.0
+    ledger.open_lots.setdefault(txn.ticker, []).append(
+        Lot(ticker=txn.ticker, open_date=txn.when, quantity=txn.quantity, cost_per_share=cost_per_share)
+    )
+
+
+def _transfer_out(ledger: Ledger, txn: Transaction) -> None:
+    """Relieve lots (FIFO) for shares sent out in kind. A transfer is not a disposal, so
+    it realizes no gain and moves no cash: the lots leave with their basis.
+
+    Raises ``ValueError`` on a transfer exceeding shares held, exactly like a SELL."""
+    if txn.quantity <= 0:
+        return
+    lots = ledger.open_lots.get(txn.ticker, [])
+    available = sum(lot.quantity for lot in lots)
+    if txn.quantity > available + 1e-9:
+        raise ValueError(
+            f"TRANSFER_OUT of {txn.quantity} {txn.ticker} on {txn.when} exceeds {available} shares held"
+        )
+    relieve_lots(lots, txn.quantity, close_date=txn.when, proceeds_per_share=0.0)  # gains discarded
 
 
 def relieve_lots(
@@ -276,15 +341,16 @@ def _split(ledger: Ledger, txn: Transaction) -> None:
 def external_cash_flows(transactions: list[Transaction]) -> list[CashFlow]:
     """Extract investor-perspective external cash flows for XIRR.
 
-    Only DEPOSIT/WITHDRAWAL are external (money into/out of the portfolio). Sign
-    convention matches `analytics.returns.xirr`: a DEPOSIT (money you put in) is
-    **negative**; a WITHDRAWAL (money you took out) is **positive**. The caller
-    appends the terminal portfolio value as a final positive flow.
+    DEPOSIT/WITHDRAWAL are external (money into/out of the portfolio), and so is a
+    security transfer in kind, at its transfer-date market value (metron-ops#378). Sign
+    convention matches `analytics.returns.xirr`: a DEPOSIT or TRANSFER_IN (capital you
+    put in) is **negative**; a WITHDRAWAL or TRANSFER_OUT (capital you took out) is
+    **positive**. The caller appends the terminal portfolio value as a final positive flow.
     """
     flows: list[CashFlow] = []
     for txn in sorted(transactions, key=lambda t: t.when):
-        if txn.type is TxnType.DEPOSIT:
+        if txn.type in (TxnType.DEPOSIT, TxnType.TRANSFER_IN):
             flows.append(CashFlow(txn.when, -txn.amount))
-        elif txn.type is TxnType.WITHDRAWAL:
+        elif txn.type in (TxnType.WITHDRAWAL, TxnType.TRANSFER_OUT):
             flows.append(CashFlow(txn.when, txn.amount))
     return flows

@@ -136,6 +136,12 @@ def artifact_to_snapshot(artifact: dict[str, Any]) -> ConnectorSnapshot:
         accounts=[account],
         securities=securities,
         holdings=holdings,
+        # One artifact, one account: an artifact that carries a ``positions`` list states
+        # the sleeve's whole current book, so an empty list is an empty book. One with no
+        # ``positions`` key declares nothing (metron-ops#382).
+        holdings_complete_for=(
+            frozenset({ACCOUNT_NUMBER}) if isinstance(artifact.get("positions"), list) else None
+        ),
     )
 
 

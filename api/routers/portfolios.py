@@ -43,9 +43,11 @@ from api.services import (
     demo,
     demo_household,
     deploy_cash,
+    holding_period,
     indices,
     intraday,
     labels,
+    market_note,
     metrics_enrichment,
     performance,
     persistence,
@@ -187,6 +189,11 @@ class HoldingOut(BaseModel):
     # is one (account, ticker). Null on the default consolidated view (metron-ops#114).
     account_id: uuid.UUID | None = None
     account_label: str | None = None
+    # Holding period (Brian 2026-11-04): the oldest open lot's buy date, the share-weighted
+    # average days held, and the share of the position those lots cover (None = no lots).
+    first_acquired: date | None = None
+    avg_days_held: float | None = None
+    held_coverage: float | None = None
     # User-set display label/alias (so a numeric-CUSIP bond is legible). None when unset.
     user_label: str | None = None
     # Per-security period returns (metron-ops#87). Day legs (overnight/intraday/day) need the
@@ -594,6 +601,8 @@ class PerfPointOut(BaseModel):
     nav: float
     external_flow: float
     spy_close: float | None
+    # Per-leg estimate stamps for this dated valuation (metron-ops-I370); null = exact.
+    estimated_inputs: list[dict] | None = None
 
 
 class RollingRiskOut(BaseModel):
@@ -780,6 +789,23 @@ class UnattributedHoldingOut(BaseModel):
     reason: str
 
 
+class AttributionReconciliationOut(BaseModel):
+    """The attribution against the observed returns over its own window (metron-ops-I372)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    available: bool
+    reason: str | None = None
+    observed_portfolio_return: float | None = None
+    observed_benchmark_return: float | None = None
+    observed_active_return: float | None = None
+    portfolio_residual: float | None = None
+    benchmark_residual: float | None = None
+    active_residual: float | None = None
+    within_tolerance: bool = False
+    tolerance: float
+
+
 class AttributionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -803,6 +829,10 @@ class AttributionOut(BaseModel):
     sectors: list[SectorEffectOut]
     # Priced holdings left out of the attribution, with the reason (coverage < 1).
     unattributed: list[UnattributedHoldingOut] = []
+    # Today's holdings held through the window, not realized attribution (metron-ops-I372).
+    basis: str = attribution.BASIS_CURRENT_HOLDINGS
+    # Observed TWR / benchmark return over the same window and the named residuals.
+    reconciliation: AttributionReconciliationOut | None = None
 
 
 class GapDriverOut(BaseModel):
@@ -2221,6 +2251,7 @@ def get_holdings(
     # feed-entitled build; off-feed each metric stays None and the table shows "—".
     if settings.feed_entitled:
         metrics_enrichment.enrich_metrics(session, held)
+    holding_period.stamp(session, portfolio.tenant_id, portfolio.id, held, account_ids=account_ids)
     return held
 
 
@@ -2468,6 +2499,30 @@ class BenchmarkReturnOut(BaseModel):
     label: str
     ret: float | None
     alpha: float | None
+    start_close: float | None = None
+    end_close: float | None = None
+
+
+class TileDayOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    when: date
+    prev_nav: float
+    nav: float
+    flow: float
+    ret: float
+
+
+class TileBasisOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    start_nav: float
+    end_nav: float
+    net_flows: float
+    steps: int
+    estimated_points: int
+    largest_days: list[TileDayOut] = []
+    suspect_days: list[TileDayOut] = []
 
 
 class PeriodTileOut(BaseModel):
@@ -2482,6 +2537,7 @@ class PeriodTileOut(BaseModel):
     mwr: float | None = None
     benchmarks: list[BenchmarkReturnOut] = []
     note: str | None = None  # honest empty-state reason (e.g. TODAY "as of <prior date>")
+    basis: TileBasisOut | None = None  # the inputs behind the figures (Brian 2026-11-04)
 
 
 class PeriodTilesOut(BaseModel):
@@ -3137,6 +3193,58 @@ def get_benchmark_gap(
     tile = next((t for t in tiles.tiles if t.period == "today"), None)
     return benchmark_gap.compute_benchmark_gap(
         session, portfolio.tenant_id, portfolio.id, index=index, tile=tile, account_ids=account_ids,
+    )
+
+
+class MarketNoteOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    available: bool
+    session_date: date | None = None
+    sentences: list[str] = []
+    missing: list[str] = []
+    portfolio_return: float | None = None
+    lead_return: float | None = None
+    gap: float | None = None
+
+
+@router.get("/{portfolio_id}/market-note", response_model=MarketNoteOut)
+def get_market_note(
+    portfolio: models.Portfolio = Depends(_owned_portfolio),
+    account_ids: set[uuid.UUID] | None = Depends(_selected_account_ids),
+    session: Session = Depends(get_session),
+    x_preview_tier: str | None = Header(default=None),
+    x_preview_feed: str | None = Header(default=None),
+) -> market_note.MarketNote:
+    """The Holdings market note (Brian 2026-11-04): two or three sentences on why
+    the portfolio moved differently from the indexes over the settled TODAY session.
+    Computed only when the page asks for it and cached per portfolio per session, so a
+    day nobody opens Holdings costs nothing. Built from the same TODAY tile the strip
+    shows, sector attribution over that session, and the name-level benchmark gap; a
+    leg the tier or the data cannot supply is left out and named in ``missing``."""
+    with_benchmarks = _external_market_data_allowed(x_preview_feed)
+    today_bench: dict[str, tuple[float | None, float | None]] = {}
+    if with_benchmarks:
+        idx_snap = indices.load_indices()
+        if idx_snap.available:
+            today_bench = {
+                q.symbol: (q.last, q.prev_close) for q in idx_snap.indices if q.change_pct is not None
+            }
+    tiles = performance.period_tiles(
+        session,
+        portfolio.tenant_id,
+        portfolio.id,
+        today=date.today(),
+        account_ids=account_ids,
+        with_benchmarks=with_benchmarks,
+        today_bench=today_bench,
+        now=datetime.now(UTC),
+    )
+    tile = next((t for t in tiles.tiles if t.period == "today"), None)
+    return market_note.market_note(
+        session, portfolio.tenant_id, portfolio.id, tile=tile, account_ids=account_ids,
+        attr_enabled=_effective_entitlement("attribution", x_preview_tier, x_preview_feed)["available"],
+        gap_enabled=_effective_entitlement("benchmark_gap", x_preview_tier, x_preview_feed)["available"],
     )
 
 

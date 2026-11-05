@@ -10,14 +10,14 @@ per-tenant in SQL:
 
   * **securities** — global, identity-based **upsert** by ``(symbol, currency)``. One
     instrument master shared across all tenants (the cost-is-per-universe property).
-  * **accounts** — **upsert** by ``(tenant_id, broker, external_id)`` under the target
-    portfolio; a re-import updates the label, never duplicates the account. For
-    sources with a brokerage-assigned stable external id (IBKR Flex, SnapTrade,
-    OFX), a match under a different portfolio reparents the row to the one being
-    synced, so re-syncing the same real account elsewhere moves it rather than
-    orphaning it (metron-ops#192). CSV/manual entry's external id is a free-text
-    label with no such guarantee, so a same-label match there is left parented
-    where it already is (pre-existing behavior, unchanged).
+  * **accounts** — **upsert** by ``(tenant_id, broker, external_id, identity_scope)``
+    under the target portfolio; a re-import updates the label, never duplicates the
+    account. For sources with a brokerage-assigned stable external id (IBKR Flex,
+    SnapTrade, OFX), the scope is the tenant and a match under a different portfolio
+    reparents the row to the one being synced, so re-syncing the same real account
+    elsewhere moves it rather than orphaning it (metron-ops#192). CSV/manual entry's
+    external id is a free-text label, so its scope is the portfolio: the same label in
+    another portfolio is another account (metron-ops#383).
   * **transactions** — immutable **events**, unioned by ``source_key`` so a re-upload
     of an overlapping CSV is idempotent (already-seen rows are skipped, not doubled).
 
@@ -37,7 +37,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from api.db import models
-from portfolio_analytics.ingestion.base import ConnectorSnapshot
+from portfolio_analytics.ingestion.base import SNAPSHOT_SOURCES, SYNC_FULL_REFRESH, ConnectorSnapshot
 from portfolio_analytics.ingestion.quality import Finding
 from portfolio_analytics.ingestion.schema import CanonicalActivity, activity_key, legacy_activity_key, lot_key
 from portfolio_analytics.prices import to_yf_symbol
@@ -56,6 +56,16 @@ class PersistResult:
     accounts_excluded: int = 0     # snapshot accounts skipped — user-deleted (excluded keys)
     realized_lots_inserted: int = 0  # broker closed-lot realized gains unioned (metron-ops#81)
     open_lots_imported: int = 0      # lot-level open positions written (metron-ops#74)
+    # Replacement scope actually applied (metron-ops#382): accounts whose positions /
+    # open lots were replaced, including ones replaced with an authoritative empty set.
+    positions_accounts_replaced: int = 0
+    open_lots_accounts_replaced: int = 0
+    # Snapshot-source account numbers whose stored holdings were KEPT because this
+    # snapshot did not state them in full (a failed per-account fetch, say). Last-good
+    # is preserved, and this list is the explicit degraded state.
+    holdings_not_stated: list[str] = field(default_factory=list)
+    # The connector's fetch error when the snapshot failed outright: nothing is replaced.
+    degraded: str | None = None
     # Schema-contract findings for this snapshot (metron-ops#219) — flag mode: reported,
     # never acted on. Empty for a clean snapshot.
     data_quality_findings: list[Finding] = field(default_factory=list)
@@ -147,16 +157,9 @@ def _upsert_securities(
 # instead a free-text label the user types per import (the CSV "account"
 # column, or a manual-entry account name) with no cross-portfolio identity
 # guarantee — two unrelated portfolios both importing a CSV with an "account"
-# column value of "Roth" are not the same real account. The ``uq_account_source``
-# DB constraint (tenant_id, broker, external_id — see api/db/models.py) is
-# tenant-wide regardless of source though, so a label collision there still
-# resolves to one shared row; reparenting it would silently move a CSV/manual
-# account out from under the portfolio the user put it in (regressed
-# test_account_from_another_portfolio_404 when first tried tenant-wide).
-# Giving free-text labels their own portfolio-scoped identity would need a
-# schema change to that constraint — a product decision on CSV/manual account
-# identity semantics, not made here; this scoping only fixes the reported
-# broker-connector case.
+# column value of "Roth" are not the same real account. Those labels are unique per
+# portfolio (``models.account_identity_scope``, metron-ops#383), so a label in
+# another portfolio never matches here and there is nothing to reparent.
 _STABLE_EXTERNAL_ID_SOURCES = {"ibkr_flex", "snaptrade", "ofx"}
 
 
@@ -171,6 +174,7 @@ def _upsert_accounts(
     canonical account ``number`` so activities can resolve their FK."""
     broker = snapshot.source
     reparentable = broker in _STABLE_EXTERNAL_ID_SOURCES
+    scope = models.account_identity_scope(broker, portfolio_id)
     out: dict[str, models.Account] = {}
     for acct in snapshot.accounts:
         row = session.scalars(
@@ -178,6 +182,7 @@ def _upsert_accounts(
                 models.Account.tenant_id == tenant_id,
                 models.Account.broker == broker,
                 models.Account.external_id == acct.number,
+                models.Account.identity_scope == scope,
             )
         ).first()
         institution = acct.institution or None
@@ -189,6 +194,7 @@ def _upsert_accounts(
                 portfolio_id=portfolio_id,
                 broker=broker,
                 external_id=acct.number,
+                identity_scope=scope,
                 name=acct.label or acct.name or None,
                 currency=acct.currency or "USD",
                 institution=institution,
@@ -305,6 +311,45 @@ def _retype_legacy_reinvestment(
     row.created_at = func.now()
 
 
+def _declared(snapshot: ConnectorSnapshot, scope: frozenset[str] | None) -> frozenset[str]:
+    """A connector's declared replacement scope, honored only for a successful full
+    refresh: an errored or incremental snapshot never states anything in full."""
+    if snapshot.error or snapshot.sync_mode != SYNC_FULL_REFRESH or scope is None:
+        return frozenset()
+    return scope
+
+
+def _holdings_scope(snapshot: ConnectorSnapshot, accounts: dict[str, models.Account]) -> set[str]:
+    """Account numbers whose positions this snapshot replaces: every account that carries
+    a holding row, plus every account the connector declared complete, including the
+    ones it declared complete and EMPTY (metron-ops#382)."""
+    present = {h.account_number for h in snapshot.holdings}
+    return (present | _declared(snapshot, snapshot.holdings_complete_for)) & accounts.keys()
+
+
+def _open_lots_scope(snapshot: ConnectorSnapshot, accounts: dict[str, models.Account]) -> set[str]:
+    """Account numbers whose open lots this snapshot replaces.
+
+    Accounts that carry lot rows, plus accounts declared lot-complete, plus accounts whose
+    holdings were declared complete and are empty: an account with no open position has
+    no open lot, so that set is known empty without any lot detail. An account that holds
+    positions but has no lot rows and no lot declaration is left alone, because a feed
+    without lot detail looks exactly like that (metron-ops#382)."""
+    present = {lot.account_number for lot in snapshot.open_lots}
+    holding = {h.account_number for h in snapshot.holdings}
+    emptied = _declared(snapshot, snapshot.holdings_complete_for) - holding
+    return (present | _declared(snapshot, snapshot.open_lots_complete_for) | emptied) & accounts.keys()
+
+
+def _stamp_date(snapshot: ConnectorSnapshot, number: str) -> date:
+    """The as-of date for a stated account: the connector's report date when it gave
+    one, today otherwise (the same fallback ``Position.as_of`` uses)."""
+    for acct in snapshot.accounts:
+        if acct.number == number and acct.as_of is not None:
+            return acct.as_of.date()
+    return date.today()
+
+
 def _replace_positions(
     session: Session,
     snapshot: ConnectorSnapshot,
@@ -319,12 +364,20 @@ def _replace_positions(
     set for an account, so a closed-out position must vanish. We therefore delete the
     account's existing positions and re-insert — last-write-wins, no ghosts. (Only
     snapshot sources like Flex/SnapTrade populate ``holdings``; CSV/OFX derive
-    positions from the transaction ledger instead and never reach here.)"""
-    touched: set[uuid.UUID] = {
-        accounts[h.account_number].id for h in snapshot.holdings if h.account_number in accounts
-    }
-    for account_id in touched:
-        session.execute(delete(models.Position).where(models.Position.account_id == account_id))
+    positions from the transaction ledger instead and never reach here.)
+
+    Scope is per account (``_holdings_scope``), not per row: an account the connector
+    stated complete with no holdings is cleared, and stamped, rather than skipped because
+    no row named it (metron-ops#382). An account it did not state keeps its last-good rows
+    and is reported on ``holdings_not_stated``."""
+    scope = _holdings_scope(snapshot, accounts)
+    for number in sorted(scope):
+        account = accounts[number]
+        session.execute(delete(models.Position).where(models.Position.account_id == account.id))
+        account.holdings_synced_on = _stamp_date(snapshot, number)
+    result.positions_accounts_replaced = len(scope)
+    if snapshot.source in SNAPSHOT_SOURCES and not snapshot.error:
+        result.holdings_not_stated = sorted(accounts.keys() - scope)
 
     for h in snapshot.holdings:
         account = accounts.get(h.account_number)
@@ -365,7 +418,7 @@ def persist_snapshot(
     (FK both). Idempotent on re-run — securities/accounts upsert, transactions union
     by ``source_key``, positions replaced per account (snapshot semantics).
     """
-    result = PersistResult()
+    result = PersistResult(degraded=snapshot.error)
     # Layer-5 schema contract (metron-ops#219), FLAG MODE: checked against the snapshot
     # exactly as the connector produced it (before the exclusion filter below, so a
     # user-deleted account's rows aren't misread as dangling references). Read-only —
@@ -402,13 +455,16 @@ def _replace_open_lots(
     """Replace lot-level open positions per account (point-in-time snapshot, like
     ``_replace_positions``). Each lot carries its ``open_date`` so historical positions —
     and thus a real NAV/TWR history — can be reconstructed for snapshot-sourced accounts
-    (metron-ops#74). Only accounts present in this snapshot's ``open_lots`` are touched, so
-    a broker that doesn't emit lot detail leaves its lots untouched."""
-    touched: set[uuid.UUID] = {
-        accounts[lot.account_number].id for lot in snapshot.open_lots if lot.account_number in accounts
-    }
-    for account_id in touched:
-        session.execute(delete(models.OpenLot).where(models.OpenLot.account_id == account_id))
+    (metron-ops#74). Scope is ``_open_lots_scope``: accounts with lot rows, accounts the
+    connector declared lot-complete, and accounts whose holdings were stated empty. A
+    broker that doesn't emit lot detail leaves a still-held account's lots untouched
+    (metron-ops#382)."""
+    scope = _open_lots_scope(snapshot, accounts)
+    for number in sorted(scope):
+        account = accounts[number]
+        session.execute(delete(models.OpenLot).where(models.OpenLot.account_id == account.id))
+        account.open_lots_synced_on = _stamp_date(snapshot, number)
+    result.open_lots_accounts_replaced = len(scope)
     for lot in snapshot.open_lots:
         account = accounts.get(lot.account_number)
         if account is None:

@@ -14,7 +14,7 @@ Two defects, both reproduced against ``main`` before this file existed:
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -58,11 +58,26 @@ def _seed(session, *, foreign_qty: float = 10, usd_qty: float = 10):
     return tenant.id, pf.id
 
 
+def _weekdays(start: date, end: date) -> list[date]:
+    days = (start + timedelta(n) for n in range((end - start).days + 1))
+    return [d for d in days if d.weekday() < 5]
+
+
+def _closes(start: date, end: date, px: float) -> list[ClosePoint]:
+    """A gap-free daily close series — every input observed on (or just before) each date."""
+    return [ClosePoint(d, px) for d in _weekdays(start, end)]
+
+
+def _rates(start: date, end: date, rate: float) -> tuple[list[date], list[float]]:
+    days = _weekdays(start, end)
+    return days, [rate] * len(days)
+
+
 def _points(session, tenant_id, pid, *, fx_series, history=None, current_px=None):
     history = history or {
-        "0700.HK": [ClosePoint(BUY, 300.0), ClosePoint(TODAY, 300.0)],
-        "AAPL": [ClosePoint(BUY, 100.0), ClosePoint(TODAY, 100.0)],
-        "SPY": [ClosePoint(BUY, 480.0), ClosePoint(TODAY, 500.0)],
+        "0700.HK": _closes(BUY, TODAY, 300.0),
+        "AAPL": _closes(BUY, TODAY, 100.0),
+        "SPY": _closes(BUY, TODAY, 480.0),
     }
     held = [
         SimpleNamespace(ticker=t, last_price=px, market_value=None, cost_basis_base=None)
@@ -85,14 +100,20 @@ def _fx_stamps(point, reason):
 def test_a_valuation_before_the_first_fx_rate_is_stamped_as_using_a_later_rate(db_session):
     """The audit's probe, in reconstruction: only a 2024-03-15 HKD rate exists."""
     tenant_id, pid = _seed(db_session)
-    points = _points(db_session, tenant_id, pid, fx_series={"HKD": ([date(2024, 3, 15)], [0.13])})
+    points = _points(db_session, tenant_id, pid, fx_series={"HKD": _rates(date(2024, 3, 15), TODAY, 0.13)})
     early = [p for p in points if p.when < date(2024, 3, 15)]
     late = [p for p in points if p.when >= date(2024, 3, 15)]
     assert early and late
     for p in early:
-        assert _fx_stamps(p, "after_date") == [
+        assert [e for e in _fx_stamps(p, "after_date") if "leg" not in e] == [
             {"ticker": "0700.HK", "input": "fx", "currency": "HKD", "reason": "after_date"}
         ], f"{p.when} used a rate from after its own date without saying so"
+    # The HKD buy's flow is converted by the same rule, so the BUY point stamps it too
+    # (metron-ops-I389).
+    buy_point = next(p for p in early if p.when == BUY)
+    assert {"ticker": "0700.HK", "input": "fx", "currency": "HKD", "reason": "after_date", "leg": "flow"} in (
+        buy_point.estimated_inputs
+    )
     for p in late:
         assert not p.estimated_inputs, f"{p.when} had an as-of rate and is exact"
 
@@ -124,12 +145,12 @@ def test_an_fx_rate_dated_after_the_valuation_is_never_used_when_an_asof_one_exi
 def test_a_current_price_carried_back_before_the_series_starts_is_stamped(db_session):
     tenant_id, pid = _seed(db_session)
     history = {
-        "0700.HK": [ClosePoint(BUY, 300.0), ClosePoint(TODAY, 300.0)],
-        "AAPL": [ClosePoint(date(2024, 3, 1), 100.0), ClosePoint(TODAY, 100.0)],  # starts late
-        "SPY": [ClosePoint(BUY, 480.0), ClosePoint(TODAY, 500.0)],
+        "0700.HK": _closes(BUY, TODAY, 300.0),
+        "AAPL": _closes(date(2024, 3, 1), TODAY, 100.0),  # starts late
+        "SPY": _closes(BUY, TODAY, 480.0),
     }
     points = _points(
-        db_session, tenant_id, pid, fx_series={"HKD": ([date(2023, 12, 29)], [0.128])},
+        db_session, tenant_id, pid, fx_series={"HKD": _rates(date(2023, 12, 29), TODAY, 0.128)},
         history=history, current_px={"AAPL": 150.0},
     )
     before = [p for p in points if p.when < date(2024, 3, 1)]
@@ -139,6 +160,57 @@ def test_a_current_price_carried_back_before_the_series_starts_is_stamped(db_ses
         assert {"ticker": "AAPL", "input": "price", "reason": "after_date"} in p.estimated_inputs
     for p in after:
         assert not p.estimated_inputs
+
+
+def test_a_close_carried_across_a_price_gap_is_stamped_stale_and_still_valued(db_session):
+    """A gap in the close history: the last close before it is dated on/before each date in
+    the gap, so it is not look-ahead, but past ``_STALE_INPUT_DAYS`` it is no longer an
+    observation of that date. The leg keeps its value (dropping it would understate NAV);
+    the point says it is an estimate and names the close it carried."""
+    tenant_id, pid = _seed(db_session)
+    gap_from, gap_to = date(2024, 1, 31), date(2024, 3, 1)
+    history = {
+        "0700.HK": _closes(BUY, TODAY, 300.0),
+        "AAPL": _closes(BUY, gap_from, 100.0) + _closes(gap_to, TODAY, 100.0),
+        "SPY": _closes(BUY, TODAY, 480.0),
+    }
+    points = _points(
+        db_session, tenant_id, pid, fx_series={"HKD": _rates(date(2023, 12, 29), TODAY, 0.128)}, history=history,
+    )
+    stale = {"ticker": "AAPL", "input": "price", "reason": "stale", "observed": gap_from.isoformat()}
+    limit = gap_from + timedelta(days=performance._STALE_INPUT_DAYS)
+    in_gap = [p for p in points if limit < p.when < gap_to]
+    fresh = [p for p in points if p.when <= limit or p.when >= gap_to]
+    assert in_gap and fresh
+    for p in in_gap:
+        assert p.estimated_inputs == [stale], f"{p.when} carried a stale close without saying so"
+        assert p.nav == pytest.approx(10 * 300 * 0.128 + 1000.0), "the stale leg must stay in NAV"
+    for p in fresh:
+        assert not p.estimated_inputs, f"{p.when} valued every leg from a fresh as-of input"
+
+
+def test_an_fx_rate_carried_across_a_gap_is_stamped_stale(db_session):
+    tenant_id, pid = _seed(db_session)
+    last = date(2024, 1, 15)
+    fx = _rates(date(2023, 12, 29), last, 0.128)
+    points = _points(db_session, tenant_id, pid, fx_series={"HKD": fx})
+    limit = last + timedelta(days=performance._STALE_INPUT_DAYS)
+    late = [p for p in points if p.when > limit]
+    assert late
+    for p in late:
+        assert _fx_stamps(p, "stale") == [{
+            "ticker": "0700.HK", "input": "fx", "currency": "HKD", "reason": "stale", "observed": last.isoformat(),
+        }]
+        assert p.nav == pytest.approx(10 * 300 * 0.128 + 1000.0)
+    assert all(not p.estimated_inputs for p in points if p.when <= limit)
+
+
+def test_rate_history_reports_the_date_of_the_rate_it_returns():
+    hist = fx_service.RateHistory("USD", {"HKD": ([date(2024, 1, 2), date(2024, 1, 9)], [0.128, 0.129])})
+    assert hist.observed_as_of("HKD", date(2024, 1, 8)) == date(2024, 1, 2)
+    assert hist.observed_as_of("HKD", date(2024, 1, 9)) == date(2024, 1, 9)
+    assert hist.observed_as_of("HKD", date(2024, 1, 1)) is None
+    assert hist.observed_as_of("USD", date(2024, 1, 1)) == date(2024, 1, 1)
 
 
 def test_stamps_persist_and_reach_the_headline(db_session, monkeypatch):
@@ -240,3 +312,80 @@ def test_account_grain_valuations_are_preserved_too(db_session):
         db_session.commit()
     (rev,) = _revisions(db_session, pid)
     assert (rev.kind, rev.account_id, float(rev.nav), rev.revision) == ("account", acct_id, 500.0, 1)
+
+
+# ── corrected vintages, end to end ─────────────────────────────────────────
+
+
+def _store_inputs(session, *, aapl_px: float = 100.0):
+    """Daily closes and HKD rates in the database, as the backfill would have left them."""
+    secs = {s.symbol: s for s in session.scalars(select(models.Security)).all()}
+    spy = models.Security(symbol="SPY", currency="USD")
+    session.add(spy)
+    session.flush()
+    for d in _weekdays(BUY, TODAY):
+        session.add_all([
+            models.PriceBar(security_id=secs["0700.HK"].id, bar_date=d, close=300.0, currency="HKD"),
+            models.PriceBar(security_id=secs["AAPL"].id, bar_date=d, close=aapl_px, currency="USD"),
+            models.PriceBar(security_id=spy.id, bar_date=d, close=480.0, currency="USD"),
+            models.FxRate(currency="HKD", base="USD", rate_date=d, rate=0.128),
+        ])
+    session.commit()
+    return secs["AAPL"].id
+
+
+def _offline(monkeypatch):
+    """Reconstruction reads only what is stored: no price or FX fetches."""
+    monkeypatch.setattr(performance.price_service, "ensure_security", lambda *a, **k: None)
+    monkeypatch.setattr(performance.price_service, "backfill_prices", lambda *a, **k: 0)
+    monkeypatch.setattr(performance.fx_service, "backfill_fx_rates", lambda *a, **k: 0)
+
+
+def test_a_corrected_close_restates_the_point_and_keeps_the_value_it_served(db_session, monkeypatch):
+    """A later, corrected vintage of an input (a revised close) changes the dated valuation
+    the next reconstruction writes. The value served before the correction must survive as
+    a linked revision of the same snapshot row, and be reproducible from the original input."""
+    _offline(monkeypatch)
+    tenant_id, pid = _seed(db_session)
+    aapl = _store_inputs(db_session)
+    performance.reconstruct_snapshots(db_session, tenant_id, pid, today=TODAY)
+    when = date(2024, 1, 31)
+    live = db_session.scalars(
+        select(models.NavSnapshot).where(models.NavSnapshot.portfolio_id == pid, models.NavSnapshot.snap_date == when)
+    ).one()
+    served = float(live.nav)
+    assert not live.estimated_inputs, "every input was observed as of the date: exact"
+    assert _revisions(db_session, pid) == []
+
+    bar = db_session.scalars(
+        select(models.PriceBar).where(models.PriceBar.security_id == aapl, models.PriceBar.bar_date == when)
+    ).one()
+    bar.close = 90.0  # the vendor's corrected close for that day
+    db_session.commit()
+    performance.reconstruct_snapshots(db_session, tenant_id, pid, today=TODAY)
+
+    db_session.refresh(live)
+    assert float(live.nav) == pytest.approx(served - 10 * (100.0 - 90.0)), "only the corrected leg moved"
+    revs = [r for r in _revisions(db_session, pid) if r.snap_date == when]
+    assert [(r.revision, r.change, float(r.nav), r.snapshot_id) for r in revs] == [(1, "update", served, live.id)]
+    # Re-running on unchanged inputs is idempotent: no further restatement.
+    performance.reconstruct_snapshots(db_session, tenant_id, pid, today=TODAY)
+    assert len([r for r in _revisions(db_session, pid) if r.snap_date == when]) == 1
+    # The superseded value is reproducible from the original input vintage.
+    bar.close = 100.0
+    db_session.commit()
+    replay = {p.when: p.nav for p in performance._reconstruct_nav_points(
+        db_session, tenant_id, pid, account_ids=None, today=TODAY, backfill=False,
+    )}
+    assert replay[when] == pytest.approx(served)
+
+
+def test_the_performance_series_carries_each_points_stamps(db_session):
+    """Per-leg missingness is explicit on every served point, not only in the headline."""
+    tenant_id, pid = _seed(db_session)
+    stamp = [{"ticker": "AAPL", "input": "price", "reason": "stale", "observed": "2024-01-02"}]
+    _write(db_session, tenant_id, pid, 1000.0, when=date(2024, 1, 2))
+    _write(db_session, tenant_id, pid, 1010.0, when=date(2024, 1, 31), estimated_inputs=stamp)
+    summary = performance.performance(db_session, tenant_id, pid)
+    by_day = {p.snap_date: p.estimated_inputs for p in summary.points}
+    assert by_day == {date(2024, 1, 2): None, date(2024, 1, 31): stamp}

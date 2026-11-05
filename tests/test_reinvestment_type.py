@@ -102,7 +102,7 @@ class TestFlows:
     def test_purchase_flow_counts_a_reinvestment_as_a_buy(self):
         rows = [("BUY", 100.0), ("REINVESTMENT", 20.0), ("SELL", 30.0), ("DIVIDEND", 20.0), ("DEPOSIT", 500.0)]
         assert perf._purchase_flow(rows) == pytest.approx(90.0)
-        assert perf._NET_PURCHASE_TYPE_VALUES == ["BUY", "REINVESTMENT", "SELL"]
+        assert perf._NET_PURCHASE_TYPE_VALUES == ["BUY", "REINVESTMENT", "SELL", "TRANSFER_IN", "TRANSFER_OUT"]
 
     def test_shadow_flow_is_the_same_as_a_buy(self):
         for kw in (dict(quantity=0.4, price=50.0, amount=20.0), dict(quantity=0.4, price=0.0, amount=20.0)):

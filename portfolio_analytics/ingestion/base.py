@@ -45,6 +45,15 @@ class ConnectorSnapshot:
     into the next ``sync(state=...)``. ``error`` is set (and the record lists left
     empty) when the live fetch failed, so ingest degrades to last-good rather than
     blanking the source.
+
+    ``holdings_complete_for`` / ``open_lots_complete_for`` are the snapshot's explicit
+    replacement scope (metron-ops#382): the account numbers whose CURRENT holdings /
+    open lots this snapshot states in full. An account listed there with no rows is
+    authoritatively EMPTY, and persistence clears its stored rows. ``None`` declares
+    nothing, so only accounts that carry rows are replaced and an account with none is
+    preserved: a connector that cannot tell "sold everything" from "this account's
+    fetch failed" or "this feed has no lot detail" must leave these ``None`` rather than
+    let an absence read as empty. Honored only for a successful ``FULL_REFRESH``.
     """
 
     source: str
@@ -57,6 +66,8 @@ class ConnectorSnapshot:
     state: dict = field(default_factory=dict)
     sync_mode: str = SYNC_FULL_REFRESH
     error: str | None = None
+    holdings_complete_for: frozenset[str] | None = None
+    open_lots_complete_for: frozenset[str] | None = None
 
 
 @runtime_checkable

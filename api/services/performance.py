@@ -16,9 +16,11 @@ import bisect
 import contextlib
 import logging
 import statistics
+import threading
+import time
 import uuid
 from collections import defaultdict
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -65,36 +67,150 @@ _ROLLING_MIN_OBS = 20
 # the tradeable ETF close is an ordinary equity price, so the ETF is the proxy. The
 # benchmark comparison is FEED-GATED (Pro): the no-feed beta renders the tiles
 # portfolio-only (the caller passes with_benchmarks=False). (symbol, display label).
-BENCHMARKS: list[tuple[str, str]] = [("SPY", "S&P 500"), ("QQQ", "Nasdaq 100"), ("IWM", "Russell 2000")]
+# The five indexes Brian tracks (2026-11-04), as ETF proxies.
+BENCHMARKS: list[tuple[str, str]] = [
+    ("DIA", "Dow Jones"),
+    ("SPY", "S&P 500"),
+    ("ONEQ", "Nasdaq Composite"),
+    ("QQQ", "Nasdaq 100"),
+    ("IWM", "Russell 2000"),
+]
 
 # The Overview hero windows (metron-ops#83): (period_key, display label).
-PERIOD_TILES: list[tuple[str, str]] = [("today", "Today"), ("ytd", "YTD"), ("ltm", "LTM")]
+PERIOD_TILES: list[tuple[str, str]] = [("today", "Today"), ("mtd", "MTD"), ("ytd", "YTD"), ("ltm", "LTM")]
 
 # Benchmark history is read from the price_bars cache; before computing a window we ensure
 # the cache spans it (feed path only — gated by the caller). The latest cached bar may lag
 # "today" by a weekend/holiday, so coverage counts as fresh within this slack.
 _BENCH_COVERAGE_SLACK_DAYS = 4
 
+# A benchmark the spine cannot cover yet (a newly added proxy before its first collector
+# run, say) is retried at most this often per process. Without it every Holdings load
+# re-read the whole consolidated close-history artifact from S3 for that symbol and found
+# nothing again (Brian 2026-11-04: Holdings stopped loading after DIA/ONEQ were added).
+_BENCH_BACKFILL_RETRY_S = 6 * 3600
+_bench_backfill_tried: dict[tuple[str, date, date], float] = {}
+_bench_backfill_lock = threading.Lock()
 
-# Stored ``txn_type`` values that count toward net purchases: every purchase type
-# (BUY and a dividend REINVESTMENT — "a reinvested dividend is a buy", metron-ops#44)
-# plus SELL. A reinvestment carries a distinct type only for display (metron-ops#335);
-# its flow arithmetic is exactly a BUY's.
+
+def clear_benchmark_backfill_memo() -> None:
+    with _bench_backfill_lock:
+        _bench_backfill_tried.clear()
+
+
+# Stored ``txn_type`` values that count toward the holdings flow ("net purchases"): every
+# purchase type (BUY and a dividend REINVESTMENT — "a reinvested dividend is a buy",
+# metron-ops#44) plus SELL, plus a security transfer in or out in kind at its
+# transfer-date market value (metron-ops#378). A reinvestment carries a distinct type
+# only for display (metron-ops#335); its flow arithmetic is exactly a BUY's. A transfer
+# is neither a purchase nor return: it is capital entering or leaving the holdings.
 _PURCHASE_TYPE_VALUES = frozenset(t.value for t in PURCHASE_TYPES)
-_NET_PURCHASE_TYPE_VALUES = sorted(_PURCHASE_TYPE_VALUES | {TxnType.SELL.value})
+_INFLOW_TYPE_VALUES = _PURCHASE_TYPE_VALUES | {TxnType.TRANSFER_IN.value}
+_OUTFLOW_TYPE_VALUES = frozenset({TxnType.SELL.value, TxnType.TRANSFER_OUT.value})
+_NET_PURCHASE_TYPE_VALUES = sorted(_INFLOW_TYPE_VALUES | _OUTFLOW_TYPE_VALUES)
+
+
+RateFn = Callable[[str, date], tuple[float | None, str | None, date | None]]
+
+
+def _as_of_rate(session: Session, fx_history: fx_service.RateHistory) -> RateFn:
+    """The one FX admission rule for historical valuation AND its flows (metron-ops-I370,
+    metron-ops-I389): ``rate(ccy, when)`` → ``(rate, None, None)`` from a rate dated
+    on/before ``when``; otherwise a labelled fallback. ``(later_rate, "after_date", None)``
+    when the only rates cached postdate ``when`` — an ESTIMATE, stamped on the point, never
+    exact. ``(None, "unavailable", None)`` when no rate exists at all: the leg is excluded,
+    exactly as the live valuation excludes a holding with no cached rate. There is no 1.0
+    parity fallback — that fabricated a rate for a real foreign currency. ``(rate,
+    "stale", observed)`` when the as-of rate is more than ``_STALE_INPUT_DAYS`` older than
+    ``when`` — a gap in the rate history, carried forward: used, but an estimate.
+    Currencies ``fx_history`` does not cover are read per (currency, date), cached."""
+    cache: dict[tuple[str, date], tuple[float | None, str | None, date | None]] = {}
+
+    def _rate(ccy: str, when: date) -> tuple[float | None, str | None, date | None]:
+        ccy = (ccy or "USD").strip().upper()
+        if ccy == "USD":
+            return 1.0, None, None
+        key = (ccy, when)
+        if key not in cache:
+            observed: date | None = None
+            if fx_history.covers(ccy):
+                asof, later = fx_history.rate_as_of(ccy, when), fx_history.latest(ccy)
+                observed = fx_history.observed_as_of(ccy, when)
+            else:
+                # The observation date too, so a months-old carried-forward rate is
+                # stamped stale here as it is from the history (codex 7c7b0a8de0a1aa10).
+                asof, observed = fx_service.rate_and_date_as_of(session, ccy, when)
+                later = None if asof is not None else fx_service.latest_rate_to_base(session, ccy)
+            if asof is not None and observed is not None and (when - observed).days > _STALE_INPUT_DAYS:
+                cache[key] = (asof, "stale", observed)
+            elif asof is not None:
+                cache[key] = (asof, None, None)
+            elif later is not None:
+                cache[key] = (later, "after_date", None)
+            else:
+                cache[key] = (None, "unavailable", None)
+        return cache[key]
+
+    return _rate
+
+
+def _fx_stamp(ticker: str, ccy: str, why: str, observed: date | None) -> dict:
+    """The estimate stamp for an FX input admitted by :func:`_as_of_rate` with ``why``."""
+    stamp = {"ticker": ticker, "input": "fx", "currency": ccy, "reason": why}
+    if why == "stale":
+        stamp["observed"] = observed.isoformat()
+    return stamp
+
+
+def _base_flow_rows(rows, rate: RateFn, estimates: list[dict]) -> list[tuple[str, float]]:
+    """``(trade_date, txn_type, amount, currency, ticker)`` net-purchase rows → the
+    ``(txn_type, base amount)`` rows :func:`_purchase_flow` sums (metron-ops-I389).
+
+    ``Transaction.amount`` is in the trade's own currency (``Transaction.currency``), so a
+    300 HKD buy is 300 × the HKD rate as of its trade date, through the same
+    :func:`_as_of_rate` admission the NAV legs use — a later rate is stamped
+    ``after_date`` in ``estimates``, and a currency with no rate at all is EXCLUDED and
+    stamped ``unavailable``, matching the NAV leg it would otherwise fund (a flow the NAV
+    cannot see would read as a loss)."""
+    out: list[tuple[str, float]] = []
+    for when, txn_type, amount, ccy, ticker in rows:
+        r, why, observed = rate(ccy, when)
+        if why is not None:
+            estimates.append(_fx_stamp(ticker or "*cash*", ccy, why, observed))
+        if r is not None:
+            out.append((txn_type, float(amount) * r))
+    return out
 
 
 def _purchase_flow(rows: list[tuple[str, float]]) -> float:
     """Net purchases for a set of (txn_type, amount) rows: a BUY (or a dividend
-    REINVESTMENT, which is a buy) brings capital INTO the holdings (+amount), a SELL takes
-    it OUT (−amount)."""
+    REINVESTMENT, which is a buy) or a TRANSFER_IN brings capital INTO the holdings
+    (+amount), a SELL or a TRANSFER_OUT takes it OUT (−amount)."""
     flow = 0.0
     for txn_type, amount in rows:
-        if txn_type in _PURCHASE_TYPE_VALUES:
+        if txn_type in _INFLOW_TYPE_VALUES:
             flow += float(amount)
-        elif txn_type == TxnType.SELL.value:
+        elif txn_type in _OUTFLOW_TYPE_VALUES:
             flow -= float(amount)
     return flow
+
+
+def _flow_columns():
+    """The net-purchase row shape :func:`_base_flow_rows` converts — trade date, type,
+    native amount, the amount's currency, and the symbol for an estimate stamp."""
+    return (
+        models.Transaction.trade_date,
+        models.Transaction.txn_type,
+        models.Transaction.amount,
+        models.Transaction.currency,
+        models.Security.symbol,
+    )
+
+
+def _forward_rate(session: Session) -> RateFn:
+    """:func:`_as_of_rate` for a forward-recorded flow: no prefetched history, so a foreign
+    row reads its own as-of rate (cached per currency and date); a USD row reads nothing."""
+    return _as_of_rate(session, fx_service.RateHistory("USD", {}))
 
 
 def _net_purchases(
@@ -104,16 +220,21 @@ def _net_purchases(
     *,
     after: date | None,
     through: date,
+    estimates: list[dict] | None = None,
 ) -> float:
     """Net external capital into the portfolio over ``(after, through]`` — NET PURCHASES
-    (ΣBUY − ΣSELL).
+    (ΣBUY − ΣSELL), in base currency.
 
     Metron's NAV is the market value of HOLDINGS (no cash bucket). With no cash, a BUY is
     the moment capital enters the valued portfolio and a SELL the moment it leaves; a cash
     DEPOSIT/WITHDRAWAL doesn't move the holdings NAV (it only does once spent on a buy), and
     a reinvested dividend is a buy. So the flow TWR must neutralize is net purchases — NOT
     cash deposits. Counting only deposits (the old behavior) made a portfolio funded by
-    buys read its entire contribution-driven build-up as investment return (metron-ops#44)."""
+    buys read its entire contribution-driven build-up as investment return (metron-ops#44).
+
+    Each row is converted from its own currency at the rate as of its trade date
+    (:func:`_base_flow_rows`, metron-ops-I389); FX estimates are appended to
+    ``estimates`` when one is passed."""
     conds = [
         models.Transaction.tenant_id == tenant_id,
         models.Account.portfolio_id == portfolio_id,
@@ -123,17 +244,19 @@ def _net_purchases(
     if after is not None:
         conds.append(models.Transaction.trade_date > after)
     rows = session.execute(
-        select(models.Transaction.txn_type, models.Transaction.amount)
+        select(*_flow_columns())
         .join(models.Account, models.Transaction.account_id == models.Account.id)
+        .outerjoin(models.Security, models.Transaction.security_id == models.Security.id)
         .where(*conds)
     ).all()
-    return _purchase_flow(rows)
+    return _purchase_flow(_base_flow_rows(rows, _forward_rate(session), [] if estimates is None else estimates))
 
 
 def _account_net_purchases(
     session: Session, tenant_id: uuid.UUID, account_id: uuid.UUID, *, after: date | None, through: date
 ) -> float:
-    """Per-ACCOUNT net purchases over ``(after, through]`` — the account-grain analogue."""
+    """Per-ACCOUNT net purchases over ``(after, through]`` — the account-grain analogue,
+    converted to base the same way (metron-ops-I389)."""
     conds = [
         models.Transaction.tenant_id == tenant_id,
         models.Transaction.account_id == account_id,
@@ -143,63 +266,73 @@ def _account_net_purchases(
     if after is not None:
         conds.append(models.Transaction.trade_date > after)
     rows = session.execute(
-        select(models.Transaction.txn_type, models.Transaction.amount).where(*conds)
+        select(*_flow_columns())
+        .outerjoin(models.Security, models.Transaction.security_id == models.Security.id)
+        .where(*conds)
     ).all()
-    return _purchase_flow(rows)
+    return _purchase_flow(_base_flow_rows(rows, _forward_rate(session), []))
 
 
 def _net_purchase_rows_by_account(
     session: Session, tenant_id: uuid.UUID, account_ids: Collection[uuid.UUID]
-) -> dict[uuid.UUID, tuple[list[date], list[tuple[str, float]]]]:
-    """Every net-purchase row (BUY / REINVESTMENT / SELL) of ``account_ids`` in ONE read,
-    grouped per account and sorted by trade date — ``(dates, (txn_type, amount) rows)``.
+) -> dict[uuid.UUID, tuple[list[date], list[tuple]]]:
+    """Every net-purchase row (BUY / REINVESTMENT / SELL / TRANSFER_IN / TRANSFER_OUT) of
+    ``account_ids`` in ONE read, grouped per account and sorted by trade date — ``(dates, rows)``, each row in
+    :func:`_flow_columns`' native shape (converted per window by
+    :func:`_windowed_net_purchases`).
 
     The set-based input to :func:`_windowed_net_purchases`. A NAV reconstruction takes the
     flow term over every consecutive valuation sub-period; reading it with
     :func:`_account_net_purchases` cost one query per (sub-period × ledger account) — the
     84 statements of a cold Accounts-panel load in the landing-page benchmark, a count that
     grows with every month of history (``tests/test_landing_page_statement_budget.py``)."""
-    out: dict[uuid.UUID, tuple[list[date], list[tuple[str, float]]]] = {aid: ([], []) for aid in account_ids}
+    out: dict[uuid.UUID, tuple[list[date], list[tuple]]] = {aid: ([], []) for aid in account_ids}
     if not account_ids:
         return out
     rows = session.execute(
-        select(
-            models.Transaction.account_id,
-            models.Transaction.trade_date,
-            models.Transaction.txn_type,
-            models.Transaction.amount,
-        ).where(
+        select(models.Transaction.account_id, *_flow_columns())
+        .outerjoin(models.Security, models.Transaction.security_id == models.Security.id)
+        .where(
             models.Transaction.tenant_id == tenant_id,
             models.Transaction.account_id.in_(list(account_ids)),
             models.Transaction.txn_type.in_(_NET_PURCHASE_TYPE_VALUES),
         )
     ).all()
-    grouped: dict[uuid.UUID, list[tuple[date, str, float]]] = defaultdict(list)
-    for account_id, trade_date, txn_type, amount in rows:
-        grouped[account_id].append((trade_date, txn_type, amount))
+    grouped: dict[uuid.UUID, list[tuple]] = defaultdict(list)
+    for account_id, *row in rows:
+        grouped[account_id].append(tuple(row))
     for account_id, items in grouped.items():
         items.sort(key=lambda r: r[0])  # stable: same-day rows keep their read order
-        out[account_id] = ([d for d, _t, _a in items], [(t, a) for _d, t, a in items])
+        out[account_id] = ([r[0] for r in items], items)
     return out
 
 
+def _flow_currencies(prefetched: dict[uuid.UUID, tuple[list[date], list[tuple]]]) -> set[str]:
+    """Every currency a prefetched net-purchase row is denominated in."""
+    return {(r[3] or "USD").strip().upper() for _dates, rows in prefetched.values() for r in rows}
+
+
 def _windowed_net_purchases(
-    prefetched: dict[uuid.UUID, tuple[list[date], list[tuple[str, float]]]],
+    prefetched: dict[uuid.UUID, tuple[list[date], list[tuple]]],
     account_ids: Collection[uuid.UUID],
     *,
     after: date | None,
     through: date,
+    rate: RateFn,
+    estimates: list[dict],
 ) -> float:
-    """Net purchases of ``account_ids`` over ``(after, through]`` — per account exactly
-    what :func:`_account_net_purchases` returns (the same window, the same
-    :func:`_purchase_flow`), summed across accounts — answered from
-    :func:`_net_purchase_rows_by_account`'s prefetch instead of a query per account."""
+    """Net purchases of ``account_ids`` over ``(after, through]`` in base currency — per
+    account exactly what :func:`_account_net_purchases` returns (the same window, the same
+    :func:`_base_flow_rows` conversion, the same :func:`_purchase_flow`), summed across
+    accounts — answered from :func:`_net_purchase_rows_by_account`'s prefetch instead of a
+    query per account. ``rate`` is the caller's :func:`_as_of_rate`, so a flow and the NAV
+    leg it funds are admitted by one rule."""
     total = 0
     for aid in account_ids:
         dates, rows = prefetched.get(aid, ([], []))
         lo = bisect.bisect_right(dates, after) if after is not None else 0
         hi = bisect.bisect_right(dates, through)
-        total += _purchase_flow(rows[lo:hi])
+        total += _purchase_flow(_base_flow_rows(rows[lo:hi], rate, estimates))
     return total
 
 
@@ -346,9 +479,11 @@ def record_snapshot(
     # Base-currency cost basis (matches the base-currency NAV); a holding with no cached
     # FX rate is excluded rather than summed at native face value.
     cost_basis = sum(h.cost_basis_base for h in held if h.cost_basis_base is not None)
+    flow_estimates: list[dict] = []
     flow = _net_purchases(
         session, tenant_id, portfolio_id,
         after=_last_snapshot_date(session, tenant_id, portfolio_id, today), through=today,
+        estimates=flow_estimates,
     )
     baseline = _recent_navs(session, tenant_id, portfolio_id, today)
     if _implausible_nav(nav, baseline, flow):
@@ -363,6 +498,9 @@ def record_snapshot(
         session, tenant_id, portfolio_id, today,
         nav=nav, cost_basis=cost_basis, flow=flow, spy_close=spy_point.close if spy_point else None,
         provisional=_fund_legs_stale(held, today), composition=_composition(held, today),
+        # Today's legs are all as-of; only a flow converted at a later (or no) FX rate is
+        # an estimate here (metron-ops-I389).
+        estimated_inputs=_dedupe_estimates([{**e, "leg": "flow"} for e in flow_estimates]),
     )
     session.commit()
     session.refresh(row)
@@ -742,6 +880,10 @@ class PerfPoint:
     nav: float
     external_flow: float
     spy_close: float | None
+    # The stored point's estimate stamps (``NavSnapshot.estimated_inputs``, metron-ops-I370):
+    # which legs were NOT valued from inputs observed on/before ``snap_date``, and why.
+    # None = an exact as-of valuation, or a grain that does not record them (account).
+    estimated_inputs: list[dict] | None = None
 
 
 @dataclass
@@ -800,6 +942,59 @@ class BenchmarkReturn:
     label: str
     ret: float | None      # benchmark % return over the window (None if uncached)
     alpha: float | None    # portfolio TWR − benchmark return (None if either is missing)
+    start_close: float | None = None  # the closes ``ret`` is computed from (evidence)
+    end_close: float | None = None
+
+
+@dataclass
+class TileDay:
+    """One snapshot-to-snapshot step inside a tile window, shown as evidence."""
+
+    when: date
+    prev_nav: float
+    nav: float
+    flow: float
+    ret: float  # flow-neutralized: (nav - flow) / prev_nav - 1
+
+
+@dataclass
+class TileBasis:
+    """The inputs behind a tile, so every figure can be checked by hand (Brian 2026-11-04:
+    "how can we back up these numbers?"). gain = end_nav - start_nav - net_flows exactly;
+    twr links ``steps`` daily returns; ``largest_days`` are the steps that moved it most,
+    and ``suspect_days`` the ones past ``SUSPECT_DAY_RET`` (usually a missing deposit,
+    sale or transfer rather than a market move)."""
+
+    start_nav: float
+    end_nav: float
+    net_flows: float
+    steps: int
+    estimated_points: int
+    largest_days: list[TileDay] = field(default_factory=list)
+    suspect_days: list[TileDay] = field(default_factory=list)
+
+
+#: A single snapshot-to-snapshot step beyond this is flagged on the tile as worth checking.
+SUSPECT_DAY_RET = 0.08
+
+
+def tile_basis(window: list[PerfPoint], *, top: int = 3) -> TileBasis:
+    days = [
+        TileDay(when=cur.snap_date, prev_nav=prev.nav, nav=cur.nav, flow=cur.external_flow,
+                ret=(cur.nav - cur.external_flow) / prev.nav - 1.0)
+        for prev, cur in zip(window, window[1:], strict=False)
+        if prev.nav > 0
+    ]
+    by_size = sorted(days, key=lambda d: abs(d.ret), reverse=True)
+    return TileBasis(
+        start_nav=window[0].nav,
+        end_nav=window[-1].nav,
+        net_flows=sum(p.external_flow for p in window[1:]),
+        steps=len(days),
+        estimated_points=sum(1 for p in window if p.estimated_inputs),
+        largest_days=by_size[:top],
+        suspect_days=[d for d in by_size if abs(d.ret) > SUSPECT_DAY_RET][:10],
+    )
 
 
 @dataclass
@@ -821,6 +1016,7 @@ class PeriodTile:
     # Honest empty-state reason when the window can't be formed (e.g. "as of 2026-06-25"
     # for a TODAY tile whose freshest valuation predates today). None for a formed tile.
     note: str | None = None
+    basis: TileBasis | None = None
 
 
 @dataclass
@@ -1035,6 +1231,7 @@ def performance(
                 nav=float(s.nav),
                 external_flow=float(s.external_flow),
                 spy_close=float(s.spy_close) if s.spy_close is not None else None,
+                estimated_inputs=s.estimated_inputs or None,
             )
             for s in snaps
         ]
@@ -1180,7 +1377,13 @@ def _window_indices(
     end_i = n - 1
     if period == "today":
         return _today_window_indices(points, _tile_now(today, now))
-    if period == "ytd":
+    if period == "mtd":
+        end_d = points[end_i].snap_date
+        base = next(
+            (i for i in range(end_i, -1, -1) if (points[i].snap_date.year, points[i].snap_date.month) < (end_d.year, end_d.month)),
+            0,
+        )
+    elif period == "ytd":
         year = points[end_i].snap_date.year
         base = next((i for i in range(end_i, -1, -1) if points[i].snap_date.year < year), 0)
     elif period == "ltm":
@@ -1210,6 +1413,13 @@ def _ensure_benchmark_coverage(
             or (end - series[-1].bar_date).days > _BENCH_COVERAGE_SLACK_DAYS
         )
     ]
+    if need and source is None:
+        # Default (spine) source: skip symbols attempted for this window recently.
+        now = time.monotonic()
+        with _bench_backfill_lock:
+            need = [s for s in need if now - _bench_backfill_tried.get((s, start, end), -1e18) >= _BENCH_BACKFILL_RETRY_S]
+            for s in need:
+                _bench_backfill_tried[(s, start, end)] = now
     if need:
         price_service.backfill_prices(session, need, start, end, source=source)
 
@@ -1235,6 +1445,7 @@ def _load_perf_points(
             nav=float(s.nav),
             external_flow=float(s.external_flow),
             spy_close=float(s.spy_close) if s.spy_close is not None else None,
+            estimated_inputs=s.estimated_inputs or None,
         )
         for s in snaps
     ]
@@ -1337,13 +1548,15 @@ def period_tiles(
             for sym, blabel in BENCHMARKS:
                 if use_today_bench:
                     ret = _index_bench_return(today_bench, sym)
+                    b_end, b_start = today_bench.get(sym, (None, None))
                 else:
                     series = bench_history.get(sym)
                     b_start = _asof_close(series, base.snap_date)
                     b_end = _asof_close(series, end.snap_date)
                     ret = (b_end / b_start - 1.0) if (b_start and b_end and b_start > 0) else None
                 alpha = (twr - ret) if (twr is not None and ret is not None) else None
-                benches.append(BenchmarkReturn(symbol=sym, label=blabel, ret=ret, alpha=alpha))
+                benches.append(BenchmarkReturn(symbol=sym, label=blabel, ret=ret, alpha=alpha,
+                                               start_close=b_start, end_close=b_end))
         # Settled TODAY whose end session predates the calendar day carries "as of <date>"
         # (Mon pre-open showing Thu's close); post-close same-day does not.
         note = (
@@ -1351,7 +1564,7 @@ def period_tiles(
             if period == "today" and end.snap_date != cal
             else None
         )
-        result.tiles.append(PeriodTile(period, label, base.snap_date, end.snap_date, gain, twr, mwr=mwr, benchmarks=benches, note=note))
+        result.tiles.append(PeriodTile(period, label, base.snap_date, end.snap_date, gain, twr, mwr=mwr, benchmarks=benches, note=note, basis=tile_basis(window)))
     return result
 
 
@@ -1708,11 +1921,12 @@ def _account_performance_series(
     flows_by_account = _load_lot_flows_by_account(session, tenant_id, portfolio_id, targets)
     if held_by_account is None:
         held_by_account = analytics.valued_holdings_by_account(session, tenant_id, portfolio_id)
-    foreign = sorted({c for c in ticker_ccy.values() if c and c != "USD"})
-    fx_history = fx_service.rate_history(session, foreign)
     ledger_purchases = _net_purchase_rows_by_account(
         session, tenant_id, sorted({aid for aid, _t in by_account_all if aid not in snapshot_account_ids})
     )
+    # The ledger flows' own currencies ride the same single rate read (metron-ops-I389).
+    foreign = sorted({c for c in [*ticker_ccy.values(), *_flow_currencies(ledger_purchases)] if c and c != "USD"})
+    fx_history = fx_service.rate_history(session, foreign)
     forward_rows: dict[uuid.UUID, list] | None = None  # read on first need, once
 
     result = HoldingsPerfSeries()
@@ -1776,6 +1990,15 @@ def _account_performance_series(
 # valuation dates replay the ledger to that date and value the positions held then at
 # that date's close. Gives instant multi-year history where forward-recording would
 # take years to accumulate.
+
+
+def _asof_bar(series: list[ClosePoint] | None, when: date) -> ClosePoint | None:
+    """The bar :func:`_asof_close` reads — the most recent on or before ``when`` — so a
+    caller can also see HOW OLD the admitted close is (metron-ops-I370)."""
+    if not series:
+        return None
+    idx = bisect.bisect_right(series, when, key=lambda p: p.bar_date)
+    return series[idx - 1] if idx > 0 else None
 
 
 def _asof_close(series: list[ClosePoint] | None, when: date) -> float | None:
@@ -2011,14 +2234,31 @@ def _close_read_windows(open_lots, closed_lots, ledger_txns, first: date, today:
 
 
 def _ticker_currencies(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> dict[str, str]:
-    """ticker → native currency, from the lot tables — so historical native prices can be
-    FX-converted to base before they enter NAV (a foreign close is not a USD value)."""
+    """ticker → native currency, so historical native prices can be FX-converted to base
+    before they enter NAV (a foreign close is not a USD value).
+
+    Lots win (the broker states each lot's currency). A ticker with no lot — every holding
+    of a ledger-replayed CSV/OFX account — resolves through the Security rows this
+    portfolio's own positions and transactions link to, positions first, the precedence
+    the live valuation uses (``analytics._tenant_currency_by_symbol``). Before
+    metron-ops-I389 those tickers defaulted to USD, so a 300 HKD close entered historical
+    NAV as $300 while today's live point converted it."""
     out: dict[str, str] = {}
     for model in (models.OpenLot, models.RealizedLot):
         for ticker, ccy in session.execute(
             select(model.ticker, model.currency)
             .join(models.Account, model.account_id == models.Account.id)
             .where(model.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+        ).all():
+            out.setdefault(ticker, ccy or "USD")
+    for model in (models.Position, models.Transaction):
+        for ticker, ccy in session.execute(
+            select(models.Security.symbol, models.Security.currency)
+            .join(model, model.security_id == models.Security.id)
+            .join(models.Account, model.account_id == models.Account.id)
+            .where(model.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+            .distinct()
+            .order_by(models.Security.symbol, models.Security.currency)
         ).all():
             out.setdefault(ticker, ccy or "USD")
     return out
@@ -2074,7 +2314,8 @@ def nav_history_estimated(session: Session, tenant_id: uuid.UUID, portfolio_id: 
     ).scalars().all()
     stamped_note = (
         f"{len(stamped)} dated valuation(s) through {stamped[-1].isoformat()} used a price or FX rate "
-        "from after their own date, or excluded a holding with no FX rate."
+        f"from after their own date, carried one across a gap of more than {_STALE_INPUT_DAYS} days, "
+        "or excluded a holding with no FX rate."
         if stamped
         else None
     )
@@ -2145,6 +2386,14 @@ def _profiled(profile, label: str):
         return
     with profile.block(label) as record:
         yield record
+
+
+# An as-of close or FX rate more than this many calendar days older than the date it values
+# is a GAP carried forward, not an observation of that date (metron-ops-I370): the leg is
+# still valued at it — dropping it would understate NAV — but the point is stamped as an
+# estimate (``reason: "stale"``, with the ``observed`` date). Ten days clears every routine
+# market closure, the longest being multi-day exchange holidays plus their weekends.
+_STALE_INPUT_DAYS = 10
 
 
 @dataclass
@@ -2268,54 +2517,45 @@ def _reconstruct_nav_points(
     # valuation date (a foreign close is not a USD value — the foreign-holding spike).
     if ticker_ccy is None:
         ticker_ccy = _ticker_currencies(session, tenant_id, portfolio_id)
-    foreign = sorted({c for c in ticker_ccy.values() if c and c != "USD"})
+    ledger_account_ids = sorted({aid for aid, _t in ledger_by_account})
+    # One read for every sub-period's trade-ledger flow (not one per sub-period × account).
+    # Read before the FX history so the currencies its rows are denominated in are covered
+    # by the same single rate read (metron-ops-I389).
+    if ledger_purchases is None:
+        ledger_purchases = _net_purchase_rows_by_account(session, tenant_id, ledger_account_ids)
+    flow_ccys = _flow_currencies({aid: ledger_purchases.get(aid, ([], [])) for aid in ledger_account_ids})
+    foreign = sorted({c for c in [*ticker_ccy.values(), *flow_ccys] if c and c != "USD"})
     if backfill and foreign:
         fx_service.backfill_fx_rates(session, foreign, first, today, base="USD")
-    _rate_cache: dict[tuple[str, date], tuple[float | None, str | None]] = {}
     # Every foreign rate this reconstruction can ask for, read once (after the backfill
     # above, so it sees what that wrote) — not one query per (currency, valuation date).
     if fx_history is None:
         fx_history = fx_service.rate_history(session, foreign)
-
-    def _rate(ccy: str, when: date) -> tuple[float | None, str | None]:
-        """``(rate, None)`` from a rate dated on/before ``when``; otherwise a labelled
-        fallback (metron-ops-I370). ``(later_rate, "after_date")`` when the only rates
-        cached postdate ``when`` — an ESTIMATE, stamped on the point, never exact. ``(None,
-        "unavailable")`` when no rate exists at all: the leg is excluded, exactly as the
-        live valuation excludes a holding with no cached rate. There is no 1.0 parity
-        fallback — that fabricated a rate for a real foreign currency."""
-        if not ccy or ccy == "USD":
-            return 1.0, None
-        key = (ccy, when)
-        if key not in _rate_cache:
-            if fx_history.covers(ccy):
-                asof, later = fx_history.rate_as_of(ccy, when), fx_history.latest(ccy)
-            else:
-                asof = fx_service.rate_as_of(session, ccy, when)
-                later = None if asof is not None else fx_service.latest_rate_to_base(session, ccy)
-            if asof is not None:
-                _rate_cache[key] = (asof, None)
-            elif later is not None:
-                _rate_cache[key] = (later, "after_date")
-            else:
-                _rate_cache[key] = (None, "unavailable")
-        return _rate_cache[key]
+    _rate = _as_of_rate(session, fx_history)
 
     def _value_leg(ticker: str, qty: float, d: date, estimates: list[dict]) -> float | None:
         """Base value of ``qty`` of ``ticker`` on ``d``; appends to ``estimates`` every input
         that was not dated on/before ``d``. None when the leg cannot be valued at all."""
-        px = _asof_close(history.get(ticker), d)
-        if px is None:
+        bar = _asof_bar(history.get(ticker), d)
+        if bar is None:
             px = current_px.get(ticker)
             if px is None:
                 return None
             if d < today:
                 # The documented flat-backward fallback: TODAY's price on a past date.
                 estimates.append({"ticker": ticker, "input": "price", "reason": "after_date"})
+        else:
+            px = bar.close
+            if (d - bar.bar_date).days > _STALE_INPUT_DAYS:
+                # A gap in the close history: the last close before it is carried forward.
+                # Dated on/before ``d``, so no look-ahead, but not an observation of ``d``.
+                estimates.append({
+                    "ticker": ticker, "input": "price", "reason": "stale", "observed": bar.bar_date.isoformat(),
+                })
         ccy = ticker_ccy.get(ticker, "USD")
-        rate, why = _rate(ccy, d)
+        rate, why, observed = _rate(ccy, d)
         if why is not None:
-            estimates.append({"ticker": ticker, "input": "fx", "currency": ccy, "reason": why})
+            estimates.append(_fx_stamp(ticker, ccy, why, observed))
         if rate is None:
             return None
         return qty * px * rate
@@ -2330,10 +2570,6 @@ def _reconstruct_nav_points(
         lot_opens, lot_closes = lot_flows
     else:
         lot_opens, lot_closes = _load_lot_flows(session, tenant_id, portfolio_id, account_ids)
-    ledger_account_ids = sorted({aid for aid, _t in ledger_by_account})
-    # One read for every sub-period's trade-ledger flow (not one per sub-period × account).
-    if ledger_purchases is None:
-        ledger_purchases = _net_purchase_rows_by_account(session, tenant_id, ledger_account_ids)
 
     def _event_mv(ticker: str, qty: float, d: date, estimates: list[dict]) -> float:
         """Base-currency MARKET value of ``qty`` of ``ticker`` on ``d`` — valued IDENTICALLY
@@ -2388,7 +2624,9 @@ def _reconstruct_nav_points(
         flow = (
             sum(_event_mv(t, q, d, flow_estimates) for t, d, q in lot_opens if (lo is None or d > lo) and d <= hi)
             - sum(_event_mv(t, q, d, flow_estimates) for t, d, q in lot_closes if (lo is None or d > lo) and d <= hi)
-            + _windowed_net_purchases(ledger_purchases, ledger_account_ids, after=prev, through=when)
+            + _windowed_net_purchases(
+                ledger_purchases, ledger_account_ids, after=prev, through=when, rate=_rate, estimates=flow_estimates
+            )
         )
         estimates += [{**e, "leg": "flow"} for e in flow_estimates]
         if flat_nav and when < today:

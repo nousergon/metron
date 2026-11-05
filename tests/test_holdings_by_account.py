@@ -83,3 +83,15 @@ def test_by_account_respects_account_scope(client, tenant):
         ("AAPL", "Brokerage"),
         ("MSFT", "Brokerage"),
     }
+
+
+def test_holdings_carry_the_purchase_date_and_full_lot_coverage(client, tenant):
+    # Brian 2026-11-04: an unrealized gain needs the date it was bought.
+    pid = _seed(client, tenant)
+    rows = client.get(f"/portfolios/{pid}/holdings", headers=_hdr(tenant)).json()
+    aapl = next(r for r in rows if r["ticker"] == "AAPL")
+    assert aapl["first_acquired"] == "2024-01-02"
+    assert aapl["held_coverage"] == pytest.approx(1.0)
+    assert aapl["avg_days_held"] > 600
+    split = client.get(f"/portfolios/{pid}/holdings?by_account=1", headers=_hdr(tenant)).json()
+    assert all(r["first_acquired"] == "2024-01-02" for r in split)
