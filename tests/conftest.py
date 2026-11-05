@@ -23,6 +23,7 @@ from api.db.session import REQUEST_SCOPED, Base, get_session
 from api.main import app
 from api.services import attractiveness as attractiveness_service
 from api.services import benchmark_gap, compute_cache, identity, spine_artifacts
+from api.services import performance as performance_service
 
 
 @pytest.fixture(autouse=True)
@@ -33,11 +34,13 @@ def _clear_compute_cache():
     attractiveness_service.clear_cache()
     benchmark_gap.clear_cache()
     spine_artifacts.clear()
+    performance_service.clear_benchmark_backfill_memo()
     yield
     compute_cache.clear()
     attractiveness_service.clear_cache()
     benchmark_gap.clear_cache()
     spine_artifacts.clear()
+    performance_service.clear_benchmark_backfill_memo()
 
 
 class _NoCredsStubClient:

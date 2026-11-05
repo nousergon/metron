@@ -16,6 +16,8 @@ import bisect
 import contextlib
 import logging
 import statistics
+import threading
+import time
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Collection
@@ -81,6 +83,19 @@ PERIOD_TILES: list[tuple[str, str]] = [("today", "Today"), ("mtd", "MTD"), ("ytd
 # the cache spans it (feed path only — gated by the caller). The latest cached bar may lag
 # "today" by a weekend/holiday, so coverage counts as fresh within this slack.
 _BENCH_COVERAGE_SLACK_DAYS = 4
+
+# A benchmark the spine cannot cover yet (a newly added proxy before its first collector
+# run, say) is retried at most this often per process. Without it every Holdings load
+# re-read the whole consolidated close-history artifact from S3 for that symbol and found
+# nothing again (Brian 2026-11-04: Holdings stopped loading after DIA/ONEQ were added).
+_BENCH_BACKFILL_RETRY_S = 6 * 3600
+_bench_backfill_tried: dict[tuple[str, date, date], float] = {}
+_bench_backfill_lock = threading.Lock()
+
+
+def clear_benchmark_backfill_memo() -> None:
+    with _bench_backfill_lock:
+        _bench_backfill_tried.clear()
 
 
 # Stored ``txn_type`` values that count toward the holdings flow ("net purchases"): every
@@ -1342,6 +1357,13 @@ def _ensure_benchmark_coverage(
             or (end - series[-1].bar_date).days > _BENCH_COVERAGE_SLACK_DAYS
         )
     ]
+    if need and source is None:
+        # Default (spine) source: skip symbols attempted for this window recently.
+        now = time.monotonic()
+        with _bench_backfill_lock:
+            need = [s for s in need if now - _bench_backfill_tried.get((s, start, end), -1e18) >= _BENCH_BACKFILL_RETRY_S]
+            for s in need:
+                _bench_backfill_tried[(s, start, end)] = now
     if need:
         price_service.backfill_prices(session, need, start, end, source=source)
 
