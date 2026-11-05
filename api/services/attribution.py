@@ -28,6 +28,27 @@ reason. ``coverage`` is the share of portfolio market value that was actually at
 (classified AND returnable), and the sector weights are over that same population, so
 weights and returns describe one set of holdings. ``as_of`` is the common end — the
 freshness of the stalest required leg, never the freshest.
+
+**Reconciled to what actually happened** (metron-ops-I372, remaining slice). The
+decomposition uses TODAY's holdings, weighted by current market value and held unchanged
+through the window, against a benchmark rebuilt from sector ETFs. That is a current-holdings
+analysis (``basis``), not a reconstruction of the realized portfolio. Each computable
+result therefore carries a ``reconciliation``: the portfolio's observed time-weighted return
+from its NAV snapshots and the benchmark's own close-to-close return, both over the same
+``[start_date, as_of]`` window, and the named residuals that separate them from the
+attributed figures:
+
+* ``portfolio_residual`` = observed TWR − attributed holdings return. It carries trading
+  during the window, weight drift, cash and the holdings left out of the attribution;
+* ``benchmark_residual`` = observed benchmark return − the sector-ETF composite. It is
+  the cost of the sector-proxy approximation;
+* ``active_residual`` = observed active return − attributed active return.
+
+Nothing is refused or hidden on a large residual, unlike ``benchmark_gap``'s single-day
+gate. A trailing-window current-holdings analysis is not expected to tie, so the residual
+is reported next to the effects, and ``within_tolerance`` says whether it does. When
+either observed figure cannot be measured over exactly that window, the reconciliation
+says so with a reason. It never measures over a nearby window instead.
 """
 
 from __future__ import annotations
@@ -38,9 +59,12 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from nousergon_lib.quant.attribution import BrinsonResult, brinson_fachler
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from api.db import models
 from api.services import analytics
+from api.services import performance as perf_service
 from api.services import prices as price_service
 from api.services import sectors as sector_service
 from portfolio_analytics.prices import ClosePoint, HistorySource
@@ -57,6 +81,15 @@ from portfolio_analytics.sectors import (
 # allocation/selection here, name-level active contribution there.
 BENCHMARKS: dict[str, str] = {"SPY": "S&P 500", "QQQ": "Nasdaq 100"}
 BENCHMARK = "SPY"  # default, kept for backward compatibility
+
+# What the decomposition describes (metron-ops-I372): today's holdings at today's weights,
+# held through the window. Surfaced so no reader takes it for realized attribution.
+BASIS_CURRENT_HOLDINGS = "current_holdings"
+
+# Return-fraction slack for ``Reconciliation.within_tolerance``. The same 5bps rounding
+# budget ``benchmark_gap.DEFAULT_TOLERANCE`` uses between two independently sourced
+# figures. It is not a materiality judgment.
+RECONCILE_TOLERANCE = 0.0005
 
 
 @dataclass
@@ -84,6 +117,26 @@ class UnattributedHolding:
 
 
 @dataclass
+class Reconciliation:
+    """The attribution against the observed returns over its own window (metron-ops-I372).
+
+    All return fractions. ``available`` is False, with ``reason``, when either observed
+    figure cannot be measured over exactly ``[start_date, as_of]``. The figures that
+    could be measured are still filled in."""
+
+    available: bool
+    reason: str | None = None
+    observed_portfolio_return: float | None = None  # TWR from the NAV snapshots
+    observed_benchmark_return: float | None = None  # the benchmark's own closes
+    observed_active_return: float | None = None
+    portfolio_residual: float | None = None  # observed TWR − attributed holdings return
+    benchmark_residual: float | None = None  # observed benchmark − sector-ETF composite
+    active_residual: float | None = None  # observed active − attributed active
+    within_tolerance: bool = False
+    tolerance: float = RECONCILE_TOLERANCE
+
+
+@dataclass
 class AttributionSummary:
     computable: bool
     benchmark: str = BENCHMARK
@@ -108,6 +161,8 @@ class AttributionSummary:
     interaction: float | None = None
     sectors: list[SectorEffect] = field(default_factory=list)
     unattributed: list[UnattributedHolding] = field(default_factory=list)
+    basis: str = BASIS_CURRENT_HOLDINGS
+    reconciliation: Reconciliation | None = None
 
 
 def _close_on_or_before(series: list[ClosePoint], when: date) -> ClosePoint | None:
@@ -192,6 +247,92 @@ def _portfolio_sector_aggregates(
     return weights, returns, coverage
 
 
+def _observed_window_points(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    account_ids: Collection[uuid.UUID] | None,
+    anchor: date,
+    end: date,
+) -> list[perf_service.PerfPoint]:
+    """The NAV snapshot points inside ``[anchor, end]`` for the selection, as the
+    performance page reads them. The portfolio grain reads only the window's rows. An
+    account selection goes through ``_account_perf_series``, which aggregates the
+    selected accounts and applies its every-account-present guard."""
+    if account_ids:
+        points = perf_service._load_perf_points(session, tenant_id, portfolio_id, account_ids)
+    else:
+        rows = session.scalars(
+            select(models.NavSnapshot)
+            .where(
+                models.NavSnapshot.tenant_id == tenant_id,
+                models.NavSnapshot.portfolio_id == portfolio_id,
+                models.NavSnapshot.snap_date >= anchor,
+                models.NavSnapshot.snap_date <= end,
+            )
+            .order_by(models.NavSnapshot.snap_date)
+        ).all()
+        points = [
+            perf_service.PerfPoint(
+                snap_date=r.snap_date,
+                nav=float(r.nav),
+                external_flow=float(r.external_flow),
+                spy_close=None,
+            )
+            for r in rows
+        ]
+    return [p for p in points if anchor <= p.snap_date <= end]
+
+
+def _reconcile(
+    points: list[perf_service.PerfPoint],
+    benchmark_series: list[ClosePoint] | None,
+    *,
+    benchmark: str,
+    anchor: date,
+    end: date,
+    portfolio_return: float,
+    benchmark_return: float,
+    tolerance: float = RECONCILE_TOLERANCE,
+) -> Reconciliation:
+    """Tie the attributed returns to the observed ones over exactly ``[anchor, end]``.
+
+    The observed portfolio return is the flow-neutralized TWR the performance page uses,
+    linked from the snapshot ON ``anchor`` to the snapshot ON ``end``. A snapshot on
+    another date would measure a different interval, so a missing end is a reason, not
+    a fallback. The observed benchmark return uses the same ``_window_return`` rule as
+    every attributed leg."""
+    reasons: list[str] = []
+
+    observed_port: float | None = None
+    dates = [p.snap_date for p in points]
+    if not points or dates[0] != anchor:
+        reasons.append(f"no NAV snapshot on {anchor.isoformat()}")
+    elif dates[-1] != end:
+        reasons.append(f"no NAV snapshot on {end.isoformat()}")
+    elif any(p.nav <= 0 for p in points[:-1]):
+        reasons.append("a non-positive NAV inside the window")
+    else:
+        observed_port = perf_service._window_twr(points)
+
+    observed_bench, why = _window_return(benchmark_series, anchor, end)
+    if observed_bench is None:
+        reasons.append(f"{benchmark} close history: {why}")
+
+    rec = Reconciliation(available=not reasons, reason="; ".join(reasons) or None, tolerance=tolerance)
+    if observed_port is not None:
+        rec.observed_portfolio_return = observed_port
+        rec.portfolio_residual = observed_port - portfolio_return
+    if observed_bench is not None:
+        rec.observed_benchmark_return = observed_bench
+        rec.benchmark_residual = observed_bench - benchmark_return
+    if observed_port is not None and observed_bench is not None:
+        rec.observed_active_return = observed_port - observed_bench
+        rec.active_residual = rec.observed_active_return - (portfolio_return - benchmark_return)
+        rec.within_tolerance = abs(rec.active_residual) <= tolerance
+    return rec
+
+
 def _normalize_benchmark_weights(raw: dict[str, float]) -> dict[str, float]:
     """Restrict raw benchmark weights to the known GICS sectors and renormalize to 1."""
     kept = {s: w for s, w in raw.items() if s in SECTOR_ETF and w > 0}
@@ -234,9 +375,9 @@ def compute_attribution(
 
     if do_backfill:
         sector_service.ensure_sectors(session, tickers, source=sector_source)
-        for etf in etfs:
-            price_service.ensure_security(session, etf)
-        price_service.backfill_prices(session, [*tickers, *etfs], start, today, source=price_source)
+        for sym in [*etfs, benchmark]:
+            price_service.ensure_security(session, sym)
+        price_service.backfill_prices(session, [*tickers, *etfs, benchmark], start, today, source=price_source)
 
     raw_bench = fetch_benchmark_sector_weights(benchmark, source=benchmark_source)
     w_b = _normalize_benchmark_weights(raw_bench)
@@ -252,7 +393,9 @@ def compute_attribution(
     # Bounded at ``start`` (metron-ops-I343): every return is measured from the common
     # anchor on/after ``start``, so earlier bars never change a result. Unbounded, this
     # read every cached bar of every held ticker and sector ETF.
-    hist = price_service.close_history_by_symbol(session, [*tickers, *etfs], start_date=start)
+    # The benchmark's own closes are read too, for the reconciliation only (they never
+    # bound the window: a sector-ETF leg does).
+    hist = price_service.close_history_by_symbol(session, [*tickers, *etfs, benchmark], start_date=start)
     # The common window (metron-ops-I372), set by the sector-ETF legs that carry benchmark
     # weight — the benchmark side cannot be measured without them, so they bound it.
     required_etfs = [SECTOR_ETF[sec] for sec in w_b if hist.get(SECTOR_ETF[sec])]
@@ -324,6 +467,15 @@ def compute_attribution(
         for g in result.groups
     ]
     effects.sort(key=lambda e: e.total)  # biggest detractors first → read at a glance
+    reconciliation = _reconcile(
+        _observed_window_points(session, tenant_id, portfolio_id, account_ids, anchor, end),
+        hist.get(benchmark),
+        benchmark=benchmark,
+        anchor=anchor,
+        end=end,
+        portfolio_return=result.portfolio_return,
+        benchmark_return=result.benchmark_return,
+    )
     return AttributionSummary(
         computable=True,
         benchmark=benchmark,
@@ -341,4 +493,5 @@ def compute_attribution(
         interaction=result.interaction,
         sectors=effects,
         unattributed=sorted(unattributed, key=lambda u: -u.market_value),
+        reconciliation=reconciliation,
     )
