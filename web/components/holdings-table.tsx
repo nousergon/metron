@@ -186,6 +186,43 @@ type ColumnDef = {
   foot?: (t: Totals, baseCurrency: string) => ReactNode;
 };
 
+/** "45d" / "8mo" / "3.2y" for a share-weighted average holding period in days. */
+export function heldLabel(days: number): string {
+  if (days < 60) return `${Math.round(days)}d`;
+  if (days < 730) return `${Math.round(days / 30.44)}mo`;
+  return `${(days / 365.25).toFixed(1)}y`;
+}
+
+function heldCell(h: Holding): ReactNode {
+  if (h.avg_days_held == null || !h.first_acquired) return <span className="text-muted">—</span>;
+  const partial = (h.held_coverage ?? 1) < 0.995;
+  const tip =
+    `Bought ${h.first_acquired} (oldest open lot). Share-weighted average holding period ${heldLabel(h.avg_days_held)}.` +
+    (partial
+      ? ` The broker's lots cover only ${Math.round((h.held_coverage ?? 0) * 100)}% of these shares, so the rest have no known purchase date.`
+      : "");
+  return (
+    <span title={tip} className="tabular-nums">
+      {heldLabel(h.avg_days_held)}
+      {partial ? <span className="text-muted">*</span> : null}
+      <span className="ml-1 text-[10px] text-muted">{h.first_acquired.slice(0, 7)}</span>
+    </span>
+  );
+}
+
+function heldColumn(key: string, band: ColumnBand): ColumnDef {
+  return {
+    key,
+    label: "Held",
+    band,
+    defaultDesc: true,
+    title:
+      "How long you have held it: the share-weighted average age of the open lots, with the month of the oldest purchase. * means the broker's lots don't cover every share.",
+    sort: (h) => h.avg_days_held ?? null,
+    cell: (h) => heldCell(h),
+  };
+}
+
 // Shared last-price cell renderer (FX fallback, stale ⚠, estimated ~) — used by both the
 // Value band's "Last" column and the Valuation band's "Price" duplicate (metron-ops#178: a
 // ratio's numerator should be visible in the same band as the ratio, without losing the
@@ -264,6 +301,7 @@ const POSITION_COLUMNS: ColumnDef[] = [
     cell: (h, ctx) => (ctx.positionApplicable ? ctx.baseMoney(h.cost_basis_base, h.cost_basis, moneyWhole) : "—"),
     foot: (t, ccy) => moneyWhole(t.cost, ccy),
   },
+  heldColumn("held", "Position"),
   // Value — live price + unrealized (priced). Market value itself is rendered as part of the
   // frozen spine (MARKET_VALUE_COLUMN below), not this band.
   {
@@ -483,6 +521,7 @@ const POSITION_COLUMNS: ColumnDef[] = [
       <span className={signClass(t.unrealPct ?? 0)}>{t.unrealPct != null ? accountingPercent(t.unrealPct) : "—"}</span>
     ),
   },
+  heldColumn("intraday_held", "Intraday"),
   // Returns — per-security period returns (metron-ops#87): Day + its overnight/intraday
   // decomposition, then YTD, LTM. Day is the primary metric; Overnight and Intraday are
   // its two legs shown as explicit (visually subordinate) columns rather than a hover
@@ -918,6 +957,8 @@ const DEFAULT_COL_WIDTH: Record<string, number> = {
   quantity: 90,
   avg_cost: 90,
   cost_basis: 100,
+  held: 95,
+  intraday_held: 95,
   // Value.
   last: 90,
   day_change: 90,

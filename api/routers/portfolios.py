@@ -43,6 +43,7 @@ from api.services import (
     demo,
     demo_household,
     deploy_cash,
+    holding_period,
     indices,
     intraday,
     labels,
@@ -188,6 +189,11 @@ class HoldingOut(BaseModel):
     # is one (account, ticker). Null on the default consolidated view (metron-ops#114).
     account_id: uuid.UUID | None = None
     account_label: str | None = None
+    # Holding period (Brian 2026-11-04): the oldest open lot's buy date, the share-weighted
+    # average days held, and the share of the position those lots cover (None = no lots).
+    first_acquired: date | None = None
+    avg_days_held: float | None = None
+    held_coverage: float | None = None
     # User-set display label/alias (so a numeric-CUSIP bond is legible). None when unset.
     user_label: str | None = None
     # Per-security period returns (metron-ops#87). Day legs (overnight/intraday/day) need the
@@ -2224,6 +2230,7 @@ def get_holdings(
     # feed-entitled build; off-feed each metric stays None and the table shows "—".
     if settings.feed_entitled:
         metrics_enrichment.enrich_metrics(session, held)
+    holding_period.stamp(session, portfolio.tenant_id, portfolio.id, held, account_ids=account_ids)
     return held
 
 
