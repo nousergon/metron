@@ -2471,6 +2471,30 @@ class BenchmarkReturnOut(BaseModel):
     label: str
     ret: float | None
     alpha: float | None
+    start_close: float | None = None
+    end_close: float | None = None
+
+
+class TileDayOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    when: date
+    prev_nav: float
+    nav: float
+    flow: float
+    ret: float
+
+
+class TileBasisOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    start_nav: float
+    end_nav: float
+    net_flows: float
+    steps: int
+    estimated_points: int
+    largest_days: list[TileDayOut] = []
+    suspect_days: list[TileDayOut] = []
 
 
 class PeriodTileOut(BaseModel):
@@ -2485,6 +2509,7 @@ class PeriodTileOut(BaseModel):
     mwr: float | None = None
     benchmarks: list[BenchmarkReturnOut] = []
     note: str | None = None  # honest empty-state reason (e.g. TODAY "as of <prior date>")
+    basis: TileBasisOut | None = None  # the inputs behind the figures (Brian 2026-11-04)
 
 
 class PeriodTilesOut(BaseModel):

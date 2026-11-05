@@ -925,6 +925,59 @@ class BenchmarkReturn:
     label: str
     ret: float | None      # benchmark % return over the window (None if uncached)
     alpha: float | None    # portfolio TWR − benchmark return (None if either is missing)
+    start_close: float | None = None  # the closes ``ret`` is computed from (evidence)
+    end_close: float | None = None
+
+
+@dataclass
+class TileDay:
+    """One snapshot-to-snapshot step inside a tile window, shown as evidence."""
+
+    when: date
+    prev_nav: float
+    nav: float
+    flow: float
+    ret: float  # flow-neutralized: (nav - flow) / prev_nav - 1
+
+
+@dataclass
+class TileBasis:
+    """The inputs behind a tile, so every figure can be checked by hand (Brian 2026-11-04:
+    "how can we back up these numbers?"). gain = end_nav - start_nav - net_flows exactly;
+    twr links ``steps`` daily returns; ``largest_days`` are the steps that moved it most,
+    and ``suspect_days`` the ones past ``SUSPECT_DAY_RET`` (usually a missing deposit,
+    sale or transfer rather than a market move)."""
+
+    start_nav: float
+    end_nav: float
+    net_flows: float
+    steps: int
+    estimated_points: int
+    largest_days: list[TileDay] = field(default_factory=list)
+    suspect_days: list[TileDay] = field(default_factory=list)
+
+
+#: A single snapshot-to-snapshot step beyond this is flagged on the tile as worth checking.
+SUSPECT_DAY_RET = 0.08
+
+
+def tile_basis(window: list[PerfPoint], *, top: int = 3) -> TileBasis:
+    days = [
+        TileDay(when=cur.snap_date, prev_nav=prev.nav, nav=cur.nav, flow=cur.external_flow,
+                ret=(cur.nav - cur.external_flow) / prev.nav - 1.0)
+        for prev, cur in zip(window, window[1:])
+        if prev.nav > 0
+    ]
+    by_size = sorted(days, key=lambda d: abs(d.ret), reverse=True)
+    return TileBasis(
+        start_nav=window[0].nav,
+        end_nav=window[-1].nav,
+        net_flows=sum(p.external_flow for p in window[1:]),
+        steps=len(days),
+        estimated_points=sum(1 for p in window if p.estimated_inputs),
+        largest_days=by_size[:top],
+        suspect_days=[d for d in by_size if abs(d.ret) > SUSPECT_DAY_RET][:10],
+    )
 
 
 @dataclass
@@ -946,6 +999,7 @@ class PeriodTile:
     # Honest empty-state reason when the window can't be formed (e.g. "as of 2026-06-25"
     # for a TODAY tile whose freshest valuation predates today). None for a formed tile.
     note: str | None = None
+    basis: TileBasis | None = None
 
 
 @dataclass
@@ -1470,13 +1524,15 @@ def period_tiles(
             for sym, blabel in BENCHMARKS:
                 if use_today_bench:
                     ret = _index_bench_return(today_bench, sym)
+                    b_end, b_start = today_bench.get(sym, (None, None))
                 else:
                     series = bench_history.get(sym)
                     b_start = _asof_close(series, base.snap_date)
                     b_end = _asof_close(series, end.snap_date)
                     ret = (b_end / b_start - 1.0) if (b_start and b_end and b_start > 0) else None
                 alpha = (twr - ret) if (twr is not None and ret is not None) else None
-                benches.append(BenchmarkReturn(symbol=sym, label=blabel, ret=ret, alpha=alpha))
+                benches.append(BenchmarkReturn(symbol=sym, label=blabel, ret=ret, alpha=alpha,
+                                               start_close=b_start, end_close=b_end))
         # Settled TODAY whose end session predates the calendar day carries "as of <date>"
         # (Mon pre-open showing Thu's close); post-close same-day does not.
         note = (
@@ -1484,7 +1540,7 @@ def period_tiles(
             if period == "today" and end.snap_date != cal
             else None
         )
-        result.tiles.append(PeriodTile(period, label, base.snap_date, end.snap_date, gain, twr, mwr=mwr, benchmarks=benches, note=note))
+        result.tiles.append(PeriodTile(period, label, base.snap_date, end.snap_date, gain, twr, mwr=mwr, benchmarks=benches, note=note, basis=tile_basis(window)))
     return result
 
 

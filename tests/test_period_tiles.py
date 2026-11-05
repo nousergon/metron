@@ -365,3 +365,35 @@ class TestEndpoint:
         today_tile = next(t for t in r.json()["tiles"] if t["period"] == "today")
         qqq = next(b for b in today_tile["benchmarks"] if b["symbol"] == "QQQ")
         assert qqq["ret"] == pytest.approx(-0.05)
+
+
+class TestBasis:
+    """Brian 2026-11-04: every tile figure must be checkable from the inputs it shows."""
+
+    def test_basis_reconciles_the_gain_and_flags_a_big_step(self, db_session, tenant):
+        pid = uuid.uuid4()
+        for when, nav in _SERIES:
+            _snap(db_session, tenant, pid, when, nav)
+        res = perf.period_tiles(db_session, uuid.UUID(tenant), pid, today=_TODAY, now=_FRIDAY_POST_CLOSE)
+        ytd = next(t for t in res.tiles if t.period == "ytd")
+        b = ytd.basis
+        assert (b.start_nav, b.end_nav, b.net_flows, b.steps) == (1100.0, 1320.0, 0.0, 3)
+        assert ytd.gain == pytest.approx(b.end_nav - b.start_nav - b.net_flows)
+        assert b.largest_days[0].when == date(2024, 6, 26)
+        assert b.largest_days[0].ret == pytest.approx(1280 / 1100 - 1)
+        assert [d.when for d in b.suspect_days] == [date(2024, 6, 26)]
+
+    def test_benchmark_carries_the_closes_it_was_computed_from(self, db_session, tenant, monkeypatch):
+        monkeypatch.setattr("api.services.prices.fetch_close_history", lambda *a, **k: {})
+        pid = uuid.uuid4()
+        for when, nav in _SERIES:
+            _snap(db_session, tenant, pid, when, nav)
+        bars = [(date(2023, 6, 1), 400.0), (date(2023, 12, 29), 440.0), (date(2024, 6, 28), 484.0)]
+        for sym in ("DIA", "SPY", "ONEQ", "QQQ", "IWM"):
+            _bars(db_session, sym, bars)
+        res = perf.period_tiles(
+            db_session, uuid.UUID(tenant), pid, today=_TODAY, with_benchmarks=True, now=_FRIDAY_POST_CLOSE,
+        )
+        ytd = next(t for t in res.tiles if t.period == "ytd")
+        spy = next(b for b in ytd.benchmarks if b.symbol == "SPY")
+        assert (spy.start_close, spy.end_close) == (440.0, 484.0)

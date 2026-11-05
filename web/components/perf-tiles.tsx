@@ -11,8 +11,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import type { BenchmarkReturn, PeriodTile } from "@/lib/api";
-import { isoDate, percent, signClass, signedMoneyWhole } from "@/lib/format";
+import type { BenchmarkReturn, PeriodTile, TileDay } from "@/lib/api";
+import { isoDate, moneyWhole, percent, signClass, signedMoneyWhole } from "@/lib/format";
 
 /** The benchmark universe across the tiles (same set on each) → [{symbol, label}]. */
 function benchmarkMeta(tiles: PeriodTile[]): { symbol: string; label: string }[] {
@@ -29,6 +29,71 @@ function AlphaRow({ b }: { b: BenchmarkReturn }) {
         {b.alpha != null ? percent(b.alpha) : "—"}
       </span>
     </div>
+  );
+}
+
+function DayLine({ d }: { d: TileDay }) {
+  return (
+    <li className="tabular-nums">
+      {isoDate(d.when)}: {moneyWhole(d.prev_nav)} → {moneyWhole(d.nav)}
+      {d.flow ? `, net purchases ${signedMoneyWhole(d.flow)}` : ""} ={" "}
+      <span className={signClass(d.ret)}>{percent(d.ret)}</span>
+    </li>
+  );
+}
+
+/** "How this is computed" (Brian 2026-11-04): every figure on the tile, from its inputs. */
+function TileMath({ tile }: { tile: PeriodTile }) {
+  const b = tile.basis;
+  if (!b || !tile.start_date || !tile.end_date) return null;
+  const priced = tile.benchmarks.filter((x) => x.ret != null && x.start_close != null && x.end_close != null);
+  return (
+    <details className="mt-3 border-t border-line pt-2 text-[11px] leading-relaxed text-muted">
+      <summary className="cursor-pointer select-none hover:text-ink">How this is computed</summary>
+      <div className="mt-1 space-y-1.5">
+        <p className="tabular-nums">
+          Holdings value {moneyWhole(b.start_nav)} on {isoDate(tile.start_date)}, {moneyWhole(b.end_nav)} on{" "}
+          {isoDate(tile.end_date)}. Net purchases in between {signedMoneyWhole(b.net_flows)}. Gain = end − start −
+          purchases = {tile.gain != null ? signedMoneyWhole(tile.gain) : "—"}.
+        </p>
+        <p>
+          TWR chains {b.steps} snapshot-to-snapshot returns, each with that day&apos;s purchases taken out, so money
+          added is never counted as return.
+          {b.estimated_points > 0 ? ` ${b.estimated_points} of the snapshots used an estimated input.` : ""}
+        </p>
+        {b.suspect_days.length > 0 ? (
+          <div className="text-amber-600 dark:text-amber-400">
+            Check these days. A one-step move over 8% is usually a missing deposit, sale or transfer, not the market:
+            <ul className="ml-3 list-disc">
+              {b.suspect_days.map((d) => (
+                <DayLine key={d.when} d={d} />
+              ))}
+            </ul>
+          </div>
+        ) : b.largest_days.length > 0 ? (
+          <div>
+            Biggest days:
+            <ul className="ml-3 list-disc">
+              {b.largest_days.map((d) => (
+                <DayLine key={d.when} d={d} />
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {priced.length > 0 ? (
+          <div>
+            Index returns, ETF close to close:
+            <ul className="ml-3 list-disc tabular-nums">
+              {priced.map((x) => (
+                <li key={x.symbol}>
+                  {x.label} ({x.symbol}) {x.start_close!.toFixed(2)} → {x.end_close!.toFixed(2)} = {percent(x.ret!)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
@@ -82,6 +147,7 @@ function Tile({ tile, selected, sessionHref }: { tile: PeriodTile; selected: Set
               ))}
             </div>
           ) : null}
+          <TileMath tile={tile} />
         </>
       ) : (
         <div className="mt-2 text-sm text-muted">{tile.note ?? "history building…"}</div>

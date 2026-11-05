@@ -112,3 +112,23 @@ describe("PerfTiles", () => {
     expect(link.getAttribute("href")).toBe("/portfolios/p1/holdings?val=live");
   });
 });
+
+describe("PerfTiles — how this is computed (Brian 2026-11-04)", () => {
+  it("shows the inputs behind the gain and flags a suspect day", () => {
+    const tile: PeriodTile = {
+      period: "ytd", label: "YTD", start_date: "2023-12-29", end_date: "2024-06-28",
+      gain: 220, twr: 0.2, mwr: null,
+      benchmarks: [{ symbol: "SPY", label: "S&P 500", ret: 0.1, alpha: 0.1, start_close: 440, end_close: 484 }],
+      basis: {
+        start_nav: 1100, end_nav: 1320, net_flows: 0, steps: 3, estimated_points: 0,
+        largest_days: [],
+        suspect_days: [{ when: "2024-06-26", prev_nav: 1100, nav: 1280, flow: 0, ret: 0.1636 }],
+      },
+    };
+    render(<PerfTiles tiles={[tile]} benchmarksAvailable />);
+    expect(screen.getByText("How this is computed")).toBeTruthy();
+    expect(screen.getByText(/Gain = end − start − purchases/)).toBeTruthy();
+    expect(screen.getByText(/Check these days/)).toBeTruthy();
+    expect(screen.getByText(/440\.00 → 484\.00/)).toBeTruthy();
+  });
+});

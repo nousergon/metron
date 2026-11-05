@@ -450,6 +450,23 @@ export type BenchmarkReturn = {
   label: string;
   ret: number | null;   // benchmark % return over the window
   alpha: number | null; // portfolio %TWR − benchmark %
+  start_close?: number | null; // the closes `ret` is computed from
+  end_close?: number | null;
+};
+
+/** One snapshot-to-snapshot step inside a tile window. */
+export type TileDay = { when: string; prev_nav: number; nav: number; flow: number; ret: number };
+
+/** The inputs behind a tile: gain = end_nav − start_nav − net_flows; TWR links `steps`
+ *  daily returns. `suspect_days` moved more than 8% in one step. */
+export type TileBasis = {
+  start_nav: number;
+  end_nav: number;
+  net_flows: number;
+  steps: number;
+  estimated_points: number;
+  largest_days: TileDay[];
+  suspect_days: TileDay[];
 };
 
 /** One Overview hero tile: aggregate holdings performance over a window. */
@@ -463,6 +480,7 @@ export type PeriodTile = {
   mwr: number | null;   // % money-weighted return (XIRR) over the window
   benchmarks: BenchmarkReturn[];
   note?: string | null; // honest empty-state reason (e.g. TODAY "as of <prior date>")
+  basis?: TileBasis | null; // the inputs behind the figures
 };
 
 /** Overview performance-vs-market tiles. Benchmark comparison is feed-gated (Pro):
