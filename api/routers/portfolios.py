@@ -132,8 +132,8 @@ class PreferencesIn(BaseModel):
     risk_tolerance: str | None = None
     objective: str | None = None
     notes: str | None = None
-    # The single user-facing intraday-overlay switch (default OFF). Full-replace PUT, so a
-    # client that loaded `current` and submits the whole object governs this too.
+    # The single user-facing intraday-overlay switch (default ON). Omitted/None leaves the
+    # stored value alone, so a client that never sends it cannot switch the overlay off.
     intraday_enabled: bool | None = None
 
 
@@ -1354,7 +1354,8 @@ def put_preferences(
     pref.risk_tolerance = (body.risk_tolerance or "").strip() or None
     pref.objective = (body.objective or "").strip() or None
     pref.notes = (body.notes or "").strip() or None
-    pref.intraday_enabled = bool(body.intraday_enabled)
+    if body.intraday_enabled is not None:
+        pref.intraday_enabled = body.intraday_enabled
     session.commit()
     session.refresh(pref)
     return pref
