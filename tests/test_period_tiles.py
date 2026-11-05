@@ -164,6 +164,20 @@ class TestBenchmarks:
         assert spy_ltm.ret == pytest.approx(484 / 400 - 1)
         assert spy_ltm.alpha == pytest.approx(0.32 - (484 / 400 - 1))
 
+    def test_an_uncoverable_benchmark_is_fetched_once_not_per_request(self, db_session, tenant, monkeypatch):
+        # Brian 2026-11-04: Holdings hung after DIA/ONEQ were added, because each page
+        # load re-read the spine's whole close history for symbols it could not supply.
+        calls = []
+        monkeypatch.setattr("api.services.prices.fetch_close_history", lambda syms, *a, **k: calls.append(list(syms)) or {})
+        pid = uuid.uuid4()
+        for when, nav in _SERIES:
+            _snap(db_session, tenant, pid, when, nav)
+        for _ in range(3):
+            perf.period_tiles(
+                db_session, uuid.UUID(tenant), pid, today=_TODAY, with_benchmarks=True, now=_FRIDAY_POST_CLOSE,
+            )
+        assert len(calls) == 1
+
     def test_alpha_none_when_benchmark_uncached(self, db_session, tenant, monkeypatch):
         monkeypatch.setattr("api.services.prices.fetch_close_history", lambda *a, **k: {})
         pid = uuid.uuid4()
