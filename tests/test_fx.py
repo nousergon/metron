@@ -94,3 +94,17 @@ class TestRateHistory:
         book = fx.rate_history(db_session, ["EUR"])
         assert book.covers("EUR") and book.covers("USD")
         assert not book.covers("CHF")
+
+
+def test_a_forward_flow_rate_months_old_is_stamped_stale(db_session):
+    # codex 7c7b0a8de0a1aa10: the forward path read the rate without its date, so the
+    # stale test never fired and a months-old carried-forward rate was stamped exact.
+    from api.services import performance
+
+    db_session.add(models.FxRate(currency="EUR", base="USD", rate_date=date(2026, 1, 5), rate=1.10))
+    db_session.commit()
+    assert fx.rate_and_date_as_of(db_session, "EUR", date(2026, 6, 1)) == (1.10, date(2026, 1, 5))
+    rate = performance._forward_rate(db_session)
+    value, why, observed = rate("EUR", date(2026, 6, 1))
+    assert (value, why, observed) == (1.10, "stale", date(2026, 1, 5))
+    assert rate("EUR", date(2026, 1, 6))[1] is None  # a day old is exact
