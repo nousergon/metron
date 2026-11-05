@@ -6,6 +6,7 @@ import { AsOfClose } from "@/components/as-of-close";
 import { MethodologyLink } from "@/components/methodology-link";
 import { TierSimulator } from "@/components/tier-simulator";
 import { ComputeAttribution } from "@/components/compute-attribution";
+import { ReconciliationSection } from "@/components/attribution-reconciliation";
 import { featureEntitlement, loadEntitlements, toFeatureStates } from "@/lib/entitlements";
 import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
@@ -132,6 +133,8 @@ export default async function AttributionPage(
               ))}
             </Table>
           </Section>
+
+          {attr.reconciliation ? <ReconciliationSection rec={attr.reconciliation} benchmark={attr.benchmark} /> : null}
 
           {attr.coverage < 1 ? (
             <Section title="Coverage" note="market value attributed over the whole window">

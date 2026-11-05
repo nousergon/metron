@@ -310,6 +310,18 @@ export default function MethodologyPage() {
           slightly from the benchmark ETF&rsquo;s own return. A sector the portfolio does not hold has zero
           selection effect; a sector the benchmark does not hold takes R<sub>b</sub> as its benchmark return.
         </p>
+        <p>
+          <strong>Reconciliation.</strong> Because of that approximation, the page also measures what actually
+          happened over the same window and shows the gap. The observed portfolio return is the time-weighted
+          return from the portfolio&rsquo;s recorded daily values, with deposits and withdrawals removed, from the
+          window&rsquo;s first session to its last. The observed benchmark return is the benchmark ETF&rsquo;s own
+          close-to-close return over the same sessions. Three residuals are shown: observed portfolio return minus
+          R<sub>p</sub>, observed benchmark return minus R<sub>b</sub>, and observed active return minus
+          R<sub>p</sub> − R<sub>b</sub>. The portfolio residual includes trading during the window, weight drift,
+          cash and any holding left out of the attribution. The benchmark residual is the cost of the sector-ETF
+          approximation. If either observed return cannot be measured over exactly that window, for example
+          because no value was recorded on the first or last session, the page says so instead of using nearby dates.
+        </p>
       </Section>
 
       <Section id="factor-risk" title="Factor risk model">
