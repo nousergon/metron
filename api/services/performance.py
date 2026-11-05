@@ -965,7 +965,7 @@ def tile_basis(window: list[PerfPoint], *, top: int = 3) -> TileBasis:
     days = [
         TileDay(when=cur.snap_date, prev_nav=prev.nav, nav=cur.nav, flow=cur.external_flow,
                 ret=(cur.nav - cur.external_flow) / prev.nav - 1.0)
-        for prev, cur in zip(window, window[1:])
+        for prev, cur in zip(window, window[1:], strict=False)
         if prev.nav > 0
     ]
     by_size = sorted(days, key=lambda d: abs(d.ret), reverse=True)
