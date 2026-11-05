@@ -104,9 +104,17 @@ class TestPreferences:
 
     def test_intraday_toggle_round_trip(self, client, tenant):
         pid = _seed(client, tenant)
-        # Default off — a missing/unset toggle reads as disabled.
+        # Unset reads as None, which the overlay and the Settings form treat as ON.
         d = client.get(f"/portfolios/{pid}/preferences", headers={"X-Tenant-Id": tenant}).json()
-        assert d["intraday_enabled"] in (None, False)
+        assert d["intraday_enabled"] is None
+        # A PUT that omits the toggle leaves it unset (still ON), never False.
+        client.put(
+            f"/portfolios/{pid}/preferences",
+            json={"notes": "x"}, headers={"X-Tenant-Id": tenant},
+        )
+        assert client.get(
+            f"/portfolios/{pid}/preferences", headers={"X-Tenant-Id": tenant}
+        ).json()["intraday_enabled"] is None
         # Turn it on, then off — the full-replace PUT governs it.
         client.put(
             f"/portfolios/{pid}/preferences",
