@@ -137,7 +137,9 @@ def _as_of_rate(session: Session, fx_history: fx_service.RateHistory) -> RateFn:
                 asof, later = fx_history.rate_as_of(ccy, when), fx_history.latest(ccy)
                 observed = fx_history.observed_as_of(ccy, when)
             else:
-                asof = fx_service.rate_as_of(session, ccy, when)
+                # The observation date too, so a months-old carried-forward rate is
+                # stamped stale here as it is from the history (codex 7c7b0a8de0a1aa10).
+                asof, observed = fx_service.rate_and_date_as_of(session, ccy, when)
                 later = None if asof is not None else fx_service.latest_rate_to_base(session, ccy)
             if asof is not None and observed is not None and (when - observed).days > _STALE_INPUT_DAYS:
                 cache[key] = (asof, "stale", observed)
