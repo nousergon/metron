@@ -789,6 +789,23 @@ class UnattributedHoldingOut(BaseModel):
     reason: str
 
 
+class AttributionReconciliationOut(BaseModel):
+    """The attribution against the observed returns over its own window (metron-ops-I372)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    available: bool
+    reason: str | None = None
+    observed_portfolio_return: float | None = None
+    observed_benchmark_return: float | None = None
+    observed_active_return: float | None = None
+    portfolio_residual: float | None = None
+    benchmark_residual: float | None = None
+    active_residual: float | None = None
+    within_tolerance: bool = False
+    tolerance: float
+
+
 class AttributionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -812,6 +829,10 @@ class AttributionOut(BaseModel):
     sectors: list[SectorEffectOut]
     # Priced holdings left out of the attribution, with the reason (coverage < 1).
     unattributed: list[UnattributedHoldingOut] = []
+    # Today's holdings held through the window, not realized attribution (metron-ops-I372).
+    basis: str = attribution.BASIS_CURRENT_HOLDINGS
+    # Observed TWR / benchmark return over the same window and the named residuals.
+    reconciliation: AttributionReconciliationOut | None = None
 
 
 class GapDriverOut(BaseModel):
