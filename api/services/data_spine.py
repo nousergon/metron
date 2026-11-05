@@ -294,10 +294,16 @@ def build_personal_returns(session: Session, *, now: datetime | None = None) -> 
     by_day: dict[date, dict[uuid.UUID, models.NavSnapshot]] = {}
     first: dict[uuid.UUID, date] = {}
     last: dict[uuid.UUID, date] = {}
+    last_nav: dict[uuid.UUID, float] = {}
     for snap in snaps:
         by_day.setdefault(snap.snap_date, {})[snap.portfolio_id] = snap
         first.setdefault(snap.portfolio_id, snap.snap_date)
         last[snap.portfolio_id] = snap.snap_date
+        last_nav[snap.portfolio_id] = float(snap.nav or 0)
+    # A portfolio's latest snapshot ends its active span only when it closed (NAV 0). A
+    # portfolio whose newest refresh is merely missing stays active, so those dates are
+    # skipped rather than summed without it (codex finding 745c29c5eaaa1fe5).
+    closed = {pid for pid, nav in last_nav.items() if nav <= 0}
 
     def _estimated(snap: models.NavSnapshot) -> bool:
         return bool(snap.provisional) or bool(snap.estimated_inputs)
@@ -311,7 +317,7 @@ def build_personal_returns(session: Session, *, now: datetime | None = None) -> 
     skipped_flow: dict[uuid.UUID, float] = {}
     for day in sorted(by_day):
         cur = by_day[day]
-        active = {pid for pid in first if first[pid] <= day <= last[pid]}
+        active = {pid for pid in first if first[pid] <= day and (pid not in closed or day <= last[pid])}
         if not active <= set(cur):
             skipped += 1
             for pid, snap in cur.items():

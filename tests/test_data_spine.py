@@ -473,6 +473,26 @@ class TestPersonalReturns:
         assert [(r["start"], r["end"]) for r in rows] == [("2024-06-04", "2024-06-06")]
         assert rows[0]["return"] == pytest.approx(0.0)
 
+    def test_a_missing_latest_refresh_is_not_a_closure(self, db_session):
+        # codex finding 745c29c5eaaa1fe5: B's 06-05 refresh is missing; B must stay active,
+        # so 06-05 is skipped instead of reported as A's return alone.
+        a = _seed_holding(db_session, pf_name="A", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        b = _seed_holding(db_session, pf_name="B", symbol="MSFT", currency="USD", yf_symbol="MSFT", external_id="B1")
+        self._snap(db_session, a, date(2024, 6, 4), 100.0)
+        self._snap(db_session, b, date(2024, 6, 4), 100.0)
+        self._snap(db_session, a, date(2024, 6, 5), 110.0)
+        payload = data_spine.build_personal_returns(db_session)
+        assert payload["returns"] == [] and payload["dates_skipped_incomplete"] == 1
+
+    def test_a_portfolio_closed_at_zero_nav_leaves_the_household(self, db_session):
+        a = _seed_holding(db_session, pf_name="A", symbol="AAPL", currency="USD", yf_symbol="AAPL")
+        b = _seed_holding(db_session, pf_name="B", symbol="MSFT", currency="USD", yf_symbol="MSFT", external_id="B1")
+        self._snap(db_session, a, date(2024, 6, 4), 100.0)
+        self._snap(db_session, b, date(2024, 6, 4), 0.0)  # B closed
+        self._snap(db_session, a, date(2024, 6, 5), 110.0)
+        rows = data_spine.build_personal_returns(db_session)["returns"]
+        assert [(r["start"], r["end"]) for r in rows] == [("2024-06-04", "2024-06-05")]
+
     def test_publish_writes_the_pinned_key(self, db_session):
         pf = _seed_holding(db_session, pf_name="P1", symbol="AAPL", currency="USD", yf_symbol="AAPL")
         self._snap(db_session, pf, date(2024, 6, 3), 1000.0)
