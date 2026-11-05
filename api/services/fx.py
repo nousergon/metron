@@ -150,6 +150,29 @@ def rate_as_of(session: Session, currency: str, on_date: date, *, base: str = "U
     return float(rate) if rate is not None else None
 
 
+def rate_and_date_as_of(
+    session: Session, currency: str, on_date: date, *, base: str = "USD"
+) -> tuple[float | None, date | None]:
+    """:func:`rate_as_of` plus the date the rate was observed, so a caller can tell a
+    carried-forward rate months old from today's. ``(1.0, None)`` for the base currency,
+    ``(None, None)`` when nothing is cached on or before ``on_date``."""
+    base = (base or "USD").strip().upper()
+    ccy = (currency or base).strip().upper()
+    if ccy == base:
+        return 1.0, None
+    row = session.execute(
+        select(models.FxRate.rate, models.FxRate.rate_date)
+        .where(
+            models.FxRate.currency == ccy,
+            models.FxRate.base == base,
+            models.FxRate.rate_date <= on_date,
+        )
+        .order_by(models.FxRate.rate_date.desc())
+        .limit(1)
+    ).first()
+    return (float(row[0]), row[1]) if row is not None else (None, None)
+
+
 def latest_rate_to_base(session: Session, currency: str, *, base: str = "USD") -> float | None:
     """Most recent cached rate converting 1 unit of ``currency`` into ``base``.
 
