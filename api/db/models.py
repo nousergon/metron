@@ -391,7 +391,9 @@ class PriceBar(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     security_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("securities.id", ondelete="CASCADE"), index=True)
     bar_date: Mapped[date] = mapped_column(index=True)
-    close: Mapped[float] = mapped_column(Numeric(28, 10))
+    # active_history: the superseded close is loaded before an ORM write replaces it, so
+    # ``_record_input_revisions`` can preserve it (metron-ops-I370).
+    close: Mapped[float] = mapped_column(Numeric(28, 10), active_history=True)
     currency: Mapped[str] = mapped_column(String(3), default="USD")
 
 
@@ -714,7 +716,72 @@ class FxRate(Base):
     currency: Mapped[str] = mapped_column(String(3), index=True)  # ISO-4217 quote currency
     base: Mapped[str] = mapped_column(String(3), default="USD")   # rate is `base` per 1 `currency`
     rate_date: Mapped[date] = mapped_column(index=True)
-    rate: Mapped[float] = mapped_column(Numeric(28, 10))
+    rate: Mapped[float] = mapped_column(Numeric(28, 10), active_history=True)  # see PriceBar.close
+
+
+class MarketInputRevision(Base):
+    """The append-only record of every cached close or FX rate that was REPLACED
+    (metron-ops-I370).
+
+    ``price_bars`` and ``fx_rates`` hold one row per (security|currency, day) and are
+    rewritten in place when a source revises a value: the backfill upsert overwrites a
+    close that differs, the latest refresh overwrites a same-day close or rate. A dated NAV
+    valuation preserved in ``nav_snapshot_revisions`` was computed from those inputs, so
+    without this table the value it used was lost on the next revision and the served
+    number could not be replayed from stored inputs. The live row is the CURRENT value;
+    this table is every superseded one, with when it stopped being current.
+
+    Written by ``prices._upsert_price_bars`` (the Core upsert, which no ORM hook sees) and
+    by the ``before_flush`` hook ``_record_input_revisions`` (every ORM update or delete).
+    Never updated or deleted by application code. No FK to ``securities``, so a revision
+    outlives the row it describes."""
+
+    __tablename__ = "market_input_revisions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    kind: Mapped[str] = mapped_column(String(8))  # "price" | "fx"
+    # The security for a close; NULL for an FX rate.
+    security_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    # The close's currency, or the FX quote currency (``base`` per 1 ``currency``).
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True, index=True)
+    base: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    obs_date: Mapped[date] = mapped_column(index=True)  # bar_date / rate_date
+    value: Mapped[float] = mapped_column(Numeric(28, 10))  # the superseded close / rate
+    change: Mapped[str] = mapped_column(String(16))  # "update" | "delete"
+    superseded_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+def _input_revision(obj, value, change: str) -> MarketInputRevision:
+    if isinstance(obj, PriceBar):
+        return MarketInputRevision(
+            kind="price", security_id=obj.security_id, currency=obj.currency, obs_date=obj.bar_date,
+            value=value, change=change,
+        )
+    return MarketInputRevision(
+        kind="fx", currency=obj.currency, base=obj.base, obs_date=obj.rate_date, value=value, change=change,
+    )
+
+
+def _record_input_revisions(session, flush_context, instances) -> None:
+    """Append the superseded close/rate of every ORM-changed or -deleted cached input."""
+    pending: list[MarketInputRevision] = []
+    for obj in session.dirty:
+        if isinstance(obj, (PriceBar, FxRate)) and sa_inspect(obj).has_identity:
+            field = "close" if isinstance(obj, PriceBar) else "rate"
+            hist = sa_inspect(obj).attrs[field].history
+            # Compared at the stored Numeric(28, 10) precision, as ``_same`` compares a NAV.
+            if hist.deleted and hist.deleted[0] is not None and not _same("nav", hist.deleted[0], getattr(obj, field)):
+                pending.append(_input_revision(obj, hist.deleted[0], "update"))
+    for obj in session.deleted:
+        if isinstance(obj, (PriceBar, FxRate)):
+            field = "close" if isinstance(obj, PriceBar) else "rate"
+            hist = sa_inspect(obj).attrs[field].history
+            pending.append(_input_revision(obj, hist.deleted[0] if hist.deleted else getattr(obj, field), "delete"))
+    if pending:
+        session.add_all(pending)
+
+
+event.listen(OrmSession, "before_flush", _record_input_revisions)
 
 
 class InvestorPreferences(Base):
