@@ -161,6 +161,13 @@ def compose(tile, attr=None, gap=None) -> MarketNote:
     sentences = [headline] if headline else []
     missing: list[str] = []
     sector = _sector_sentence(attr)
+    head_gap = (port - lead) if port is not None and lead is not None else None
+    if sector and head_gap is not None and (attr.active_return > 0) != (head_gap > 0):
+        # Attribution weighs today's classified holdings; the headline is the NAV tile. When
+        # they disagree on the gap's direction the sector cannot explain it (metron-ops-I392).
+        sector = None
+        missing.append("sector view: the sector attribution does not agree in direction "
+                       "with the portfolio's gap")
     if sector:
         sentences.append(sector)
     elif attr is not None and not attr.computable and attr.reason:
@@ -193,8 +200,13 @@ def market_note(
         return compose(tile)
     accounts = ",".join(sorted(str(a) for a in account_ids)) if account_ids else "all"
     fp = compute_cache.portfolio_fingerprint(session, tenant_id, portfolio_id)
+    # The note quotes the supplied tile (its TWR and benchmark returns), so the tile is part
+    # of the key: a refreshed tile over unchanged holdings must not reuse a stale note
+    # (metron-ops-I392).
+    tile_sig = repr((tile.start_date, tile.twr,
+                     [(b.symbol, b.label, b.ret) for b in tile.benchmarks]))
     key = (f"market-note:{CACHE_VERSION}:{portfolio_id}:{accounts}:{tile.end_date}:"
-           f"{int(attr_enabled)}{int(gap_enabled)}:{fp}")
+           f"{int(attr_enabled)}{int(gap_enabled)}:{fp}:{tile_sig}")
 
     def build() -> MarketNote:
         attr = None

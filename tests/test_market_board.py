@@ -27,7 +27,7 @@ def _rating_art() -> dict:
     # wall clock — anchor ``as_of_utc`` to "now" (bugclass_a_test_fixture_that_expires_at_
     # utc_midnight), never a hardcoded date.
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "ratings": {
             "AAPL": {
@@ -157,7 +157,7 @@ def test_unrated_symbol_sorts_last_never_as_zero(client, tenant, monkeypatch):
     monkeypatch.setattr(
         market_board.technical_rating_service, "load_technical_rating",
         lambda: real_load(intraday_reader=lambda: {
-            "schema_version": 1,
+            "schema_version": 2,
             "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "ratings": {"AAPL": {"score": -0.5, "label": "Sell", "ma_score": -0.4, "osc_score": -0.6}},
         }),

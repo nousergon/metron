@@ -24,7 +24,7 @@ _STALE_NOW = datetime(2026, 6, 12, 15, 45, tzinfo=UTC)  # 45 min after — stale
 
 
 def _art(quotes: dict) -> dict:
-    return {"schema_version": 1, "as_of_utc": _AS_OF, "source": "yfinance_delayed", "quotes": quotes}
+    return {"schema_version": 3, "as_of_utc": _AS_OF, "source": "yfinance_delayed", "quotes": quotes}
 
 
 def _seed_one_holding(
@@ -173,7 +173,7 @@ class TestLivePrices:
 
 def _fund_art(fund_proxies: dict, quotes: dict | None = None) -> dict:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "as_of_utc": _AS_OF,
         "source": "yfinance_delayed",
         "quotes": quotes or {},
@@ -702,7 +702,7 @@ class TestHoldingsEndpointIsEstimated:
 
         session_today = today.isoformat()
         art = {
-            "schema_version": 2,
+            "schema_version": 3,
             "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "quotes": {"AAPL": {"last": 130.0, "session_date": session_today}},
             "fund_proxies": {"SPY": {"last": 102.0, "prev_close": 100.0, "session_date": session_today}},
@@ -772,7 +772,7 @@ class TestIntradayStatusCoverageEndpoint:
         db_session.commit()
 
         art = {
-            "schema_version": 2,
+            "schema_version": 3,
             "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "quotes": {"AAPL": {"last": 130.0}},
         }

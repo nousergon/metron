@@ -16,7 +16,7 @@ _TODAY = date(2026, 6, 12)
 
 
 def _art(quotes: dict) -> dict:
-    return {"schema_version": 1, "as_of_utc": _AS_OF_ART, "source": "yfinance_delayed", "quotes": quotes}
+    return {"schema_version": 3, "as_of_utc": _AS_OF_ART, "source": "yfinance_delayed", "quotes": quotes}
 
 
 def _seed(session, closes: list[tuple[date, float]]):
@@ -56,6 +56,7 @@ _CLOSES = [
 ]
 
 _PERF_ART = {
+    "schema_version": 1,
     "as_of": "2025-06-01",
     "performance": {
         "AAPL": {"ytd_pct": 0.20, "ltm_pct": 0.50},
@@ -90,7 +91,7 @@ def test_window_omitted_when_history_too_short(db_session):
     tid, pid = _seed(db_session, [(date(2025, 5, 1), 170.0), (date(2025, 6, 1), 180.0)])
     out = security_perf.per_security_returns(
         db_session, tid, pid, ["AAPL"], as_of=date(2025, 6, 1), feed_entitled=True,
-        performance_reader=lambda: {"performance": {}},
+        performance_reader=lambda: {"schema_version": 1, "performance": {}},
     )
     sr = out["AAPL"]
     assert sr.ytd_pct is None
@@ -239,7 +240,7 @@ def test_ltm_from_spine_artifact(db_session):
     """Holdings LTM reads the security_performance spine — not local price_bars."""
     tid, pid = _seed(db_session, [(date(2025, 7, 6), 518.0), (date(2026, 7, 2), 193.98)])
     ltm = 193.98 / 126.36 - 1.0
-    perf_art = {"performance": {"AAPL": {"ltm_pct": ltm, "ytd_pct": ltm}}}
+    perf_art = {"schema_version": 1, "performance": {"AAPL": {"ltm_pct": ltm, "ytd_pct": ltm}}}
     out = security_perf.per_security_returns(
         db_session, tid, pid, ["AAPL"], as_of=date(2026, 7, 6), feed_entitled=True,
         performance_reader=lambda: perf_art,
