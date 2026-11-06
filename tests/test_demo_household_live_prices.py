@@ -283,7 +283,7 @@ def test_refresh_before_the_anchor_writes_nothing(seeded):
 
 def _rating_art() -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "ratings": {
             "AAPL": {"score": 0.4, "label": "Buy", "ma_score": 0.5, "osc_score": 0.3,

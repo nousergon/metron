@@ -34,7 +34,7 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Invalid", "NumberReading", "admit_schema", "read_number"]
+__all__ = ["Invalid", "NumberReading", "admit_schema", "finite_field", "read_number"]
 
 
 def admit_schema(art: dict | None, *, expected: int, artifact: str) -> str | None:
@@ -97,3 +97,17 @@ def read_number(value: object) -> NumberReading:
     if not math.isfinite(number):
         return Invalid(value)
     return number
+
+
+def finite_field(d: dict, key: str, invalid: list[str], *, name: str | None = None) -> float | None:
+    """``d[key]`` as a finite float, or ``None``.
+
+    Absent (missing key or JSON ``null``) reads as ``None``. Present but not a finite
+    number also reads as ``None``, and ``name`` (default ``key``) is appended to
+    ``invalid`` so the reader can say the producer sent garbage rather than nothing.
+    """
+    reading = read_number(d.get(key))
+    if isinstance(reading, Invalid):
+        invalid.append(name or key)
+        return None
+    return reading

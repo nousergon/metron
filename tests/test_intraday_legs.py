@@ -15,7 +15,7 @@ _NOW = datetime(2026, 6, 12, 15, 3, tzinfo=UTC)  # fresh vs the write
 
 
 def _art(quotes: dict) -> dict:
-    return {"schema_version": 1, "as_of_utc": _AS_OF, "source": "yfinance_delayed", "quotes": quotes}
+    return {"schema_version": 3, "as_of_utc": _AS_OF, "source": "yfinance_delayed", "quotes": quotes}
 
 
 def _seed(session):
@@ -73,7 +73,7 @@ def test_record_then_history_cumulative(db_session):
 def _reader_day2():
     # Day 2: overnight +0% (open == prev), intraday +10% (last 110 vs open 100, prev-MV 1000).
     return {
-        "schema_version": 1, "as_of_utc": "2026-06-13T15:00:00Z", "source": "yfinance_delayed",
+        "schema_version": 3, "as_of_utc": "2026-06-13T15:00:00Z", "source": "yfinance_delayed",
         "quotes": {"AAPL": {"prev_close": 100.0, "open": 100.0, "last": 110.0}},
     }
 

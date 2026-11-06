@@ -278,7 +278,7 @@ class TestAccountPeriodReturns:
 
         def _reader():
             return {
-                "schema_version": 1, "as_of_utc": "2026-06-12T15:00:00Z", "source": "yfinance_delayed",
+                "schema_version": 3, "as_of_utc": "2026-06-12T15:00:00Z", "source": "yfinance_delayed",
                 "quotes": {
                     "AAPL": {"prev_close": 100.0, "open": 110.0, "last": 130.0},
                     "MSFT": {"prev_close": 200.0, "open": 210.0, "last": 230.0},
