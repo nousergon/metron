@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from api.services import fund_proxy, market_snapshot
+from portfolio_analytics.admission import admit_schema, read_number
 from portfolio_analytics.prices import ClosePoint
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,12 @@ def load_quotes(*, reader=None, now: datetime | None = None) -> tuple[dict[str, 
     now = now or datetime.now(UTC)
     art = (reader or _default_reader)()
     if not art:
+        return {}, None, True
+    if admit_schema(
+        art, expected=market_snapshot.INTRADAY_SCHEMA_VERSION, artifact=market_snapshot.INTRADAY_KEY
+    ) is not None:
+        # Refused whole (off-contract schema_version, metron-ops-I373): read exactly like an
+        # absent artifact, so every position falls back to its EOD close.
         return {}, None, True
     quotes = art.get("quotes")
     as_of = art.get("as_of_utc")
@@ -207,9 +214,12 @@ def _overlay(
         q = quotes.get(yf_by_ticker.get(ticker, ticker))
         usable = isinstance(q, dict) and not q.get("suspect") and q.get("last") is not None
         if usable:
-            try:
-                close = float(q["last"])
-            except (TypeError, ValueError):
+            # A non-finite or non-numeric last (NaN/±Infinity/garbage) is not a price: fall
+            # back to the EOD close rather than value a position at it (metron-ops-I373).
+            reading = read_number(q["last"])
+            if isinstance(reading, float):
+                close = reading
+            else:
                 usable = False
         if usable:
             eod = eod_closes.get(ticker)
@@ -431,11 +441,9 @@ def weigh_coverage(meta: IntradayMeta, held: list) -> IntradayMeta:
 
 
 def _f(d: dict, key: str) -> float | None:
-    v = d.get(key)
-    try:
-        return float(v) if v is not None else None
-    except (TypeError, ValueError):
-        return None
+    """A finite float or None — NaN/±Infinity/garbage read as unavailable (metron-ops-I373)."""
+    reading = read_number(d.get(key))
+    return reading if isinstance(reading, float) else None
 
 
 @dataclass

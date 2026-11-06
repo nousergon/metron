@@ -39,6 +39,7 @@ def _fresh_intraday_art(as_of: str = "2026-09-14T14:55:00Z") -> dict:
 
 
 _EOD_TECHNICALS_ART = {
+    "schema_version": 4,
     "as_of": "2026-09-13",
     "technicals": {
         "AAPL": {
@@ -143,7 +144,7 @@ def test_both_artifacts_absent_is_empty():
 
 def test_unknown_label_is_omitted_never_fabricated():
     art = {
-        "schema_version": 1, "as_of_utc": "2026-09-14T14:55:00Z",
+        "schema_version": 2, "as_of_utc": "2026-09-14T14:55:00Z",
         "ratings": {"ZZZ": {"score": 0.4, "label": "Bullish!", "n_votes": 5}},
     }
     snap = technical_rating.load_technical_rating(

@@ -22,6 +22,8 @@ import logging
 import os
 from dataclasses import dataclass, field
 
+from portfolio_analytics.admission import admit_schema, read_number
+
 logger = logging.getLogger(__name__)
 
 RATING_PERFORMANCE_KEY = "market_data/technicals/rating_performance.json"
@@ -121,18 +123,16 @@ class RatingPerformance:
 
 
 def _f(d: dict, key: str) -> float | None:
-    v = d.get(key)
-    try:
-        return float(v) if v is not None else None
-    except (TypeError, ValueError):
-        return None
+    """A finite float or None — NaN/±Infinity/garbage read as unavailable (metron-ops-I373)."""
+    reading = read_number(d.get(key))
+    return reading if isinstance(reading, float) else None
 
 
 def _i(d: dict, key: str) -> int | None:
     v = d.get(key)
     try:
         return int(v) if v is not None else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # int(inf) raises OverflowError
         return None
 
 
@@ -204,12 +204,11 @@ def load_rating_performance(*, reader=None) -> RatingPerformance | None:
     art = (reader or _default_reader)()
     if not isinstance(art, dict):
         return None
-    schema_version = art.get("schema_version")
-    if schema_version != SCHEMA_VERSION:
-        logger.warning(
-            "rating_performance schema_version %r != pinned %d; omitting", schema_version, SCHEMA_VERSION
-        )
+    # Shared admission (metron-ops-I373): refuses a missing, non-integer (``true`` is not 1)
+    # or off-pin version and logs the refusal at ERROR so it reaches alerting.
+    if admit_schema(art, expected=SCHEMA_VERSION, artifact=RATING_PERFORMANCE_KEY) is not None:
         return None
+    schema_version = art["schema_version"]
 
     segments: dict[str, dict[str, dict[str, RatingHorizonStats]]] = {}
     raw_segments = art.get("segments")
