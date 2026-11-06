@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, cast, func, literal, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from api.db import models
@@ -286,6 +286,7 @@ def _upsert_price_bars(session: Session, chunk: list[dict]) -> int:
         from sqlalchemy.dialects.sqlite import insert as dialect_insert
     else:  # pragma: no cover - Metron runs on Postgres (prod) and SQLite (dev/test) only
         raise NotImplementedError(f"backfill_prices has no upsert for dialect {dialect!r}")
+    _record_superseded_bars(session, chunk)
     stmt = dialect_insert(table).values(chunk)
     stmt = stmt.on_conflict_do_update(
         index_elements=[table.c.security_id, table.c.bar_date],
@@ -293,6 +294,37 @@ def _upsert_price_bars(session: Session, chunk: list[dict]) -> int:
         where=table.c.close.is_distinct_from(stmt.excluded.close),
     )
     return session.execute(stmt).rowcount
+
+
+def _record_superseded_bars(session: Session, chunk: list[dict]) -> None:
+    """Preserve, in ``market_input_revisions``, every cached close the upsert of ``chunk``
+    is about to overwrite (metron-ops-I370). The upsert is Core, so no ORM hook sees it.
+
+    Only the rows that WILL change are read back, and "change" is decided exactly as the
+    upsert's own ``WHERE`` decides it: the stored close against the incoming close coerced
+    to the column's type. An identical re-send (three backfills a night) reads nothing back
+    and records nothing, which keeps metron-ops-I343's no-read-back property for the
+    unchanged bars that are nearly all of every run."""
+    table = models.PriceBar.__table__
+    ctype = table.c.close.type
+    changed = session.execute(
+        select(table.c.security_id, table.c.bar_date, table.c.close, table.c.currency).where(
+            or_(*(
+                and_(
+                    table.c.security_id == row["security_id"],
+                    table.c.bar_date == row["bar_date"],
+                    table.c.close.is_distinct_from(cast(literal(row["close"], ctype), ctype)),
+                )
+                for row in chunk
+            ))
+        )
+    ).all()
+    session.add_all(
+        models.MarketInputRevision(
+            kind="price", security_id=sid, currency=ccy, obs_date=bar_date, value=close, change="update"
+        )
+        for sid, bar_date, close, ccy in changed
+    )
 
 
 def close_history_by_symbol(
