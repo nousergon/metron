@@ -17,13 +17,20 @@ with NO schema/UI change.
 
 from __future__ import annotations
 
+import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from api.services import spine_artifacts
+from portfolio_analytics.admission import admit_schema, finite_field
+
+logger = logging.getLogger(__name__)
 
 ANALYST_KEY = "market_data/analyst/latest.json"
+# Pinned producer version (tests/contracts/metron_analyst.schema.json). Any other version is
+# refused whole at runtime (metron-ops-I373).
+ANALYST_SCHEMA_VERSION = 1
 
 # Reason surfaced on the paid forward-estimate columns until the paid consensus-estimates
 # feed lands (metron-ops#107). Scaffolded now so the columns exist with no later schema/UI
@@ -79,6 +86,11 @@ class TickerAnalyst:
 class AnalystSnapshot:
     as_of: date | None
     by_symbol: dict[str, TickerAnalyst]
+    # Set when the artifact was refused whole (off-contract schema_version): it then reads
+    # as absent, but the reason is explicit. `invalid_fields` names, per symbol, the fields
+    # that were present but not a finite number and therefore read as unavailable.
+    rejected_reason: str | None = None
+    invalid_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _bucket() -> str:
@@ -90,23 +102,18 @@ def _default_reader() -> dict | None:
     return spine_artifacts.read_json(ANALYST_KEY, bucket=_bucket())
 
 
-def _f(d: dict, key: str) -> float | None:
-    v = d.get(key)
-    try:
-        return float(v) if v is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
 def _i(d: dict, key: str) -> int | None:
     v = d.get(key)
     try:
         return int(v) if v is not None else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # int(inf) raises OverflowError
         return None
 
 
-def _parse(yf_symbol: str, d: dict) -> TickerAnalyst:
+def _parse(yf_symbol: str, d: dict, invalid: list[str]) -> TickerAnalyst:
+    def _f(d: dict, key: str) -> float | None:
+        return finite_field(d, key, invalid)
+
     rating = d.get("consensus_rating")
     return TickerAnalyst(
         yf_symbol=yf_symbol,
@@ -129,11 +136,24 @@ def load_analyst(*, reader=None) -> AnalystSnapshot:
     """The latest consensus-research snapshot, keyed by yf_symbol. ``reader`` (a no-arg
     callable returning the raw artifact dict) is injectable for tests; defaults to the S3
     read. A missing artifact yields an empty snapshot (fail-soft)."""
-    art = (reader or _default_reader)() or {}
+    raw = (reader or _default_reader)()
+    rejected = admit_schema(raw, expected=ANALYST_SCHEMA_VERSION, artifact=ANALYST_KEY)
+    if rejected is not None:
+        return AnalystSnapshot(as_of=None, by_symbol={}, rejected_reason=rejected)
+    art = raw or {}
     by_symbol: dict[str, TickerAnalyst] = {}
+    invalid_fields: dict[str, tuple[str, ...]] = {}
     for sym, body in (art.get("analyst") or {}).items():
         if isinstance(body, dict):
-            by_symbol[sym] = _parse(sym, body)
+            invalid: list[str] = []
+            by_symbol[sym] = _parse(sym, body, invalid)
+            if invalid:
+                invalid_fields[sym] = tuple(invalid)
+    if invalid_fields:
+        logger.warning(
+            "%s: %d symbol(s) carried non-finite or non-numeric values, read as unavailable: %s",
+            ANALYST_KEY, len(invalid_fields), sorted(invalid_fields),
+        )
     as_of = None
     raw_as_of = art.get("as_of")
     if raw_as_of:
@@ -141,4 +161,4 @@ def load_analyst(*, reader=None) -> AnalystSnapshot:
             as_of = date.fromisoformat(str(raw_as_of)[:10])
         except ValueError:
             as_of = None
-    return AnalystSnapshot(as_of=as_of, by_symbol=by_symbol)
+    return AnalystSnapshot(as_of=as_of, by_symbol=by_symbol, invalid_fields=invalid_fields)

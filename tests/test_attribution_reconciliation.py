@@ -227,3 +227,28 @@ def test_the_api_serves_the_basis_and_the_reconciliation(client, db_session, ten
     assert rec["observed_portfolio_return"] == pytest.approx(0.04)
     assert rec["tolerance"] == pytest.approx(attribution.RECONCILE_TOLERANCE)
     assert set(rec) >= {"portfolio_residual", "benchmark_residual", "active_residual", "within_tolerance"}
+
+
+def test_a_selected_account_without_snapshots_leaves_no_observed_return(
+    client, db_session, tenant, monkeypatch
+):
+    # metron-ops-I392: the aggregate's cohort is the accounts WITH rows, so a selected
+    # account that has none must not silently drop out of the observed return.
+    pid = _seed(client, tenant)
+    _refresh(client, tenant, pid, monkeypatch)
+    acct_id = db_session.scalars(
+        select(models.Account.id).where(models.Account.portfolio_id == uuid.UUID(pid))
+    ).first()
+    for when, nav in ((FIRST, 500.0), (LAST, 540.0)):
+        db_session.add(models.AccountNavSnapshot(
+            tenant_id=uuid.UUID(tenant), portfolio_id=uuid.UUID(pid), account_id=acct_id, snap_date=when,
+            nav=nav, cost_basis=500.0, external_flow=0.0,
+        ))
+    db_session.commit()
+    uncovered = uuid.uuid4()
+    points = attribution._observed_window_points(
+        db_session, uuid.UUID(tenant), uuid.UUID(pid), {acct_id, uncovered}, FIRST, LAST)
+    assert points == []
+    covered = attribution._observed_window_points(
+        db_session, uuid.UUID(tenant), uuid.UUID(pid), {acct_id}, FIRST, LAST)
+    assert [p.snap_date for p in covered] == [FIRST, LAST]

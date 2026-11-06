@@ -23,7 +23,7 @@ def _rating_art() -> dict:
     # as_of_utc would silently go stale (bugclass_a_test_fixture_that_expires_at_utc_
     # midnight): anchor to "now" instead.
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "ratings": {
             "AAPL": {"score": 0.6, "label": "Buy", "ma_score": 0.7, "osc_score": 0.5,

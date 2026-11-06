@@ -45,6 +45,7 @@ def _seed(session):
 
 
 _PERF_ART = {
+    "schema_version": 1,
     "as_of": "2026-06-26",
     "performance": {
         "AAPL": {
@@ -125,7 +126,7 @@ def test_tearsheet_off_feed_shows_position_only(db_session):
 # ── Technical rating (metron-ops#294) ────────────────────────────────────────────────
 
 _RATING_ART_FRESH = {
-    "schema_version": 1,
+    "schema_version": 2,
     "as_of_utc": "2026-06-26T14:55:00Z",
     "quote_as_of_utc": "2026-06-26T14:55:00Z",
     "source": "computed_intraday",
@@ -492,6 +493,7 @@ def test_tearsheet_period_return_from_spine_artifact(db_session):
     tenant_id, pid = _seed_crwd(db_session)
     ltm = 193.98 / 126.36 - 1.0
     perf_art = {
+        "schema_version": 1,
         "as_of": "2026-07-02",
         "performance": {
             "CRWD": {
@@ -514,6 +516,7 @@ def test_tearsheet_period_return_from_spine_artifact(db_session):
 def test_security_performance_spine_consumer_parses_artifact():
     """Contract: tearsheet consumer reads the security_performance spine shape."""
     art = {
+        "schema_version": 1,
         "as_of": "2026-07-02",
         "performance": {
             "AAPL": {

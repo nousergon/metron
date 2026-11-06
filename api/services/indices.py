@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from api.services import market_snapshot
+from portfolio_analytics.admission import admit_schema, finite_field, read_number
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,11 @@ class IndicesSnapshot:
     as_of_utc: str | None = None  # ISO8601 Z from the artifact (the producer's write time)
     stale: bool = False
     indices: list[IndexQuote] = field(default_factory=list)
+    # Set when the artifact was refused whole (off-contract schema_version): it then reads
+    # as unavailable, but the reason is explicit. `invalid_fields` names, per symbol, the
+    # fields that were present but not a finite number and therefore read as unavailable.
+    rejected_reason: str | None = None
+    invalid_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _default_reader() -> dict | None:
@@ -78,11 +84,15 @@ def _default_reader() -> dict | None:
 
 
 def _f(d: dict, key: str) -> float | None:
-    v = d.get(key)
-    try:
-        return float(v) if v is not None else None
-    except (TypeError, ValueError):
-        return None
+    """A finite float or None — NaN/±Infinity/garbage read as unavailable (metron-ops-I373)."""
+    reading = read_number(d.get(key))
+    return reading if isinstance(reading, float) else None
+
+
+def _admit(art: dict | None) -> str | None:
+    return admit_schema(
+        art, expected=market_snapshot.INTRADAY_SCHEMA_VERSION, artifact=market_snapshot.INTRADAY_KEY
+    )
 
 
 def _is_stale(as_of_utc: str | None, now: datetime) -> bool:
@@ -114,7 +124,7 @@ def proxy_day_return(symbol: str, *, reader=None, now: datetime | None = None) -
     now = now or datetime.now(UTC)
     session_today = security_perf.market_today(now).isoformat()
     art = (reader or _default_reader)()
-    if not art:
+    if not art or _admit(art) is not None:
         return None
     raw = art.get("fund_proxies") or {}
     q = raw.get(symbol)
@@ -147,6 +157,14 @@ def load_indices(*, reader=None, now: datetime | None = None) -> IndicesSnapshot
     art = (reader or _default_reader)()
     if not art:
         return IndicesSnapshot(False, reason="Market data unavailable — the intraday feed hasn't published yet.")
+    rejected = _admit(art)
+    if rejected is not None:
+        return IndicesSnapshot(
+            False,
+            reason="Market data unavailable — the intraday feed is on an unrecognised schema version.",
+            rejected_reason=rejected,
+        )
+    invalid_fields: dict[str, tuple[str, ...]] = {}
     as_of_utc = art.get("as_of_utc")
     raw = art.get("indices") or {}
     quotes: list[IndexQuote] = []
@@ -154,8 +172,12 @@ def load_indices(*, reader=None, now: datetime | None = None) -> IndicesSnapshot
         q = raw.get(sym)
         if not isinstance(q, dict):
             continue  # absent from this snapshot — omitted, not fabricated
-        last = _f(q, "last")
-        prev = _f(q, "prev_close")
+        invalid: list[str] = []
+        last = finite_field(q, "last", invalid)
+        prev = finite_field(q, "prev_close", invalid)
+        opn = finite_field(q, "open", invalid)
+        if invalid:
+            invalid_fields[sym] = tuple(invalid)
         session_date = q.get("session_date")
         is_today = session_date is not None and str(session_date) == session_today
         # Only a quote dated for the live session carries a real "today" move; otherwise the
@@ -168,12 +190,17 @@ def load_indices(*, reader=None, now: datetime | None = None) -> IndicesSnapshot
                 label=INDEX_LABELS.get(sym, sym),
                 last=last,
                 prev_close=prev,
-                open=_f(q, "open"),
+                open=opn,
                 change=change,
                 change_pct=change_pct,
                 session_date=session_date,
                 suspect=bool(q.get("suspect", False)),
             )
+        )
+    if invalid_fields:
+        logger.warning(
+            "%s: %d index proxy quote(s) carried non-finite or non-numeric values, read as unavailable: %s",
+            market_snapshot.INTRADAY_KEY, len(invalid_fields), sorted(invalid_fields),
         )
     if not quotes:
         return IndicesSnapshot(
@@ -181,5 +208,8 @@ def load_indices(*, reader=None, now: datetime | None = None) -> IndicesSnapshot
             reason="No index quotes in the latest intraday snapshot yet.",
             as_of_utc=as_of_utc,
             stale=_is_stale(as_of_utc, now),
+            invalid_fields=invalid_fields,
         )
-    return IndicesSnapshot(True, as_of_utc=as_of_utc, stale=_is_stale(as_of_utc, now), indices=quotes)
+    return IndicesSnapshot(
+        True, as_of_utc=as_of_utc, stale=_is_stale(as_of_utc, now), indices=quotes, invalid_fields=invalid_fields
+    )
