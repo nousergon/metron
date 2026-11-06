@@ -40,7 +40,7 @@ dependencies = [
     # its JWKS (metron-ops#179) — [crypto] pulls in `cryptography` for the Ed25519 path.
     "pyjwt[crypto]>=2.15.1",
     # --- engine tier (portfolio_analytics/) ---
-    "pandas>=3.0.6",
+    "pandas>=3.1.1",
     "numpy>=2.4.6",
     # Quant core (factor risk, attribution, returns, VaR/CVaR, riskstats) + the shared
     # cost-telemetry & SFT-capture chokepoints (nousergon_lib.sft). AGPL-3.0 (the internal
@@ -85,7 +85,7 @@ dependencies = [
     # via conftest's autouse `_no_live_aws_calls`, so no test exercises a real S3 call.
     # `<2` is close to free — boto3 has been on 1.x for its entire life — and it means a
     # major cannot arrive on a routine deploy the way snaptrade 12.x did (metron-ops#260).
-    "boto3>=1.43.121,<2",
+    "boto3>=1.43.124,<2",
     # Postgres driver (prod). SQLite is a dev/test fallback and needs nothing extra.
     "psycopg[binary]>=3.3.8",
 ]
