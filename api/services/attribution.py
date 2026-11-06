@@ -257,10 +257,17 @@ def _observed_window_points(
 ) -> list[perf_service.PerfPoint]:
     """The NAV snapshot points inside ``[anchor, end]`` for the selection, as the
     performance page reads them. The portfolio grain reads only the window's rows. An
-    account selection goes through ``_account_perf_series``, which aggregates the
-    selected accounts and applies its every-account-present guard."""
+    account selection goes through ``_account_perf_series_from_rows``, which aggregates the
+    selected accounts and applies its every-account-present guard, and is empty unless
+    EVERY selected account has snapshot rows."""
     if account_ids:
-        points = perf_service._load_perf_points(session, tenant_id, portfolio_id, account_ids)
+        by_account = perf_service._account_nav_rows_by_account(session, tenant_id, account_ids)
+        if set(by_account) != set(account_ids):
+            # The aggregate's cohort is the accounts that have rows; a selected account
+            # without any would silently drop out of the observed return (metron-ops-I392).
+            return []
+        points, _ = perf_service._account_perf_series_from_rows(
+            [r for rows in by_account.values() for r in rows])
     else:
         rows = session.scalars(
             select(models.NavSnapshot)
