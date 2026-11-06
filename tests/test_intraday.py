@@ -40,10 +40,10 @@ def _seed_one_holding(
     pf = models.Portfolio(tenant_id=tenant.id, name="P", base_currency="USD")
     session.add(pf)
     session.flush()
-    if intraday_enabled:
-        session.add(
-            models.InvestorPreferences(tenant_id=tenant.id, portfolio_id=pf.id, intraday_enabled=True)
-        )
+    # Default is ON with no prefs row, so "off" is an explicit False row.
+    session.add(
+        models.InvestorPreferences(tenant_id=tenant.id, portfolio_id=pf.id, intraday_enabled=bool(intraday_enabled))
+    )
     acct = models.Account(
         tenant_id=tenant.id, portfolio_id=pf.id, broker="csv", external_id="A1", currency="USD"
     )
@@ -327,9 +327,18 @@ class TestTodayView:
 
 class TestIntradayToggle:
     """The single user-facing intraday switch (InvestorPreferences.intraday_enabled),
-    default OFF — opt-in overlay; EOD-close valuation is authoritative until turned on."""
+    default ON (no row / NULL); an explicit False opts out to the EOD close."""
 
-    def test_default_off_no_pref_row(self, db_session):
+    def test_default_on_with_no_pref_row_or_null(self, db_session):
+        tid, pid = _seed_one_holding(db_session, symbol="AAPL")
+        db_session.query(models.InvestorPreferences).delete()
+        db_session.flush()
+        assert intraday.intraday_enabled(db_session, tid, pid) is True
+        db_session.add(models.InvestorPreferences(tenant_id=tid, portfolio_id=pid, intraday_enabled=None))
+        db_session.flush()
+        assert intraday.intraday_enabled(db_session, tid, pid) is True
+
+    def test_explicit_false_opts_out(self, db_session):
         tid, pid = _seed_one_holding(db_session, symbol="AAPL", intraday_enabled=False)
         assert intraday.intraday_enabled(db_session, tid, pid) is False
         prices, meta = intraday.for_portfolio(
@@ -394,9 +403,13 @@ class TestIntradayStatusEndpoint:
         assert r.json()["applied"] is False
 
     def test_toggle_off_reports_off_even_with_feed(self, client, tenant, monkeypatch):
-        # Feed entitled, but the user's single intraday switch is off (default) → reason "off".
+        # Feed entitled, but the user switched the intraday overlay off → reason "off".
         monkeypatch.setattr(settings, "feed_entitled", True)
         pid = client.post("/portfolios", json={"name": "P"}, headers={"X-Tenant-Id": tenant}).json()["id"]
+        client.put(
+            f"/portfolios/{pid}/preferences",
+            json={"intraday_enabled": False}, headers={"X-Tenant-Id": tenant},
+        )
         r = client.get(f"/portfolios/{pid}/intraday", headers={"X-Tenant-Id": tenant})
         assert r.status_code == 200
         body = r.json()
@@ -418,10 +431,10 @@ def _seed_portfolio_multi(session, specs, *, intraday_enabled=True, base="USD"):
     pf = models.Portfolio(tenant_id=tenant.id, name="P", base_currency=base)
     session.add(pf)
     session.flush()
-    if intraday_enabled:
-        session.add(
-            models.InvestorPreferences(tenant_id=tenant.id, portfolio_id=pf.id, intraday_enabled=True)
-        )
+    # Default is ON with no prefs row, so "off" is an explicit False row.
+    session.add(
+        models.InvestorPreferences(tenant_id=tenant.id, portfolio_id=pf.id, intraday_enabled=bool(intraday_enabled))
+    )
     acct = models.Account(
         tenant_id=tenant.id, portfolio_id=pf.id, broker="csv", external_id="A1", currency=base
     )

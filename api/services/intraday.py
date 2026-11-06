@@ -251,16 +251,18 @@ def _overlay(
 
 def intraday_enabled(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> bool:
     """The portfolio's single user-facing intraday toggle (``InvestorPreferences``, set from
-    Settings). Default OFF — a missing prefs row or a NULL column reads as disabled — so the
-    live overlay is opt-in and the persisted EOD-close valuation stays authoritative until the
-    user turns it on. The overlay applies iff ``feed_entitled AND intraday_enabled``."""
+    Settings). Default ON — a missing prefs row or a NULL column reads as enabled, so during
+    the session the dashboard shows the ~15-min-delayed prices rather than the prior close
+    (Brian 2026-11-05). Only an explicit False opts out. Display-only either way: the
+    persisted EOD-close history never takes intraday prices. The overlay applies iff
+    ``feed_entitled AND intraday_enabled``."""
     val = session.scalars(
         select(models.InvestorPreferences.intraday_enabled).where(
             models.InvestorPreferences.tenant_id == tenant_id,
             models.InvestorPreferences.portfolio_id == portfolio_id,
         )
     ).first()
-    return bool(val)
+    return val is not False
 
 
 def live_prices(
