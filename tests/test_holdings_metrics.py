@@ -96,6 +96,7 @@ def test_technicals_missing_artifact_is_empty():
 
 def test_valuation_medians_parse_and_normalize():
     art = {
+        "schema_version": 1,
         "as_of": "2026-06-26",
         "by_sector": {"Technology": {"n": 152, "trailing_pe": 28.0, "price_to_book": 6.2,
                                      "dividend_yield": 1.2}},

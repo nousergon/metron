@@ -79,11 +79,20 @@ def check(session, *, now: datetime | None = None) -> dict | None:
     if latest["status"] == "not-measured":
         quiet = [d for d in _not_measured_trading_days(session)
                  if d >= _PARSER_FIX_DAY.isoformat()]
+        # An error run is the job failing, not an absence of traffic: while one stands
+        # since the parser fix, the missing reading is classified job_broken (metron-ops-I392).
+        errored = [d for d in _run_days(session, "error") if d >= _PARSER_FIX_DAY.isoformat()]
         if len(quiet) >= _NEVER_MEASURED_TRADING_DAYS:
-            kind = kind or "no_traffic"
+            kind = kind or ("job_broken" if errored else "no_traffic")
             reasons.append(
                 f"no glance requests on {len(quiet)} trading day(s) since the log-parser "
                 f"fix (metron#593, {_PARSER_FIX_DAY.isoformat()}), latest {quiet[-1]}"
+            )
+        if errored:
+            kind = "job_broken"
+            reasons.append(
+                f"scripts/glance_p95.py --record errored on {len(errored)} trading day(s) "
+                f"since the log-parser fix, latest {errored[-1]} -- no reading was taken"
             )
 
     last_run = latest["last_run"]
@@ -140,6 +149,11 @@ def _alert_text(finding: dict) -> str:
 def _not_measured_trading_days(session) -> list[str]:
     """Distinct trading days (ISO, ascending) the run log recorded as ``not-measured``.
     Non-trading target days are dropped: an empty Saturday is not evidence of anything."""
+    return _run_days(session, "not-measured")
+
+
+def _run_days(session, status: str) -> list[str]:
+    """Distinct trading days (ISO, ascending) the run log recorded with ``status``."""
     from krepis.trading_calendar import is_trading_day
     from sqlalchemy import select
 
@@ -147,7 +161,7 @@ def _not_measured_trading_days(session) -> list[str]:
 
     days = session.scalars(
         select(models.GlanceP95RunLog.target_day)
-        .where(models.GlanceP95RunLog.status == "not-measured")
+        .where(models.GlanceP95RunLog.status == status)
         .distinct()
     ).all()
     return sorted(d.isoformat() for d in days if is_trading_day(d))

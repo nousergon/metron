@@ -160,3 +160,15 @@ def test_quiet_trading_days_do_not_add_a_finding_once_a_day_was_measured(db_sess
     gl.record_run(db_session, target_day=date(2026, 9, 21), status="not-measured", n=0)
     gl.record_run(db_session, target_day=day, status="measured", n=1, p95_ms=812.3)
     assert freshness.check(db_session, now=datetime(2026, 9, 23, 12, 0, tzinfo=_NY)) is None
+
+
+def test_error_runs_are_job_broken_not_no_traffic(db_session):
+    # metron-ops-I392: a run that errored took no reading, so two quiet days with an error
+    # among the runs is the job failing, not an absence of glance traffic.
+    gl.record_run(db_session, target_day=date(2026, 11, 2), status="not-measured", n=0)  # Mon
+    gl.record_run(db_session, target_day=date(2026, 11, 3), status="not-measured", n=0)  # Tue
+    gl.record_run(db_session, target_day=date(2026, 11, 4), status="error", error="boom")  # Wed
+    finding = freshness.check(db_session, now=datetime(2026, 11, 5, 12, 0, tzinfo=_NY))
+    assert finding is not None
+    assert finding["kind"] == "job_broken"
+    assert any("errored on 1 trading day(s)" in r for r in finding["reasons"])

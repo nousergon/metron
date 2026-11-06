@@ -145,7 +145,7 @@ class TestAccountDetailLiveValuation:
 
         session_today = security_perf.market_today().isoformat()
         art = {
-            "schema_version": 2,
+            "schema_version": 3,
             "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "quotes": {"AAPL": {"last": 130.0, "session_date": session_today}},
         }

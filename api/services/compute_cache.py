@@ -155,6 +155,17 @@ for _evt in ("after_flush", "after_commit", "after_rollback", "after_soft_rollba
 event.listen(Session, "do_orm_execute", _forget_on_write)
 
 
+def _bound_unexpiring_lock(lock_key: str) -> None:
+    """Give a lock key that carries NO expiry one (metron-ops-I392). ``diskcache.Lock``'s
+    ``expire`` applies only when the lock is freshly added, so a key orphaned by a worker
+    killed under code that predates ``LOCK_EXPIRE_S`` would block every caller forever.
+    A live holder written by this code always has an expiry and is left untouched."""
+    if lock_key in _cache:
+        _value, expire_time = _cache.get(lock_key, expire_time=True)
+        if expire_time is None:
+            _cache.touch(lock_key, expire=LOCK_EXPIRE_S)
+
+
 def cached(key: str, compute: Callable[[], T]) -> T:
     """Return ``compute()``'s result for ``key``, computed at most once per (key, content)
     across all workers. The first caller for a fresh key computes while others
@@ -165,7 +176,9 @@ def cached(key: str, compute: Callable[[], T]) -> T:
     if entry is not _MISS:
         return entry  # type: ignore[return-value]
 
-    lock = dc.Lock(_cache, f"lck:{key}", expire=LOCK_EXPIRE_S)
+    lock_key = f"lck:{key}"
+    _bound_unexpiring_lock(lock_key)
+    lock = dc.Lock(_cache, lock_key, expire=LOCK_EXPIRE_S)
     with lock:
         # Re-check inside the cross-process lock: a racing worker may have just populated it.
         entry = _cache.get(key, _MISS)

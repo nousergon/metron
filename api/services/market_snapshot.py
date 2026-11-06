@@ -25,6 +25,10 @@ import time
 logger = logging.getLogger(__name__)
 
 INTRADAY_KEY = "market_data/intraday/latest.json"
+# Pinned producer version (tests/contracts/metron_intraday_latest.schema.json). Every reader
+# of this artifact (indices, intraday overlay) refuses any other version whole at runtime
+# (metron-ops-I373); re-pin both together when the producer bumps it.
+INTRADAY_SCHEMA_VERSION = 3
 
 
 def _bucket() -> str:

@@ -24,15 +24,23 @@ rating" exactly like any other absent data-spine artifact.
 
 from __future__ import annotations
 
+import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from api import entitlements
 from api.services import intraday as intraday_service
 from api.services import spine_artifacts
+from api.services.technicals import TECHNICALS_SCHEMA_VERSION
+from portfolio_analytics.admission import admit_schema, finite_field
+
+logger = logging.getLogger(__name__)
 
 TECHNICAL_RATINGS_KEY = "market_data/intraday/technical_ratings.json"
+# Pinned producer version (tests/contracts/technical_ratings.schema.json). Any other version
+# is refused whole at runtime (metron-ops-I373); the EOD fallback then covers every symbol.
+TECHNICAL_RATINGS_SCHEMA_VERSION = 2
 # Shared with technicals.py — this module reads the SAME artifact for its embedded EOD
 # ``rating`` object, independently of (and without depending on) technicals.py's own
 # TickerTechnicals parse, which doesn't carry the rating fields.
@@ -64,6 +72,11 @@ class TickerRating:
 @dataclass
 class RatingSnapshot:
     by_symbol: dict[str, TickerRating]
+    # Artifact key → refusal reason for each artifact refused whole (off-contract
+    # schema_version); a refused artifact contributes no ratings. `invalid_fields` names, per
+    # symbol, the fields that were present but not a finite number and read as unavailable.
+    rejected: dict[str, str] = field(default_factory=dict)
+    invalid_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _bucket() -> str:
@@ -93,19 +106,11 @@ def _is_stale(as_of_utc: str | None, now: datetime) -> bool:
     return (now - beat).total_seconds() > intraday_service.STALE_AFTER_SECONDS
 
 
-def _f(d: dict, key: str) -> float | None:
-    v = d.get(key)
-    try:
-        return float(v) if v is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
 def _i(d: dict, key: str) -> int | None:
     v = d.get(key)
     try:
         return int(v) if v is not None else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # int(inf) raises OverflowError
         return None
 
 
@@ -114,7 +119,10 @@ def _label(d: dict) -> str | None:
     return label if isinstance(label, str) and label in RATING_LABELS else None
 
 
-def _parse(yf_symbol: str, d: dict, *, basis: str, as_of: str | None) -> TickerRating:
+def _parse(yf_symbol: str, d: dict, *, basis: str, as_of: str | None, invalid: list[str]) -> TickerRating:
+    def _f(d: dict, key: str) -> float | None:
+        return finite_field(d, key, invalid)
+
     return TickerRating(
         yf_symbol=yf_symbol,
         score=_f(d, "score"),
@@ -144,27 +152,50 @@ def load_technical_rating(
         return RatingSnapshot(by_symbol={})
     now = now or datetime.now(UTC)
     by_symbol: dict[str, TickerRating] = {}
+    rejected: dict[str, str] = {}
+    invalid_fields: dict[str, tuple[str, ...]] = {}
 
-    intraday_art = (intraday_reader or _default_intraday_reader)() or {}
+    def _add(sym: str, body: dict, *, basis: str, as_of: str | None) -> None:
+        invalid: list[str] = []
+        by_symbol[sym] = _parse(sym, body, basis=basis, as_of=as_of, invalid=invalid)
+        if invalid:
+            invalid_fields[sym] = tuple(invalid)
+
+    intraday_raw = (intraday_reader or _default_intraday_reader)()
+    reason = admit_schema(
+        intraday_raw, expected=TECHNICAL_RATINGS_SCHEMA_VERSION, artifact=TECHNICAL_RATINGS_KEY
+    )
+    if reason is not None:
+        rejected[TECHNICAL_RATINGS_KEY] = reason
+    intraday_art = (intraday_raw if reason is None else None) or {}
     intraday_as_of = intraday_art.get("as_of_utc")
     if intraday_art and not _is_stale(intraday_as_of, now):
         ratings = intraday_art.get("ratings")
         if isinstance(ratings, dict):
             for sym, body in ratings.items():
                 if isinstance(body, dict):
-                    by_symbol[sym] = _parse(sym, body, basis=BASIS_INTRADAY, as_of=intraday_as_of)
+                    _add(sym, body, basis=BASIS_INTRADAY, as_of=intraday_as_of)
 
     # EOD fallback (schema v3 embedded ``rating``) — fills any symbol not already covered by
     # a fresh intraday rating, including every symbol when the intraday artifact is
     # absent/stale/missing its own ``ratings`` map. Schema v2 (no ``rating`` key per symbol)
     # degrades to simply contributing nothing here — never an error.
-    tech_art = (technicals_reader or _default_technicals_reader)() or {}
+    tech_raw = (technicals_reader or _default_technicals_reader)()
+    reason = admit_schema(tech_raw, expected=TECHNICALS_SCHEMA_VERSION, artifact=TECHNICALS_KEY)
+    if reason is not None:
+        rejected[TECHNICALS_KEY] = reason
+    tech_art = (tech_raw if reason is None else None) or {}
     tech_as_of = tech_art.get("as_of")
     for sym, body in (tech_art.get("technicals") or {}).items():
         if sym in by_symbol or not isinstance(body, dict):
             continue
         rating = body.get("rating")
         if isinstance(rating, dict):
-            by_symbol[sym] = _parse(sym, rating, basis=BASIS_EOD, as_of=str(tech_as_of) if tech_as_of else None)
+            _add(sym, rating, basis=BASIS_EOD, as_of=str(tech_as_of) if tech_as_of else None)
 
-    return RatingSnapshot(by_symbol=by_symbol)
+    if invalid_fields:
+        logger.warning(
+            "technical ratings: %d symbol(s) carried non-finite or non-numeric values, read as unavailable: %s",
+            len(invalid_fields), sorted(invalid_fields),
+        )
+    return RatingSnapshot(by_symbol=by_symbol, rejected=rejected, invalid_fields=invalid_fields)

@@ -74,7 +74,7 @@ def test_analyst_paid_estimates_scaffold_is_na():
 def test_analyst_estimates_available_when_paid_feed_lands():
     """Forward-compat: a future artifact carrying a forward estimate flips the gate with no
     schema change (the columns auto-populate)."""
-    art = {"analyst": {"X": {"consensus_rating": "buy", "forward_eps": 7.5}}}
+    art = {"schema_version": 1, "analyst": {"X": {"consensus_rating": "buy", "forward_eps": 7.5}}}
     a = analyst.load_analyst(reader=lambda: art).by_symbol["X"]
     assert a.forward_eps == 7.5 and a.estimates_available is True
 

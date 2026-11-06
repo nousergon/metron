@@ -200,3 +200,12 @@ def test_the_compute_lock_carries_an_expiry() -> None:
 
     assert "expire=LOCK_EXPIRE_S" in inspect.getsource(compute_cache.cached)
     assert 0 < compute_cache.LOCK_EXPIRE_S <= 300
+
+
+def test_an_orphaned_lock_without_expiry_is_bounded():
+    # metron-ops-I392: a lock key left with no expiry (orphaned before locks expired) must
+    # not block forever; cached() gives it LOCK_EXPIRE_S, after which the key computes.
+    compute_cache._cache.add("lck:orphan-key", None)  # no expire, like a pre-expiry orphan
+    assert compute_cache._cache.get("lck:orphan-key", expire_time=True)[1] is None
+    compute_cache._bound_unexpiring_lock("lck:orphan-key")
+    assert compute_cache._cache.get("lck:orphan-key", expire_time=True)[1] is not None
