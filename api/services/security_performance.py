@@ -10,13 +10,20 @@ Mirrors ``technicals.py`` / ``fundamentals.py`` (injectable reader, fail-soft).
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import date
 
 from api.services import spine_artifacts
+from portfolio_analytics.admission import admit_schema, finite_field, read_number
+
+logger = logging.getLogger(__name__)
 
 SECURITY_PERFORMANCE_KEY = "market_data/security_performance/latest.json"
+# Pinned producer version (tests/contracts/metron_security_performance.schema.json). Any
+# other version is refused whole at runtime (metron-ops-I373).
+SECURITY_PERFORMANCE_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -41,6 +48,11 @@ class TickerPerformance:
 class SecurityPerformanceSnapshot:
     as_of: date | None
     by_symbol: dict[str, TickerPerformance]
+    # Set when the artifact was refused whole (off-contract schema_version): it then reads
+    # as absent, but the reason is explicit. `invalid_fields` names, per symbol, the fields
+    # that were present but not a finite number and therefore read as unavailable.
+    rejected_reason: str | None = None
+    invalid_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _bucket() -> str:
@@ -52,23 +64,21 @@ def _default_reader() -> dict | None:
     return spine_artifacts.read_json(SECURITY_PERFORMANCE_KEY, bucket=_bucket())
 
 
-def _f(d: dict, key: str) -> float | None:
-    v = d.get(key)
-    try:
-        return float(v) if v is not None else None
-    except (TypeError, ValueError):
-        return None
+def _parse(yf_symbol: str, d: dict, invalid: list[str]) -> TickerPerformance:
+    def _f(key: str) -> float | None:
+        return finite_field(d, key, invalid)
 
-
-def _parse(yf_symbol: str, d: dict) -> TickerPerformance:
     period_returns: dict[str, float] = {}
     raw_pr = d.get("period_returns")
     if isinstance(raw_pr, dict):
         for label, val in raw_pr.items():
-            try:
-                period_returns[str(label)] = float(val)
-            except (TypeError, ValueError):
+            if val is None:
                 continue
+            reading = read_number(val)
+            if isinstance(reading, float):
+                period_returns[str(label)] = reading
+            else:
+                invalid.append(f"period_returns.{label}")
     history_from = None
     raw_hf = d.get("history_from")
     if raw_hf:
@@ -84,16 +94,16 @@ def _parse(yf_symbol: str, d: dict) -> TickerPerformance:
     return TickerPerformance(
         yf_symbol=yf_symbol,
         period_returns=period_returns,
-        mtd_pct=_f(d, "mtd_pct"),
-        ytd_pct=_f(d, "ytd_pct"),
-        ltm_pct=_f(d, "ltm_pct"),
-        volatility=_f(d, "volatility"),
-        sharpe=_f(d, "sharpe"),
-        sortino=_f(d, "sortino"),
-        max_drawdown=_f(d, "max_drawdown"),
-        beta_vs_spy=_f(d, "beta_vs_spy"),
-        vs_spy_1y=_f(d, "vs_spy_1y"),
-        vs_spy_window=_f(d, "vs_spy_window"),
+        mtd_pct=_f("mtd_pct"),
+        ytd_pct=_f("ytd_pct"),
+        ltm_pct=_f("ltm_pct"),
+        volatility=_f("volatility"),
+        sharpe=_f("sharpe"),
+        sortino=_f("sortino"),
+        max_drawdown=_f("max_drawdown"),
+        beta_vs_spy=_f("beta_vs_spy"),
+        vs_spy_1y=_f("vs_spy_1y"),
+        vs_spy_window=_f("vs_spy_window"),
         n_bars=n_bars,
         history_from=history_from,
     )
@@ -101,11 +111,26 @@ def _parse(yf_symbol: str, d: dict) -> TickerPerformance:
 
 def load_security_performance(*, reader=None) -> SecurityPerformanceSnapshot:
     """Latest performance snapshot keyed by yf_symbol. ``reader`` is injectable for tests."""
-    art = (reader or _default_reader)() or {}
+    raw = (reader or _default_reader)()
+    rejected = admit_schema(
+        raw, expected=SECURITY_PERFORMANCE_SCHEMA_VERSION, artifact=SECURITY_PERFORMANCE_KEY
+    )
+    if rejected is not None:
+        return SecurityPerformanceSnapshot(as_of=None, by_symbol={}, rejected_reason=rejected)
+    art = raw or {}
     by_symbol: dict[str, TickerPerformance] = {}
+    invalid_fields: dict[str, tuple[str, ...]] = {}
     for sym, body in (art.get("performance") or {}).items():
         if isinstance(body, dict):
-            by_symbol[sym] = _parse(sym, body)
+            invalid: list[str] = []
+            by_symbol[sym] = _parse(sym, body, invalid)
+            if invalid:
+                invalid_fields[sym] = tuple(invalid)
+    if invalid_fields:
+        logger.warning(
+            "%s: %d symbol(s) carried non-finite or non-numeric values, read as unavailable: %s",
+            SECURITY_PERFORMANCE_KEY, len(invalid_fields), sorted(invalid_fields),
+        )
     as_of = None
     raw_as_of = art.get("as_of")
     if raw_as_of:
@@ -113,4 +138,4 @@ def load_security_performance(*, reader=None) -> SecurityPerformanceSnapshot:
             as_of = date.fromisoformat(str(raw_as_of)[:10])
         except ValueError:
             as_of = None
-    return SecurityPerformanceSnapshot(as_of=as_of, by_symbol=by_symbol)
+    return SecurityPerformanceSnapshot(as_of=as_of, by_symbol=by_symbol, invalid_fields=invalid_fields)
