@@ -152,6 +152,7 @@ class TestIndicesEndpoint:
         """YTD/LTM come from the security_performance spine — no local price_bars backfill."""
         monkeypatch.setattr(indices, "_default_reader", lambda: _ART)
         perf_art = {
+            "schema_version": 1,
             "performance": {
                 sym: {"ytd_pct": level / 100.0 - 1.0, "ltm_pct": level / 100.0 - 1.0}
                 for sym, level in (("SPY", 110.0), ("ONEQ", 120.0), ("QQQ", 130.0), ("IWM", 90.0))
@@ -228,6 +229,7 @@ class TestProxyDayReturn:
 class TestIndexPeriodReturnsFromSpine:
     def test_reads_ytd_ltm_from_security_performance_artifact(self, monkeypatch):
         art = {
+            "schema_version": 1,
             "performance": {
                 "SPY": {"mtd_pct": 0.01, "ytd_pct": 0.08, "ltm_pct": 0.15},
                 "ONEQ": {"ytd_pct": 0.09, "ltm_pct": 0.16},
