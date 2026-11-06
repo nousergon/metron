@@ -101,3 +101,25 @@ def test_endpoint_answers_with_the_note_shape(client, monkeypatch):
     body = r.json()
     # No NAV history yet: honest "not available" with the reason, never an empty note.
     assert body["available"] is False and body["missing"]
+
+
+def test_a_refreshed_tile_is_not_answered_with_the_cached_note(monkeypatch):
+    # metron-ops-I392: the note quotes the tile's TWR and benchmark returns, so the same
+    # holdings fingerprint with a different tile must compose a new note, not reuse the old.
+    from api.services import compute_cache
+
+    monkeypatch.setattr(compute_cache, "portfolio_fingerprint", lambda s, t, p: "fp-fixed")
+    pid, tid = uuid.uuid4(), uuid.uuid4()
+    first = market_note.market_note(None, tid, pid, tile=_tile(spy=0.006),
+                                    attr_enabled=False, gap_enabled=False)
+    second = market_note.market_note(None, tid, pid, tile=_tile(spy=-0.02),
+                                     attr_enabled=False, gap_enabled=False)
+    assert first.sentences != second.sentences
+
+
+def test_a_sector_view_disagreeing_with_the_headline_gap_is_not_told():
+    # metron-ops-I392: the tile says AHEAD by 1.4 points; an attribution saying behind by
+    # 1.4 cannot explain that gap, so no sector sentence is composed from it.
+    note = market_note.compose(_tile(twr=0.02), _energy_attr(gap=-0.014))
+    assert len(note.sentences) == 1
+    assert any("does not agree in direction" in m for m in note.missing)

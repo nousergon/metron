@@ -1413,7 +1413,8 @@ def _ensure_benchmark_coverage(
             or (end - series[-1].bar_date).days > _BENCH_COVERAGE_SLACK_DAYS
         )
     ]
-    if need and source is None:
+    memoized = need and source is None
+    if memoized:
         # Default (spine) source: skip symbols attempted for this window recently.
         now = time.monotonic()
         with _bench_backfill_lock:
@@ -1421,7 +1422,16 @@ def _ensure_benchmark_coverage(
             for s in need:
                 _bench_backfill_tried[(s, start, end)] = now
     if need:
-        price_service.backfill_prices(session, need, start, end, source=source)
+        try:
+            price_service.backfill_prices(session, need, start, end, source=source)
+        except Exception:
+            # A FAILED attempt is not a completed one: drop its memo so the next load
+            # retries instead of waiting out the window (metron-ops-I392).
+            if memoized:
+                with _bench_backfill_lock:
+                    for s in need:
+                        _bench_backfill_tried.pop((s, start, end), None)
+            raise
 
 
 def _load_perf_points(
