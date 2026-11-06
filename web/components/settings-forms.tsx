@@ -173,7 +173,7 @@ export function PreferencesForm({ portfolioId, current }: { portfolioId: string;
   // through saves unchanged below, so nothing is destroyed — the inputs can return
   // with the registered tier.
   const [notes, setNotes] = useState(current.notes ?? "");
-  const [intradayEnabled, setIntradayEnabled] = useState(current.intraday_enabled ?? false);
+  const [intradayEnabled, setIntradayEnabled] = useState(current.intraday_enabled ?? true);
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -211,8 +211,8 @@ export function PreferencesForm({ portfolioId, current }: { portfolioId: string;
         <span>
           <span className="text-muted">Live intraday prices</span>
           <span className="mt-0.5 block text-xs text-muted">
-            Overlay ~15-min-delayed intraday prices on your holdings while the app is open. Off by
-            default — values come from the official end-of-day close.
+            Overlay ~15-min-delayed intraday prices on your holdings while the market is open. On by
+            default; turn off to value everything at the official end-of-day close.
           </span>
         </span>
       </label>
