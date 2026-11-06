@@ -19,7 +19,7 @@ from api.services import indices, security_perf
 _AS_OF = "2026-06-12T15:00:00Z"
 _NOW = datetime(2026, 6, 12, 15, 3, tzinfo=UTC)  # 3 min after the write — fresh
 _ART = {
-    "schema_version": 2,
+    "schema_version": 3,
     "as_of_utc": _AS_OF,
     "source": "yfinance_delayed",
     "quotes": {"AAPL": {"last": 202.1, "prev_close": 201.5}},
@@ -55,17 +55,17 @@ class TestLoadIndices:
         assert snap.available is False and snap.reason
 
     def test_unavailable_when_indices_absent_but_as_of_preserved(self):
-        snap = indices.load_indices(reader=lambda: {"as_of_utc": _AS_OF, "indices": {}}, now=_NOW)
+        snap = indices.load_indices(reader=lambda: {"schema_version": 3, "as_of_utc": _AS_OF, "indices": {}}, now=_NOW)
         assert snap.available is False and snap.reason
         assert snap.as_of_utc == _AS_OF
 
     def test_absent_symbol_omitted_not_fabricated(self):
-        art = {"as_of_utc": _AS_OF, "indices": {"SPY": _ART["indices"]["SPY"]}}
+        art = {"schema_version": 3, "as_of_utc": _AS_OF, "indices": {"SPY": _ART["indices"]["SPY"]}}
         snap = indices.load_indices(reader=lambda: art, now=_NOW)
         assert [q.symbol for q in snap.indices] == ["SPY"]
 
     def test_missing_prev_close_yields_none_change(self):
-        art = {"as_of_utc": _AS_OF, "indices": {"SPY": {"last": 605.2}}}
+        art = {"schema_version": 3, "as_of_utc": _AS_OF, "indices": {"SPY": {"last": 605.2}}}
         snap = indices.load_indices(reader=lambda: art, now=_NOW)
         q = snap.indices[0]
         assert q.last == 605.2 and q.change is None and q.change_pct is None
@@ -76,7 +76,7 @@ class TestLoadIndices:
         assert snap.available is True and snap.stale is True
 
     def test_suspect_flag_passthrough(self):
-        art = {"as_of_utc": _AS_OF, "indices": {"SPY": {"last": 9.9, "prev_close": 602.4, "suspect": True}}}
+        art = {"schema_version": 3, "as_of_utc": _AS_OF, "indices": {"SPY": {"last": 9.9, "prev_close": 602.4, "suspect": True}}}
         snap = indices.load_indices(reader=lambda: art, now=_NOW)
         assert snap.indices[0].suspect is True
 
@@ -110,7 +110,7 @@ class TestLoadIndices:
     def test_missing_session_date_suppresses_move(self):
         """A quote with no ``session_date`` can't be proven to be the current session, so its
         move is suppressed (fail-safe — never assume an undated quote is today's)."""
-        art = {"as_of_utc": _AS_OF, "indices": {"SPY": {"last": 605.2, "prev_close": 602.4}}}
+        art = {"schema_version": 3, "as_of_utc": _AS_OF, "indices": {"SPY": {"last": 605.2, "prev_close": 602.4}}}
         snap = indices.load_indices(reader=lambda: art, now=_NOW)
         q = snap.indices[0]
         assert q.last == pytest.approx(605.2) and q.change is None and q.change_pct is None
@@ -174,6 +174,7 @@ class TestProxyDayReturn:
     a quote dated for the live session carries a real today move" discipline exactly."""
 
     _ART = {
+        "schema_version": 3,
         "as_of_utc": _AS_OF,
         "fund_proxies": {
             "SPY": {"last": 605.2, "prev_close": 602.4, "session_date": "2026-06-12"},
@@ -204,7 +205,7 @@ class TestProxyDayReturn:
         assert indices.proxy_day_return("SPY", reader=lambda: self._ART, now=preopen) is None
 
     def test_missing_session_date_returns_none(self):
-        art = {"as_of_utc": _AS_OF, "fund_proxies": {"SPY": {"last": 605.2, "prev_close": 602.4}}}
+        art = {"schema_version": 3, "as_of_utc": _AS_OF, "fund_proxies": {"SPY": {"last": 605.2, "prev_close": 602.4}}}
         assert indices.proxy_day_return("SPY", reader=lambda: art, now=_NOW) is None
 
     def test_missing_prev_close_returns_none(self):
@@ -222,7 +223,7 @@ class TestProxyDayReturn:
         assert indices.proxy_day_return("SPY", reader=lambda: art, now=_NOW) is None
 
     def test_absent_fund_proxies_map_returns_none(self):
-        art = {"as_of_utc": _AS_OF, "indices": {}}
+        art = {"schema_version": 3, "as_of_utc": _AS_OF, "indices": {}}
         assert indices.proxy_day_return("SPY", reader=lambda: art, now=_NOW) is None
 
 

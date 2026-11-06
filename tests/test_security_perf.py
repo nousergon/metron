@@ -16,7 +16,7 @@ _TODAY = date(2026, 6, 12)
 
 
 def _art(quotes: dict) -> dict:
-    return {"schema_version": 1, "as_of_utc": _AS_OF_ART, "source": "yfinance_delayed", "quotes": quotes}
+    return {"schema_version": 3, "as_of_utc": _AS_OF_ART, "source": "yfinance_delayed", "quotes": quotes}
 
 
 def _seed(session, closes: list[tuple[date, float]]):
