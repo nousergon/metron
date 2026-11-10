@@ -17,6 +17,8 @@ import { featureEntitlement, loadEntitlements, navFeatureStates, previewFromCook
 import { IndexStrip } from "@/components/index-strip";
 import { PerfTiles } from "@/components/perf-tiles";
 import { MarketNoteView } from "@/components/market-note";
+import { MarketNoteLate } from "@/components/market-note-late";
+import { RetryRefresh, RetryReset } from "@/components/retry-refresh";
 import { requireApiAuth } from "@/lib/session";
 import { resolveAccountIds } from "@/lib/selection";
 
@@ -122,21 +124,14 @@ export default async function HoldingsPage(
   const scoped = accountIds.length > 0;
   const navQuery = acctParams(accountIds);
 
-  // The one CHEAP scoped read blocks the shell (≈0.3s): summary gives base currency +
-  // priced state used throughout (and resolves portfolio-not-found). The expensive reads
-  // (accounts / holdings) stream below. Valued per the resolved regime.
-  let summary: Summary;
-  try {
-    summary = await getSummary(apiAuth, id, accountIds, valuation);
-  } catch (e) {
-    if (e instanceof MetronApiError && e.status === 404) {
-      return <Empty>Portfolio not found.</Empty>;
-    }
-    return <Empty>Couldn&apos;t load holdings. Is the backend running?</Empty>;
-  }
-
-  const ccy = summary.base_currency;
-  const priced = summary.market_value != null;
+  // Summary gives the base currency + priced state the holdings sections need (and
+  // resolves portfolio-not-found). It no longer blocks the shell (Brian, 2026-11-09: "the
+  // page materializes with what can load quickly"): the nav, the stats strip and the note
+  // paint at once, and each section that needs the basis awaits this promise itself.
+  const basisP: Promise<Basis> = getSummary(apiAuth, id, accountIds, valuation).then(
+    (summary: Summary): Basis => ({ ok: true, ccy: summary.base_currency, priced: summary.market_value != null }),
+    (e: unknown): Basis => ({ ok: false, notFound: e instanceof MetronApiError && e.status === 404 }),
+  );
 
   // One holdings read shared by the total, the table and the notes (see header comment).
   // Each consumer handles a rejection itself; the no-op catch only keeps an unconsumed
@@ -146,7 +141,7 @@ export default async function HoldingsPage(
   // The live session's data (covered-basis Today + drift legs), shared by the headline
   // panel near the top and its footnotes in the bottom notes. Live mode only.
   const sessionP: Promise<SessionData> | null =
-    valuation === "live" && priced && live
+    valuation === "live" && live
       ? Promise.all([
           getToday(apiAuth, id, accountIds).catch((): Today | null => null),
           getIntradayLegs(apiAuth, id).catch((): IntradayLegHistory | null => null),
@@ -182,7 +177,7 @@ export default async function HoldingsPage(
       {/* Portfolio total — first on the page (Brian, 2026-09-28). Same type-filtered rows as
           the table below (HiddenTypesProvider), so the two can never disagree. */}
       <Suspense fallback={<Bar className="mt-3 h-12 w-full animate-pulse" />}>
-        <TotalSection holdingsP={holdingsP} ccy={ccy} priced={priced} />
+        <TotalSection holdingsP={holdingsP} basisP={basisP} />
       </Suspense>
 
       {/* Live-session panel (metron-ops#153): coverage banner + covered-basis session strip
@@ -194,7 +189,7 @@ export default async function HoldingsPage(
           so no change was needed here beyond letting valuation stay "live" that long. */}
       {sessionP && live ? (
         <Suspense fallback={<SectionSkeleton rows={2} />}>
-          <SessionSection sessionP={sessionP} ccy={ccy} status={live} />
+          <SessionSection sessionP={sessionP} basisP={basisP} status={live} />
         </Suspense>
       ) : null}
 
@@ -209,11 +204,11 @@ export default async function HoldingsPage(
           day; Overview is the settled-mode fallback. */}
       <ColumnBandsProvider initialBands={valuation === "live" ? INTRADAY_VISIBLE_GROUPS : DEFAULT_VISIBLE_GROUPS}>
         <Suspense fallback={<SectionSkeleton rows={6} />}>
-          <HoldingsSection apiAuth={apiAuth} id={id} holdingsP={holdingsP} accountIds={accountIds} ccy={ccy} priced={priced} entitlements={entitlements} byAccount={byAccount} savedView={savedView} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} />
+          <HoldingsSection apiAuth={apiAuth} id={id} holdingsP={holdingsP} accountIds={accountIds} basisP={basisP} entitlements={entitlements} byAccount={byAccount} savedView={savedView} valuation={valuation} liveAvailable={liveAvailable} sessionState={sessionState} />
         </Suspense>
 
         <Suspense fallback={<SectionSkeleton rows={3} />}>
-          <WatchlistSection apiAuth={apiAuth} id={id} ccy={ccy} />
+          <WatchlistSection apiAuth={apiAuth} id={id} basisP={basisP} />
         </Suspense>
       </ColumnBandsProvider>
 
@@ -226,11 +221,11 @@ export default async function HoldingsPage(
         </h2>
         {sessionP ? (
           <Suspense fallback={null}>
-            <SessionNotesSection sessionP={sessionP} ccy={ccy} />
+            <SessionNotesSection sessionP={sessionP} basisP={basisP} />
           </Suspense>
         ) : null}
         <Suspense fallback={null}>
-          <FreshnessNotesSection holdingsP={holdingsP} priced={priced} />
+          <FreshnessNotesSection holdingsP={holdingsP} basisP={basisP} />
         </Suspense>
         <p className="text-xs text-muted">
           All accounts are included by default. (De)activate accounts with the account chip in the Holdings toolbar to
@@ -246,10 +241,14 @@ export default async function HoldingsPage(
 
 type SessionData = { today: Today | null; legs: IntradayLegHistory | null };
 
+/** The summary-derived basis every holdings section needs, resolved off the shell. */
+type Basis = { ok: true; ccy: string; priced: boolean } | { ok: false; notFound: boolean };
+
 /** The hoisted Portfolio total (top of the page) — fails soft (the table reports errors). */
-async function TotalSection({ holdingsP, ccy, priced }: { holdingsP: Promise<Holding[]>; ccy: string; priced: boolean }) {
-  const holdings = await holdingsP.catch((): Holding[] | null => null);
-  if (!holdings || holdings.length === 0) return null;
+async function TotalSection({ holdingsP, basisP }: { holdingsP: Promise<Holding[]>; basisP: Promise<Basis> }) {
+  const [basis, holdings] = await Promise.all([basisP, holdingsP.catch((): Holding[] | null => null)]);
+  if (!basis.ok || !holdings || holdings.length === 0) return null;
+  const { ccy, priced } = basis;
   return (
     <div className="mt-3">
       <FilteredPortfolioTotal holdings={holdings} baseCurrency={ccy} priced={priced} />
@@ -259,24 +258,25 @@ async function TotalSection({ holdingsP, ccy, priced }: { holdingsP: Promise<Hol
 
 /** The live-session headline (scoped like the table): the covered-basis Today
  *  decomposition joined with the coverage status fetched upstream. */
-async function SessionSection({ sessionP, ccy, status }: { sessionP: Promise<SessionData>; ccy: string; status: IntradayStatus }) {
-  const { today } = await sessionP;
-  if (!today) return null;
-  return <SessionPanel status={status} today={today} ccy={ccy} />;
+async function SessionSection({ sessionP, basisP, status }: { sessionP: Promise<SessionData>; basisP: Promise<Basis>; status: IntradayStatus }) {
+  const [basis, { today }] = await Promise.all([basisP, sessionP]);
+  if (!basis.ok || !basis.priced || !today) return null;
+  return <SessionPanel status={status} today={today} ccy={basis.ccy} />;
 }
 
 /** The live session's footnotes, rendered in the bottom Notes block. */
-async function SessionNotesSection({ sessionP, ccy }: { sessionP: Promise<SessionData>; ccy: string }) {
-  const { today, legs } = await sessionP;
-  if (!today) return null;
-  return <SessionNotes today={today} legs={legs} ccy={ccy} />;
+async function SessionNotesSection({ sessionP, basisP }: { sessionP: Promise<SessionData>; basisP: Promise<Basis> }) {
+  const [basis, { today, legs }] = await Promise.all([basisP, sessionP]);
+  if (!basis.ok || !basis.priced || !today) return null;
+  return <SessionNotes today={today} legs={legs} ccy={basis.ccy} />;
 }
 
 /** The plain "prices as of" / "positions synced through" captions, over the whole holdings
  *  read (page-level provenance, independent of the table's type filter). */
-async function FreshnessNotesSection({ holdingsP, priced }: { holdingsP: Promise<Holding[]>; priced: boolean }) {
-  const holdings = await holdingsP.catch((): Holding[] | null => null);
-  if (!holdings || holdings.length === 0) return null;
+async function FreshnessNotesSection({ holdingsP, basisP }: { holdingsP: Promise<Holding[]>; basisP: Promise<Basis> }) {
+  const [basis, holdings] = await Promise.all([basisP, holdingsP.catch((): Holding[] | null => null)]);
+  if (!basis.ok || !holdings || holdings.length === 0) return null;
+  const { priced } = basis;
   return (
     <>
       {priced ? <PricesAsOfCaption holdings={holdings} /> : null}
@@ -286,20 +286,27 @@ async function FreshnessNotesSection({ holdingsP, priced }: { holdingsP: Promise
 }
 
 async function HoldingsSection({
-  apiAuth, id, holdingsP, accountIds, ccy, priced, entitlements, byAccount, savedView, valuation, liveAvailable, sessionState,
+  apiAuth, id, holdingsP, accountIds, basisP, entitlements, byAccount, savedView, valuation, liveAvailable, sessionState,
 }: {
-  apiAuth: string; id: string; holdingsP: Promise<Holding[]>; accountIds: string[]; ccy: string; priced: boolean; entitlements: Entitlements | null; byAccount: boolean; savedView: HoldingsViewPrefs | null; valuation: "live" | "settled"; liveAvailable: boolean; sessionState: "live" | "recap" | "closed";
+  apiAuth: string; id: string; holdingsP: Promise<Holding[]>; accountIds: string[]; basisP: Promise<Basis>; entitlements: Entitlements | null; byAccount: boolean; savedView: HoldingsViewPrefs | null; valuation: "live" | "settled"; liveAvailable: boolean; sessionState: "live" | "recap" | "closed";
 }) {
+  const basis = await basisP;
+  if (!basis.ok && basis.notFound) return <Empty>Portfolio not found.</Empty>;
   let holdings: Holding[];
   try {
+    if (!basis.ok) throw new Error("summary unavailable");
     holdings = await holdingsP;
   } catch {
+    // A slow or briefly unavailable API (2026-11-09: the worker was being recycled) is
+    // retried in the background rather than parked behind "reload in a minute".
     return (
       <Section title="Holdings">
-        <Empty>Couldn&apos;t load holdings.</Empty>
+        <Empty>Holdings are taking longer than usual. Retrying in the background…</Empty>
+        <RetryRefresh retryKey={`holdings:${id}`} />
       </Section>
     );
   }
+  const { ccy, priced } = basis;
   // SP1500-broad sector/country median bands — best-effort + feed-gated. Accounts feed
   // the toolbar scope chip (metron-ops-I156) — the panel moved to the Overview.
   const [medians, accounts] = await Promise.all([
@@ -330,6 +337,7 @@ async function HoldingsSection({
 
   return (
     <Section title="Holdings" note={priced ? valuationNote : "cost basis — refresh for market value"}>
+      <RetryReset retryKey={`holdings:${id}`} />
       <div className="mb-3">
         <RefreshPrices portfolioId={id} feedOn={entitlements?.feed_enabled} />
       </div>
@@ -350,13 +358,16 @@ async function HoldingsSection({
 // Watchlist (metron-ops#42/#121) — a comparison-only table of tracked tickers you don't
 // (necessarily) hold, sortable on the same metrics as the Holdings table above. Always
 // scoped to the whole portfolio (not account-filtered — a watchlist entry has no account).
-async function WatchlistSection({ apiAuth, id, ccy }: { apiAuth: string; id: string; ccy: string }) {
+async function WatchlistSection({ apiAuth, id, basisP }: { apiAuth: string; id: string; basisP: Promise<Basis> }) {
   let entries: WatchlistEntry[];
   try {
     entries = await getWatchlist(apiAuth, id);
   } catch {
     return null; // best-effort — the Holdings table above already rendered
   }
+  const basis = await basisP;
+  if (!basis.ok) return null;
+  const { ccy } = basis;
   return (
     <Section title="Watchlist" note="tracked tickers, compared side-by-side · metrics as of last close — never affects NAV or performance">
       <WatchlistCompareTable portfolioId={id} baseCurrency={ccy} entries={entries} />
@@ -376,6 +387,9 @@ async function MarketNoteSection({
   accountIds: string[];
 }) {
   const note = await getMarketNote(apiAuth, id, accountIds).catch(() => null);
+  // Missed the streamed window: keep fetching in the background and swap the note in when
+  // it lands, instead of asking the reader to reload (Brian, 2026-11-09).
+  if (!note) return <MarketNoteLate portfolioId={id} accountIds={accountIds} />;
   return <MarketNoteView note={note} />;
 }
 
