@@ -130,6 +130,14 @@ describe("Holdings landing page composition", () => {
     await landing();
     expect(api.getHoldings).toHaveBeenCalledTimes(1);
   });
+
+  it("paints the shell without waiting for the summary (Brian, 2026-11-09)", async () => {
+    api.getSummary.mockReturnValue(new Promise(() => {})); // never settles
+    const names = typeNames(await landing());
+    expect(names).toContain("PortfolioNav");
+    expect(names).toContain("StatsSection");
+    expect(names).toContain("HoldingsSection");
+  });
 });
 
 describe("HoldingsView on the landing page", () => {

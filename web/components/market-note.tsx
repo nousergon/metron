@@ -8,10 +8,12 @@ import type { MarketNote } from "@/lib/api";
 
 const TITLE = "Portfolio vs market";
 
-export function MarketNoteView({ note }: { note: MarketNote | null }) {
+export function MarketNoteView({ note, pending = false }: { note: MarketNote | null; pending?: boolean }) {
   const ready = note?.available && note.sentences.length > 0;
   const why = !note
-    ? "The note did not load in time. Reload in a minute to try again."
+    ? pending
+      ? "Still working on the note. It will appear here when it is ready."
+      : "The note did not load. Reload in a minute to try again."
     : (note.missing[0] ?? "No note for this session yet.");
   return (
     <div className="mt-3 rounded-lg border border-line p-4" aria-label="Why the portfolio moved">

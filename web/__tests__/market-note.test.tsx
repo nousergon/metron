@@ -36,6 +36,11 @@ describe("MarketNoteView", () => {
 
   it("says it could not load rather than vanishing", () => {
     render(<MarketNoteView note={null} />);
-    expect(screen.getByText(/did not load in time/)).toBeTruthy();
+    expect(screen.getByText(/did not load/)).toBeTruthy();
+  });
+
+  it("says it is still working while a late note is being fetched", () => {
+    render(<MarketNoteView note={null} pending />);
+    expect(screen.getByText(/Still working on the note/)).toBeTruthy();
   });
 });
