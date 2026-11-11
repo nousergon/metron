@@ -29,6 +29,7 @@ import json
 import logging
 import os
 from datetime import date
+from typing import Any
 
 from portfolio_analytics.admission import Invalid, admit_schema, read_number
 from portfolio_analytics.prices.source import ClosePoint
@@ -42,6 +43,13 @@ CLOSE_HISTORY_PREFIX = "market_data/close_history/"
 # symbols' close series + currency map, written alongside per-ticker files during the
 # transition period. The consumer loads this when present to avoid N sequential reads.
 CLOSE_HISTORY_CONSOLIDATED_KEY = f"{CLOSE_HISTORY_PREFIX}consolidated.json"
+# The consolidated file is read only for a batch this large or larger. It is ~57 MB of
+# JSON covering ~950 symbols, and json.loads of it peaks at ~550 MiB of RSS (measured
+# 2026-11-11). metron-api's cgroup is MemoryHigh 280M / MemoryMax 350M, so one parse on a
+# page request stalled the single worker in memory reclaim until gunicorn killed it: the
+# 11-09 and 11-11 "page won't load" outages (metron-ops-I395). A portfolio's few dozen
+# symbols read their ~64 KB per-ticker files instead, which the producer writes alongside.
+CONSOLIDATED_MIN_SYMBOLS = 400
 FX_HISTORY_PREFIX = "market_data/fx_history/"
 _FX_PAIR_SUFFIX = "USD=X"  # the engine asks FX as {CCY}USD=X; the artifact base is USD
 
@@ -62,12 +70,12 @@ def _bucket() -> str:
     return os.environ.get("MARKET_DATA_BUCKET", "alpha-engine-research")
 
 
-def _s3():
+def _s3() -> Any:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
     import boto3
     return boto3.client("s3")
 
 
-def _read_json(s3, bucket: str, key: str) -> dict | None:
+def _read_json(s3: Any, bucket: str, key: str) -> dict | None:  # pyright: ignore[reportExplicitAny, reportMissingTypeArgument]  # boto3 client / raw JSON value: untyped at this boundary
     """Read + parse an S3 JSON artifact; ``None`` on any failure (fail-soft)."""
     try:
         obj = s3.get_object(Bucket=bucket, Key=key)
@@ -78,7 +86,7 @@ def _read_json(s3, bucket: str, key: str) -> dict | None:
 
 
 def _read_admitted(
-    s3, bucket: str, key: str, *, expected: int, adjustment_basis: str | None = None
+    s3: Any, bucket: str, key: str, *, expected: int, adjustment_basis: str | None = None  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
 ) -> dict | None:
     """:func:`_read_json`, then refuse anything not on the pinned contract.
 
@@ -102,7 +110,7 @@ def _read_admitted(
     return art
 
 
-def _positive_finite(value) -> float | None:
+def _positive_finite(value: Any) -> float | None:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
     """``value`` as a finite float > 0, else ``None`` (NaN, Infinity, ≤ 0, garbage)."""
     reading = read_number(value)
     if isinstance(reading, Invalid) or reading is None or reading <= 0:
@@ -118,7 +126,7 @@ def _fx_currency(symbol: str) -> str | None:
     return None
 
 
-def spine_latest_closes(symbols: list[str], *, s3=None) -> dict[str, ClosePoint]:
+def spine_latest_closes(symbols: list[str], *, s3: Any = None) -> dict[str, ClosePoint]:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
     """Latest close per symbol from the spine. Equity symbols resolve from the
     eod_closes artifact; ``{CCY}USD=X`` pairs resolve from the fx artifact (rate as a
     ``ClosePoint``)."""
@@ -188,13 +196,13 @@ def _parse_series(series: list, start: date, end: date, *, label: str = "series"
     return points
 
 
-def spine_close_history(symbols: list[str], start: date, end: date, *, s3=None) -> dict[str, list[ClosePoint]]:
+def spine_close_history(symbols: list[str], start: date, end: date, *, s3: Any = None) -> dict[str, list[ClosePoint]]:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
     """Daily close series per symbol over ``[start, end]`` from the spine.
 
-    Primary source (metron-ops#233): the consolidated artifact at
-    ``market_data/close_history/consolidated.json`` (all equity symbols in one file) —
-    the consumer loads it once and filters in memory. Falls back to per-symbol history
-    files during the transition period. Equity → consolidated / close_history/{sym}.json;
+    Batches of ``CONSOLIDATED_MIN_SYMBOLS`` or more read the consolidated artifact at
+    ``market_data/close_history/consolidated.json`` (metron-ops#233) once and filter in
+    memory. Smaller batches, which is every page request, read per-symbol history files:
+    the consolidated parse costs ~550 MiB, more than metron-api's whole memory cap. Equity → consolidated / close_history/{sym}.json;
     ``{CCY}USD=X`` → fx_history/{CCY}.json (FX history is always 1–2 currencies, not N).
 
     S3 reads are parallelized via ``ThreadPoolExecutor`` for the per-symbol fallback path:
@@ -222,7 +230,11 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3=None) 
     equity_symbols = [sym for sym in symbols if _fx_currency(sym) is None]
     if not equity_symbols:
         return out
-    consolidated = _read_json(s3, bucket, CLOSE_HISTORY_CONSOLIDATED_KEY)
+    consolidated = (
+        _read_json(s3, bucket, CLOSE_HISTORY_CONSOLIDATED_KEY)
+        if len(equity_symbols) >= CONSOLIDATED_MIN_SYMBOLS
+        else None
+    )
     if consolidated is not None and (
         admit_schema(
             consolidated, expected=CLOSE_HISTORY_SCHEMA_VERSION, artifact=CLOSE_HISTORY_CONSOLIDATED_KEY
@@ -280,7 +292,7 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3=None) 
     return out
 
 
-def _parse_date(value) -> date | None:
+def _parse_date(value: Any) -> date | None:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
     if not value:
         return None
     try:

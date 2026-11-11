@@ -68,7 +68,8 @@ class TestHistory:
         s3 = _s3_with({"market_data/close_history/AAPL.json": None})
         assert spine_source.spine_close_history(["AAPL"], date(2026, 1, 1), date(2026, 12, 31), s3=s3) == {}
 
-    def test_consolidated_close_history_reads_one_file(self):
+    def test_consolidated_close_history_reads_one_file(self, monkeypatch):
+        monkeypatch.setattr(spine_source, "CONSOLIDATED_MIN_SYMBOLS", 1)
         # metron-ops#233: when the consolidated artifact exists, spine_close_history loads
         # it once and filters in memory rather than reading N per-ticker files.
         s3 = _s3_with({
@@ -86,6 +87,22 @@ class TestHistory:
         assert out["AAPL"] == [ClosePoint(date(2026, 6, 10), 200.0), ClosePoint(date(2026, 6, 11), 201.5)]
         assert out["MSFT"] == [ClosePoint(date(2026, 6, 10), 350.0), ClosePoint(date(2026, 6, 11), 355.0)]
 
+    def test_small_batch_skips_the_consolidated_file(self):
+        # metron-ops-I395: a portfolio-sized batch must never parse the consolidated file
+        # (~550 MiB of RSS against a 350M cgroup cap); it reads the per-ticker files even
+        # when the consolidated artifact exists.
+        s3 = _s3_with({
+            spine_source.CLOSE_HISTORY_CONSOLIDATED_KEY: {
+                "schema_version": 1, "adjustment_basis": "dividend_adjusted",
+                "series": {"AAPL": [["2026-06-11", 999.0]]},
+            },
+            "market_data/close_history/AAPL.json": {"schema_version": 1, "adjustment_basis": "dividend_adjusted", "closes": [["2026-06-11", 201.5]]},
+        })
+        out = spine_source.spine_close_history(["AAPL"], date(2026, 6, 11), date(2026, 6, 11), s3=s3)
+        assert out["AAPL"] == [ClosePoint(date(2026, 6, 11), 201.5)]
+        read_keys = [c.kwargs["Key"] for c in s3.get_object.call_args_list]
+        assert spine_source.CLOSE_HISTORY_CONSOLIDATED_KEY not in read_keys
+
     def test_consolidated_missing_falls_back_to_per_ticker_files(self):
         # Without the consolidated artifact, spine_close_history degrades to per-ticker
         # reads (transition period or producer lag).
@@ -95,7 +112,8 @@ class TestHistory:
         out = spine_source.spine_close_history(["AAPL"], date(2026, 6, 10), date(2026, 6, 11), s3=s3)
         assert out["AAPL"] == [ClosePoint(date(2026, 6, 10), 200.0), ClosePoint(date(2026, 6, 11), 201.5)]
 
-    def test_consolidated_does_not_break_fx_pairs(self):
+    def test_consolidated_does_not_break_fx_pairs(self, monkeypatch):
+        monkeypatch.setattr(spine_source, "CONSOLIDATED_MIN_SYMBOLS", 1)
         # FX pairs must still resolve from per-currency FX history even when the
         # consolidated equity file is present (FX is never consolidated into it).
         s3 = _s3_with({

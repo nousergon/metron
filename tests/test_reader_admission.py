@@ -206,7 +206,8 @@ def test_a_per_ticker_history_off_contract_is_refused(overrides):
 
 
 @pytest.mark.parametrize("overrides", [{"schema_version": 999}, {"adjustment_basis": "split_only"}])
-def test_an_off_contract_consolidated_artifact_falls_back_to_admitted_per_ticker_files(overrides):
+def test_an_off_contract_consolidated_artifact_falls_back_to_admitted_per_ticker_files(overrides, monkeypatch):
+    monkeypatch.setattr(spine_source, "CONSOLIDATED_MIN_SYMBOLS", 1)
     consolidated = {"schema_version": 1, "adjustment_basis": "dividend_adjusted",
                     "series": {"AAPL": [["2026-10-22", 999.0]]}, "currency": {"AAPL": "USD"}, **overrides}
     out = _history({spine_source.CLOSE_HISTORY_CONSOLIDATED_KEY: consolidated,
