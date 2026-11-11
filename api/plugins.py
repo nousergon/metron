@@ -26,10 +26,16 @@ factory** returning a ``MetronPlugin``. Example, in metron-ops' pyproject::
 from __future__ import annotations
 
 import importlib.metadata
+import uuid
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from fastapi import APIRouter
+
+# The API layer's session type, imported for annotations only: this plumbing module still
+# pulls in no DB machinery at import time.
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 ENTRY_POINT_GROUP = "metron.plugins"
 
@@ -84,14 +90,14 @@ class ProvidesInvestorTargets(Protocol):
     suitability fields never reach any generated output (metron-ops-I166).
     """
 
-    def investor_targets(self, session, tenant_id) -> dict | None: ...
+    def investor_targets(self, session: Session, tenant_id: uuid.UUID) -> dict[str, object] | None: ...
 
 
-def investor_targets(session, tenant_id) -> dict | None:
+def investor_targets(session: Session, tenant_id: uuid.UUID) -> dict[str, object] | None:
     """The tenant's stated-targets profile block from the first active plugin that
     provides one, or ``None`` (no capable plugin installed/enabled, or nothing stored).
-    Session/tenant types are the API layer's (SQLAlchemy Session, UUID) — untyped here
-    so this plumbing module keeps zero DB imports."""
+    Session/tenant types are the API layer's (SQLAlchemy Session, UUID), imported for
+    annotations only so this plumbing module keeps zero runtime DB imports."""
     for plugin in active_plugins():
         if isinstance(plugin, ProvidesInvestorTargets):
             block = plugin.investor_targets(session, tenant_id)
