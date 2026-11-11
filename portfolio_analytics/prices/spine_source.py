@@ -42,6 +42,13 @@ CLOSE_HISTORY_PREFIX = "market_data/close_history/"
 # symbols' close series + currency map, written alongside per-ticker files during the
 # transition period. The consumer loads this when present to avoid N sequential reads.
 CLOSE_HISTORY_CONSOLIDATED_KEY = f"{CLOSE_HISTORY_PREFIX}consolidated.json"
+# The consolidated file is read only for a batch this large or larger. It is ~57 MB of
+# JSON covering ~950 symbols, and json.loads of it peaks at ~550 MiB of RSS (measured
+# 2026-11-11). metron-api's cgroup is MemoryHigh 280M / MemoryMax 350M, so one parse on a
+# page request stalled the single worker in memory reclaim until gunicorn killed it: the
+# 11-09 and 11-11 "page won't load" outages (metron-ops-I395). A portfolio's few dozen
+# symbols read their ~64 KB per-ticker files instead, which the producer writes alongside.
+CONSOLIDATED_MIN_SYMBOLS = 400
 FX_HISTORY_PREFIX = "market_data/fx_history/"
 _FX_PAIR_SUFFIX = "USD=X"  # the engine asks FX as {CCY}USD=X; the artifact base is USD
 
@@ -191,10 +198,10 @@ def _parse_series(series: list, start: date, end: date, *, label: str = "series"
 def spine_close_history(symbols: list[str], start: date, end: date, *, s3=None) -> dict[str, list[ClosePoint]]:
     """Daily close series per symbol over ``[start, end]`` from the spine.
 
-    Primary source (metron-ops#233): the consolidated artifact at
-    ``market_data/close_history/consolidated.json`` (all equity symbols in one file) —
-    the consumer loads it once and filters in memory. Falls back to per-symbol history
-    files during the transition period. Equity → consolidated / close_history/{sym}.json;
+    Batches of ``CONSOLIDATED_MIN_SYMBOLS`` or more read the consolidated artifact at
+    ``market_data/close_history/consolidated.json`` (metron-ops#233) once and filter in
+    memory. Smaller batches, which is every page request, read per-symbol history files:
+    the consolidated parse costs ~550 MiB, more than metron-api's whole memory cap. Equity → consolidated / close_history/{sym}.json;
     ``{CCY}USD=X`` → fx_history/{CCY}.json (FX history is always 1–2 currencies, not N).
 
     S3 reads are parallelized via ``ThreadPoolExecutor`` for the per-symbol fallback path:
@@ -222,7 +229,11 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3=None) 
     equity_symbols = [sym for sym in symbols if _fx_currency(sym) is None]
     if not equity_symbols:
         return out
-    consolidated = _read_json(s3, bucket, CLOSE_HISTORY_CONSOLIDATED_KEY)
+    consolidated = (
+        _read_json(s3, bucket, CLOSE_HISTORY_CONSOLIDATED_KEY)
+        if len(equity_symbols) >= CONSOLIDATED_MIN_SYMBOLS
+        else None
+    )
     if consolidated is not None and (
         admit_schema(
             consolidated, expected=CLOSE_HISTORY_SCHEMA_VERSION, artifact=CLOSE_HISTORY_CONSOLIDATED_KEY
