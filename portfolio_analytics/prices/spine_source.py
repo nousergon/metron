@@ -29,6 +29,7 @@ import json
 import logging
 import os
 from datetime import date
+from typing import Any
 
 from portfolio_analytics.admission import Invalid, admit_schema, read_number
 from portfolio_analytics.prices.source import ClosePoint
@@ -69,12 +70,12 @@ def _bucket() -> str:
     return os.environ.get("MARKET_DATA_BUCKET", "alpha-engine-research")
 
 
-def _s3():
+def _s3() -> Any:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
     import boto3
     return boto3.client("s3")
 
 
-def _read_json(s3, bucket: str, key: str) -> dict | None:
+def _read_json(s3: Any, bucket: str, key: str) -> dict | None:  # pyright: ignore[reportExplicitAny, reportMissingTypeArgument]  # boto3 client / raw JSON value: untyped at this boundary
     """Read + parse an S3 JSON artifact; ``None`` on any failure (fail-soft)."""
     try:
         obj = s3.get_object(Bucket=bucket, Key=key)
@@ -85,7 +86,7 @@ def _read_json(s3, bucket: str, key: str) -> dict | None:
 
 
 def _read_admitted(
-    s3, bucket: str, key: str, *, expected: int, adjustment_basis: str | None = None
+    s3: Any, bucket: str, key: str, *, expected: int, adjustment_basis: str | None = None  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
 ) -> dict | None:
     """:func:`_read_json`, then refuse anything not on the pinned contract.
 
@@ -109,7 +110,7 @@ def _read_admitted(
     return art
 
 
-def _positive_finite(value) -> float | None:
+def _positive_finite(value: Any) -> float | None:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
     """``value`` as a finite float > 0, else ``None`` (NaN, Infinity, ≤ 0, garbage)."""
     reading = read_number(value)
     if isinstance(reading, Invalid) or reading is None or reading <= 0:
@@ -125,7 +126,7 @@ def _fx_currency(symbol: str) -> str | None:
     return None
 
 
-def spine_latest_closes(symbols: list[str], *, s3=None) -> dict[str, ClosePoint]:
+def spine_latest_closes(symbols: list[str], *, s3: Any = None) -> dict[str, ClosePoint]:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
     """Latest close per symbol from the spine. Equity symbols resolve from the
     eod_closes artifact; ``{CCY}USD=X`` pairs resolve from the fx artifact (rate as a
     ``ClosePoint``)."""
@@ -195,7 +196,7 @@ def _parse_series(series: list, start: date, end: date, *, label: str = "series"
     return points
 
 
-def spine_close_history(symbols: list[str], start: date, end: date, *, s3=None) -> dict[str, list[ClosePoint]]:
+def spine_close_history(symbols: list[str], start: date, end: date, *, s3: Any = None) -> dict[str, list[ClosePoint]]:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
     """Daily close series per symbol over ``[start, end]`` from the spine.
 
     Batches of ``CONSOLIDATED_MIN_SYMBOLS`` or more read the consolidated artifact at
@@ -291,7 +292,7 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3=None) 
     return out
 
 
-def _parse_date(value) -> date | None:
+def _parse_date(value: Any) -> date | None:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
     if not value:
         return None
     try:
