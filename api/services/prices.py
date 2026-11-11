@@ -18,6 +18,7 @@ from sqlalchemy import and_, cast, func, literal, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from api.db import models
+from api.services import compute_cache
 from portfolio_analytics.prices import (
     ClosePoint,
     HistorySource,
@@ -158,6 +159,17 @@ def latest_close_by_symbol(
     symbols = [s for s in dict.fromkeys(symbols) if s]
     if not symbols:
         return {}
+    ccy_key = tuple(sorted((s, (currency_by_symbol or {}).get(s)) for s in symbols))
+    return compute_cache.request_memo(
+        session,
+        ("latest-close", tuple(symbols), ccy_key),
+        lambda: _latest_close_by_symbol(session, symbols, currency_by_symbol),
+    )
+
+
+def _latest_close_by_symbol(
+    session: Session, symbols: list[str], currency_by_symbol: dict[str, str] | None
+) -> dict[str, ClosePoint]:
     newer = aliased(models.PriceBar)
     latest_date = (
         select(func.max(newer.bar_date))
@@ -269,7 +281,7 @@ def _upsert_chunk_size(session: Session) -> int:
     return 150 if session.get_bind().dialect.name == "sqlite" else 2000
 
 
-def _chunks(items: list, size: int):
+def _chunks(items: list, size: int):  # noqa: ANN202
     for i in range(0, len(items), size):
         yield items[i:i + size]
 
