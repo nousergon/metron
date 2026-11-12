@@ -23,4 +23,4 @@ concurrency:
 
 jobs:
   guard:
-    uses: nousergon/nousergon-lib/.github/workflows/provider-linkage-guard.yml@b5eb768f9360b66c24076a19ca1117ef674f59df
+    uses: nousergon/nousergon-lib/.github/workflows/provider-linkage-guard.yml@02631f1accd98a1e5f20ab79299c5759c37022d5
