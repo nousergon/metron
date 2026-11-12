@@ -158,9 +158,18 @@ def request_memo(session: Session, key: tuple[object, ...], compute: Callable[[]
     return memo[key]
 
 
-def _forget_fingerprints(session: Session, *_args: object) -> None:
+def clear_request_memos(session: Session) -> None:
+    """Drop the fingerprint and read memos stored on ``session``.
+
+    ``Session.close`` does not emit a rollback when no transaction is open, and a
+    closed session may be used again. The memo is the previous view of the database,
+    so it has to die with that view rather than ride along in ``Session.info``."""
     session.info.pop(_MEMO_KEY, None)
     session.info.pop(_READS_KEY, None)
+
+
+def _forget_fingerprints(session: Session, *_args: object) -> None:
+    clear_request_memos(session)
 
 
 def _forget_on_write(orm_execute_state: ORMExecuteState) -> None:
@@ -168,17 +177,35 @@ def _forget_on_write(orm_execute_state: ORMExecuteState) -> None:
     # without a flush, so the flush hook alone would let a later read in the same request
     # sign its key with the pre-write fingerprint. Anything that is not a SELECT drops it.
     if not orm_execute_state.is_select:
-        info = orm_execute_state.session.info
-        info.pop(_MEMO_KEY, None)
-        info.pop(_READS_KEY, None)
+        clear_request_memos(orm_execute_state.session)
+
+
+def _forget_on_transaction_end(session: Session, transaction: object) -> None:
+    # Outermost transaction only. A SAVEPOINT ending mid-request must not throw away
+    # reads that are still valid for the open transaction.
+    if getattr(transaction, "parent", None) is None:
+        clear_request_memos(session)
 
 
 # The memo describes what the session could see when it was taken; anything that can change
 # that view — its own writes (flush, or a Core statement), a new transaction snapshot
-# (commit / rollback) — drops it.
+# (commit / rollback / close) — drops it.
 for _evt in ("after_flush", "after_commit", "after_rollback", "after_soft_rollback"):
     event.listen(Session, _evt, _forget_fingerprints)
 event.listen(Session, "do_orm_execute", _forget_on_write)
+event.listen(Session, "after_transaction_end", _forget_on_transaction_end)
+
+# close() with no open transaction emits none of the events above, and the same Session
+# object is allowed to run again. Clear first so that reuse cannot serve the old memo.
+_session_close = Session.close
+
+
+def _close_clearing_memos(self: Session) -> None:
+    clear_request_memos(self)
+    _session_close(self)
+
+
+Session.close = _close_clearing_memos
 
 
 def _bound_unexpiring_lock(lock_key: str) -> None:

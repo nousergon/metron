@@ -24,7 +24,7 @@ from collections.abc import Callable, Collection, Generator
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from typing import Protocol, cast
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from krepis.trading_calendar import last_closed_trading_day, previous_trading_day
@@ -33,7 +33,7 @@ from nousergon_lib.quant.risk_measures import historical_cvar
 from nousergon_lib.quant.riskstats import max_drawdown, sharpe_ratio, sortino_ratio, volatility
 from nousergon_lib.quant.stats.dsr import compute_psr
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from api.db import models
 from api.services import analytics, compute_cache, fund_proxy
@@ -1224,29 +1224,31 @@ def _portfolio_nav_series(
     and ``period_tiles`` (glance calls both, and each goal facet used to call
     ``performance`` again)."""
     def _load() -> tuple[list[PerfPoint], float | None]:
-        # estimated_inputs is Mapped[list | None]; selecting it makes the row partially
-        # unknown to the type checker. The values are the same stamps the ORM load returned.
-        rows = session.execute(  # pyright: ignore[reportUnknownVariableType]
-            select(
+        # load_only keeps composition (the per-holding blob) out of the SELECT. The
+        # stamps ride the same row, so an estimate is still an estimate.
+        rows = session.scalars(
+            select(models.NavSnapshot)
+            .options(load_only(
                 models.NavSnapshot.snap_date,
                 models.NavSnapshot.nav,
                 models.NavSnapshot.cost_basis,
                 models.NavSnapshot.external_flow,
                 models.NavSnapshot.spy_close,
-                models.NavSnapshot.estimated_inputs,  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            )
+                models.NavSnapshot.estimated_inputs,
+            ))
             .where(models.NavSnapshot.tenant_id == tenant_id, models.NavSnapshot.portfolio_id == portfolio_id)
             .order_by(models.NavSnapshot.snap_date)
         ).all()
-        points: list[PerfPoint] = []
-        for r in rows:  # pyright: ignore[reportUnknownVariableType]
-            points.append(PerfPoint(
-                snap_date=r.snap_date,
-                nav=float(r.nav),
-                external_flow=float(r.external_flow),
-                spy_close=float(r.spy_close) if r.spy_close is not None else None,
-                estimated_inputs=cast("list[dict[str, object]] | None", r.estimated_inputs or None),
-            ))
+        points = [
+            PerfPoint(
+                snap_date=row.snap_date,
+                nav=float(row.nav),
+                external_flow=float(row.external_flow),
+                spy_close=float(row.spy_close) if row.spy_close is not None else None,
+                estimated_inputs=row.estimated_inputs or None,
+            )
+            for row in rows
+        ]
         last_cost = float(rows[-1].cost_basis) if rows else None
         return points, last_cost
 
