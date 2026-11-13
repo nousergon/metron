@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
 from api.db import models
+from api.services import compute_cache
 from portfolio_analytics.prices import (
     HistorySource,
     PriceSource,
@@ -245,6 +246,12 @@ def rate_history(session: Session, currencies: Iterable[str], *, base: str = "US
     """Load a :class:`RateHistory` for ``currencies`` in one query."""
     base = (base or "USD").strip().upper()
     wanted = sorted({(c or base).strip().upper() for c in currencies} - {base})
+    return compute_cache.request_memo(
+        session, ("fx-hist", base, tuple(wanted)), lambda: _rate_history(session, base, wanted)
+    )
+
+
+def _rate_history(session: Session, base: str, wanted: list[str]) -> RateHistory:
     series: dict[str, tuple[list[date], list[float]]] = {c: ([], []) for c in wanted}
     if wanted:
         rows = session.execute(
@@ -265,6 +272,14 @@ def rates_to_base(session: Session, currencies: list[str], *, base: str = "USD")
     with no cached rate maps to ``None`` (caller treats as unconvertible)."""
     base = (base or "USD").strip().upper()
     distinct = {(c or base).strip().upper() for c in currencies}
+    return compute_cache.request_memo(
+        session,
+        ("fx-latest", base, tuple(sorted(distinct))),
+        lambda: _rates_to_base(session, base, distinct),
+    )
+
+
+def _rates_to_base(session: Session, base: str, distinct: set[str]) -> dict[str, float | None]:
     out: dict[str, float | None] = dict.fromkeys(distinct)
     if base in out:
         out[base] = 1.0

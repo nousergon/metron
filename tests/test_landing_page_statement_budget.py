@@ -31,6 +31,9 @@ TODAY = date.today()
 
 # Every read the landing page makes on first load (web/app/portfolios/[id]/page.tsx, its
 # streamed sections, and the client IntradayRefresher's first poll).
+# What the page requests today (web/app/portfolios/[id]/page.tsx), including the
+# stats strip and the market note added 2026-11-04. ``/glance`` is the separate
+# one-round-trip screen and is budgeted on its own below.
 LANDING_PAGE = (
     "/holdings-view",
     "/intraday",
@@ -41,6 +44,8 @@ LANDING_PAGE = (
     "/valuation-medians",
     "/accounts",
     "/watchlist",
+    "/performance/tiles",
+    "/market-note",
 )
 
 
@@ -166,12 +171,41 @@ def test_first_load_statement_count_does_not_grow_with_history(client, db_sessio
 
 
 def test_landing_page_statement_ceiling(client, db_session, statements):
-    """Absolute ceilings, with headroom over the fixed code (165 cold / 86 warm on this
-    seed; the code before the fix sent 407 / 246). A new per-row or per-date read on this
-    page trips them."""
+    """Absolute ceilings, with headroom over the fixed code (118 cold / 89 warm on this
+    seed, which now includes the stats strip and the market note). A new per-row or
+    per-date read on this page trips them. The 2026-09-28 page sent 1,276 cold / 355 warm;
+    the N+1 fixes brought the original fan-out to 165 / 86 before these two sections."""
     tenant_id, pid = _seed(db_session, _seed_reference(db_session), months=12)
     compute_cache.clear()
     cold = sum(len(s) for s in _load_page(client, tenant_id, pid, statements).values())
     warm = sum(len(s) for s in _load_page(client, tenant_id, pid, statements).values())
-    assert cold <= 190, f"cold landing page sent {cold} statements"
+    assert cold <= 130, f"cold landing page sent {cold} statements"
     assert warm <= 100, f"warm landing page sent {warm} statements"
+
+
+def test_glance_statement_ceiling(client, db_session, statements):
+    """Glance is one request, so its cold cost is its own statement count, not the
+    page's fan-out. The goal facets used to each reload the NAV series."""
+    tenant_id, pid = _seed(db_session, _seed_reference(db_session), months=12)
+    compute_cache.clear()
+    statements.clear()
+    cold = client.get(f"/portfolios/{pid}/glance", headers={"X-Tenant-Id": str(tenant_id)})
+    assert cold.status_code == 200, cold.text[:300]
+    cold_n = len(statements)
+    statements.clear()
+    warm = client.get(f"/portfolios/{pid}/glance", headers={"X-Tenant-Id": str(tenant_id)})
+    assert warm.status_code == 200, warm.text[:300]
+    warm_n = len(statements)
+    # Headline value is the summary's market value + cash, not a second valuation.
+    body = cold.json()
+    summary = client.get(
+        f"/portfolios/{pid}/summary", headers={"X-Tenant-Id": str(tenant_id)}
+    )
+    assert summary.status_code == 200
+    s = summary.json()
+    expect = (s["market_value"] or 0) + (s["cash"] or 0)
+    assert body["headline"]["total_value"] == expect
+    # 46 cold on this seed. The warm pass can send a couple more (a cache fill that the
+    # cold pass did inside a section the warm pass still touches once).
+    assert cold_n <= 58, f"cold glance sent {cold_n} statements"
+    assert warm_n <= 58, f"warm glance sent {warm_n} statements"

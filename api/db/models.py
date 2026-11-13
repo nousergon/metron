@@ -112,7 +112,7 @@ def account_identity_scope(broker: str, portfolio_id: uuid.UUID) -> str:
     return TENANT_SCOPE
 
 
-def _default_identity_scope(context) -> str:
+def _default_identity_scope(context) -> str:  # noqa: ANN001
     params = context.get_current_parameters()
     portfolio_id = params["portfolio_id"]
     if not isinstance(portfolio_id, uuid.UUID):
@@ -433,7 +433,7 @@ class NavSnapshot(Base):
     # empty = every leg used an as-of close and an as-of FX rate, i.e. an EXACT historical
     # valuation. Non-empty = an ESTIMATE (a current price carried back, a later FX rate, or
     # an unconvertible leg excluded) — never presented as exact. Nullable → auto-ALTER.
-    estimated_inputs: Mapped[list | None] = mapped_column(
+    estimated_inputs: Mapped[list[dict[str, object]] | None] = mapped_column(
         JSON(none_as_null=True), nullable=True, default=None, active_history=True
     )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -524,7 +524,7 @@ _NAV_REVISION_FIELDS = (
 _NAV_QUANTUM = Decimal("1e-10")  # Numeric(28, 10): compare at the precision actually stored
 
 
-def _same(field: str, old, new) -> bool:
+def _same(field: str, old, new) -> bool:  # noqa: ANN001
     if old is None or new is None:
         return old is None and new is None
     if field in ("nav", "cost_basis", "external_flow", "spy_close"):
@@ -532,7 +532,7 @@ def _same(field: str, old, new) -> bool:
     return old == new
 
 
-def _prior_values(obj) -> dict | None:
+def _prior_values(obj) -> dict | None:  # noqa: ANN001
     """The committed values of ``obj``'s tracked fields, or None when none changed."""
     state = sa_inspect(obj)
     prior: dict = {}
@@ -554,7 +554,7 @@ def _prior_values(obj) -> dict | None:
     return prior if changed else None
 
 
-def _committed_values(obj) -> dict:
+def _committed_values(obj) -> dict:  # noqa: ANN001
     state = sa_inspect(obj)
     out: dict = {}
     for field in _NAV_REVISION_FIELDS:
@@ -565,7 +565,7 @@ def _committed_values(obj) -> dict:
     return out
 
 
-def _record_nav_revisions(session, flush_context, instances) -> None:
+def _record_nav_revisions(session, flush_context, instances) -> None:  # noqa: ANN001
     """Append the superseded valuation of every changed/deleted NAV snapshot row."""
     # The tracked columns are mapped with ``active_history=True``, so an attribute that was
     # expired (e.g. after a commit) still loads its old value before being overwritten —
@@ -751,7 +751,7 @@ class MarketInputRevision(Base):
     superseded_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
-def _input_revision(obj, value, change: str) -> MarketInputRevision:
+def _input_revision(obj, value, change: str) -> MarketInputRevision:  # noqa: ANN001
     if isinstance(obj, PriceBar):
         return MarketInputRevision(
             kind="price", security_id=obj.security_id, currency=obj.currency, obs_date=obj.bar_date,
@@ -762,7 +762,7 @@ def _input_revision(obj, value, change: str) -> MarketInputRevision:
     )
 
 
-def _record_input_revisions(session, flush_context, instances) -> None:
+def _record_input_revisions(session, flush_context, instances) -> None:  # noqa: ANN001
     """Append the superseded close/rate of every ORM-changed or -deleted cached input."""
     pending: list[MarketInputRevision] = []
     for obj in session.dirty:

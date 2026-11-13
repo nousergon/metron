@@ -20,9 +20,11 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Generator
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from krepis.trading_calendar import last_closed_trading_day, previous_trading_day
@@ -31,7 +33,7 @@ from nousergon_lib.quant.risk_measures import historical_cvar
 from nousergon_lib.quant.riskstats import max_drawdown, sharpe_ratio, sortino_ratio, volatility
 from nousergon_lib.quant.stats.dsr import compute_psr
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from api.db import models
 from api.services import analytics, compute_cache, fund_proxy
@@ -162,7 +164,7 @@ def _fx_stamp(ticker: str, ccy: str, why: str, observed: date | None) -> dict:
     return stamp
 
 
-def _base_flow_rows(rows, rate: RateFn, estimates: list[dict]) -> list[tuple[str, float]]:
+def _base_flow_rows(rows, rate: RateFn, estimates: list[dict]) -> list[tuple[str, float]]:  # noqa: ANN001
     """``(trade_date, txn_type, amount, currency, ticker)`` net-purchase rows → the
     ``(txn_type, base amount)`` rows :func:`_purchase_flow` sums (metron-ops-I389).
 
@@ -195,7 +197,7 @@ def _purchase_flow(rows: list[tuple[str, float]]) -> float:
     return flow
 
 
-def _flow_columns():
+def _flow_columns():  # noqa: ANN202
     """The net-purchase row shape :func:`_base_flow_rows` converts — trade date, type,
     native amount, the amount's currency, and the symbol for an estimate stamp."""
     return (
@@ -420,7 +422,7 @@ _RECONCILE_WINDOW_DAYS = 7
 _COMPOSITION_SCHEMA = 1
 
 
-def _is_stale_fund_leg(h, snap_date: date) -> bool:
+def _is_stale_fund_leg(h, snap_date: date) -> bool:  # noqa: ANN001
     """True when a priced FUND holding's cached close predates ``snap_date`` — its real NAV
     hasn't struck yet. Only close-fed legs count (a broker snapshot is legitimately old)."""
     return (
@@ -431,14 +433,14 @@ def _is_stale_fund_leg(h, snap_date: date) -> bool:
     )
 
 
-def _fund_legs_stale(held, snap_date: date) -> bool:
+def _fund_legs_stale(held, snap_date: date) -> bool:  # noqa: ANN001
     """Any priced fund leg still on a pre-``snap_date`` NAV → the snapshot is provisional."""
     return any(
         _is_stale_fund_leg(h, snap_date) for h in held if h.market_value is not None
     )
 
 
-def _composition(held, snap_date: date) -> dict:
+def _composition(held, snap_date: date) -> dict:  # noqa: ANN001
     """The priced per-holding legs that sum to the snapshot NAV — persisted so a later
     restatement swaps a stale fund leg's price WITHOUT re-deriving composition (impossible
     for snapshot-only SnapTrade accounts). ``value`` is the base-currency market value, so
@@ -465,7 +467,7 @@ def _composition(held, snap_date: date) -> dict:
 
 
 def record_snapshot(
-    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, today: date, source=None
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, today: date, source=None,  # noqa: ANN001
 ) -> models.NavSnapshot | None:
     """Record today's NAV snapshot (idempotent per day). Returns the row, or None when
     NAV isn't computable yet (no holding has a cached price → nothing to value) OR when the
@@ -591,7 +593,7 @@ def repair_nav_snapshots(
 
 
 def record_account_snapshots(
-    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, today: date, source=None
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, today: date, source=None,  # noqa: ANN001
 ) -> int:
     """Record today's per-ACCOUNT NAV snapshots (idempotent per day). Returns the count
     written.
@@ -674,7 +676,9 @@ def _upsert_account_snapshot(
     return row
 
 
-def _restate_provisional(row, history: dict[str, list[ClosePoint]]) -> bool:
+def _restate_provisional(
+    row: models.NavSnapshot | models.AccountNavSnapshot, history: dict[str, list[ClosePoint]]
+) -> bool:
     """Restate one provisional snapshot row IN PLACE from now-cached struck fund NAVs.
 
     For each stale fund leg, the struck price is the newest cached close that is later than
@@ -787,7 +791,7 @@ def reconcile_snapshots(
 
 def record_intraday_legs(
     session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID,
-    *, today: date, feed_entitled: bool, reader=None, now: datetime | None = None,
+    *, today: date, feed_entitled: bool, reader=None, now: datetime | None = None,  # noqa: ANN001
 ) -> models.IntradayLegSnapshot | None:
     """Record today's portfolio overnight/intraday/day P&L decomposition (metron-ops#87) —
     the additive sibling of ``record_snapshot``. Captures the split from the intraday spine
@@ -1159,16 +1163,22 @@ def _account_nav_rows_by_account(
 ) -> dict[uuid.UUID, list]:
     """Every per-account NAV snapshot row of ``account_ids`` in ONE read, oldest first,
     split per account — the input :func:`_account_perf_series_from_rows` takes."""
-    out: dict[uuid.UUID, list] = defaultdict(list)
-    rows = session.scalars(
-        select(models.AccountNavSnapshot)
-        .where(
-            models.AccountNavSnapshot.tenant_id == tenant_id,
-            models.AccountNavSnapshot.account_id.in_(list(account_ids)),
+    key = ("acct-nav", str(tenant_id), tuple(sorted(str(a) for a in account_ids)))
+
+    def _load() -> list[models.AccountNavSnapshot]:
+        return list(
+            session.scalars(
+                select(models.AccountNavSnapshot)
+                .where(
+                    models.AccountNavSnapshot.tenant_id == tenant_id,
+                    models.AccountNavSnapshot.account_id.in_(list(account_ids)),
+                )
+                .order_by(models.AccountNavSnapshot.snap_date)
+            ).all()
         )
-        .order_by(models.AccountNavSnapshot.snap_date)
-    ).all()
-    for r in rows:
+
+    out: dict[uuid.UUID, list] = defaultdict(list)
+    for r in compute_cache.request_memo(session, key, _load):
         out[r.account_id].append(r)
     return out
 
@@ -1203,6 +1213,48 @@ def _account_perf_series_from_rows(rows: list) -> tuple[list[PerfPoint], float |
     return points, last_cost
 
 
+def _portfolio_nav_series(
+    session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID
+) -> tuple[list[PerfPoint], float | None]:
+    """Whole-portfolio NAV points and the latest cost basis.
+
+    The columns the series actually reads — not the per-holding ``composition`` blob,
+    which a multi-year book carries on every row and which neither the tiles nor the
+    goal facets use. A request-scoped session shares one load across ``performance``
+    and ``period_tiles`` (glance calls both, and each goal facet used to call
+    ``performance`` again)."""
+    def _load() -> tuple[list[PerfPoint], float | None]:
+        # load_only keeps composition (the per-holding blob) out of the SELECT. The
+        # stamps ride the same row, so an estimate is still an estimate.
+        rows = session.scalars(
+            select(models.NavSnapshot)
+            .options(load_only(
+                models.NavSnapshot.snap_date,
+                models.NavSnapshot.nav,
+                models.NavSnapshot.cost_basis,
+                models.NavSnapshot.external_flow,
+                models.NavSnapshot.spy_close,
+                models.NavSnapshot.estimated_inputs,
+            ))
+            .where(models.NavSnapshot.tenant_id == tenant_id, models.NavSnapshot.portfolio_id == portfolio_id)
+            .order_by(models.NavSnapshot.snap_date)
+        ).all()
+        points = [
+            PerfPoint(
+                snap_date=row.snap_date,
+                nav=float(row.nav),
+                external_flow=float(row.external_flow),
+                spy_close=float(row.spy_close) if row.spy_close is not None else None,
+                estimated_inputs=row.estimated_inputs or None,
+            )
+            for row in rows
+        ]
+        last_cost = float(rows[-1].cost_basis) if rows else None
+        return points, last_cost
+
+    return compute_cache.request_memo(session, ("nav-series", str(tenant_id), str(portfolio_id)), _load)
+
+
 def performance(
     session: Session,
     tenant_id: uuid.UUID,
@@ -1216,26 +1268,30 @@ def performance(
     ``account_ids`` (a non-empty selection) scopes the series to those accounts' own
     forward-recorded ``AccountNavSnapshot`` rows (metron-ops#9) — per-account NAV can't be
     reconstructed for snapshot-sourced accounts, so this history accrues forward only.
-    None / empty = the whole-portfolio ``NavSnapshot`` series (also reconstructable)."""
+    None / empty = the whole-portfolio ``NavSnapshot`` series (also reconstructable).
+
+    A request-scoped session returns the same summary for a repeated call (glance's goal
+    facets each ask). The object is read-only for the rest of the request."""
+    scope = tuple(sorted(str(a) for a in account_ids)) if account_ids else ()
+    return compute_cache.request_memo(
+        session,
+        ("performance", str(tenant_id), str(portfolio_id), scope),
+        lambda: _performance(session, tenant_id, portfolio_id, account_ids=account_ids),
+    )
+
+
+def _performance(
+    session: Session,
+    tenant_id: uuid.UUID,
+    portfolio_id: uuid.UUID,
+    *,
+    account_ids: Collection[uuid.UUID] | None = None,
+) -> PerformanceSummary:
+    """Uncached core of :func:`performance`."""
     if account_ids:
         points, last_cost_basis = _account_perf_series(session, tenant_id, account_ids)
     else:
-        snaps = session.scalars(
-            select(models.NavSnapshot)
-            .where(models.NavSnapshot.tenant_id == tenant_id, models.NavSnapshot.portfolio_id == portfolio_id)
-            .order_by(models.NavSnapshot.snap_date)
-        ).all()
-        points = [
-            PerfPoint(
-                snap_date=s.snap_date,
-                nav=float(s.nav),
-                external_flow=float(s.external_flow),
-                spy_close=float(s.spy_close) if s.spy_close is not None else None,
-                estimated_inputs=s.estimated_inputs or None,
-            )
-            for s in snaps
-        ]
-        last_cost_basis = float(snaps[-1].cost_basis) if snaps else None
+        points, last_cost_basis = _portfolio_nav_series(session, tenant_id, portfolio_id)
     summary = PerformanceSummary(n_snapshots=len(points), points=points)
     summary.estimated, summary.estimated_note = nav_history_estimated(session, tenant_id, portfolio_id)
     if not points:
@@ -1444,21 +1500,7 @@ def _load_perf_points(
     the whole-portfolio series (shared by ``performance`` and ``period_tiles``)."""
     if account_ids:
         return _account_perf_series(session, tenant_id, account_ids)[0]
-    snaps = session.scalars(
-        select(models.NavSnapshot)
-        .where(models.NavSnapshot.tenant_id == tenant_id, models.NavSnapshot.portfolio_id == portfolio_id)
-        .order_by(models.NavSnapshot.snap_date)
-    ).all()
-    return [
-        PerfPoint(
-            snap_date=s.snap_date,
-            nav=float(s.nav),
-            external_flow=float(s.external_flow),
-            spy_close=float(s.spy_close) if s.spy_close is not None else None,
-            estimated_inputs=s.estimated_inputs or None,
-        )
-        for s in snaps
-    ]
+    return _portfolio_nav_series(session, tenant_id, portfolio_id)[0]
 
 
 def _index_bench_return(bench: dict[str, tuple[float | None, float | None]], sym: str) -> float | None:
@@ -1668,7 +1710,7 @@ def account_period_returns(
     today: date,
     feed_entitled: bool,
     account_ids: Collection[uuid.UUID] | None = None,
-    reader=None,
+    reader=None,  # noqa: ANN001
     now: datetime | None = None,
     held_by_account: dict | None = None,
 ) -> dict[uuid.UUID, AccountPeriodReturns]:
@@ -1901,7 +1943,16 @@ def _account_performance_series(
     snapshot_account_ids = analytics._snapshot_sourced_account_ids(session, tenant_id, portfolio_id)
     by_account_all = analytics.engine_transactions_by_account(session, tenant_id, portfolio_id)
     ticker_ccy = _ticker_currencies(session, tenant_id, portfolio_id)
-    all_open, all_closed = _load_lot_timeline(session, tenant_id, portfolio_id, None)
+    # The per-account lot read below is the whole book when nothing is selected. Deriving
+    # the union from it avoids a second open-lot and realized-lot scan of the same rows.
+    # A subset still reads the unscoped timeline so the price-prefetch window stays the
+    # one the full book would have used.
+    lots_by_account = _load_lot_timeline_by_account(session, tenant_id, portfolio_id, targets)
+    if account_ids:
+        all_open, all_closed = _load_lot_timeline(session, tenant_id, portfolio_id, None)
+    else:
+        all_open = [lot for pair in lots_by_account.values() for lot in pair[0]]
+        all_closed = [lot for pair in lots_by_account.values() for lot in pair[1]]
     union_symbols = sorted(
         {t for t, *_ in all_open}
         | {t for t, *_ in all_closed}
@@ -1926,8 +1977,7 @@ def _account_performance_series(
     # The per-account inputs, read ONCE for every target instead of once per account in the
     # loop below (the Accounts panel sent ~25 statements per account for these — #515 left it
     # as the largest cold cost on the Holdings page). Each is exactly what the per-account
-    # call would have read for that account.
-    lots_by_account = _load_lot_timeline_by_account(session, tenant_id, portfolio_id, targets)
+    # call would have read for that account. ``lots_by_account`` was read above.
     flows_by_account = _load_lot_flows_by_account(session, tenant_id, portfolio_id, targets)
     if held_by_account is None:
         held_by_account = analytics.valued_holdings_by_account(session, tenant_id, portfolio_id)
@@ -2049,7 +2099,7 @@ def _load_lot_timeline(
     tenant_id: uuid.UUID,
     portfolio_id: uuid.UUID,
     account_ids: Collection[uuid.UUID] | None = None,
-):
+) -> tuple[list[tuple[str, float, float, date]], list[tuple[str, float, float, date, date]]]:
     """Per-ticker open + closed lots → the inputs to reconstruct the historical position.
 
     Returns ``(open_lots, closed_lots)`` where each is ``(ticker, qty, cost_basis,
@@ -2058,50 +2108,74 @@ def _load_lot_timeline(
     (exclusive). Together they give position(ticker, d) without a replayable trade feed
     (metron-ops#74). ``account_ids`` scopes to a SET of accounts (per-account history,
     metron-ops#87)."""
-    scope = list(account_ids) if account_ids is not None else None
+    scope = tuple(sorted(str(a) for a in account_ids)) if account_ids is not None else None
 
-    def _q(model):
-        stmt = (
-            select(model)
-            .join(models.Account, model.account_id == models.Account.id)
-            .where(model.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+    def _load() -> tuple[list[tuple[str, float, float, date]], list[tuple[str, float, float, date, date]]]:
+        open_stmt = (
+            select(models.OpenLot)
+            .join(models.Account, models.OpenLot.account_id == models.Account.id)
+            .where(models.OpenLot.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
         )
-        if scope is not None:
-            stmt = stmt.where(model.account_id.in_(scope))
-        return session.scalars(stmt).all()
+        closed_stmt = (
+            select(models.RealizedLot)
+            .join(models.Account, models.RealizedLot.account_id == models.Account.id)
+            .where(models.RealizedLot.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+        )
+        if account_ids is not None:
+            ids = list(account_ids)
+            open_stmt = open_stmt.where(models.OpenLot.account_id.in_(ids))
+            closed_stmt = closed_stmt.where(models.RealizedLot.account_id.in_(ids))
+        open_lots = [
+            (r.ticker, float(r.quantity), float(r.cost_basis), r.open_date)
+            for r in session.scalars(open_stmt).all()
+        ]
+        closed_lots = [
+            (r.ticker, float(r.quantity), float(r.cost_basis), r.open_date, r.close_date)
+            for r in session.scalars(closed_stmt).all()
+        ]
+        return open_lots, closed_lots
 
-    open_lots = [(r.ticker, float(r.quantity), float(r.cost_basis), r.open_date) for r in _q(models.OpenLot)]
-    closed_lots = [
-        (r.ticker, float(r.quantity), float(r.cost_basis), r.open_date, r.close_date) for r in _q(models.RealizedLot)
-    ]
-    return open_lots, closed_lots
+    return compute_cache.request_memo(
+        session, ("lot-timeline", str(tenant_id), str(portfolio_id), scope), _load
+    )
 
 
 def _load_lot_timeline_by_account(
     session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, account_ids: Collection[uuid.UUID]
-) -> dict[uuid.UUID, tuple[list, list]]:
+) -> dict[uuid.UUID, tuple[list[tuple[str, float, float, date]], list[tuple[str, float, float, date, date]]]]:
     """:func:`_load_lot_timeline` for EVERY account in ``account_ids`` in two reads, split
     per account: ``{account_id: (open_lots, closed_lots)}``. The per-account Holdings /
     Accounts-panel series otherwise re-ran the same two lot reads once per account."""
-    out: dict[uuid.UUID, tuple[list, list]] = {aid: ([], []) for aid in account_ids}
+    out: dict[uuid.UUID, tuple[list[tuple[str, float, float, date]], list[tuple[str, float, float, date, date]]]] = {
+        aid: ([], []) for aid in account_ids
+    }
     if not out:
         return out
     scope = list(out)
-    for model, closed in ((models.OpenLot, False), (models.RealizedLot, True)):
-        rows = session.scalars(
-            select(model)
-            .join(models.Account, model.account_id == models.Account.id)
-            .where(
-                model.tenant_id == tenant_id,
-                models.Account.portfolio_id == portfolio_id,
-                model.account_id.in_(scope),
-            )
-        ).all()
-        for r in rows:
-            if closed:
-                out[r.account_id][1].append((r.ticker, float(r.quantity), float(r.cost_basis), r.open_date, r.close_date))
-            else:
-                out[r.account_id][0].append((r.ticker, float(r.quantity), float(r.cost_basis), r.open_date))
+    open_rows = session.scalars(
+        select(models.OpenLot)
+        .join(models.Account, models.OpenLot.account_id == models.Account.id)
+        .where(
+            models.OpenLot.tenant_id == tenant_id,
+            models.Account.portfolio_id == portfolio_id,
+            models.OpenLot.account_id.in_(scope),
+        )
+    ).all()
+    for r in open_rows:
+        out[r.account_id][0].append((r.ticker, float(r.quantity), float(r.cost_basis), r.open_date))
+    closed_rows = session.scalars(
+        select(models.RealizedLot)
+        .join(models.Account, models.RealizedLot.account_id == models.Account.id)
+        .where(
+            models.RealizedLot.tenant_id == tenant_id,
+            models.Account.portfolio_id == portfolio_id,
+            models.RealizedLot.account_id.in_(scope),
+        )
+    ).all()
+    for r in closed_rows:
+        out[r.account_id][1].append(
+            (r.ticker, float(r.quantity), float(r.cost_basis), r.open_date, r.close_date)
+        )
     return out
 
 
@@ -2115,7 +2189,7 @@ def _load_lot_flows_by_account(
         return out
     scope = list(out)
 
-    def _q(model, *cols):
+    def _q(model, *cols):  # noqa: ANN001, ANN002, ANN202
         return session.execute(
             select(model.account_id, *cols)
             .join(models.Account, model.account_id == models.Account.id)
@@ -2140,7 +2214,7 @@ def _load_lot_flows(
     tenant_id: uuid.UUID,
     portfolio_id: uuid.UUID,
     account_ids: Collection[uuid.UUID] | None = None,
-):
+) -> tuple[list[tuple[str, date, float]], list[tuple[str, date, float]]]:
     """Capital-in / capital-out EVENTS ``(ticker, date, quantity)`` from the lot tables — the
     flow signal a snapshot-sourced account (IBKR Flex / SnapTrade, no replayable trade feed)
     needs so its contribution-driven NAV build-up isn't mis-read as investment return
@@ -2159,7 +2233,7 @@ def _load_lot_flows(
     trade ledger)."""
     scope = list(account_ids) if account_ids is not None else None
 
-    def _q(model, *cols):
+    def _q(model, *cols):  # noqa: ANN001, ANN002, ANN202
         stmt = (
             select(*cols)
             .join(models.Account, model.account_id == models.Account.id)
@@ -2188,7 +2262,7 @@ def _load_lot_flows(
     return opens, closes
 
 
-def _lot_positions_asof(open_lots, closed_lots, when: date):
+def _lot_positions_asof(open_lots, closed_lots, when: date):  # noqa: ANN001, ANN202
     """``(ticker → quantity, ticker → cost_basis)`` held as-of ``when`` from the lot
     timeline: an open lot counts once its open date has passed; a closed lot counts only
     between its open and close (exclusive). Pure — the core of lot-based reconstruction."""
@@ -2205,7 +2279,7 @@ def _lot_positions_asof(open_lots, closed_lots, when: date):
     return pos, cost
 
 
-def _close_read_windows(open_lots, closed_lots, ledger_txns, first: date, today: date) -> dict[str, tuple[date, date]]:
+def _close_read_windows(open_lots, closed_lots, ledger_txns, first: date, today: date) -> dict[str, tuple[date, date]]:  # noqa: ANN001
     """``symbol → (lo, hi)``: the only dates ``_reconstruct_nav_points`` can ask a close of
     that symbol for (metron-ops-I343). Pure.
 
@@ -2274,7 +2348,7 @@ def _ticker_currencies(session: Session, tenant_id: uuid.UUID, portfolio_id: uui
     return out
 
 
-def _no_lot_flat_value(held, tickers_with_lots: set[str]) -> tuple[float, float, list[str]]:
+def _no_lot_flat_value(held, tickers_with_lots: set[str]) -> tuple[float, float, list[str]]:  # noqa: ANN001
     """Current base value + cost of holdings that have NO lots (e.g. bonds / money-market
     funds with no lot detail). Reconstruction can't place them on past dates, so they're
     carried FLAT-BACKWARD at current value rather than dropped — dropping undercounts the
@@ -2348,7 +2422,7 @@ def nav_history_estimated(session: Session, tenant_id: uuid.UUID, portfolio_id: 
 
 def reconstruct_snapshots(
     session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID, *, today: date,
-    source: HistorySource | None = None, profile=None,
+    source: HistorySource | None = None, profile: _Profiler | None = None,
 ) -> int:
     """Seed the historical NAV series from the **lot timeline** + a ledger fallback.
 
@@ -2382,8 +2456,15 @@ def reconstruct_snapshots(
     return written
 
 
+class _Profiler(Protocol):
+    """The optional block recorder reconstruct accepts. Structural, so the caller's
+    profiler type stays out of this module."""
+
+    def block(self, label: str) -> AbstractContextManager[Callable[[int], None]]: ...
+
+
 @contextlib.contextmanager
-def _profiled(profile, label: str):
+def _profiled(profile: _Profiler | None, label: str) -> Generator[Callable[[int], None]]:
     """``profile.block(label)`` when a profile was passed, a no-op recorder otherwise.
 
     Exists so the instrumented call sites read identically whether or not a profile
@@ -2431,7 +2512,7 @@ def _reconstruct_nav_points(
     by_account: list | None = None,
     snapshot_account_ids: set[uuid.UUID] | None = None,
     ticker_ccy: dict[str, str] | None = None,
-    profile=None,
+    profile: _Profiler | None = None,
     lot_timeline: tuple[list, list] | None = None,
     lot_flows: tuple[list, list] | None = None,
     held: list | None = None,
