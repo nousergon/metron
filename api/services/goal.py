@@ -68,13 +68,21 @@ _DIVIDEND_INTEREST_TYPES = ("DIVIDEND", "INTEREST")
 
 
 def get_goal(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> models.RetirementGoal | None:
-    """The portfolio's saved goal, or None when the user hasn't set one."""
-    return session.scalars(
-        select(models.RetirementGoal).where(
-            models.RetirementGoal.tenant_id == tenant_id,
-            models.RetirementGoal.portfolio_id == portfolio_id,
-        )
-    ).first()
+    """The portfolio's saved goal, or None when the user hasn't set one.
+
+    Glance asks once per goal facet. The row does not change within a read, so a
+    request-scoped session shares the first load (including the no-goal ``None``)."""
+    from api.services import compute_cache
+
+    def _load() -> models.RetirementGoal | None:
+        return session.scalars(
+            select(models.RetirementGoal).where(
+                models.RetirementGoal.tenant_id == tenant_id,
+                models.RetirementGoal.portfolio_id == portfolio_id,
+            )
+        ).first()
+
+    return compute_cache.request_memo(session, ("goal", str(tenant_id), str(portfolio_id)), _load)
 
 
 def set_goal(

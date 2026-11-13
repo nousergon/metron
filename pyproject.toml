@@ -73,7 +73,7 @@ dependencies = [
     # client, so the bump's only real exercise was production (metron-ops#260).
     # The upper bound is what makes a future ceiling-raising Dependabot PR visible;
     # tests/test_snaptrade_sdk_pin.py fails if it is removed or the major moves.
-    "snaptrade-python-sdk>=11.0.213,<12",
+    "snaptrade-python-sdk>=11.0.214,<12",
     # OFX/QFX parsing (spec-strict) for the free-tier OFX import path.
     "ofxtools>=1.1.1",
     # S3 client for the data spine. `alpha-engine-data` is the single market/reference-
@@ -103,7 +103,7 @@ dev = [
     # (golden portfolios + property tests, metron-ops#210): generates randomized-but-valid
     # transaction histories to assert ledger invariants hold universally, not just on
     # hand-picked fixtures (tests/test_golden_portfolios.py).
-    "hypothesis>=6.170.13",
+    "hypothesis>=6.170.15",
     "alembic>=1.20.1",            # Postgres schema migrations
     # tests/test_dependency_exposure.py parses .github/dependabot.yml. PyYAML is already
     # present transitively (krepis, nousergon-lib), but a test that imports it must not

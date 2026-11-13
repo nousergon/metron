@@ -103,22 +103,29 @@ def tax_class(account: models.Account) -> str | None:
     return None
 
 
+def _portfolio_accounts(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> list[models.Account]:
+    """Every account in the portfolio, once per request. Taxable and tax-deferred scans
+    both need the full rows (the classification reads name and type, not just an id)."""
+    from api.services import compute_cache
+
+    def _load() -> list[models.Account]:
+        return list(
+            session.scalars(
+                select(models.Account).where(
+                    models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id
+                )
+            ).all()
+        )
+
+    return compute_cache.request_memo(session, ("acct-rows", str(tenant_id), str(portfolio_id)), _load)
+
+
 def taxable_account_ids(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> set[uuid.UUID]:
     """The ids of a portfolio's taxable accounts (per ``is_taxable``)."""
-    rows = session.scalars(
-        select(models.Account).where(
-            models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id
-        )
-    ).all()
-    return {a.id for a in rows if is_taxable(a)}
+    return {a.id for a in _portfolio_accounts(session, tenant_id, portfolio_id) if is_taxable(a)}
 
 
 def tax_deferred_account_ids(session: Session, tenant_id: uuid.UUID, portfolio_id: uuid.UUID) -> set[uuid.UUID]:
     """The ids of a portfolio's tax-deferred accounts (per ``is_tax_deferred``) — the
     accounts whose withdrawals count as taxable distributions."""
-    rows = session.scalars(
-        select(models.Account).where(
-            models.Account.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id
-        )
-    ).all()
-    return {a.id for a in rows if is_tax_deferred(a)}
+    return {a.id for a in _portfolio_accounts(session, tenant_id, portfolio_id) if is_tax_deferred(a)}

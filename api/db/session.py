@@ -87,10 +87,15 @@ def get_session() -> Iterator[Session]:
     try:
         yield session
     finally:
+        # close() also clears these, including when no transaction was open (that path
+        # emits no rollback). Doing it here makes request teardown independent of that.
+        from api.services.compute_cache import clear_request_memos
+
+        clear_request_memos(session)
         session.close()
 
 
-def _sync_missing_indexes(conn, table) -> None:
+def _sync_missing_indexes(conn, table) -> None:  # noqa: ANN001
     """Create any index the model declares on ``table`` (single-column ``index=True``/
     ``unique=True`` and multi-column ``Index(...)`` alike — anything that lands in
     ``table.indexes``) that the live DB doesn't have yet. ``ALTER TABLE ADD COLUMN``

@@ -21,14 +21,16 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import defaultdict
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 
 from sqlalchemy import func, select
+from sqlalchemy.engine import Row
 from sqlalchemy.orm import Session
 
 from api.db import models
+from api.db.session import REQUEST_SCOPED
 from api.services import compute_cache, labels
 from api.services import fx as fx_service
 from api.services import prices as price_service
@@ -282,7 +284,7 @@ def _portfolio_rows(
     portfolio_id: uuid.UUID,
     account_id: uuid.UUID | None = None,
     account_ids: Collection[uuid.UUID] | None = None,
-):
+) -> Sequence[Row[models.Transaction, str]]:
     """Fetch ``(Transaction, ticker)`` for one portfolio, tenant-scoped, oldest first.
 
     When ``account_id`` is given the result is narrowed to that single account (the
@@ -299,11 +301,32 @@ def _portfolio_rows(
         )
         .order_by(models.Transaction.trade_date, models.Transaction.created_at)
     )
+
+    def _run(
+        one_account: uuid.UUID | None, many_accounts: Collection[uuid.UUID] | None
+    ) -> Sequence[Row[models.Transaction, str]]:
+        scoped = stmt
+        if one_account is not None:
+            scoped = scoped.where(models.Transaction.account_id == one_account)
+        if many_accounts is not None:
+            scoped = scoped.where(models.Transaction.account_id.in_(many_accounts))
+        return session.execute(scoped).all()
+
+    # A request reads this ledger from holdings, income, cash and realized, often for a
+    # subset of the same portfolio. Load the portfolio once and filter in memory so those
+    # sections share one round trip; the row set matches the filtered SQL (same order).
+    if not session.info.get(REQUEST_SCOPED):
+        return _run(account_id, account_ids)
+    all_rows = compute_cache.request_memo(
+        session, ("txn-rows", str(tenant_id), str(portfolio_id)), lambda: _run(None, None)
+    )
+    rows = all_rows
     if account_id is not None:
-        stmt = stmt.where(models.Transaction.account_id == account_id)
+        rows = [r for r in rows if r[0].account_id == account_id]
     if account_ids is not None:
-        stmt = stmt.where(models.Transaction.account_id.in_(account_ids))
-    return session.execute(stmt).all()
+        wanted = set(account_ids)
+        rows = [r for r in rows if r[0].account_id in wanted]
+    return list(rows)
 
 
 # Stored ``txn_type`` values that carry a quantity × price trade: every purchase type
@@ -455,7 +478,7 @@ def _position_rows(
     portfolio_id: uuid.UUID,
     account_id: uuid.UUID | None = None,
     account_ids: Collection[uuid.UUID] | None = None,
-):
+) -> Sequence[Row[float, float, float | None, date, str, str]]:
     """Fetch ``(quantity, avg_cost, market_value_local, as_of, ticker, currency)`` for
     broker-reported positions in a portfolio (snapshot-sourced accounts: Flex/SnapTrade),
     optionally one account or a SET of accounts. ``market_value_local`` is the broker's
@@ -675,12 +698,21 @@ def _scoped_account_ids(
 ) -> set[uuid.UUID]:
     """The account ids in scope — the portfolio's accounts, narrowed by ``account_id``
     (one) or ``account_ids`` (a set, possibly empty)."""
-    stmt = select(models.Account.id).where(models.Account.portfolio_id == portfolio_id)
-    if account_id is not None:
-        stmt = stmt.where(models.Account.id == account_id)
-    if account_ids is not None:
-        stmt = stmt.where(models.Account.id.in_(account_ids))
-    return {row[0] for row in session.execute(stmt)}
+    scope_key = (
+        str(portfolio_id),
+        None if account_id is None else str(account_id),
+        None if account_ids is None else tuple(sorted(str(a) for a in account_ids)),
+    )
+
+    def _load() -> set[uuid.UUID]:
+        stmt = select(models.Account.id).where(models.Account.portfolio_id == portfolio_id)
+        if account_id is not None:
+            stmt = stmt.where(models.Account.id == account_id)
+        if account_ids is not None:
+            stmt = stmt.where(models.Account.id.in_(account_ids))
+        return {row[0] for row in session.execute(stmt)}
+
+    return compute_cache.request_memo(session, ("acct-scope", scope_key), _load)
 
 
 def _snapshot_sourced_account_ids(
@@ -697,23 +729,28 @@ def _snapshot_sourced_account_ids(
     partial activity history into the holdings ledger). The position-rows check is kept
     as a defensive union for any legacy snapshot data whose broker string predates
     ``SNAPSHOT_SOURCES``."""
-    by_broker = (
-        select(models.Account.id)
-        .where(
-            models.Account.tenant_id == tenant_id,
-            models.Account.portfolio_id == portfolio_id,
-            models.Account.broker.in_(SNAPSHOT_SOURCES),
+    def _load() -> set[uuid.UUID]:
+        by_broker = (
+            select(models.Account.id)
+            .where(
+                models.Account.tenant_id == tenant_id,
+                models.Account.portfolio_id == portfolio_id,
+                models.Account.broker.in_(SNAPSHOT_SOURCES),
+            )
         )
+        by_positions = (
+            select(models.Position.account_id)
+            .join(models.Account, models.Position.account_id == models.Account.id)
+            .where(models.Position.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
+            .distinct()
+        )
+        return {row[0] for row in session.execute(by_broker)} | {
+            row[0] for row in session.execute(by_positions)
+        }
+
+    return compute_cache.request_memo(
+        session, ("snapshot-accts", str(tenant_id), str(portfolio_id)), _load
     )
-    by_positions = (
-        select(models.Position.account_id)
-        .join(models.Account, models.Position.account_id == models.Account.id)
-        .where(models.Position.tenant_id == tenant_id, models.Account.portfolio_id == portfolio_id)
-        .distinct()
-    )
-    return {row[0] for row in session.execute(by_broker)} | {
-        row[0] for row in session.execute(by_positions)
-    }
 
 
 def _ledger_cash_by_account(
@@ -886,7 +923,7 @@ def _holdings(
     )
 
 
-def _assemble_holdings(ledger, position_rows, currency_of_ledger_only) -> list[Holding]:
+def _assemble_holdings(ledger, position_rows, currency_of_ledger_only) -> list[Holding]:  # noqa: ANN001
     """Fold one scope's replayed ledger + broker position rows into native ``Holding`` rows.
 
     Pure apart from ``currency_of_ledger_only(tickers)``, the currency lookup for tickers
@@ -1848,16 +1885,22 @@ def summary(
     account_ids: Collection[uuid.UUID] | None = None,
     *,
     prices: dict[str, ClosePoint] | None = None,
+    held: list[Holding] | None = None,
 ) -> PortfolioSummary:
     """Portfolio-level totals for the home view — cost basis, realized, income, plus
     market value / unrealized P&L when prices are cached (None otherwise, never
     fabricated). ``account_ids`` scopes every total to the selected accounts; None =
     whole portfolio. ``prices`` overrides the price source (the LIVE intraday valuation
-    passes intraday last over EOD close so the headline NAV is fresh — metron-ops#79)."""
+    passes intraday last over EOD close so the headline NAV is fresh — metron-ops#79).
+
+    ``held`` is that same valuation when the caller already has it (glance values the
+    book once and hands the rows here). It must be the holdings of this exact scope and
+    price source; ``None`` computes them."""
     from api.services import account_meta  # local import avoids a cycle (account_meta → models)
 
     portfolio = session.get(models.Portfolio, portfolio_id)
-    held = valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids, prices=prices)
+    if held is None:
+        held = valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids, prices=prices)
     # Realized lots split by tax treatment so the headline can surface YTD realized the
     # same way it splits unrealized — the taxable figure carries the tax consequence; an
     # IRA/401(k)/Roth realization is never taxed. Two disjoint scoped calls union back to
