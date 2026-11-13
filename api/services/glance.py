@@ -42,6 +42,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dtime
+from typing import TypeVar
 from zoneinfo import ZoneInfo
 
 from krepis.trading_calendar import is_market_hours, is_trading_day
@@ -55,6 +56,8 @@ from portfolio_analytics.domain.diagnostics import DiagnosticsPosition, compute_
 from portfolio_analytics.domain.tax import LONG_TERM_DAYS, SHORT_TERM
 
 log = logging.getLogger(__name__)
+
+_R = TypeVar("_R")
 
 _ET = ZoneInfo("America/New_York")
 
@@ -820,7 +823,7 @@ def compose(
     today = now.astimezone(_ET).date()
     timings: dict[str, float] = {}
 
-    def _timed(name: str, fn: Callable):
+    def _timed(name: str, fn: Callable[[], _R]) -> _R:
         t0 = time.perf_counter()
         try:
             return fn()
@@ -828,8 +831,11 @@ def compose(
             timings[name] = round((time.perf_counter() - t0) * 1000.0, 2)
 
     tenant_id, pid = portfolio.tenant_id, portfolio.id
-    summary = _timed("summary", lambda: analytics.summary(session, tenant_id, pid))
+    # Value the book once. Summary's totals are those rows; the sections below read the
+    # same list. Goal facets each call performance(), which a request-scoped session
+    # computes once (see performance.performance).
     held = _timed("holdings", lambda: analytics.valued_holdings(session, tenant_id, pid))
+    summary = _timed("summary", lambda: analytics.summary(session, tenant_id, pid, held=held))
     tiles = _timed(
         "period_tiles",
         lambda: performance.period_tiles(session, tenant_id, pid, today=today, with_benchmarks=False, now=now),
