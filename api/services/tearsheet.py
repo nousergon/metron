@@ -28,6 +28,7 @@ from api.services import technical_rating as technical_rating_service
 from api.services import technical_rating_performance as technical_rating_performance_service
 from api.services import technicals as technicals_service
 from api.services.spine_artifacts import ArtifactReader
+from portfolio_analytics.admission import Flagged, reader_flags
 from portfolio_analytics.prices.source import InputSource
 
 _FUNDAMENTALS_REASON = "Arrives with the fundamentals feed (alpha-engine-config#1022)."
@@ -208,6 +209,8 @@ class Tearsheet:
     attractiveness: TearsheetAttractiveness = field(default_factory=TearsheetAttractiveness)
     # Producer objects the values above were read from, keyed by reader name.
     input_sources: dict[str, InputSource] = field(default_factory=dict)
+    stale_reasons: dict[str, str] = field(default_factory=dict)
+    universe_reasons: dict[str, str] = field(default_factory=dict)
 
 
 def _performance_from_spine(
@@ -366,6 +369,7 @@ def tearsheet(
     )
     as_of = security_perf_service.market_today()
     sources: dict[str, InputSource | None] = {}
+    flagged: dict[str, Flagged] = {}
 
     if feed_enabled:
         yf = _yf_symbol_map(session, [ticker]).get(ticker, ticker)
@@ -380,6 +384,8 @@ def tearsheet(
         )
         sources["security_performance"] = perf_snap.input_source
         sources["technicals"] = tech_snap.input_source
+        flagged["security_performance"] = perf_snap
+        flagged["technicals"] = tech_snap
         for key, src in rating_snap.input_sources.items():
             sources[f"technical_rating:{key}"] = src
         performance = _performance_from_spine(perf_snap.by_symbol.get(yf), holding.unrealized_pct)
@@ -413,6 +419,7 @@ def tearsheet(
     if feed_enabled:
         snap = fundamentals_service.load_fundamentals(reader=fundamentals_reader)
         sources["fundamentals"] = snap.input_source
+        flagged["fundamentals"] = snap
         yf_map = _yf_symbol_map(session, [h.ticker for h in valued])
         fund = snap.by_symbol.get(yf_map.get(ticker, ticker))
         if fund is not None:
@@ -445,6 +452,8 @@ def tearsheet(
         s_snap = sentiment_service.load_sentiment(reader=sentiment_reader)
         sources["analyst"] = a_snap.input_source
         sources["sentiment"] = s_snap.input_source
+        flagged["analyst"] = a_snap
+        flagged["sentiment"] = s_snap
         s = s_snap.by_symbol.get(yf)
         if a is not None or s is not None:
             sheet.consensus_available = True
@@ -490,4 +499,5 @@ def tearsheet(
                 ],
             )
     sheet.input_sources = {name: src for name, src in sources.items() if src is not None}
+    sheet.stale_reasons, sheet.universe_reasons = reader_flags(flagged)
     return sheet

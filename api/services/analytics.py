@@ -233,6 +233,9 @@ class Holding:
     # Reader name -> the stored producer object the metrics above were read from
     # (metron-ops-I373). Empty until ``metrics_enrichment.enrich_metrics`` runs.
     input_sources: dict[str, InputSource] = field(default_factory=dict)
+    # Reader name -> why its content is stale / its universe collapsed (metron-ops-I373).
+    stale_reasons: dict[str, str] = field(default_factory=dict)
+    universe_reasons: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

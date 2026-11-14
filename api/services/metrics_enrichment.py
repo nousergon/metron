@@ -23,6 +23,7 @@ from api.services import (
 )
 from api.services import technical_rating as technical_rating_service
 from api.services import technicals as technicals_service
+from portfolio_analytics.admission import reader_flags
 from portfolio_analytics.prices.source import InputSource
 
 
@@ -49,6 +50,14 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
         **{f"technical_rating:{key}": src for key, src in ratings_snap.input_sources.items()},
     }
     input_sources = {name: src for name, src in sources.items() if src is not None}
+    stale_reasons, universe_reasons = reader_flags(
+        {
+            "fundamentals": funds_snap,
+            "technicals": techs_snap,
+            "analyst": analysts_snap,
+            "sentiment": sentiments_snap,
+        }
+    )
     universe_att = attractiveness_service.compute_universe()
     # metron-ops-I334: once retired, compute_universe() is {} — stamp the substrate state on
     # every row so the UI renders "retired" rather than a blank that reads as a coverage gap.
@@ -61,6 +70,8 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
 
     for h in held:
         h.input_sources = dict(input_sources)
+        h.stale_reasons = dict(stale_reasons)
+        h.universe_reasons = dict(universe_reasons)
         yf = yf_map.get(h.ticker, h.ticker)
         f = funds.get(yf)
         if f is not None:

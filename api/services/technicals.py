@@ -19,7 +19,7 @@ from typing import cast
 
 from api.services import spine_artifacts
 from api.services.spine_artifacts import ArtifactReader, JsonObject
-from portfolio_analytics.admission import Invalid, admit_schema, content_staleness, read_number
+from portfolio_analytics.admission import Invalid, admit_schema, content_staleness, read_number, universe_shortfall
 from portfolio_analytics.prices.source import InputSource
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,10 @@ TECHNICALS_KEY = "market_data/technicals/latest.json"
 # tests/contracts/technicals.schema.json. Any other version is refused at
 # runtime (metron-ops-I373); re-pin both together when the producer bumps it.
 TECHNICALS_SCHEMA_VERSION = 4
+
+#: Smallest symbol map the broad technicals product can honestly hold (live: ~930 on
+#: 2026-11-14); only a collapse trips it.
+MIN_UNIVERSE = 100
 
 # The unit each field is declared in, as inclusive bounds — the same ranges as
 # tests/contracts/technicals_snapshot.schema.json. A finite value outside its range is a
@@ -86,6 +90,9 @@ class TechnicalsSnapshot:
     # whatever the object's write time says. The numbers are still served: stale is a flag
     # the caller renders, not a refusal (metron-ops-I373).
     stale_reason: str | None = None
+    # Set when a PRESENT artifact's symbol map is empty or far below the product's minimum
+    # universe, so "no coverage" is not mistaken for a healthy producer (I373).
+    universe_reason: str | None = None
 
 
 def _bucket() -> str:
@@ -168,18 +175,39 @@ def load_technicals(*, reader: ArtifactReader | None = None, now: datetime | Non
             as_of = date.fromisoformat(str(raw_as_of)[:10])
         except ValueError:
             as_of = None
-    stale_reason = content_staleness(
-        as_of,
-        now=now or datetime.now(UTC),
-        written_at=input_source.last_modified if input_source else None,
-        artifact=TECHNICALS_KEY,
+    stale_reason = (
+        content_staleness(
+            as_of,
+            now=now or datetime.now(UTC),
+            written_at=input_source.last_modified if input_source else None,
+            artifact=TECHNICALS_KEY,
+        )
+        if raw is not None
+        else None
     )
+    universe_reason = (
+        universe_shortfall(len(by_symbol), artifact=TECHNICALS_KEY, minimum=MIN_UNIVERSE)
+        if raw is not None
+        else None
+    )
+    # The producer also declares its own coverage verdict (covered vs denominator against a
+    # floor); a producer that says it missed its floor is reported, never silently served.
+    coverage: object = art.get("coverage")
+    if universe_reason is None and isinstance(coverage, dict):
+        declared = cast("JsonObject", coverage)
+        if declared.get("meets_floor") is False:
+            universe_reason = (
+                f"{TECHNICALS_KEY}: producer reports coverage below its floor "
+                f"(covered {declared.get('covered')!r} of {declared.get('denominator')!r})"
+            )
+            logger.error("data-spine artifact universe too small — %s", universe_reason)
     if stale_reason:
         logger.warning("%s", stale_reason)
     return TechnicalsSnapshot(
         as_of=as_of,
         by_symbol=by_symbol,
         stale_reason=stale_reason,
+        universe_reason=universe_reason,
         schema_version=art.get("schema_version"),
         source=art.get("source"),
         invalid_fields=invalid_fields,

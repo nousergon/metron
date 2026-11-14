@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +43,11 @@ __all__ = [
     "NumberReading",
     "admit_schema",
     "content_staleness",
+    "Flagged",
     "finite_field",
     "read_number",
+    "reader_flags",
+    "universe_shortfall",
 ]
 
 #: A daily-cadence artifact whose content ``as_of`` is older than this many calendar days
@@ -163,3 +168,46 @@ def content_staleness(
             + (" — a recent write of old content" if recent else "")
         )
     return reason
+
+
+def universe_shortfall(count: int, *, artifact: str, minimum: int = 1) -> str | None:
+    """``None`` when a present artifact's symbol map holds at least ``minimum`` entries;
+    otherwise the reason it does not.
+
+    A producer that writes a valid, current, correctly-versioned artifact with an empty or
+    truncated symbol map passes every other gate and serves nothing, which reads as "no
+    coverage" rather than as a broken producer. ``minimum`` is the smallest universe the
+    artifact can honestly have, set far below the live size so that only a collapse trips it.
+    Callers do not call this for an absent artifact (that is the fail-soft absent case).
+    """
+    if count >= minimum:
+        return None
+    reason = f"{artifact}: holds {count} symbol(s), below the minimum of {minimum} for this product"
+    logger.error("data-spine artifact universe too small — %s", reason)
+    return reason
+
+
+class Flagged(Protocol):
+    @property
+    def stale_reason(self) -> str | None: ...
+    @property
+    def universe_reason(self) -> str | None: ...
+
+
+def reader_flags(snapshots: Mapping[str, Flagged]) -> tuple[dict[str, str], dict[str, str]]:
+    """``(stale_reasons, universe_reasons)`` by reader name, for the readers that set one.
+
+    The wire form of the flags the snapshots carry, so a response can say which reader's
+    numbers are old or came from a collapsed universe instead of rendering them as current.
+    """
+    stale: dict[str, str] = {}
+    universe: dict[str, str] = {}
+    for name, snap in snapshots.items():
+        # getattr: a test double standing in for a snapshot may predate these fields.
+        stale_reason: str | None = getattr(snap, "stale_reason", None)
+        universe_reason: str | None = getattr(snap, "universe_reason", None)
+        if stale_reason:
+            stale[name] = stale_reason
+        if universe_reason:
+            universe[name] = universe_reason
+    return stale, universe

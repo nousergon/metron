@@ -15,10 +15,11 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 
 from api.services import spine_artifacts
 from api.services.spine_artifacts import ArtifactReader, JsonObject
+from portfolio_analytics import admission
 from portfolio_analytics.admission import admit_schema, finite_field
 from portfolio_analytics.prices.source import InputSource
 
@@ -56,6 +57,12 @@ class SentimentSnapshot:
     # the VersionId / ETag S3 reported on the read (metron-ops-I373). Set for a refused
     # artifact too. `None` when the read failed or the reader was injected.
     input_source: InputSource | None = None
+    # Set when the content's own `as_of` is too old (or absent), whatever the object's write
+    # time says; the numbers are still served, so this is a flag, not a refusal (I373).
+    stale_reason: str | None = None
+    # Set when a PRESENT artifact's symbol map is empty or far below the product's minimum
+    # universe, so "no coverage" is not mistaken for a healthy producer (I373).
+    universe_reason: str | None = None
 
 
 def _bucket() -> str:
@@ -101,7 +108,7 @@ def _parse(yf_symbol: str, d: dict, invalid: list[str]) -> TickerSentiment:
     )
 
 
-def load_sentiment(*, reader: ArtifactReader | None = None) -> SentimentSnapshot:
+def load_sentiment(*, reader: ArtifactReader | None = None, now: datetime | None = None) -> SentimentSnapshot:
     """The latest news-sentiment snapshot, keyed by yf_symbol. ``reader`` (a no-arg callable
     returning the raw artifact dict) is injectable for tests; defaults to the S3 read. A
     missing artifact yields an empty snapshot (fail-soft)."""
@@ -133,6 +140,26 @@ def load_sentiment(*, reader: ArtifactReader | None = None) -> SentimentSnapshot
             as_of = date.fromisoformat(str(raw_as_of)[:10])
         except ValueError:
             as_of = None
+    stale_reason = (
+        admission.content_staleness(
+            as_of,
+            now=now or datetime.now(UTC),
+            written_at=input_source.last_modified if input_source else None,
+            artifact=SENTIMENT_KEY,
+        )
+        if raw is not None
+        else None
+    )
+    if stale_reason:
+        logger.warning("%s", stale_reason)
+    universe_reason = (
+        admission.universe_shortfall(len(by_symbol), artifact=SENTIMENT_KEY, minimum=1) if raw is not None else None
+    )
     return SentimentSnapshot(
-        as_of=as_of, by_symbol=by_symbol, invalid_fields=invalid_fields, input_source=input_source
+        as_of=as_of,
+        by_symbol=by_symbol,
+        invalid_fields=invalid_fields,
+        input_source=input_source,
+        stale_reason=stale_reason,
+        universe_reason=universe_reason,
     )

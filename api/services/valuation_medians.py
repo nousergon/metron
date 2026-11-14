@@ -15,10 +15,11 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 
 from api.services import spine_artifacts
 from api.services.spine_artifacts import ArtifactReader, JsonObject
+from portfolio_analytics import admission
 from portfolio_analytics.admission import admit_schema, finite_field
 from portfolio_analytics.prices.source import InputSource
 
@@ -28,6 +29,9 @@ VALUATION_MEDIANS_KEY = "market_data/valuation_medians/latest.json"
 # Pinned producer version (tests/contracts/metron_valuation_medians.schema.json). Any other
 # version is refused whole at runtime (metron-ops-I373).
 VALUATION_MEDIANS_SCHEMA_VERSION = 1
+#: Produced weekly: a week plus slack for a missed Saturday run. Live as_of was 8 days old on
+#: 2026-11-14 (written 2026-11-07), inside it.
+WEEKLY_MAX_AGE_DAYS = 10
 
 
 @dataclass
@@ -55,6 +59,11 @@ class ValuationMediansSnapshot:
     # the VersionId / ETag S3 reported on the read (metron-ops-I373). Set for a refused
     # artifact too. `None` when the read failed or the reader was injected.
     input_source: InputSource | None = None
+    # Set when a PRESENT artifact's sector map is empty or far below the product's minimum
+    # universe, so "no coverage" is not mistaken for a healthy producer (I373).
+    universe_reason: str | None = None
+    # Content `as_of` older than the weekly cadence allows (I373); a flag, numbers still served.
+    stale_reason: str | None = None
 
 
 def _bucket() -> str:
@@ -96,7 +105,7 @@ def _parse_groups(
     return out
 
 
-def load_valuation_medians(*, reader: ArtifactReader | None = None) -> ValuationMediansSnapshot:
+def load_valuation_medians(*, reader: ArtifactReader | None = None, now: datetime | None = None) -> ValuationMediansSnapshot:
     """The latest valuation-medians snapshot. ``reader`` (a no-arg callable returning the raw
     artifact dict) is injectable for tests; defaults to the S3 read."""
     if reader is not None:
@@ -126,7 +135,24 @@ def load_valuation_medians(*, reader: ArtifactReader | None = None) -> Valuation
             "%s: %d group(s) carried non-finite or non-numeric values, read as unavailable: %s",
             VALUATION_MEDIANS_KEY, len(invalid_fields), sorted(invalid_fields),
         )
+    stale_reason = (
+        admission.content_staleness(
+            as_of,
+            now=now or datetime.now(UTC),
+            written_at=input_source.last_modified if input_source else None,
+            max_age_days=WEEKLY_MAX_AGE_DAYS,
+            artifact=VALUATION_MEDIANS_KEY,
+        )
+        if raw is not None
+        else None
+    )
+    if stale_reason:
+        logger.warning("%s", stale_reason)
     return ValuationMediansSnapshot(
+        stale_reason=stale_reason,
+        universe_reason=(
+            admission.universe_shortfall(len(by_sector), artifact=VALUATION_MEDIANS_KEY) if raw is not None else None
+        ),
         as_of=as_of,
         by_sector=by_sector,
         by_country=by_country,
