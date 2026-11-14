@@ -11,12 +11,12 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import cast
 
 from api.services import spine_artifacts
 from api.services.spine_artifacts import ArtifactReader, JsonObject
-from portfolio_analytics.admission import Invalid, admit_schema, read_number
+from portfolio_analytics.admission import Invalid, admit_schema, content_staleness, read_number
 from portfolio_analytics.prices.source import InputSource
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,19 @@ FUNDAMENTALS_KEY = "market_data/fundamentals/latest.json"
 # tests/contracts/metron_fundamentals.schema.json. Any other version is refused at
 # runtime (metron-ops-I373); re-pin both together when the producer bumps it.
 FUNDAMENTALS_SCHEMA_VERSION = 5
+
+# Declared-unit bounds (inclusive) for the fields whose unit the reader depends on, keyed
+# by the artifact's field name. A finite value outside its range is a value in the wrong
+# unit (yfinance gives margins as FRACTIONS, so 45.0 is a percent; dividendYield is a
+# PERCENT that is divided by 100 below, so 0.045 is a fraction and 450 is nonsense) and
+# reads as invalid, not as a metric (metron-ops-I373). Only bounds no real company
+# breaches are set: a gross margin cannot exceed 1, and a yield outside 0-100 percent is
+# not a yield. Live artifacts checked read-only on 2026-11-14: none outside.
+_BOUNDS: dict[str, tuple[float | None, float | None]] = {
+    "dividendYield": (0.0, 100.0),
+    "grossMargins": (None, 1.0),
+    "operatingMargins": (None, 1.0),
+}
 
 
 @dataclass
@@ -84,6 +97,10 @@ class FundamentalsSnapshot:
     # `by_symbol` came from. Set for a refused artifact too, so the refusal names the
     # object it refused. `None` when the read failed or the reader was injected.
     input_source: InputSource | None = None
+    # Set when the content's own `as_of` is older than CONTENT_MAX_AGE_DAYS (or absent),
+    # whatever the object's write time says. The numbers are still served: stale is a flag
+    # the caller renders, not a refusal (metron-ops-I373).
+    stale_reason: str | None = None
 
 
 def _bucket() -> str:
@@ -100,7 +117,8 @@ def _f(d: JsonObject, key: str, invalid: list[str]) -> float | None:
     """A finite float, or None. A present-but-invalid value (NaN, Infinity, a
     non-numeric string) also reads as None, and its key is appended to ``invalid``
     so the snapshot can say so (metron-ops-I373)."""
-    reading = read_number(d.get(key))
+    lo, hi = _BOUNDS.get(key, (None, None))
+    reading = read_number(d.get(key), lo=lo, hi=hi)
     if isinstance(reading, Invalid):
         invalid.append(key)
         return None
@@ -151,7 +169,7 @@ def _parse(yf_symbol: str, d: JsonObject, invalid: list[str]) -> TickerFundament
     )
 
 
-def load_fundamentals(*, reader: ArtifactReader | None = None) -> FundamentalsSnapshot:
+def load_fundamentals(*, reader: ArtifactReader | None = None, now: datetime | None = None) -> FundamentalsSnapshot:
     """The latest fundamentals snapshot, keyed by yf_symbol. ``reader`` (a no-arg callable
     returning the raw artifact dict) is injectable for tests; defaults to the S3 read,
     which also records the object version read in ``input_source``."""
@@ -191,9 +209,18 @@ def load_fundamentals(*, reader: ArtifactReader | None = None) -> FundamentalsSn
             as_of = date.fromisoformat(str(raw_as_of)[:10])
         except ValueError:
             as_of = None
+    stale_reason = content_staleness(
+        as_of,
+        now=now or datetime.now(UTC),
+        written_at=input_source.last_modified if input_source else None,
+        artifact=FUNDAMENTALS_KEY,
+    )
+    if stale_reason:
+        logger.warning("%s", stale_reason)
     return FundamentalsSnapshot(
         as_of=as_of,
         by_symbol=by_symbol,
+        stale_reason=stale_reason,
         schema_version=art.get("schema_version"),
         source=art.get("source"),
         invalid_fields=invalid_fields,

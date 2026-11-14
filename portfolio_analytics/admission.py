@@ -31,10 +31,23 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Invalid", "NumberReading", "admit_schema", "finite_field", "read_number"]
+__all__ = [
+    "CONTENT_MAX_AGE_DAYS",
+    "Invalid",
+    "NumberReading",
+    "admit_schema",
+    "content_staleness",
+    "finite_field",
+    "read_number",
+]
+
+#: A daily-cadence artifact whose content ``as_of`` is older than this many calendar days
+#: is stale. Five covers a Friday print read on the Wednesday after a Monday holiday.
+CONTENT_MAX_AGE_DAYS = 5
 
 
 def admit_schema(art: dict | None, *, expected: int, artifact: str) -> str | None:
@@ -79,8 +92,12 @@ class Invalid:
 NumberReading = float | None | Invalid
 
 
-def read_number(value: object) -> NumberReading:
+def read_number(value: object, *, lo: float | None = None, hi: float | None = None) -> NumberReading:
     """A finite ``float``, ``None`` when absent, or :class:`Invalid` when present but bad.
+
+    ``lo``/``hi`` are the inclusive range the field's declared unit allows (a fraction in
+    ``[0, 1]``, an RSI in ``[0, 100]``). A finite value outside it is a value in the wrong
+    unit or scale (a percent where a fraction is declared) and is :class:`Invalid` too.
 
     The pinned schemas type these fields as JSON numbers, so only ``int``/``float``
     are accepted, and only when finite. Strings (numeric or not), booleans, ``NaN``
@@ -97,18 +114,52 @@ def read_number(value: object) -> NumberReading:
         return Invalid(value)
     if not math.isfinite(number):
         return Invalid(value)
+    if (lo is not None and number < lo) or (hi is not None and number > hi):
+        return Invalid(value)
     return number
 
 
-def finite_field(d: dict, key: str, invalid: list[str], *, name: str | None = None) -> float | None:
+def finite_field(d: dict, key: str, invalid: list[str], *, name: str | None = None, lo: float | None = None, hi: float | None = None) -> float | None:
     """``d[key]`` as a finite float, or ``None``.
 
     Absent (missing key or JSON ``null``) reads as ``None``. Present but not a finite
     number also reads as ``None``, and ``name`` (default ``key``) is appended to
     ``invalid`` so the reader can say the producer sent garbage rather than nothing.
     """
-    reading = read_number(d.get(key))
+    reading = read_number(d.get(key), lo=lo, hi=hi)
     if isinstance(reading, Invalid):
         invalid.append(name or key)
         return None
     return reading
+
+
+def content_staleness(
+    as_of: date | None,
+    *,
+    now: datetime,
+    written_at: datetime | None = None,
+    max_age_days: int = CONTENT_MAX_AGE_DAYS,
+    artifact: str = "artifact",
+) -> str | None:
+    """``None`` when the content's own ``as_of`` is current; otherwise the reason it is not.
+
+    The age is judged on the date the PRODUCER declared for the content, never on when the
+    object was written: a producer that re-uploads yesterday's (or last month's) payload
+    gives the key a fresh write time and old numbers. ``written_at`` (the store's
+    ``LastModified``, when known) is only named in the reason, so the report says "written
+    recently, content old" instead of letting the write time pass for freshness.
+    A payload that declares no usable ``as_of`` is stale by this rule: its age is unknown.
+    """
+    if as_of is None:
+        return f"{artifact}: declares no usable as_of, so the age of its content is unknown"
+    age = (now.astimezone(UTC).date() - as_of).days
+    if age <= max_age_days:
+        return None
+    reason = f"{artifact}: content as_of {as_of.isoformat()} is {age} days old (limit {max_age_days})"
+    if written_at is not None:
+        recent = now - written_at <= timedelta(days=max_age_days)
+        reason += (
+            f"; the object was written {written_at.isoformat()}"
+            + (" — a recent write of old content" if recent else "")
+        )
+    return reason
