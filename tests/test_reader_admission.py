@@ -46,7 +46,12 @@ def test_a_present_non_finite_or_non_numeric_value_is_invalid_not_absent(value):
     assert isinstance(read_number(value), Invalid)
 
 
-@pytest.mark.parametrize(("value", "expected"), [(None, None), (1, 1.0), ("2.5", 2.5), (0.0, 0.0), (-3, -3.0)])
+@pytest.mark.parametrize("value", ["2.5", "1", " 3 ", "1e3", [1.0], {"v": 1}, 10**400])
+def test_a_numeric_string_is_invalid_because_the_schemas_type_these_fields_as_numbers(value):
+    assert isinstance(read_number(value), Invalid)
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, None), (1, 1.0), (2.5, 2.5), (0.0, 0.0), (-3, -3.0)])
 def test_absent_and_finite_values_read_as_themselves(value, expected):
     assert read_number(value) == expected
 
@@ -226,3 +231,37 @@ def test_an_on_contract_series_is_read_unchanged():
     out = _history({"market_data/close_history/AAPL.json": _ticker(_GOOD_ROWS)})
     assert out["AAPL"] == [ClosePoint(date(2026, 10, 20), 198.0), ClosePoint(date(2026, 10, 21), 200.0),
                            ClosePoint(date(2026, 10, 22), 201.5)]
+
+
+def test_a_string_valued_close_refuses_the_series_and_the_refusal_is_structured():
+    rows = [_GOOD_ROWS[0], ["2026-10-21", "200.0"], _GOOD_ROWS[2]]
+    refusals: list[spine_source.SeriesRefusal] = []
+    out = spine_source.spine_close_history(
+        ["AAPL", "MSFT"], date(2026, 10, 1), date(2026, 10, 31),
+        s3=_s3_with({"market_data/close_history/AAPL.json": _ticker(rows),
+                     "market_data/close_history/MSFT.json": _ticker(_GOOD_ROWS)}),
+        refusals=refusals,
+    )
+    assert set(out) == {"MSFT"}
+    assert refusals == [spine_source.SeriesRefusal(
+        label="market_data/close_history/AAPL.json",
+        reason="row is not [ISO date, positive finite number]", rows=3, bad_row=1)]
+
+
+def test_a_non_list_series_is_a_structured_refusal_and_an_absent_one_is_not():
+    refusals: list[spine_source.SeriesRefusal] = []
+    out = spine_source.spine_close_history(
+        ["AAPL", "MSFT"], date(2026, 10, 1), date(2026, 10, 31),
+        s3=_s3_with({"market_data/close_history/AAPL.json": _ticker({"not": "a list"})}),
+        refusals=refusals,
+    )
+    assert out == {}
+    assert [(r.label, r.rows, r.bad_row) for r in refusals] == [("market_data/close_history/AAPL.json", 0, None)]
+
+
+def test_a_clean_history_reports_no_refusals():
+    refusals: list[spine_source.SeriesRefusal] = []
+    spine_source.spine_close_history(
+        ["AAPL"], date(2026, 10, 1), date(2026, 10, 31),
+        s3=_s3_with({"market_data/close_history/AAPL.json": _ticker(_GOOD_ROWS)}), refusals=refusals)
+    assert refusals == []

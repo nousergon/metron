@@ -82,17 +82,18 @@ NumberReading = float | None | Invalid
 def read_number(value: object) -> NumberReading:
     """A finite ``float``, ``None`` when absent, or :class:`Invalid` when present but bad.
 
-    Numbers and numeric strings are accepted when finite; ``NaN``, ``±Infinity``,
-    booleans and unparseable strings are :class:`Invalid`. JSON ``null`` is
-    absent (``None``), never invalid.
+    The pinned schemas type these fields as JSON numbers, so only ``int``/``float``
+    are accepted, and only when finite. Strings (numeric or not), booleans, ``NaN``
+    and ``±Infinity`` are :class:`Invalid`. JSON ``null`` is absent (``None``),
+    never invalid.
     """
     if value is None:
         return None
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return Invalid(value)
     try:
-        number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+        number = float(value)
+    except OverflowError:
         return Invalid(value)
     if not math.isfinite(number):
         return Invalid(value)
