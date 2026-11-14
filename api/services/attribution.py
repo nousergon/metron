@@ -24,9 +24,13 @@ is the first session every sector-ETF series reaches on/after the requested star
 is the last session EVERY one of them reaches. A holding whose cached series does not span
 that interval (short history, or stale) is not measured over its own shorter interval —
 it is left out of the attributable population and named in ``unattributed`` with the
-reason. ``coverage`` is the share of portfolio market value that was actually attributed
-(classified AND returnable), and the sector weights are over that same population, so
-weights and returns describe one set of holdings. ``as_of`` is the common end — the
+reason. An endpoint close may be carried forward over at most ``ENDPOINT_GAP_SESSIONS``
+sessions (a local-exchange holiday); a longer hole is a data gap and excludes the holding.
+Every sector ETF that carries benchmark weight is required: one without a window return
+makes the result not computable and is named, never dropped. ``coverage`` is the share
+of portfolio market value that was actually attributed (classified AND returnable), and
+the sector weights are over that same population, so weights and returns describe one set
+of holdings. ``as_of`` is the common end — the
 freshness of the stalest required leg, never the freshest.
 
 **Reconciled to what actually happened** (metron-ops-I372, remaining slice). The
@@ -53,6 +57,7 @@ says so with a reason. It never measures over a nearby window instead.
 
 from __future__ import annotations
 
+import bisect
 import uuid
 from collections.abc import Collection
 from dataclasses import dataclass, field
@@ -91,6 +96,16 @@ BASIS_CURRENT_HOLDINGS = "current_holdings"
 # figures. It is not a materiality judgment.
 RECONCILE_TOLERANCE = 0.0005
 
+# How many sessions of the reference calendar (the sector-ETF dates) an endpoint close may
+# be carried over. A foreign listing closed for a local holiday on the anchor or end date
+# is priced at its prior close, which is the economically correct value. Local holidays in
+# the price spine's ten-year history run to 3 missed sessions (Hong Kong, Lunar New Year);
+# 5 also covers mainland China's week-long closures. A longer hole is a data gap.
+ENDPOINT_GAP_SESSIONS = 5
+# Calendar days read before the requested start, so a close carried onto the anchor is in
+# the read. 14 days always hold more than ``ENDPOINT_GAP_SESSIONS`` sessions.
+_READ_PAD_DAYS = 14
+
 
 @dataclass
 class SectorEffect:
@@ -111,8 +126,8 @@ class UnattributedHolding:
 
     ticker: str
     market_value: float
-    # "no_sector" | "no_history" | "short_history" (no close on/before the window start) |
-    # "stale" (no close at the window end) | "invalid_price"
+    # "no_sector" | "no_history" | "invalid_price" | "short_history" / "stale" (no close
+    # within ENDPOINT_GAP_SESSIONS sessions on/before the window start / end)
     reason: str
 
 
@@ -194,24 +209,32 @@ def _common_window(reference: list[list[ClosePoint]], start: date) -> tuple[date
     return (anchor, end) if end > anchor else None
 
 
-def _window_return(series: list[ClosePoint] | None, anchor: date, end: date) -> tuple[float | None, str | None]:
+def _window_return(
+    series: list[ClosePoint] | None, anchor: date, end: date, sessions: list[date]
+) -> tuple[float | None, str | None]:
     """Return over exactly ``[anchor, end]``, or ``(None, reason)``.
 
-    Both ends are the close on/before that date, and the series must actually reach both:
-    a first bar after ``anchor`` is ``short_history`` and a last bar before ``end`` is
-    ``stale`` — measuring such a series over the part it does cover would put a different
-    interval into the same sum as every other leg."""
+    Each end is the close on/before that date, carried over at most
+    ``ENDPOINT_GAP_SESSIONS`` of ``sessions`` (the sorted reference calendar). No such close
+    at the anchor is ``short_history`` and at the end is ``stale``: measuring the series
+    over the part it does cover would put a different interval into the same sum as every
+    other leg."""
     if not series:
         return None, "no_history"
-    if series[0].bar_date > anchor:
-        return None, "short_history"
-    if series[-1].bar_date < end:
-        return None, "stale"
     first = _close_on_or_before(series, anchor)
+    if first is None or _sessions_between(sessions, first.bar_date, anchor) > ENDPOINT_GAP_SESSIONS:
+        return None, "short_history"
     last = _close_on_or_before(series, end)
-    if first is None or last is None or first.close <= 0 or last.close <= 0:
+    if last is None or _sessions_between(sessions, last.bar_date, end) > ENDPOINT_GAP_SESSIONS:
+        return None, "stale"
+    if first.close <= 0 or last.close <= 0:
         return None, "invalid_price"
     return last.close / first.close - 1.0, None
+
+
+def _sessions_between(sessions: list[date], carried: date, endpoint: date) -> int:
+    """Sessions in ``(carried, endpoint]``: how far a close on ``carried`` is carried."""
+    return bisect.bisect_right(sessions, endpoint) - bisect.bisect_right(sessions, carried)
 
 
 def _portfolio_sector_aggregates(
@@ -298,6 +321,7 @@ def _reconcile(
     benchmark: str,
     anchor: date,
     end: date,
+    sessions: list[date],
     portfolio_return: float,
     benchmark_return: float,
     tolerance: float = RECONCILE_TOLERANCE,
@@ -322,7 +346,7 @@ def _reconcile(
     else:
         observed_port = perf_service._window_twr(points)
 
-    observed_bench, why = _window_return(benchmark_series, anchor, end)
+    observed_bench, why = _window_return(benchmark_series, anchor, end, sessions)
     if observed_bench is None:
         reasons.append(f"{benchmark} close history: {why}")
 
@@ -371,6 +395,7 @@ def compute_attribution(
     if benchmark not in BENCHMARKS:
         raise ValueError(f"unknown benchmark {benchmark!r}; known: {sorted(BENCHMARKS)}")
     start = today - timedelta(days=lookback_days)
+    read_from = start - timedelta(days=_READ_PAD_DAYS)
     held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
     priced = [h for h in held if h.market_value and h.market_value > 0]
     if not priced:
@@ -384,7 +409,7 @@ def compute_attribution(
         sector_service.ensure_sectors(session, tickers, source=sector_source)
         for sym in [*etfs, benchmark]:
             price_service.ensure_security(session, sym)
-        price_service.backfill_prices(session, [*tickers, *etfs, benchmark], start, today, source=price_source)
+        price_service.backfill_prices(session, [*tickers, *etfs, benchmark], read_from, today, source=price_source)
 
     raw_bench = fetch_benchmark_sector_weights(benchmark, source=benchmark_source)
     w_b = _normalize_benchmark_weights(raw_bench)
@@ -397,16 +422,29 @@ def compute_attribution(
         )
 
     sector_of = sector_service.sectors_by_symbol(session, tickers)
-    # Bounded at ``start`` (metron-ops-I343): every return is measured from the common
-    # anchor on/after ``start``, so earlier bars never change a result. Unbounded, this
-    # read every cached bar of every held ticker and sector ETF.
+    # Bounded (metron-ops-I343): every return is measured from the common anchor on/after
+    # ``start``, and only a close carried onto it reaches back past ``start``, by at most
+    # ``_READ_PAD_DAYS``. Unbounded, this read every cached bar of every held ticker and
+    # sector ETF.
     # The benchmark's own closes are read too, for the reconciliation only (they never
     # bound the window: a sector-ETF leg does).
-    hist = price_service.close_history_by_symbol(session, [*tickers, *etfs, benchmark], start_date=start)
+    hist = price_service.close_history_by_symbol(session, [*tickers, *etfs, benchmark], start_date=read_from)
     # The common window (metron-ops-I372), set by the sector-ETF legs that carry benchmark
-    # weight — the benchmark side cannot be measured without them, so they bound it.
-    required_etfs = [SECTOR_ETF[sec] for sec in w_b if hist.get(SECTOR_ETF[sec])]
-    window = _common_window([hist[etf] for etf in required_etfs], start)
+    # weight — the benchmark side cannot be measured without them, so they bound it. One
+    # without history is named, not dropped: dropping it priced its sector at 0% inside the
+    # benchmark return.
+    required = {sec: SECTOR_ETF[sec] for sec in sorted(w_b)}
+    missing = [f"{etf} ({sec})" for sec, etf in required.items() if not hist.get(etf)]
+    if missing:
+        return AttributionSummary(
+            False,
+            benchmark=benchmark,
+            reason=f"No price history for benchmark sector ETF {', '.join(missing)} — compute "
+            "attribution to backfill it.",
+            requested_start=start,
+            lookback_days=lookback_days,
+        )
+    window = _common_window([hist[etf] for etf in required.values()], start)
     if window is None:
         return AttributionSummary(
             False,
@@ -416,6 +454,7 @@ def compute_attribution(
             lookback_days=lookback_days,
         )
     anchor, end = window
+    sessions = sorted({p.bar_date for etf in required.values() for p in hist[etf]})
 
     holding_returns: dict[str, float] = {}
     unattributed: list[UnattributedHolding] = []
@@ -423,7 +462,7 @@ def compute_attribution(
         if sector_of.get(h.ticker) not in SECTOR_ETF:
             unattributed.append(UnattributedHolding(h.ticker, h.market_value, "no_sector"))
             continue
-        ret, why = _window_return(hist.get(h.ticker), anchor, end)
+        ret, why = _window_return(hist.get(h.ticker), anchor, end, sessions)
         if ret is None:
             unattributed.append(UnattributedHolding(h.ticker, h.market_value, why or "no_history"))
         else:
@@ -445,9 +484,23 @@ def compute_attribution(
             lookback_days=lookback_days,
             unattributed=unattributed,
         )
-    r_b = {
-        sec: r for sec, etf in SECTOR_ETF.items() if (r := _window_return(hist.get(etf), anchor, end)[0]) is not None
-    }
+    r_b: dict[str, float] = {}
+    gaps: list[str] = []
+    for sec, etf in SECTOR_ETF.items():
+        r, why = _window_return(hist.get(etf), anchor, end, sessions)
+        if r is not None:
+            r_b[sec] = r
+        elif sec in required:
+            gaps.append(f"{etf} ({sec}): {why}")
+    if gaps:
+        return AttributionSummary(
+            False,
+            benchmark=benchmark,
+            reason=f"No window return for benchmark sector ETF {'; '.join(gaps)}.",
+            requested_start=start,
+            lookback_days=lookback_days,
+            unattributed=unattributed,
+        )
     if not r_p or not r_b:
         return AttributionSummary(
             False,
@@ -480,6 +533,7 @@ def compute_attribution(
         benchmark=benchmark,
         anchor=anchor,
         end=end,
+        sessions=sessions,
         portfolio_return=result.portfolio_return,
         benchmark_return=result.benchmark_return,
     )

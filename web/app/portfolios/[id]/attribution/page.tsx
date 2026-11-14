@@ -25,8 +25,8 @@ function ret(v: number | null): string {
 const UNATTRIBUTED_REASON: Record<string, string> = {
   no_sector: "no resolved GICS sector",
   no_history: "no price history",
-  short_history: "price history starts after the window start",
-  stale: "no price at the window end",
+  short_history: "no price at or shortly before the window start",
+  stale: "no price at or shortly before the window end",
   invalid_price: "unusable price",
 };
 
