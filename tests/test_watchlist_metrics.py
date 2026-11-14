@@ -32,6 +32,7 @@ def test_watchlist_metrics_populate_via_data_spine_when_feed_entitled(db_session
     class _Snap:
         def __init__(self, by):
             self.by_symbol = by
+            self.input_source = None
             self.by_sector = {}
             self.by_country = {}
 

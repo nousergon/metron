@@ -81,10 +81,10 @@ def test_enrich_metrics_attaches_sota_attractiveness(db_session, monkeypatch):
     monkeypatch.setattr(
         metrics_enrichment.tearsheet_service, "_yf_symbol_map", lambda s, t: {"AAPL": "AAPL"},
     )
-    monkeypatch.setattr(metrics_enrichment.fundamentals_service, "load_fundamentals", lambda: type("S", (), {"by_symbol": {}})())
-    monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals", lambda: type("S", (), {"by_symbol": {}})())
-    monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst", lambda: type("S", (), {"by_symbol": {}})())
-    monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment", lambda: type("S", (), {"by_symbol": {}})())
+    monkeypatch.setattr(metrics_enrichment.fundamentals_service, "load_fundamentals", lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
+    monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals", lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
+    monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst", lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
+    monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment", lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
 
     def _test_profiles_reader():
         # load_factor_profiles(reader=...) parses a RAW dict into a snapshot itself —
@@ -256,7 +256,7 @@ def test_retired_returns_empty_universe_without_reading_profiles(monkeypatch):
 
 
 def _stub_enrichment_spine(monkeypatch, symbols):
-    empty = lambda: type("S", (), {"by_symbol": {}})()  # noqa: E731
+    empty = lambda: type("S", (), {"input_source": None, "by_symbol": {}})()  # noqa: E731
     monkeypatch.setattr(
         metrics_enrichment.tearsheet_service, "_yf_symbol_map", lambda s, t: {x: x for x in symbols},
     )

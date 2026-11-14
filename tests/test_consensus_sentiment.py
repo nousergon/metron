@@ -111,9 +111,9 @@ def _patch_loaders(monkeypatch, *, analyst_art, sentiment_art):
     monkeypatch.setattr(metrics_enrichment.tearsheet_service, "_yf_symbol_map",
                         lambda session, syms: {s: s for s in syms})
     monkeypatch.setattr(metrics_enrichment.fundamentals_service, "load_fundamentals",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst",
                         lambda: real_analyst(reader=lambda: analyst_art))
     monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment",

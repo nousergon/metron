@@ -23,6 +23,7 @@ from api.services import (
 )
 from api.services import technical_rating as technical_rating_service
 from api.services import technicals as technicals_service
+from portfolio_analytics.prices.source import InputSource
 
 
 def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
@@ -31,11 +32,23 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
     yf_symbol). Fail-soft: a missing artifact or absent symbol leaves the fields None
     (coverage gap, never fabricated)."""
     yf_map = tearsheet_service._yf_symbol_map(session, [h.ticker for h in held])
-    funds = fundamentals_service.load_fundamentals().by_symbol
-    techs = technicals_service.load_technicals().by_symbol
-    ratings = technical_rating_service.load_technical_rating().by_symbol
-    analysts = analyst_service.load_analyst().by_symbol
-    sentiments = sentiment_service.load_sentiment().by_symbol
+    funds_snap = fundamentals_service.load_fundamentals()
+    techs_snap = technicals_service.load_technicals()
+    ratings_snap = technical_rating_service.load_technical_rating()
+    analysts_snap = analyst_service.load_analyst()
+    sentiments_snap = sentiment_service.load_sentiment()
+    funds, techs, ratings = funds_snap.by_symbol, techs_snap.by_symbol, ratings_snap.by_symbol
+    analysts, sentiments = analysts_snap.by_symbol, sentiments_snap.by_symbol
+    # The producer object each reader served from (metron-ops-I373); a failed read or an
+    # injected reader has none, and is simply absent here.
+    sources: dict[str, InputSource | None] = {
+        "fundamentals": funds_snap.input_source,
+        "technicals": techs_snap.input_source,
+        "analyst": analysts_snap.input_source,
+        "sentiment": sentiments_snap.input_source,
+        **{f"technical_rating:{key}": src for key, src in ratings_snap.input_sources.items()},
+    }
+    input_sources = {name: src for name, src in sources.items() if src is not None}
     universe_att = attractiveness_service.compute_universe()
     # metron-ops-I334: once retired, compute_universe() is {} — stamp the substrate state on
     # every row so the UI renders "retired" rather than a blank that reads as a coverage gap.
@@ -47,6 +60,7 @@ def enrich_metrics(session: Session, held: list[analytics.Holding]) -> None:
     from api.services.demo_household import reference_symbol
 
     for h in held:
+        h.input_sources = dict(input_sources)
         yf = yf_map.get(h.ticker, h.ticker)
         f = funds.get(yf)
         if f is not None:
