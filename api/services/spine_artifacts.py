@@ -16,6 +16,11 @@ transient S3 error can never pin a page to "unavailable". The cached dict is sha
 consumers parse it into their own snapshot types and never mutate it. The ``reader=``
 injection seams bypass this module entirely, as they always did.
 
+A read also names the object it came from (metron-ops-I373): :func:`read_artifact`
+returns the parsed artifact together with its :class:`InputSource` — the ``s3://``
+location and the ``VersionId`` / ``ETag`` S3 reported — and a cache hit returns the
+identity of the bytes it actually serves, never the key's current version.
+
 ``intraday/latest.json`` keeps its own 30-second cache in ``market_snapshot`` (it is
 written every ~5 minutes and judged for staleness per call).
 """
@@ -27,6 +32,10 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
+from typing import Any, cast
+
+from portfolio_analytics.prices.source import InputSource, s3_input_source
 
 logger = logging.getLogger(__name__)
 
@@ -35,37 +44,56 @@ logger = logging.getLogger(__name__)
 TTL_S = 60.0
 
 _lock = threading.Lock()
-_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+#: A parsed artifact: a JSON object whose values are untyped until a reader admits them.
+JsonObject = dict[str, Any]  # pyright: ignore[reportExplicitAny]  # raw JSON value: untyped at this boundary
+
+#: An injectable no-arg artifact reader: the test seam every ``load_*`` reader takes.
+ArtifactReader = Callable[[], JsonObject | None]
+
+_cache: dict[tuple[str, str], tuple[float, JsonObject, InputSource]] = {}
 
 
 def _default_bucket() -> str:
     return os.environ.get("MARKET_DATA_BUCKET", "alpha-engine-research")
 
 
-def _fetch(bucket: str, key: str) -> dict | None:
+def _fetch(bucket: str, key: str) -> tuple[JsonObject, InputSource] | None:
     import boto3
 
     try:
-        obj = boto3.client("s3").get_object(Bucket=bucket, Key=key)
-        return json.loads(obj["Body"].read())
+        obj = cast("JsonObject", boto3.client("s3").get_object(Bucket=bucket, Key=key))  # pyright: ignore[reportUnknownMemberType]  # boto3 ships no types here
+        art: object = json.loads(obj["Body"].read())
     except Exception as e:  # fail-soft: every consumer degrades to "unavailable", never breaks a page
         logger.warning("data-spine read failed %s: %s", key, e)
         return None
+    if art is None:
+        return None
+    # Not narrowed to a dict here: a non-object payload is refused by the reader's admit_schema.
+    return cast("JsonObject", art), s3_input_source(bucket, key, obj, art)
 
 
-def read_json(key: str, *, bucket: str | None = None) -> dict | None:
-    """The parsed artifact at ``s3://bucket/key`` (or ``None`` on read failure), served
-    from memory for ``TTL_S`` seconds after a successful read."""
+def read_artifact(key: str, *, bucket: str | None = None) -> tuple[JsonObject | None, InputSource | None]:
+    """The parsed artifact at ``s3://bucket/key`` and the object version it was read from,
+    or ``(None, None)`` on read failure. Served from memory for ``TTL_S`` seconds after a
+    successful read; a cache hit carries the lineage of the read that filled it."""
     ck = (bucket or _default_bucket(), key)
     with _lock:
         hit = _cache.get(ck)
         if hit is not None and time.monotonic() - hit[0] < TTL_S:
-            return hit[1]
-    art = _fetch(*ck)  # outside the lock: reads of different keys never queue behind each other
-    if art is not None:
-        with _lock:
-            _cache[ck] = (time.monotonic(), art)
-    return art
+            return hit[1], hit[2]
+    got = _fetch(*ck)  # outside the lock: reads of different keys never queue behind each other
+    if got is None:
+        return None, None
+    art, source = got
+    with _lock:
+        _cache[ck] = (time.monotonic(), art, source)
+    return art, source
+
+
+def read_json(key: str, *, bucket: str | None = None) -> JsonObject | None:
+    """The parsed artifact at ``s3://bucket/key`` (or ``None`` on read failure), served
+    from memory for ``TTL_S`` seconds after a successful read."""
+    return read_artifact(key, bucket=bucket)[0]
 
 
 def clear() -> None:

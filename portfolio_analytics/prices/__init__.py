@@ -12,6 +12,7 @@ from portfolio_analytics.prices.source import (
     PriceSource,
     fetch_close_history,
     fetch_latest_closes,
+    s3_input_source,
 )
 from portfolio_analytics.prices.symbology import fx_pair_symbol, to_yf_symbol
 
@@ -22,6 +23,7 @@ __all__ = [
     "PriceSource",
     "fetch_close_history",
     "fetch_latest_closes",
+    "s3_input_source",
     "fx_pair_symbol",
     "to_yf_symbol",
 ]
