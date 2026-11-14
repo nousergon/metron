@@ -32,8 +32,10 @@ from datetime import UTC, datetime
 from api import entitlements
 from api.services import intraday as intraday_service
 from api.services import spine_artifacts
+from api.services.spine_artifacts import ArtifactReader, JsonObject
 from api.services.technicals import TECHNICALS_SCHEMA_VERSION
 from portfolio_analytics.admission import admit_schema, finite_field
+from portfolio_analytics.prices.source import InputSource
 
 logger = logging.getLogger(__name__)
 
@@ -77,20 +79,23 @@ class RatingSnapshot:
     # symbol, the fields that were present but not a finite number and read as unavailable.
     rejected: dict[str, str] = field(default_factory=dict)
     invalid_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Artifact key → the stored object it was read from (metron-ops-I373), for each artifact
+    # actually read (a refused one included). Absent for a failed read or an injected reader.
+    input_sources: dict[str, InputSource] = field(default_factory=dict)
 
 
 def _bucket() -> str:
     return os.environ.get("MARKET_DATA_BUCKET", "alpha-engine-research")
 
 
-def _default_intraday_reader() -> dict | None:
-    # Fail-soft (None on any read error); shared short-TTL cache — see spine_artifacts.
-    return spine_artifacts.read_json(TECHNICAL_RATINGS_KEY, bucket=_bucket())
+def _default_intraday_read() -> tuple[JsonObject | None, InputSource | None]:
+    # Fail-soft ((None, None) on any read error); shared short-TTL cache — see spine_artifacts.
+    return spine_artifacts.read_artifact(TECHNICAL_RATINGS_KEY, bucket=_bucket())
 
 
-def _default_technicals_reader() -> dict | None:
-    # Fail-soft (None on any read error); shared short-TTL cache — see spine_artifacts.
-    return spine_artifacts.read_json(TECHNICALS_KEY, bucket=_bucket())
+def _default_technicals_read() -> tuple[JsonObject | None, InputSource | None]:
+    # Fail-soft ((None, None) on any read error); shared short-TTL cache — see spine_artifacts.
+    return spine_artifacts.read_artifact(TECHNICALS_KEY, bucket=_bucket())
 
 
 def _is_stale(as_of_utc: str | None, now: datetime) -> bool:
@@ -139,7 +144,10 @@ def _parse(yf_symbol: str, d: dict, *, basis: str, as_of: str | None, invalid: l
 
 
 def load_technical_rating(
-    *, intraday_reader=None, technicals_reader=None, now: datetime | None = None
+    *,
+    intraday_reader: ArtifactReader | None = None,
+    technicals_reader: ArtifactReader | None = None,
+    now: datetime | None = None,
 ) -> RatingSnapshot:
     """The latest per-symbol technical rating, keyed by yf_symbol — intraday where fresh,
     EOD fallback otherwise, decided PER SYMBOL (metron-ops#294). ``intraday_reader`` /
@@ -154,6 +162,7 @@ def load_technical_rating(
     by_symbol: dict[str, TickerRating] = {}
     rejected: dict[str, str] = {}
     invalid_fields: dict[str, tuple[str, ...]] = {}
+    input_sources: dict[str, InputSource] = {}
 
     def _add(sym: str, body: dict, *, basis: str, as_of: str | None) -> None:
         invalid: list[str] = []
@@ -161,7 +170,12 @@ def load_technical_rating(
         if invalid:
             invalid_fields[sym] = tuple(invalid)
 
-    intraday_raw = (intraday_reader or _default_intraday_reader)()
+    if intraday_reader is not None:
+        intraday_raw, intraday_source = intraday_reader(), None
+    else:
+        intraday_raw, intraday_source = _default_intraday_read()
+    if intraday_source is not None:
+        input_sources[TECHNICAL_RATINGS_KEY] = intraday_source
     reason = admit_schema(
         intraday_raw, expected=TECHNICAL_RATINGS_SCHEMA_VERSION, artifact=TECHNICAL_RATINGS_KEY
     )
@@ -180,7 +194,12 @@ def load_technical_rating(
     # a fresh intraday rating, including every symbol when the intraday artifact is
     # absent/stale/missing its own ``ratings`` map. Schema v2 (no ``rating`` key per symbol)
     # degrades to simply contributing nothing here — never an error.
-    tech_raw = (technicals_reader or _default_technicals_reader)()
+    if technicals_reader is not None:
+        tech_raw, tech_source = technicals_reader(), None
+    else:
+        tech_raw, tech_source = _default_technicals_read()
+    if tech_source is not None:
+        input_sources[TECHNICALS_KEY] = tech_source
     reason = admit_schema(tech_raw, expected=TECHNICALS_SCHEMA_VERSION, artifact=TECHNICALS_KEY)
     if reason is not None:
         rejected[TECHNICALS_KEY] = reason
@@ -198,4 +217,6 @@ def load_technical_rating(
             "technical ratings: %d symbol(s) carried non-finite or non-numeric values, read as unavailable: %s",
             len(invalid_fields), sorted(invalid_fields),
         )
-    return RatingSnapshot(by_symbol=by_symbol, rejected=rejected, invalid_fields=invalid_fields)
+    return RatingSnapshot(
+        by_symbol=by_symbol, rejected=rejected, invalid_fields=invalid_fields, input_sources=input_sources
+    )

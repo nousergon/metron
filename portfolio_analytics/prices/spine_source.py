@@ -32,7 +32,7 @@ from datetime import date
 from typing import Any, cast
 
 from portfolio_analytics.admission import Invalid, admit_schema, read_number
-from portfolio_analytics.prices.source import ClosePoint, InputSource
+from portfolio_analytics.prices.source import ClosePoint, InputSource, s3_input_source
 
 logger = logging.getLogger(__name__)
 
@@ -93,16 +93,7 @@ def _read_json(s3: Any, bucket: str, key: str) -> tuple[_Json | None, InputSourc
     except Exception as e:  # missing object / no creds / parse error
         logger.warning("data-spine read failed s3://%s/%s: %s", bucket, key, e)
         return None, None
-    version_id = obj.get("VersionId")
-    etag = obj.get("ETag")
-    basis: object = cast("dict[str, object]", art).get("adjustment_basis") if isinstance(art, dict) else None
-    source = InputSource(
-        artifact=f"s3://{bucket}/{key}",
-        # S3 answers "null" for an object written before versioning was enabled.
-        version_id=version_id if isinstance(version_id, str) and version_id not in ("", "null") else None,
-        etag=etag.strip('"') if isinstance(etag, str) and etag.strip('"') else None,
-        adjustment_basis=basis if isinstance(basis, str) else None,
-    )
+    source = s3_input_source(bucket, key, obj, art)
     # Not narrowed to a dict here: a non-object payload is refused by admit_schema.
     return cast("_Json | None", art), source
 

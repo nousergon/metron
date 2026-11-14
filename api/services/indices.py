@@ -21,7 +21,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from api.services import market_snapshot
+from api.services.spine_artifacts import ArtifactReader, JsonObject
 from portfolio_analytics.admission import admit_schema, finite_field, read_number
+from portfolio_analytics.prices.source import InputSource
 
 logger = logging.getLogger(__name__)
 
@@ -73,14 +75,17 @@ class IndicesSnapshot:
     # fields that were present but not a finite number and therefore read as unavailable.
     rejected_reason: str | None = None
     invalid_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # The stored intraday object this strip was read from (metron-ops-I373); set for a refused
+    # artifact too. `None` when the read failed or the reader was injected.
+    input_source: InputSource | None = None
 
 
-def _default_reader() -> dict | None:
-    """The intraday snapshot dict (or None on read failure), via the shared ``market_snapshot``
-    cache so the Markets strip and the Holdings overlay (``intraday.py``) share a single S3 read
-    per TTL window. Previously this consumer read S3 uncached on every call. The ``reader=``
-    injection path bypasses this entirely, so tests are unaffected."""
-    return market_snapshot.read_cached_snapshot()
+def _default_read() -> tuple[JsonObject | None, InputSource | None]:
+    """The intraday snapshot (or None on read failure) and the object version it was read from,
+    via the shared ``market_snapshot`` cache so the Markets strip and the Holdings overlay
+    (``intraday.py``) share a single S3 read per TTL window. The ``reader=`` injection path
+    bypasses this entirely, so tests are unaffected."""
+    return market_snapshot.read_cached_artifact()
 
 
 def _f(d: dict, key: str) -> float | None:
@@ -107,7 +112,12 @@ def _is_stale(as_of_utc: str | None, now: datetime) -> bool:
     return (now - beat).total_seconds() > STALE_AFTER_SECONDS
 
 
-def proxy_day_return(symbol: str, *, reader=None, now: datetime | None = None) -> float | None:
+def proxy_day_return(
+    symbol: str,
+    *,
+    reader=None,  # noqa: ANN001 - typed with the intraday overlay's seams, whose callers still pass it untyped
+    now: datetime | None = None,
+) -> float | None:
     """The tracking-proxy ETF's same-day fractional return, read from the intraday
     artifact's ``fund_proxies`` map — the input to the mutual-fund same-day ESTIMATE
     (metron-ops#112, ``api/services/fund_proxy.py`` mechanism B). Mirrors
@@ -123,7 +133,7 @@ def proxy_day_return(symbol: str, *, reader=None, now: datetime | None = None) -
 
     now = now or datetime.now(UTC)
     session_today = security_perf.market_today(now).isoformat()
-    art = (reader or _default_reader)()
+    art = reader() if reader is not None else _default_read()[0]
     if not art or _admit(art) is not None:
         return None
     raw = art.get("fund_proxies") or {}
@@ -140,7 +150,7 @@ def proxy_day_return(symbol: str, *, reader=None, now: datetime | None = None) -
     return (last - prev) / prev
 
 
-def load_indices(*, reader=None, now: datetime | None = None) -> IndicesSnapshot:
+def load_indices(*, reader: ArtifactReader | None = None, now: datetime | None = None) -> IndicesSnapshot:
     """The latest major-index intraday strip. ``reader`` (a no-arg callable returning the
     raw intraday artifact dict) and ``now`` are injectable for tests; ``reader`` defaults
     to the S3 read, ``now`` to the current UTC time."""
@@ -154,7 +164,10 @@ def load_indices(*, reader=None, now: datetime | None = None) -> IndicesSnapshot
     # level but suppress change/change_pct (metron-ops#96, mirrors the metron#119 portfolio
     # guard) rather than relabel the last completed session's move as TODAY.
     session_today = security_perf.market_today(now).isoformat()
-    art = (reader or _default_reader)()
+    if reader is not None:
+        art, input_source = reader(), None
+    else:
+        art, input_source = _default_read()
     if not art:
         return IndicesSnapshot(False, reason="Market data unavailable — the intraday feed hasn't published yet.")
     rejected = _admit(art)
@@ -163,6 +176,7 @@ def load_indices(*, reader=None, now: datetime | None = None) -> IndicesSnapshot
             False,
             reason="Market data unavailable — the intraday feed is on an unrecognised schema version.",
             rejected_reason=rejected,
+            input_source=input_source,
         )
     invalid_fields: dict[str, tuple[str, ...]] = {}
     as_of_utc = art.get("as_of_utc")
@@ -209,7 +223,9 @@ def load_indices(*, reader=None, now: datetime | None = None) -> IndicesSnapshot
             as_of_utc=as_of_utc,
             stale=_is_stale(as_of_utc, now),
             invalid_fields=invalid_fields,
+            input_source=input_source,
         )
     return IndicesSnapshot(
-        True, as_of_utc=as_of_utc, stale=_is_stale(as_of_utc, now), indices=quotes, invalid_fields=invalid_fields
+        True, as_of_utc=as_of_utc, stale=_is_stale(as_of_utc, now), indices=quotes, invalid_fields=invalid_fields,
+        input_source=input_source,
     )

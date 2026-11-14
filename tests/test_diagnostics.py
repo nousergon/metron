@@ -423,7 +423,7 @@ class TestDiagnosticsRatingPerformance:
         _refresh(client, tenant, pid, monkeypatch)
         _patch_reference_sources(monkeypatch)
         monkeypatch.setattr(
-            "api.services.technical_rating_performance._default_reader", lambda: _RATING_PERF_ART
+            "api.services.technical_rating_performance._default_read", lambda: (_RATING_PERF_ART, None)
         )
         d = client.get(f"/portfolios/{pid}/diagnostics", headers={"X-Tenant-Id": tenant}).json()
         rp = d["rating_performance"]
@@ -459,7 +459,7 @@ class TestDiagnosticsRatingPerformance:
         # The sibling nousergon-data producer hasn't shipped the artifact yet — the
         # default S3 reader 404s / raises, and load_rating_performance degrades to None.
         monkeypatch.setattr(
-            "api.services.technical_rating_performance._default_reader", lambda: None
+            "api.services.technical_rating_performance._default_read", lambda: (None, None)
         )
         d = client.get(f"/portfolios/{pid}/diagnostics", headers={"X-Tenant-Id": tenant}).json()
         assert d["rating_performance"] is None

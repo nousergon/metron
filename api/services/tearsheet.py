@@ -27,6 +27,7 @@ from api.services import sentiment as sentiment_service
 from api.services import technical_rating as technical_rating_service
 from api.services import technical_rating_performance as technical_rating_performance_service
 from api.services import technicals as technicals_service
+from api.services.spine_artifacts import ArtifactReader
 
 _FUNDAMENTALS_REASON = "Arrives with the fundamentals feed (alpha-engine-config#1022)."
 
@@ -319,13 +320,13 @@ def tearsheet(
     ticker: str,
     *,
     feed_enabled: bool = False,
-    fundamentals_reader=None,
-    analyst_reader=None,
-    sentiment_reader=None,
-    performance_reader=None,
-    technicals_reader=None,
-    rating_reader=None,
-    rating_performance_reader=None,
+    fundamentals_reader: ArtifactReader | None = None,
+    analyst_reader: ArtifactReader | None = None,
+    sentiment_reader: ArtifactReader | None = None,
+    performance_reader: ArtifactReader | None = None,
+    technicals_reader: ArtifactReader | None = None,
+    rating_reader: ArtifactReader | None = None,
+    rating_performance_reader: ArtifactReader | None = None,
 ) -> Tearsheet | None:
     """Assemble the tearsheet for one held ticker, or None if the portfolio doesn't hold it.
 

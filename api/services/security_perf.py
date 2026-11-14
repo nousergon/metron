@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from api.services import intraday
 from api.services import security_performance as performance_service
 from api.services import tearsheet as tearsheet_service
+from api.services.spine_artifacts import ArtifactReader
 
 # The EOD close feed is keyed by NYSE trading days, so freshness is judged in market time.
 _MARKET_TZ = ZoneInfo("America/New_York")
@@ -69,7 +70,7 @@ class SecurityReturns:
 def index_period_returns(
     symbols: Collection[str],
     *,
-    performance_reader=None,
+    performance_reader: ArtifactReader | None = None,
 ) -> dict[str, tuple[float | None, float | None, float | None]]:
     """``{symbol: (mtd_pct, ytd_pct, ltm_pct)}`` for index/ETF proxies from the
     ``security_performance`` spine (metron-ops#87). Symbols absent from the artifact
@@ -92,8 +93,8 @@ def per_security_returns(
     as_of: date,
     feed_entitled: bool,
     account_ids: Collection[uuid.UUID] | None = None,
-    reader=None,
-    performance_reader=None,
+    reader: ArtifactReader | None = None,
+    performance_reader: ArtifactReader | None = None,
     now: datetime | None = None,
     day_legs: bool = True,
 ) -> dict[str, SecurityReturns]:
@@ -138,8 +139,8 @@ def enrich_holdings(
     as_of: date,
     feed_entitled: bool,
     account_ids: Collection[uuid.UUID] | None = None,
-    reader=None,
-    performance_reader=None,
+    reader: ArtifactReader | None = None,
+    performance_reader: ArtifactReader | None = None,
     now: datetime | None = None,
     day_legs: bool = True,
 ) -> list:

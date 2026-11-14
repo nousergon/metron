@@ -20,6 +20,10 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +48,7 @@ _NEVER_MEASURED_TRADING_DAYS = 2
 _PARSER_FIX_DAY = date(2026, 10, 30)
 
 
-def check(session, *, now: datetime | None = None) -> dict | None:
+def check(session: Session, *, now: datetime | None = None) -> dict | None:
     """Return a finding dict when the glance p95 surface is unhealthy, else ``None``.
 
     Three independent conditions, any of which is a defect on its own:
@@ -81,7 +85,7 @@ def check(session, *, now: datetime | None = None) -> dict | None:
                  if d >= _PARSER_FIX_DAY.isoformat()]
         # An error run is the job failing, not an absence of traffic: while one stands
         # since the parser fix, the missing reading is classified job_broken (metron-ops-I392).
-        errored = [d for d in _run_days(session, "error") if d >= _PARSER_FIX_DAY.isoformat()]
+        errored = [d for d in _standing_error_days(session) if d >= _PARSER_FIX_DAY.isoformat()]
         if len(quiet) >= _NEVER_MEASURED_TRADING_DAYS:
             kind = kind or ("job_broken" if errored else "no_traffic")
             reasons.append(
@@ -146,13 +150,23 @@ def _alert_text(finding: dict) -> str:
     )
 
 
-def _not_measured_trading_days(session) -> list[str]:
+def _not_measured_trading_days(session: Session) -> list[str]:
     """Distinct trading days (ISO, ascending) the run log recorded as ``not-measured``.
     Non-trading target days are dropped: an empty Saturday is not evidence of anything."""
     return _run_days(session, "not-measured")
 
 
-def _run_days(session, status: str) -> list[str]:
+def _standing_error_days(session: Session) -> list[str]:
+    """Error-run trading days not superseded by a completed run (``measured`` or
+    ``not-measured``) for the same or a later target day. The run log is append-only, so
+    without this one old error keeps a recovered job classified ``job_broken``
+    (metron-ops-I392)."""
+    completed = _run_days(session, "measured") + _run_days(session, "not-measured")
+    newest_completed = max(completed, default="")
+    return [d for d in _run_days(session, "error") if d > newest_completed]
+
+
+def _run_days(session: Session, status: str) -> list[str]:
     """Distinct trading days (ISO, ascending) the run log recorded with ``status``."""
     from krepis.trading_calendar import is_trading_day
     from sqlalchemy import select
@@ -167,7 +181,9 @@ def _run_days(session, status: str) -> list[str]:
     return sorted(d.isoformat() for d in days if is_trading_day(d))
 
 
-def report(session, *, now: datetime | None = None, dry_run: bool = False) -> dict | None:
+def report(
+    session: Session, *, now: datetime | None = None, dry_run: bool = False
+) -> dict | None:
     """Check and page the operator if unhealthy. Returns the finding (or None).
 
     ``dry_run`` threads straight through to ``send_alert``/``krepis.alerts.publish``

@@ -49,6 +49,7 @@ from api.services import tearsheet as tearsheet_service
 from api.services import technical_rating as technical_rating_service
 from api.services import technical_rating_performance as technical_rating_performance_service
 from api.services import watchlist as watchlist_service
+from api.services.spine_artifacts import ArtifactReader
 
 router = APIRouter(prefix="/portfolios", tags=["market-board"])
 
@@ -141,7 +142,7 @@ class MarketBoardOut(BaseModel):
     track_record: MarketBoardTrackRecordOut | None
 
 
-def _board_track_record(*, reader=None) -> MarketBoardTrackRecordOut | None:
+def _board_track_record(*, reader: ArtifactReader | None = None) -> MarketBoardTrackRecordOut | None:
     rp = technical_rating_performance_service.load_rating_performance(reader=reader)
     if rp is None:
         return None

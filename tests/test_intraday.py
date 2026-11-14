@@ -708,7 +708,7 @@ class TestHoldingsEndpointIsEstimated:
             "fund_proxies": {"SPY": {"last": 102.0, "prev_close": 100.0, "session_date": session_today}},
         }
         monkeypatch.setattr(intraday, "_default_reader", lambda: art)
-        monkeypatch.setattr(indices_service, "_default_reader", lambda: art)
+        monkeypatch.setattr(indices_service, "_default_read", lambda: (art, None))
         return pid
 
     def test_synthesized_fund_row_flagged_estimated(self, client, db_session, tenant, monkeypatch):

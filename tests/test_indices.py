@@ -119,7 +119,7 @@ class TestLoadIndices:
 class TestIndicesEndpoint:
     def test_available_returns_indices_on_feed_deployment(self, client, monkeypatch):
         # Default settings: personal tier + feed entitled → indices available.
-        monkeypatch.setattr(indices, "_default_reader", lambda: _ART)
+        monkeypatch.setattr(indices, "_default_read", lambda: (_ART, None))
         # The YTD/LTM enrichment must not reach the network in a unit test.
         monkeypatch.setattr("api.services.prices.fetch_close_history", lambda *a, **k: {})
         body = client.get("/indices/intraday").json()
@@ -130,7 +130,7 @@ class TestIndicesEndpoint:
 
     def test_locked_when_feed_not_entitled(self, client, monkeypatch):
         called = []
-        monkeypatch.setattr(indices, "_default_reader", lambda: called.append(1) or _ART)
+        monkeypatch.setattr(indices, "_default_read", lambda: called.append(1) or (_ART, None))
         monkeypatch.setattr(settings, "feed_entitled", False)  # the no-feed beta
         body = client.get("/indices/intraday").json()
         assert body["available"] is False
@@ -138,19 +138,19 @@ class TestIndicesEndpoint:
         assert not called  # locked → never reads the (licensed) data
 
     def test_simulator_preview_feed_off_locks(self, client, monkeypatch):
-        monkeypatch.setattr(indices, "_default_reader", lambda: _ART)
+        monkeypatch.setattr(indices, "_default_read", lambda: (_ART, None))
         monkeypatch.setattr(settings, "tier_simulator", True)
         body = client.get("/indices/intraday", headers={"X-Preview-Feed": "false"}).json()
         assert body["available"] is False and body["required_tier"] == "personal"
 
     def test_entitled_but_no_data_is_unavailable_without_required_tier(self, client, monkeypatch):
-        monkeypatch.setattr(indices, "_default_reader", lambda: None)
+        monkeypatch.setattr(indices, "_default_read", lambda: (None, None))
         body = client.get("/indices/intraday").json()
         assert body["available"] is False and body["required_tier"] is None and body["reason"]
 
     def test_endpoint_populates_ytd_ltm_from_security_performance_spine(self, client, monkeypatch):
         """YTD/LTM come from the security_performance spine — no local price_bars backfill."""
-        monkeypatch.setattr(indices, "_default_reader", lambda: _ART)
+        monkeypatch.setattr(indices, "_default_read", lambda: (_ART, None))
         perf_art = {
             "schema_version": 1,
             "performance": {
@@ -158,7 +158,7 @@ class TestIndicesEndpoint:
                 for sym, level in (("SPY", 110.0), ("ONEQ", 120.0), ("QQQ", 130.0), ("IWM", 90.0))
             },
         }
-        monkeypatch.setattr("api.services.security_performance._default_reader", lambda: perf_art)
+        monkeypatch.setattr("api.services.security_performance._default_read", lambda: (perf_art, None))
         body = client.get("/indices/intraday").json()
         assert body["available"] is True
         for q in body["indices"]:
