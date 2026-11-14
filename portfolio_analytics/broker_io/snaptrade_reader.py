@@ -16,13 +16,35 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from typing import TypedDict
 
 import pandas as pd
 from snaptrade_client import SnapTrade
 
 logger = logging.getLogger(__name__)
+
+
+class LinkedAccount(TypedDict):
+    """One linked brokerage account as ``SnapTradeReader.get_accounts`` returns it."""
+
+    id: str
+    name: str
+    number: str
+    type: str
+    balance_total: float
+    last_holdings_sync: object
+    institution: str
+    brokerage_authorization: str
+
+
+class LinkedConnection(TypedDict):
+    """One brokerage connection (authorization) as ``get_connections`` returns it."""
+
+    id: str
+    brokerage: str
+    disabled: bool
 
 
 def _log_safe(value: object) -> str:
@@ -79,7 +101,7 @@ def aggregate_holdings(df: pd.DataFrame, account_numbers: list[str] | None = Non
 class SnapTradeReader:
     """Read-only SnapTrade client. NO TRADING METHODS."""
 
-    def __init__(self, client_id: str, consumer_key: str, user_id: str, user_secret: str):
+    def __init__(self, client_id: str, consumer_key: str, user_id: str, user_secret: str) -> None:
         self._client = SnapTrade(consumer_key=consumer_key, client_id=client_id)
         self._user_id = user_id
         self._user_secret = user_secret
@@ -94,13 +116,13 @@ class SnapTradeReader:
             user_secret=os.environ["SNAPTRADE_USER_SECRET"],
         )
 
-    def get_accounts(self) -> list[dict]:
+    def get_accounts(self) -> list[LinkedAccount]:
         """Return all linked accounts with id, name, type, and institution."""
         response = self._client.account_information.list_user_accounts(
             user_id=self._user_id,
             user_secret=self._user_secret,
         )
-        accounts = []
+        accounts: list[LinkedAccount] = []
         for acct in response.body:
             # IBKR's own total account value in USD (positions + cash, converted
             # with IBKR's FX). This is the authoritative NAV per account — we
@@ -138,7 +160,7 @@ class SnapTradeReader:
         logger.info("Found %d linked accounts", len(accounts))
         return accounts
 
-    def get_connections(self) -> list[dict]:
+    def get_connections(self) -> list[LinkedConnection]:
         """Return linked brokerage connections (authorizations): id, brokerage, disabled.
 
         A disabled connection needs a reconnect through the connection portal
@@ -148,7 +170,7 @@ class SnapTradeReader:
             user_id=self._user_id,
             user_secret=self._user_secret,
         )
-        connections = []
+        connections: list[LinkedConnection] = []
         for auth in response.body:
             brokerage = auth.get("brokerage") or {}
             name = ""
@@ -205,14 +227,14 @@ class SnapTradeReader:
         )
         logger.info("Removed brokerage connection %s", _log_safe(authorization_id))
 
-    def get_holdings(self, account_id: str) -> list[dict]:
+    def get_holdings(self, account_id: str) -> list[dict[str, str | float]]:
         """Get positions for a single account."""
         response = self._client.account_information.get_user_holdings(
             account_id=account_id,
             user_id=self._user_id,
             user_secret=self._user_secret,
         )
-        holdings = []
+        holdings: list[dict[str, str | float]] = []
         for pos in response.body.get("positions", []):
             symbol_info = pos.get("symbol", {}) or {}
             symbol_obj = symbol_info.get("symbol", {}) or {}
@@ -255,7 +277,7 @@ class SnapTradeReader:
     def get_all_holdings(self) -> pd.DataFrame:
         """Get all positions across all accounts."""
         accounts = self.get_accounts()
-        all_holdings = []
+        all_holdings: list[dict[str, str | float]] = []
         # Account numbers whose holdings call SUCCEEDED on this pass. A failure is logged
         # and skipped so one account cannot cost the rest, which makes its absence from
         # the frame look exactly like an empty account; the connector declares holdings
@@ -285,7 +307,7 @@ class SnapTradeReader:
         """
         return aggregate_holdings(self.get_all_holdings(), account_numbers)
 
-    def get_account_activities(self, account_id: str, start_date=None) -> list[dict]:
+    def get_account_activities(self, account_id: str, start_date: date | None = None) -> list[dict[str, object]]:
         """Get the transaction/activity history for a single account.
 
         Paginates the SnapTrade ``/accounts/{id}/activities`` endpoint (BUY / SELL
@@ -296,7 +318,7 @@ class SnapTradeReader:
 
         ``start_date`` (a ``datetime.date``) optionally bounds the lookback.
         """
-        out: list[dict] = []
+        out: list[dict[str, object]] = []
         offset = 0
         while True:
             response = self._client.account_information.get_account_activities(
@@ -305,25 +327,27 @@ class SnapTradeReader:
                 user_secret=self._user_secret,
                 offset=offset,
                 limit=_ACTIVITIES_PAGE,
-                **({"start_date": start_date} if start_date else {}),
+                start_date=start_date or None,
             )
             # The endpoint may return a bare list or a paginated envelope with a
             # ``data`` list — handle both. frozendict bodies are dict-like.
             body = response.body
             page = body.get("data", []) if isinstance(body, dict) else list(body)
-            out.extend(dict(a) for a in page)
+            for a in page:
+                activity: dict[str, object] = dict(a)
+                out.append(activity)
             if len(page) < _ACTIVITIES_PAGE:
                 break
             offset += _ACTIVITIES_PAGE
         return out
 
-    def get_all_activities(self) -> list[dict]:
+    def get_all_activities(self) -> list[dict[str, object]]:
         """Get activities across all accounts, each tagged with ``account_number``.
 
         Best-effort per account (a single account's failure is logged and skipped,
         mirroring ``get_all_holdings``). Caches the merged result for offline use.
         """
-        all_activities: list[dict] = []
+        all_activities: list[dict[str, object]] = []
         for acct in self.get_accounts():
             try:
                 activities = self.get_account_activities(acct["id"])
@@ -367,7 +391,7 @@ class SnapTradeReader:
         data = json.loads(POSITIONS_CACHE_PATH.read_text())
         return pd.DataFrame(data["positions"]), data["timestamp"]
 
-    def _save_activities_cache(self, activities: list[dict]) -> None:
+    def _save_activities_cache(self, activities: list[dict[str, object]]) -> None:
         """Save activities to local cache for offline fallback."""
         try:
             ACTIVITIES_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -377,7 +401,7 @@ class SnapTradeReader:
             logger.debug("Failed to save activities cache: %s", e)
 
     @staticmethod
-    def load_cached_activities() -> tuple[list[dict], str]:
+    def load_cached_activities() -> tuple[list[dict[str, object]], str]:
         """Load last-known activities from cache. Returns (activities, timestamp)."""
         if not ACTIVITIES_CACHE_PATH.exists():
             return [], ""

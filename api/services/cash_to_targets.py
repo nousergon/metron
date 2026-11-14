@@ -85,7 +85,7 @@ class CashToTargetsPlan:
     base_currency: str
     config: PlanTargetsConfig
     disclaimer: str = DISCLAIMER
-    skipped: list[dict] = field(default_factory=list)
+    skipped: list[dict[str, str]] = field(default_factory=list)
 
 
 _UNALLOCATED_REASON_TEXT: dict[str, str] = {
@@ -105,7 +105,7 @@ def build_plan(
     config: PlanTargetsConfig,
     *,
     as_of: date | None = None,
-    price_reader=None,
+    price_reader: price_service.LatestCloseReader | None = None,
 ) -> CashToTargetsPlan:
     """Greedy-fill-to-target in the user's own target-list order (see module docstring
     for why this order is optimal, not just deterministic). ``price_reader`` is an
@@ -119,7 +119,7 @@ def build_plan(
     held_by_ticker = {h.ticker: h for h in held if h.ticker}
     basis = portfolio_value + amount_usd
 
-    skipped: list[dict] = []
+    skipped: list[dict[str, str]] = []
     if not config.targets:
         return CashToTargetsPlan(
             as_of=as_of, amount_usd=round(amount_usd, 2), allocated_usd=0.0,

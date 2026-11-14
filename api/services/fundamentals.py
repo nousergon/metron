@@ -12,6 +12,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import date
+from typing import cast
 
 from api.services import spine_artifacts
 from api.services.spine_artifacts import ArtifactReader, JsonObject
@@ -95,7 +96,7 @@ def _default_read() -> tuple[JsonObject | None, InputSource | None]:
     return spine_artifacts.read_artifact(FUNDAMENTALS_KEY, bucket=_bucket())
 
 
-def _f(d: dict, key: str, invalid: list[str]) -> float | None:
+def _f(d: JsonObject, key: str, invalid: list[str]) -> float | None:
     """A finite float, or None. A present-but-invalid value (NaN, Infinity, a
     non-numeric string) also reads as None, and its key is appended to ``invalid``
     so the snapshot can say so (metron-ops-I373)."""
@@ -106,7 +107,7 @@ def _f(d: dict, key: str, invalid: list[str]) -> float | None:
     return reading
 
 
-def _parse(yf_symbol: str, d: dict, invalid: list[str]) -> TickerFundamentals:
+def _parse(yf_symbol: str, d: JsonObject, invalid: list[str]) -> TickerFundamentals:
     trailing_pe = _f(d, "trailingPE", invalid)
     earnings_growth = _f(d, "earningsGrowth", invalid)
     # PEG = P/E ÷ (annual earnings growth in %); only meaningful for positive growth.
@@ -170,10 +171,12 @@ def load_fundamentals(*, reader: ArtifactReader | None = None) -> FundamentalsSn
     art = raw or {}
     by_symbol: dict[str, TickerFundamentals] = {}
     invalid_fields: dict[str, tuple[str, ...]] = {}
-    for sym, body in (art.get("fundamentals") or {}).items():
+    bodies: JsonObject = art.get("fundamentals") or {}
+    for sym, body in bodies.items():
         if isinstance(body, dict):
             invalid: list[str] = []
-            by_symbol[sym] = _parse(sym, body, invalid)
+            entry = cast("JsonObject", body)
+            by_symbol[sym] = _parse(sym, entry, invalid)
             if invalid:
                 invalid_fields[sym] = tuple(invalid)
     if invalid_fields:

@@ -144,11 +144,11 @@ def compute_risk(
     portfolio (factor-ETF history is global and stays unscoped). The model is estimated
     over closes from the same ~``window_days`` session window only."""
     held = analytics.valued_holdings(session, tenant_id, portfolio_id, account_ids=account_ids)
-    priced = [h for h in held if h.market_value and h.market_value > 0]
+    priced = [(h.ticker, h.market_value) for h in held if h.market_value is not None and h.market_value > 0]
     if not priced:
         return RiskSummary(False, reason="No priced holdings — refresh prices first.")
-    total_mv = sum(h.market_value for h in priced)
-    weights = {h.ticker: h.market_value / total_mv for h in priced}
+    total_mv = sum(mv for _, mv in priced)
+    weights = {ticker: mv / total_mv for ticker, mv in priced}
     tickers = list(weights)
     etfs = [MARKET_ETF, *STYLE_ETF.values()]
 

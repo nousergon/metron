@@ -15,6 +15,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import date
+from typing import cast
 
 from api.services import spine_artifacts
 from api.services.spine_artifacts import ArtifactReader, JsonObject
@@ -79,7 +80,7 @@ def _default_read() -> tuple[JsonObject | None, InputSource | None]:
     return spine_artifacts.read_artifact(TECHNICALS_KEY, bucket=_bucket())
 
 
-def _f(d: dict, key: str, invalid: list[str]) -> float | None:
+def _f(d: JsonObject, key: str, invalid: list[str]) -> float | None:
     """A finite float, or None. A present-but-invalid value (NaN, Infinity, a
     non-numeric string) also reads as None, and its key is appended to ``invalid``
     so the snapshot can say so (metron-ops-I373)."""
@@ -90,7 +91,7 @@ def _f(d: dict, key: str, invalid: list[str]) -> float | None:
     return reading
 
 
-def _parse(yf_symbol: str, d: dict, invalid: list[str]) -> TickerTechnicals:
+def _parse(yf_symbol: str, d: JsonObject, invalid: list[str]) -> TickerTechnicals:
     return TickerTechnicals(
         yf_symbol=yf_symbol,
         rsi_14=_f(d, "rsi_14", invalid),
@@ -128,10 +129,12 @@ def load_technicals(*, reader: ArtifactReader | None = None) -> TechnicalsSnapsh
     art = raw or {}
     by_symbol: dict[str, TickerTechnicals] = {}
     invalid_fields: dict[str, tuple[str, ...]] = {}
-    for sym, body in (art.get("technicals") or {}).items():
+    bodies: JsonObject = art.get("technicals") or {}
+    for sym, body in bodies.items():
         if isinstance(body, dict):
             invalid: list[str] = []
-            by_symbol[sym] = _parse(sym, body, invalid)
+            entry = cast("JsonObject", body)
+            by_symbol[sym] = _parse(sym, entry, invalid)
             if invalid:
                 invalid_fields[sym] = tuple(invalid)
     if invalid_fields:

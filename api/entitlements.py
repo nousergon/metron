@@ -208,11 +208,11 @@ def external_demo_features(*, feed_features_locked: bool) -> frozenset[str]:
     return frozenset(features)
 
 
-def set_request_pin(pin: Pin | None) -> Token:
+def set_request_pin(pin: Pin | None) -> Token[Pin | None]:
     return _request_pin.set(pin)
 
 
-def reset_request_pin(token: Token) -> None:
+def reset_request_pin(token: Token[Pin | None]) -> None:
     _request_pin.reset(token)
 
 
@@ -226,7 +226,7 @@ def provisioned_sources(feed_enabled: bool) -> frozenset[str]:
     pin = _request_pin.get()
     if pin is not None:
         feed_enabled = pin.feed_enabled
-    return FREE_SOURCES | (FEED_SOURCES if feed_enabled else frozenset())
+    return FREE_SOURCES | (FEED_SOURCES if feed_enabled else frozenset[str]())
 
 
 def required_tier(feature_key: str) -> str | None:
