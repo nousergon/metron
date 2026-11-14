@@ -286,6 +286,8 @@ class HoldingOut(BaseModel):
     # metron-ops-I334 — see analytics.Holding.attractiveness_stale / _retired.
     attractiveness_stale: bool = False
     attractiveness_retired: bool = False
+    # Producer objects the enriched metrics were read from, by reader (metron-ops-I373).
+    input_sources: dict[str, InputSourceOut] = {}
 
 
 class GroupMediansOut(BaseModel):
@@ -1075,6 +1077,8 @@ class WatchlistEntryOut(BaseModel):
     # metron-ops-I334 — see analytics.Holding.attractiveness_stale / _retired.
     attractiveness_stale: bool = False
     attractiveness_retired: bool = False
+    # Producer objects the enriched metrics were read from, by reader (metron-ops-I373).
+    input_sources: dict[str, InputSourceOut] = {}
 
 
 class WatchlistIn(BaseModel):

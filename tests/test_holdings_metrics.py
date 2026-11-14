@@ -185,13 +185,13 @@ def test_enrich_metrics_maps_attractiveness_pillar_scores(monkeypatch):
     monkeypatch.setattr(metrics_enrichment.tearsheet_service, "_yf_symbol_map",
                         lambda session, syms: {"AAPL": "AAPL"})
     monkeypatch.setattr(metrics_enrichment.fundamentals_service, "load_fundamentals",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
 
     def _test_profiles_reader():
         # load_factor_profiles(reader=...) parses a RAW dict into a snapshot itself —

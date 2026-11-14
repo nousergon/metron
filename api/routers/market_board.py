@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 from api.config import settings
 from api.db import models
 from api.db.session import get_session
+from api.lineage import InputSourceOut, lineage
 from api.routers.portfolios import _owned_portfolio
 from api.services import analytics
 from api.services import prices as price_service
@@ -49,7 +50,6 @@ from api.services import tearsheet as tearsheet_service
 from api.services import technical_rating as technical_rating_service
 from api.services import technical_rating_performance as technical_rating_performance_service
 from api.services import watchlist as watchlist_service
-from api.services.spine_artifacts import ArtifactReader
 
 router = APIRouter(prefix="/portfolios", tags=["market-board"])
 
@@ -140,10 +140,13 @@ class MarketBoardOut(BaseModel):
     scope: str
     rows: list[MarketBoardRowOut]
     track_record: MarketBoardTrackRecordOut | None
+    # Producer objects the board was read from, by reader (metron-ops-I373).
+    input_sources: dict[str, InputSourceOut] = {}
 
 
-def _board_track_record(*, reader: ArtifactReader | None = None) -> MarketBoardTrackRecordOut | None:
-    rp = technical_rating_performance_service.load_rating_performance(reader=reader)
+def _board_track_record(
+    rp: technical_rating_performance_service.RatingPerformance | None,
+) -> MarketBoardTrackRecordOut | None:
     if rp is None:
         return None
     stats = rp.stats_for(segment=_TR_SEGMENT, window=_TR_WINDOW, horizon=_TR_HORIZON)
@@ -184,7 +187,8 @@ def get_market_board(
     tickers = _scope_tickers(session, portfolio.tenant_id, portfolio.id, scope)
     symbols = [t for t, _held in tickers]
     yf_map = tearsheet_service._yf_symbol_map(session, symbols)
-    ratings = technical_rating_service.load_technical_rating().by_symbol
+    rating_snap = technical_rating_service.load_technical_rating()
+    ratings = rating_snap.by_symbol
     today = datetime.now(UTC).date()
     changes = _price_changes(session, symbols, today=today)
 
@@ -217,4 +221,13 @@ def get_market_board(
     # missing score were 0/neutral.
     rows.sort(key=lambda row: (row.score is None, -(row.score or 0.0)))
 
-    return MarketBoardOut(scope=scope, rows=rows, track_record=_board_track_record())
+    rp = technical_rating_performance_service.load_rating_performance()
+    sources = {f"technical_rating:{key}": src for key, src in rating_snap.input_sources.items()}
+    if rp is not None and rp.input_source is not None:
+        sources["technical_rating_performance"] = rp.input_source
+    return MarketBoardOut(
+        scope=scope,
+        rows=rows,
+        track_record=_board_track_record(rp),
+        input_sources={name: out for name, src in sources.items() if (out := lineage(src)) is not None},
+    )

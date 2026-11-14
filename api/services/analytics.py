@@ -22,7 +22,7 @@ import logging
 import uuid
 from collections import defaultdict
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 
 from sqlalchemy import func, select
@@ -46,6 +46,7 @@ from portfolio_analytics.domain.ledger import (
 from portfolio_analytics.domain.realized import YearlyIncome, summarize_income_by_year
 from portfolio_analytics.ingestion.base import SNAPSHOT_SOURCES
 from portfolio_analytics.prices import ClosePoint
+from portfolio_analytics.prices.source import InputSource
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +230,9 @@ class Holding:
     # honest per-ticker coverage gap (score None, retired False).
     attractiveness_stale: bool = False
     attractiveness_retired: bool = False
+    # Reader name -> the stored producer object the metrics above were read from
+    # (metron-ops-I373). Empty until ``metrics_enrichment.enrich_metrics`` runs.
+    input_sources: dict[str, InputSource] = field(default_factory=dict)
 
 
 @dataclass

@@ -162,13 +162,13 @@ def test_enrich_metrics_maps_technical_rating(monkeypatch):
     monkeypatch.setattr(metrics_enrichment.tearsheet_service, "_yf_symbol_map",
                         lambda session, syms: {"AAPL": "AAPL"})
     monkeypatch.setattr(metrics_enrichment.fundamentals_service, "load_fundamentals",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     # metrics_enrichment.technical_rating_service IS the technical_rating module (same
     # object, imported under an alias) — capture the real loader BEFORE patching, or the
     # lambda below would call into itself (see test_holdings_metrics.py's identical note).
@@ -195,13 +195,13 @@ def test_enrich_metrics_no_rating_leaves_fields_none(monkeypatch):
     monkeypatch.setattr(metrics_enrichment.tearsheet_service, "_yf_symbol_map",
                         lambda session, syms: {"ZZZ": "ZZZ"})
     monkeypatch.setattr(metrics_enrichment.fundamentals_service, "load_fundamentals",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.technicals_service, "load_technicals",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.analyst_service, "load_analyst",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.sentiment_service, "load_sentiment",
-                        lambda: type("S", (), {"by_symbol": {}})())
+                        lambda: type("S", (), {"input_source": None, "by_symbol": {}})())
     monkeypatch.setattr(metrics_enrichment.technical_rating_service, "load_technical_rating",
                         lambda: technical_rating.RatingSnapshot(by_symbol={}))
 

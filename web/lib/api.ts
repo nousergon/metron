@@ -243,6 +243,8 @@ export type Holding = {
   // reads "retired" — distinct from a per-ticker coverage gap (score null, retired false).
   attractiveness_stale: boolean;
   attractiveness_retired: boolean;
+  /** Producer objects the enriched metrics were read from, by reader (metron-ops-I373). */
+  input_sources?: Record<string, InputSource>;
 };
 
 // Sector- / country-level median multiples (SP1500-broad peer benchmark) for the Holdings
@@ -631,6 +633,8 @@ export type WatchlistEntry = {
   attractiveness_as_of: string | null;
   attractiveness_stale: boolean; // metron-ops-I334 — see Holding.attractiveness_stale
   attractiveness_retired: boolean; // metron-ops-I334 — see Holding.attractiveness_retired
+  /** Producer objects the enriched metrics were read from, by reader (metron-ops-I373). */
+  input_sources?: Record<string, InputSource>;
 };
 
 export const getWatchlist = (apiAuth: string, id: string) =>

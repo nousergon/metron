@@ -14,7 +14,7 @@ Adding a symbol caches a Security row so its reference data can resolve.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from sqlalchemy import select
@@ -26,6 +26,7 @@ from api.services import classifications as classifications_service
 from api.services import countries as countries_service
 from api.services import prices as price_service
 from api.services import sectors as sectors_service
+from portfolio_analytics.prices.source import InputSource
 
 
 @dataclass
@@ -97,6 +98,7 @@ class WatchlistEntry:
     # metron-ops-I334 — see analytics.Holding.attractiveness_stale / _retired.
     attractiveness_stale: bool = False
     attractiveness_retired: bool = False
+    input_sources: dict[str, InputSource] = field(default_factory=dict)  # metron-ops-I373
 
 
 def _norm(symbol: str) -> str:
@@ -219,6 +221,7 @@ def list_watchlist(
                 attractiveness_as_of=h.attractiveness_as_of,
                 attractiveness_stale=h.attractiveness_stale,
                 attractiveness_retired=h.attractiveness_retired,
+                input_sources=h.input_sources,
             )
         )
     return out
