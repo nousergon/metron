@@ -172,3 +172,24 @@ def test_error_runs_are_job_broken_not_no_traffic(db_session):
     assert finding is not None
     assert finding["kind"] == "job_broken"
     assert any("errored on 1 trading day(s)" in r for r in finding["reasons"])
+
+
+def test_an_error_superseded_by_a_later_completed_run_is_not_job_broken(db_session):
+    # metron-ops-I392 (066e5661): the run log is append-only, so an old error must not keep
+    # a recovered job job_broken; quiet days after it are no traffic.
+    gl.record_run(db_session, target_day=date(2026, 11, 2), status="error", error="boom")  # Mon
+    gl.record_run(db_session, target_day=date(2026, 11, 3), status="not-measured", n=0)  # Tue
+    gl.record_run(db_session, target_day=date(2026, 11, 4), status="not-measured", n=0)  # Wed
+    finding = freshness.check(db_session, now=datetime(2026, 11, 5, 12, 0, tzinfo=_NY))
+    assert finding is not None
+    assert finding["kind"] == "no_traffic"
+    assert not any("errored" in r for r in finding["reasons"])
+
+
+def test_a_retry_of_the_errored_day_supersedes_the_error(db_session):
+    gl.record_run(db_session, target_day=date(2026, 11, 3), status="not-measured", n=0)  # Tue
+    gl.record_run(db_session, target_day=date(2026, 11, 4), status="error", error="boom")  # Wed
+    gl.record_run(db_session, target_day=date(2026, 11, 4), status="not-measured", n=0)  # retry
+    finding = freshness.check(db_session, now=datetime(2026, 11, 5, 12, 0, tzinfo=_NY))
+    assert finding is not None
+    assert finding["kind"] == "no_traffic"
