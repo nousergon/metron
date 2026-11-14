@@ -16,7 +16,9 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from api.services import spine_artifacts
+from api.services.spine_artifacts import ArtifactReader, JsonObject
 from portfolio_analytics.admission import admit_schema, finite_field, read_number
+from portfolio_analytics.prices.source import InputSource
 
 logger = logging.getLogger(__name__)
 
@@ -53,15 +55,20 @@ class SecurityPerformanceSnapshot:
     # that were present but not a finite number and therefore read as unavailable.
     rejected_reason: str | None = None
     invalid_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # The stored producer object this snapshot was read from: its `s3://` location and
+    # the VersionId / ETag S3 reported on the read (metron-ops-I373). Set for a refused
+    # artifact too. `None` when the read failed or the reader was injected.
+    input_source: InputSource | None = None
 
 
 def _bucket() -> str:
     return os.environ.get("MARKET_DATA_BUCKET", "alpha-engine-research")
 
 
-def _default_reader() -> dict | None:
-    # Fail-soft (None on any read error); shared short-TTL cache — see spine_artifacts.
-    return spine_artifacts.read_json(SECURITY_PERFORMANCE_KEY, bucket=_bucket())
+def _default_read() -> tuple[JsonObject | None, InputSource | None]:
+    # Fail-soft ((None, None) on any read error); shared short-TTL cache, and the object
+    # version the bytes came from — see spine_artifacts.
+    return spine_artifacts.read_artifact(SECURITY_PERFORMANCE_KEY, bucket=_bucket())
 
 
 def _parse(yf_symbol: str, d: dict, invalid: list[str]) -> TickerPerformance:
@@ -109,14 +116,19 @@ def _parse(yf_symbol: str, d: dict, invalid: list[str]) -> TickerPerformance:
     )
 
 
-def load_security_performance(*, reader=None) -> SecurityPerformanceSnapshot:
+def load_security_performance(*, reader: ArtifactReader | None = None) -> SecurityPerformanceSnapshot:
     """Latest performance snapshot keyed by yf_symbol. ``reader`` is injectable for tests."""
-    raw = (reader or _default_reader)()
+    if reader is not None:
+        raw, input_source = reader(), None
+    else:
+        raw, input_source = _default_read()
     rejected = admit_schema(
         raw, expected=SECURITY_PERFORMANCE_SCHEMA_VERSION, artifact=SECURITY_PERFORMANCE_KEY
     )
     if rejected is not None:
-        return SecurityPerformanceSnapshot(as_of=None, by_symbol={}, rejected_reason=rejected)
+        return SecurityPerformanceSnapshot(
+            as_of=None, by_symbol={}, rejected_reason=rejected, input_source=input_source
+        )
     art = raw or {}
     by_symbol: dict[str, TickerPerformance] = {}
     invalid_fields: dict[str, tuple[str, ...]] = {}
@@ -138,4 +150,6 @@ def load_security_performance(*, reader=None) -> SecurityPerformanceSnapshot:
             as_of = date.fromisoformat(str(raw_as_of)[:10])
         except ValueError:
             as_of = None
-    return SecurityPerformanceSnapshot(as_of=as_of, by_symbol=by_symbol, invalid_fields=invalid_fields)
+    return SecurityPerformanceSnapshot(
+        as_of=as_of, by_symbol=by_symbol, invalid_fields=invalid_fields, input_source=input_source
+    )

@@ -20,7 +20,7 @@ isolation invariant).
 from __future__ import annotations
 
 import uuid
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -32,6 +32,7 @@ from api.services import classifications as classifications_service
 from api.services import countries as countries_service
 from api.services import sectors as sectors_service
 from api.services import technical_rating_performance as technical_rating_performance_service
+from api.services.spine_artifacts import ArtifactReader
 from portfolio_analytics.domain.diagnostics import (
     ConcentrationMetrics,
     DiagnosticsPosition,
@@ -89,8 +90,8 @@ def compute_portfolio_diagnostics(
     include_benchmark: bool = True,
     include_rating_performance: bool = False,
     benchmark_source: BenchmarkSource | None = None,
-    rating_performance_reader=None,
-    targets_loader=None,
+    rating_performance_reader: ArtifactReader | None = None,
+    targets_loader: Callable[[Session, uuid.UUID], dict[str, object] | None] | None = None,
 ) -> DiagnosticsSummary:
     """The diagnostics payload over the SETTLED valuation of the (account-scoped)
     holdings. ``include_benchmark=False`` skips the spine read entirely (the endpoint
