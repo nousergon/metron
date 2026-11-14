@@ -22,6 +22,7 @@ no-feed beta build has no licensed quote for a name the user doesn't already hol
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -87,7 +88,7 @@ class WhatIfPlan:
     tax_lot: TaxLotPreview
     portfolio_value: float
     base_currency: str
-    skipped: list[dict] = field(default_factory=list)
+    skipped: list[dict[str, str]] = field(default_factory=list)
 
 
 class WhatIfPurchaseError(ValueError):
@@ -159,8 +160,8 @@ def build_whatif(
     account_label: str | None = None,
     feed_entitled: bool,
     as_of: date | None = None,
-    price_reader=None,
-    fundamentals_reader=None,
+    price_reader: price_service.LatestCloseReader | None = None,
+    fundamentals_reader: Callable[[], fundamentals_service.FundamentalsSnapshot] | None = None,
 ) -> WhatIfPlan:
     """Before/after impact of buying ``symbol`` with ``amount_usd`` (converted to whole
     shares at the resolved price) or an exact ``shares`` count — exactly one of the two is

@@ -47,7 +47,7 @@ import math
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -123,7 +123,7 @@ class CandidateSet:
     them exactly once (``valued_holdings`` and the sector resolution are both real queries)."""
 
     candidates: list[Candidate]
-    skipped: list[dict]
+    skipped: list[dict[str, str]]
     portfolio_value: float
     base_currency: str
     rating_as_of: str | None
@@ -166,7 +166,7 @@ class DeployCashPlan:
     disclaimer: str = DISCLAIMER
     # Candidates considered but never given a line, with the binding reason. Reported so
     # "why isn't X here?" is answerable from the artifact rather than from the code.
-    skipped: list[dict] = field(default_factory=list)
+    skipped: list[dict[str, str]] = field(default_factory=list)
 
 
 # ── The ranking slot: register, champion pointer, measurement contract ────────
@@ -303,7 +303,7 @@ def _watchlist_symbols(session: Session, tenant_id: uuid.UUID, portfolio_id: uui
     return sorted({str(s) for s in rows if s})
 
 
-def _skip(skipped: list[dict], ticker: str, reason: str, detail: str) -> None:
+def _skip(skipped: list[dict[str, str]], ticker: str, reason: str, detail: str) -> None:
     skipped.append({"ticker": ticker, "reason": reason, "detail": detail})
 
 
@@ -314,16 +314,16 @@ def build_candidates(
     *,
     feed_entitled: bool,
     config: DeployCashConfig = DEFAULT_CONFIG,
-    ratings=None,
-    price_reader=None,
-    now=None,
+    ratings: technical_rating_service.RatingSnapshot | None = None,
+    price_reader: price_service.LatestCloseReader | None = None,
+    now: datetime | None = None,
 ) -> CandidateSet:
     """The priced, rated, eligible candidate set plus the book it is measured against.
 
     ``ratings`` / ``price_reader`` / ``now`` are injectable test seams, mirroring every
     other data-spine consumer in this package.
     """
-    skipped: list[dict] = []
+    skipped: list[dict[str, str]] = []
     held = analytics.valued_holdings(session, tenant_id, portfolio_id)
     base_currency = analytics._base_currency(session, portfolio_id)
 
@@ -447,9 +447,9 @@ def recommend(
     as_of: date | None = None,
     feed_entitled: bool,
     config: DeployCashConfig = DEFAULT_CONFIG,
-    ratings=None,
-    price_reader=None,
-    now=None,
+    ratings: technical_rating_service.RatingSnapshot | None = None,
+    price_reader: price_service.LatestCloseReader | None = None,
+    now: datetime | None = None,
 ) -> DeployCashPlan:
     """Rank ``amount_usd`` of cash across the portfolio's candidates under ``config``.
 

@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from api.db import models
 from api.services import analytics
+from portfolio_analytics.domain.ledger import Transaction
 
 #: (quantity, open_date) for one open lot.
 Lot = tuple[float, date]
@@ -51,7 +52,7 @@ def lots_by_account(
                 out[(aid, ticker)].append((float(qty), opened))
     ledger_ids = scope - snapshot
     if ledger_ids:
-        by_account: dict[uuid.UUID, list] = defaultdict(list)
+        by_account: dict[uuid.UUID, list[tuple[uuid.UUID | None, Transaction]]] = defaultdict(list)
         for aid, txn in analytics.engine_transactions_by_account(
             session, tenant_id, portfolio_id, account_ids=ledger_ids
         ):
@@ -79,11 +80,11 @@ def stamp(
     session: Session,
     tenant_id: uuid.UUID,
     portfolio_id: uuid.UUID,
-    held: list,
+    held: list[analytics.Holding],
     *,
     account_ids: Collection[uuid.UUID] | None = None,
     today: date | None = None,
-) -> list:
+) -> list[analytics.Holding]:
     """Set ``first_acquired`` / ``avg_days_held`` / ``held_coverage`` on each holding row.
     A row with ``account_id`` (the uncombined view) uses that account's lots only."""
     today = today or date.today()

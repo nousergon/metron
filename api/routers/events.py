@@ -40,7 +40,7 @@ class TrackIn(BaseModel):
     # The authenticated user once known (post-signup); omitted for the pre-auth funnel.
     user_id: uuid.UUID | None = None
     # Arbitrary structured context (referrer, wedge, step, …).
-    props: dict = Field(default_factory=dict)
+    props: dict[str, object] = Field(default_factory=dict)
 
 
 class TrackOut(BaseModel):

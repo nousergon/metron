@@ -92,7 +92,7 @@ class GateCheck:
     feed_entitled: bool | None = None
 
 
-def evaluate(settings_obj=None) -> GateCheck:
+def evaluate(settings_obj: object | None = None) -> GateCheck:
     """Read the two flags and classify. Never raises — a broken read is UNMEASURABLE,
     not an exception, because this runs from a systemd oneshot where a raise and a
     'nothing to page' free-pass look identical to the operator unless the state is

@@ -75,6 +75,7 @@ import logging
 import re
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -186,7 +187,7 @@ REMOTE_HEAD_ATTEMPTS = 3
 REMOTE_HEAD_BACKOFF_SEC = (2.0, 4.0)
 
 
-def remote_head(path: str, *, sleep=time.sleep) -> str:
+def remote_head(path: str, *, sleep: Callable[[float], None] = time.sleep) -> str:
     """Full SHA at ``origin/main``, read without writing a single ref.
 
     ``ls-remote`` asks the remote and prints; it updates no ref, no ``FETCH_HEAD``, and

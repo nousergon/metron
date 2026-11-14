@@ -47,7 +47,7 @@ def record_event(
     event_name: str,
     session_id: str,
     user_id: uuid.UUID | None = None,
-    props: dict | None = None,
+    props: dict[str, object] | None = None,
 ) -> models.Event:
     """Insert one analytics event. ``session_id`` is the anonymous funnel key (required —
     even a pre-auth visitor has one); ``user_id`` is attached only once the visitor is

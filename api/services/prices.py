@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
+from typing import Protocol
 
 from sqlalchemy import and_, cast, func, literal, or_, select
 from sqlalchemy.orm import Session, aliased
@@ -26,6 +27,14 @@ from portfolio_analytics.prices import (
     fetch_close_history,
     fetch_latest_closes,
 )
+
+
+class LatestCloseReader(Protocol):
+    """The shape of ``latest_close_by_symbol``; callers inject a stand-in with it."""
+
+    def __call__(
+        self, session: Session, symbols: list[str], *, currency_by_symbol: dict[str, str] | None = None
+    ) -> dict[str, ClosePoint]: ...
 
 
 def _securities_by_symbol(
