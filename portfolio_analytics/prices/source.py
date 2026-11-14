@@ -12,9 +12,10 @@ treats an absent symbol as "no price" and shows cost basis — never a fabricate
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
+from typing import cast
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,24 @@ class InputSource:
         if self.etag:
             return f"{self.artifact}?etag={self.etag}"
         return self.artifact
+
+
+def s3_input_source(bucket: str, key: str, response: Mapping[str, object], art: object) -> InputSource:
+    """The :class:`InputSource` of one S3 ``GetObject`` read: the object's location, the
+    ``VersionId`` and ``ETag`` S3 reported on that read, and the ``adjustment_basis`` the
+    parsed artifact ``art`` declared, if any. Shared by every data-spine reader so a
+    close, a rate and a fundamentals or technicals snapshot name their object the same
+    way (metron-ops-I373)."""
+    version_id = response.get("VersionId")
+    etag = response.get("ETag")
+    basis = cast("dict[str, object]", art).get("adjustment_basis") if isinstance(art, dict) else None
+    return InputSource(
+        artifact=f"s3://{bucket}/{key}",
+        # S3 answers "null" for an object written before versioning was enabled.
+        version_id=version_id if isinstance(version_id, str) and version_id not in ("", "null") else None,
+        etag=etag.strip('"') if isinstance(etag, str) and etag.strip('"') else None,
+        adjustment_basis=basis if isinstance(basis, str) else None,
+    )
 
 
 @dataclass(frozen=True)
