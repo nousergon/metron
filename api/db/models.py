@@ -395,6 +395,15 @@ class PriceBar(Base):
     # ``_record_input_revisions`` can preserve it (metron-ops-I370).
     close: Mapped[float] = mapped_column(Numeric(28, 10), active_history=True)
     currency: Mapped[str] = mapped_column(String(3), default="USD")
+    # Lineage of the stored close (metron-ops-I370 / I373), all nullable so they
+    # auto-ALTER onto an existing SQLite DB and NULL on every bar cached before them.
+    # ``source_ref``: the producer object version it was read from (``InputSource.ref``);
+    # ``adjustment_basis``: the price basis that object declared; ``recorded_at``: when
+    # Metron stored THIS close. Rewritten together with ``close``, and preserved with the
+    # superseded close in ``market_input_revisions`` (hence active_history).
+    source_ref: Mapped[str | None] = mapped_column(String(512), nullable=True, active_history=True)
+    adjustment_basis: Mapped[str | None] = mapped_column(String(32), nullable=True, active_history=True)
+    recorded_at: Mapped[datetime | None] = mapped_column(nullable=True, active_history=True)
 
 
 class NavSnapshot(Base):
@@ -530,6 +539,13 @@ def _same(field: str, old, new) -> bool:  # noqa: ANN001
     if field in ("nav", "cost_basis", "external_flow", "spy_close"):
         return Decimal(str(old)).quantize(_NAV_QUANTUM) == Decimal(str(new)).quantize(_NAV_QUANTUM)
     return old == new
+
+
+def same_stored_input(old: object, new: object) -> bool:
+    """Whether two closes/rates are the same value at the stored Numeric(28, 10)
+    precision — the comparison the revision hook makes, for writers deciding whether an
+    incoming value replaces the stored one (and so whether its lineage does too)."""
+    return _same("nav", old, new)
 
 
 def _prior_values(obj) -> dict | None:  # noqa: ANN001
@@ -717,6 +733,9 @@ class FxRate(Base):
     base: Mapped[str] = mapped_column(String(3), default="USD")   # rate is `base` per 1 `currency`
     rate_date: Mapped[date] = mapped_column(index=True)
     rate: Mapped[float] = mapped_column(Numeric(28, 10), active_history=True)  # see PriceBar.close
+    # Lineage of the stored rate; see PriceBar.source_ref / recorded_at.
+    source_ref: Mapped[str | None] = mapped_column(String(512), nullable=True, active_history=True)
+    recorded_at: Mapped[datetime | None] = mapped_column(nullable=True, active_history=True)
 
 
 class MarketInputRevision(Base):
@@ -749,16 +768,31 @@ class MarketInputRevision(Base):
     value: Mapped[float] = mapped_column(Numeric(28, 10))  # the superseded close / rate
     change: Mapped[str] = mapped_column(String(16))  # "update" | "delete"
     superseded_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # The superseded value's own lineage, copied from the live row it was replaced in:
+    # the producer object version it was read from, its price basis (closes only), and
+    # when Metron had recorded it. NULL for a value cached before lineage was kept.
+    source_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    adjustment_basis: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    recorded_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
-def _input_revision(obj, value, change: str) -> MarketInputRevision:  # noqa: ANN001
+def _prior(obj: PriceBar | FxRate, attr: str) -> object:
+    """The value ``attr`` held before this flush: the superseded one when the same flush
+    rewrites it alongside the close, else the (unchanged) current one."""
+    hist = sa_inspect(obj).attrs[attr].history
+    return hist.deleted[0] if hist.deleted else getattr(obj, attr)
+
+
+def _input_revision(obj: PriceBar | FxRate, value: object, change: str) -> MarketInputRevision:
     if isinstance(obj, PriceBar):
         return MarketInputRevision(
             kind="price", security_id=obj.security_id, currency=obj.currency, obs_date=obj.bar_date,
-            value=value, change=change,
+            value=value, change=change, source_ref=_prior(obj, "source_ref"),
+            adjustment_basis=_prior(obj, "adjustment_basis"), recorded_at=_prior(obj, "recorded_at"),
         )
     return MarketInputRevision(
         kind="fx", currency=obj.currency, base=obj.base, obs_date=obj.rate_date, value=value, change=change,
+        source_ref=_prior(obj, "source_ref"), recorded_at=_prior(obj, "recorded_at"),
     )
 
 

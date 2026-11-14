@@ -13,16 +13,49 @@ treats an absent symbol as "no price" and shows cost basis — never a fabricate
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 
 @dataclass(frozen=True)
+class InputSource:
+    """Which stored producer object a close or rate was read from (metron-ops-I373).
+
+    ``artifact`` is the object's location (``s3://bucket/key``). ``version_id`` is the
+    store's immutable version of it and ``etag`` its content digest, when the store
+    reports them; together they name the exact bytes the value came from, so a valuation
+    built on it can be traced back after the producer overwrites the key.
+    ``adjustment_basis`` is the price basis the artifact declared (``None`` for FX and for
+    an artifact that declares none)."""
+
+    artifact: str
+    version_id: str | None = None
+    etag: str | None = None
+    adjustment_basis: str | None = None
+
+    @property
+    def ref(self) -> str:
+        """One string naming the object version: the version id when the store keeps
+        versions, else the content digest, else the bare location."""
+        if self.version_id:
+            return f"{self.artifact}?versionId={self.version_id}"
+        if self.etag:
+            return f"{self.artifact}?etag={self.etag}"
+        return self.artifact
+
+
+@dataclass(frozen=True)
 class ClosePoint:
-    """One symbol's most recent daily close and the session it printed."""
+    """One symbol's most recent daily close and the session it printed.
+
+    ``source`` is the lineage of the value: the producer object it was read from, or
+    ``None`` when the source cannot say (an injected test source, a value read back from
+    the cache). It is excluded from equality: two points with the same date and close are
+    the same observation whichever object version carried it."""
 
     bar_date: date
     close: float
+    source: InputSource | None = field(default=None, compare=False)
 
 
 # A source maps a list of symbols to their latest closes. The default is the data spine;
