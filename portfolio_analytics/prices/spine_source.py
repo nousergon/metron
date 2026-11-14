@@ -29,10 +29,10 @@ import json
 import logging
 import os
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 from portfolio_analytics.admission import Invalid, admit_schema, read_number
-from portfolio_analytics.prices.source import ClosePoint
+from portfolio_analytics.prices.source import ClosePoint, InputSource
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,10 @@ FX_HISTORY_SCHEMA_VERSION = 1
 CLOSE_HISTORY_ADJUSTMENT_BASIS = "dividend_adjusted"
 
 
+# A parsed artifact: a JSON object whose values are untyped until admitted field by field.
+_Json = dict[str, Any]  # pyright: ignore[reportExplicitAny]  # raw JSON value: untyped at this boundary
+
+
 def _bucket() -> str:
     return os.environ.get("MARKET_DATA_BUCKET", "alpha-engine-research")
 
@@ -75,29 +79,47 @@ def _s3() -> Any:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JS
     return boto3.client("s3")
 
 
-def _read_json(s3: Any, bucket: str, key: str) -> dict | None:  # pyright: ignore[reportExplicitAny, reportMissingTypeArgument]  # boto3 client / raw JSON value: untyped at this boundary
-    """Read + parse an S3 JSON artifact; ``None`` on any failure (fail-soft)."""
+def _read_json(s3: Any, bucket: str, key: str) -> tuple[_Json | None, InputSource | None]:  # pyright: ignore[reportExplicitAny]  # boto3 client: untyped at this boundary
+    """Read + parse an S3 JSON artifact and name the object version it came from.
+
+    ``(None, None)`` on any failure (fail-soft). The :class:`InputSource` carries the
+    object's ``VersionId`` and ``ETag`` as S3 reported them on this read, so every value
+    parsed from it keeps the identity of the exact bytes it was read from
+    (metron-ops-I373) — the key alone is mutable and is overwritten every producer run.
+    """
     try:
         obj = s3.get_object(Bucket=bucket, Key=key)
-        return json.loads(obj["Body"].read())
+        art: Any = json.loads(obj["Body"].read())  # pyright: ignore[reportExplicitAny]  # raw JSON value: untyped at this boundary
     except Exception as e:  # missing object / no creds / parse error
         logger.warning("data-spine read failed s3://%s/%s: %s", bucket, key, e)
-        return None
+        return None, None
+    version_id = obj.get("VersionId")
+    etag = obj.get("ETag")
+    basis: object = cast("dict[str, object]", art).get("adjustment_basis") if isinstance(art, dict) else None
+    source = InputSource(
+        artifact=f"s3://{bucket}/{key}",
+        # S3 answers "null" for an object written before versioning was enabled.
+        version_id=version_id if isinstance(version_id, str) and version_id not in ("", "null") else None,
+        etag=etag.strip('"') if isinstance(etag, str) and etag.strip('"') else None,
+        adjustment_basis=basis if isinstance(basis, str) else None,
+    )
+    # Not narrowed to a dict here: a non-object payload is refused by admit_schema.
+    return cast("_Json | None", art), source
 
 
 def _read_admitted(
     s3: Any, bucket: str, key: str, *, expected: int, adjustment_basis: str | None = None  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
-) -> dict | None:
+) -> tuple[_Json | None, InputSource | None]:
     """:func:`_read_json`, then refuse anything not on the pinned contract.
 
-    A refused artifact reads as absent (``None``) — the same fail-soft outcome as a
-    missing object — and the refusal is logged at ERROR by :func:`admit_schema`, so
+    A refused artifact reads as absent (``(None, None)``) — the same fail-soft outcome as
+    a missing object — and the refusal is logged at ERROR by :func:`admit_schema`, so
     an unknown producer version is never parsed as the known shape. When
     ``adjustment_basis`` is given the artifact must declare exactly that basis.
     """
-    art = _read_json(s3, bucket, key)
+    art, source = _read_json(s3, bucket, key)
     if admit_schema(art, expected=expected, artifact=key) is not None:
-        return None
+        return None, None
     if art is not None and adjustment_basis is not None:
         found = art.get("adjustment_basis")
         if found != adjustment_basis:
@@ -106,8 +128,8 @@ def _read_admitted(
                 "other close series is on; mixing bases would corrupt returns",
                 key, found, adjustment_basis,
             )
-            return None
-    return art
+            return None, None
+    return art, source
 
 
 def _positive_finite(value: Any) -> float | None:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
@@ -132,9 +154,10 @@ def spine_latest_closes(symbols: list[str], *, s3: Any = None) -> dict[str, Clos
     ``ClosePoint``)."""
     s3 = s3 or _s3()
     bucket = _bucket()
-    closes_art = _read_admitted(s3, bucket, CLOSES_LATEST_KEY, expected=CLOSES_SCHEMA_VERSION) or {}
-    closes_map = closes_art.get("closes", {})
-    fx_art = _read_admitted(s3, bucket, FX_LATEST_KEY, expected=FX_SCHEMA_VERSION) or {}
+    closes_art, closes_src = _read_admitted(s3, bucket, CLOSES_LATEST_KEY, expected=CLOSES_SCHEMA_VERSION)
+    closes_map = (closes_art or {}).get("closes", {})
+    fx_art, fx_src = _read_admitted(s3, bucket, FX_LATEST_KEY, expected=FX_SCHEMA_VERSION)
+    fx_art = fx_art or {}
     fx_rates = fx_art.get("rates", {})
     fx_as_of = _parse_date(fx_art.get("as_of"))
 
@@ -146,7 +169,7 @@ def spine_latest_closes(symbols: list[str], *, s3: Any = None) -> dict[str, Clos
             raw_rate = fx_rates.get(ccy)
             rate = _positive_finite(raw_rate)
             if rate is not None and fx_as_of is not None:
-                out[sym] = ClosePoint(bar_date=fx_as_of, close=rate)
+                out[sym] = ClosePoint(bar_date=fx_as_of, close=rate, source=fx_src)
             elif raw_rate is not None:
                 refused.append(sym)
             continue
@@ -156,7 +179,7 @@ def spine_latest_closes(symbols: list[str], *, s3: Any = None) -> dict[str, Clos
         bar = _parse_date(point.get("bar_date"))
         close = _positive_finite(point.get("close"))
         if bar is not None and close is not None:
-            out[sym] = ClosePoint(bar_date=bar, close=close)
+            out[sym] = ClosePoint(bar_date=bar, close=close, source=closes_src)
         else:
             refused.append(sym)
     if refused:
@@ -166,7 +189,9 @@ def spine_latest_closes(symbols: list[str], *, s3: Any = None) -> dict[str, Clos
     return out
 
 
-def _parse_series(series: list, start: date, end: date, *, label: str = "series") -> list[ClosePoint]:
+def _parse_series(
+    series: list[Any], start: date, end: date, *, label: str = "series", source: InputSource | None = None  # pyright: ignore[reportExplicitAny]  # raw JSON value: untyped at this boundary
+) -> list[ClosePoint]:
     """Parse raw series rows ``[[date, val], …]``, filter to window, return sorted.
 
     All-or-nothing (metron-ops-I373): a row that is malformed, has an unparseable date,
@@ -190,7 +215,7 @@ def _parse_series(series: list, start: date, end: date, *, label: str = "series"
             )
             return []
         if start <= d <= end:
-            points.append(ClosePoint(bar_date=d, close=val))
+            points.append(ClosePoint(bar_date=d, close=val, source=source))
     if points:
         points.sort(key=lambda p: p.bar_date)
     return points
@@ -220,9 +245,9 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3: Any =
         ccy = _fx_currency(sym)
         if ccy is not None:
             key = f"{FX_HISTORY_PREFIX}{ccy}.json"
-            art = _read_admitted(s3, bucket, key, expected=FX_HISTORY_SCHEMA_VERSION)
+            art, src = _read_admitted(s3, bucket, key, expected=FX_HISTORY_SCHEMA_VERSION)
             series = (art or {}).get("rates", [])
-            points = _parse_series(series, start, end, label=key)
+            points = _parse_series(series, start, end, label=key, source=src)
             if points:
                 out[sym] = points
 
@@ -230,10 +255,10 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3: Any =
     equity_symbols = [sym for sym in symbols if _fx_currency(sym) is None]
     if not equity_symbols:
         return out
-    consolidated = (
+    consolidated, consolidated_src = (
         _read_json(s3, bucket, CLOSE_HISTORY_CONSOLIDATED_KEY)
         if len(equity_symbols) >= CONSOLIDATED_MIN_SYMBOLS
-        else None
+        else (None, None)
     )
     if consolidated is not None and (
         admit_schema(
@@ -256,13 +281,15 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3: Any =
             series = series_map.get(sym)
             if not series:
                 continue
-            points = _parse_series(series, start, end, label=f"{CLOSE_HISTORY_CONSOLIDATED_KEY}[{sym}]")
+            points = _parse_series(
+                series, start, end, label=f"{CLOSE_HISTORY_CONSOLIDATED_KEY}[{sym}]", source=consolidated_src
+            )
             if points:
                 out[sym] = points
     else:
         # Fall back to per-ticker files (transition period or producer lag).
         # Parallel S3 reads via thread pool (boto3 is sync but thread-safe).
-        raw: dict[str, dict | None] = {}
+        raw: dict[str, tuple[_Json | None, InputSource | None]] = {}
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(len(equity_symbols), 30),
         ) as pool:
@@ -282,11 +309,11 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3: Any =
                 try:
                     raw[sym] = future.result()
                 except Exception:
-                    raw[sym] = None
+                    raw[sym] = (None, None)
         for sym in equity_symbols:
-            art = raw.get(sym) or {}
-            series = art.get("closes", [])
-            points = _parse_series(series, start, end, label=f"{CLOSE_HISTORY_PREFIX}{sym}.json")
+            art, src = raw.get(sym) or (None, None)
+            series = (art or {}).get("closes", [])
+            points = _parse_series(series, start, end, label=f"{CLOSE_HISTORY_PREFIX}{sym}.json", source=src)
             if points:
                 out[sym] = points
     return out

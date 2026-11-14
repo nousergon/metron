@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session, aliased
 
 from api.db import models
 from api.services import compute_cache
+from api.services.prices import input_lineage, recorded_now
 from portfolio_analytics.prices import (
     HistorySource,
     PriceSource,
@@ -66,9 +67,16 @@ def refresh_fx_rates(
         ).first()
         if existing is None:
             session.add(
-                models.FxRate(currency=ccy, base=base, rate_date=point.bar_date, rate=point.close)
+                models.FxRate(
+                    currency=ccy, base=base, rate_date=point.bar_date, rate=point.close,
+                    **input_lineage(point, basis=False),
+                )
             )
         else:
+            if not models.same_stored_input(existing.rate, point.close):
+                # See prices.refresh_latest_prices: the lineage moves with the value.
+                for attr, value in input_lineage(point, basis=False).items():
+                    setattr(existing, attr, value)
             existing.rate = point.close
         written += 1
     session.commit()
@@ -110,6 +118,7 @@ def backfill_fx_rates(
         ).all()
     }
     inserted = 0
+    recorded_at = recorded_now()
     for pair, series in history.items():
         ccy = pair_to_ccy.get(pair)
         if ccy is None:
@@ -117,7 +126,12 @@ def backfill_fx_rates(
         for point in series:
             if point.close <= 0 or (ccy, point.bar_date) in existing:
                 continue
-            session.add(models.FxRate(currency=ccy, base=base, rate_date=point.bar_date, rate=point.close))
+            session.add(
+                models.FxRate(
+                    currency=ccy, base=base, rate_date=point.bar_date, rate=point.close,
+                    **input_lineage(point, recorded_at=recorded_at, basis=False),
+                )
+            )
             existing.add((ccy, point.bar_date))
             inserted += 1
     session.commit()

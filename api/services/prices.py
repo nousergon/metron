@@ -12,7 +12,7 @@ caller shows cost basis only rather than a guessed market value.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 
 from sqlalchemy import and_, cast, func, literal, or_, select
 from sqlalchemy.orm import Session, aliased
@@ -123,15 +123,42 @@ def refresh_latest_prices(
         if existing is None:
             session.add(
                 models.PriceBar(
-                    security_id=sec.id, bar_date=point.bar_date, close=point.close, currency=sec.currency
+                    security_id=sec.id, bar_date=point.bar_date, close=point.close, currency=sec.currency,
+                    **input_lineage(point),
                 )
             )
         else:
+            if not models.same_stored_input(existing.close, point.close):
+                # A new value replaces the stored one, so its lineage does too; an
+                # identical re-send keeps the lineage of the read that first stored it.
+                for attr, value in input_lineage(point).items():
+                    setattr(existing, attr, value)
             existing.close = point.close
             existing.currency = sec.currency
         written += 1
     session.commit()
     return written
+
+
+def recorded_now() -> datetime:
+    """The ``recorded_at`` stamp for an input stored now: naive UTC, like the
+    ``server_default=func.now()`` columns it sits beside."""
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def input_lineage(point: ClosePoint, *, recorded_at: datetime | None = None, basis: bool = True) -> dict[str, object]:
+    """The lineage columns stored with a cached close or rate (metron-ops-I370 / I373):
+    the producer object version it was read from, its declared price basis (closes only;
+    ``basis=False`` for an FX rate) and when Metron recorded it. A point whose source
+    cannot name its origin stores ``None`` there, never a guessed reference."""
+    src = point.source
+    out: dict[str, object] = {
+        "source_ref": src.ref if src is not None else None,
+        "recorded_at": recorded_at or recorded_now(),
+    }
+    if basis:
+        out["adjustment_basis"] = src.adjustment_basis if src is not None else None
+    return out
 
 
 def latest_close_by_symbol(
@@ -230,6 +257,7 @@ def backfill_prices(
     # a source repeated a day. Postgres refuses to touch the same row twice in one
     # INSERT ... ON CONFLICT, so the dedupe is required, not cosmetic.
     rows: dict[tuple[uuid.UUID, date], dict] = {}
+    recorded_at = recorded_now()
     for yf_sym, series in history.items():
         sec = fetch_targets.get(yf_sym)
         if sec is None:
@@ -241,6 +269,7 @@ def backfill_prices(
                 "bar_date": point.bar_date,
                 "close": point.close,
                 "currency": sec.currency,
+                **input_lineage(point, recorded_at=recorded_at),
             }
     if not rows:
         return 0
@@ -276,8 +305,9 @@ def backfill_prices(
 
 
 def _upsert_chunk_size(session: Session) -> int:
-    # Five bind parameters per row. SQLite's default variable cap is 32,766 (999 before
-    # 3.32); Postgres allows 65,535 per statement. Both sizes stay well under either.
+    # Eight bind parameters per row (five values plus three lineage columns). SQLite's
+    # default variable cap is 32,766 (999 before 3.32); Postgres allows 65,535 per
+    # statement. Both sizes stay well under either.
     return 150 if session.get_bind().dialect.name == "sqlite" else 2000
 
 
@@ -287,9 +317,10 @@ def _chunks(items: list, size: int):  # noqa: ANN202
 
 
 def _upsert_price_bars(session: Session, chunk: list[dict]) -> int:
-    """INSERT the chunk, and on a (security_id, bar_date) collision overwrite close and
-    currency only where the close actually differs. Returns rows inserted or changed:
-    a conflicting row whose close is unchanged fails the WHERE and is not counted."""
+    """INSERT the chunk, and on a (security_id, bar_date) collision overwrite close,
+    currency and the close's lineage only where the close actually differs. Returns rows
+    inserted or changed: a conflicting row whose close is unchanged fails the WHERE, is not
+    counted, and keeps the lineage of the read that first stored it."""
     table = models.PriceBar.__table__
     dialect = session.get_bind().dialect.name
     if dialect == "postgresql":
@@ -302,7 +333,13 @@ def _upsert_price_bars(session: Session, chunk: list[dict]) -> int:
     stmt = dialect_insert(table).values(chunk)
     stmt = stmt.on_conflict_do_update(
         index_elements=[table.c.security_id, table.c.bar_date],
-        set_={"close": stmt.excluded.close, "currency": stmt.excluded.currency},
+        set_={
+            "close": stmt.excluded.close,
+            "currency": stmt.excluded.currency,
+            "source_ref": stmt.excluded.source_ref,
+            "adjustment_basis": stmt.excluded.adjustment_basis,
+            "recorded_at": stmt.excluded.recorded_at,
+        },
         where=table.c.close.is_distinct_from(stmt.excluded.close),
     )
     return session.execute(stmt).rowcount
@@ -320,7 +357,10 @@ def _record_superseded_bars(session: Session, chunk: list[dict]) -> None:
     table = models.PriceBar.__table__
     ctype = table.c.close.type
     changed = session.execute(
-        select(table.c.security_id, table.c.bar_date, table.c.close, table.c.currency).where(
+        select(
+            table.c.security_id, table.c.bar_date, table.c.close, table.c.currency,
+            table.c.source_ref, table.c.adjustment_basis, table.c.recorded_at,
+        ).where(
             or_(*(
                 and_(
                     table.c.security_id == row["security_id"],
@@ -333,9 +373,10 @@ def _record_superseded_bars(session: Session, chunk: list[dict]) -> None:
     ).all()
     session.add_all(
         models.MarketInputRevision(
-            kind="price", security_id=sid, currency=ccy, obs_date=bar_date, value=close, change="update"
+            kind="price", security_id=sid, currency=ccy, obs_date=bar_date, value=close, change="update",
+            source_ref=source_ref, adjustment_basis=basis, recorded_at=recorded_at,
         )
-        for sid, bar_date, close, ccy in changed
+        for sid, bar_date, close, ccy, source_ref, basis, recorded_at in changed
     )
 
 

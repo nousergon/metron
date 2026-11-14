@@ -8,6 +8,7 @@ The engine is price-source-agnostic: ``fetch_latest_closes`` takes an injectable
 from portfolio_analytics.prices.source import (
     ClosePoint,
     HistorySource,
+    InputSource,
     PriceSource,
     fetch_close_history,
     fetch_latest_closes,
@@ -17,6 +18,7 @@ from portfolio_analytics.prices.symbology import fx_pair_symbol, to_yf_symbol
 __all__ = [
     "ClosePoint",
     "HistorySource",
+    "InputSource",
     "PriceSource",
     "fetch_close_history",
     "fetch_latest_closes",
