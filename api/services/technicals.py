@@ -17,7 +17,9 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from api.services import spine_artifacts
+from api.services.spine_artifacts import ArtifactReader, JsonObject
 from portfolio_analytics.admission import Invalid, admit_schema, read_number
+from portfolio_analytics.prices.source import InputSource
 
 logger = logging.getLogger(__name__)
 
@@ -59,15 +61,22 @@ class TechnicalsSnapshot:
     source: str | None = None
     rejected_reason: str | None = None
     invalid_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # The stored producer object this snapshot was read from: its `s3://` location and
+    # the VersionId / ETag S3 reported on the read (metron-ops-I373). The key is
+    # overwritten every producer run; this names the exact bytes every metric in
+    # `by_symbol` came from. Set for a refused artifact too, so the refusal names the
+    # object it refused. `None` when the read failed or the reader was injected.
+    input_source: InputSource | None = None
 
 
 def _bucket() -> str:
     return os.environ.get("MARKET_DATA_BUCKET", "alpha-engine-research")
 
 
-def _default_reader() -> dict | None:
-    # Fail-soft (None on any read error); shared short-TTL cache — see spine_artifacts.
-    return spine_artifacts.read_json(TECHNICALS_KEY, bucket=_bucket())
+def _default_read() -> tuple[JsonObject | None, InputSource | None]:
+    # Fail-soft ((None, None) on any read error); shared short-TTL cache, and the object
+    # version the bytes came from — see spine_artifacts.
+    return spine_artifacts.read_artifact(TECHNICALS_KEY, bucket=_bucket())
 
 
 def _f(d: dict, key: str, invalid: list[str]) -> float | None:
@@ -99,10 +108,14 @@ def _parse(yf_symbol: str, d: dict, invalid: list[str]) -> TickerTechnicals:
     )
 
 
-def load_technicals(*, reader=None) -> TechnicalsSnapshot:
+def load_technicals(*, reader: ArtifactReader | None = None) -> TechnicalsSnapshot:
     """The latest technicals snapshot, keyed by yf_symbol. ``reader`` (a no-arg callable
-    returning the raw artifact dict) is injectable for tests; defaults to the S3 read."""
-    raw = (reader or _default_reader)()
+    returning the raw artifact dict) is injectable for tests; defaults to the S3 read,
+    which also records the object version read in ``input_source``."""
+    if reader is not None:
+        raw, input_source = reader(), None
+    else:
+        raw, input_source = _default_read()
     rejected = admit_schema(raw, expected=TECHNICALS_SCHEMA_VERSION, artifact=TECHNICALS_KEY)
     if rejected is not None:
         return TechnicalsSnapshot(
@@ -110,6 +123,7 @@ def load_technicals(*, reader=None) -> TechnicalsSnapshot:
             by_symbol={},
             schema_version=raw.get("schema_version") if isinstance(raw, dict) else None,
             rejected_reason=rejected,
+            input_source=input_source,
         )
     art = raw or {}
     by_symbol: dict[str, TickerTechnicals] = {}
@@ -138,4 +152,5 @@ def load_technicals(*, reader=None) -> TechnicalsSnapshot:
         schema_version=art.get("schema_version"),
         source=art.get("source"),
         invalid_fields=invalid_fields,
+        input_source=input_source,
     )
