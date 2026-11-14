@@ -17,12 +17,14 @@ recommendation, and the existing tearsheet/Holdings disclaimer stays as-is.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass, field
 
+from api.services import spine_artifacts
+from api.services.spine_artifacts import ArtifactReader, JsonObject
 from portfolio_analytics.admission import admit_schema, read_number
+from portfolio_analytics.prices.source import InputSource
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +50,10 @@ def _bucket() -> str:
     return os.environ.get("MARKET_DATA_BUCKET", "alpha-engine-research")
 
 
-def _default_reader() -> dict | None:
-    import boto3
-
-    try:
-        obj = boto3.client("s3").get_object(Bucket=_bucket(), Key=RATING_PERFORMANCE_KEY)
-        return json.loads(obj["Body"].read())
-    except Exception as e:  # fail-soft: the consumer degrades to "no track record"
-        logger.warning("data-spine read failed %s: %s", RATING_PERFORMANCE_KEY, e)
-        return None
+def _default_read() -> tuple[JsonObject | None, InputSource | None]:
+    # Fail-soft ((None, None) on any read error: the consumer degrades to "no track record");
+    # shared short-TTL cache, and the object version the bytes came from — see spine_artifacts.
+    return spine_artifacts.read_artifact(RATING_PERFORMANCE_KEY, bucket=_bucket())
 
 
 @dataclass
@@ -100,6 +97,9 @@ class RatingPerformance:
     # segment -> window (JSON string of an int) -> horizon (JSON string of an int) -> stats.
     segments: dict[str, dict[str, dict[str, RatingHorizonStats]]] = field(default_factory=dict)
     ic_series: list[IcPoint] = field(default_factory=list)
+    # The stored object this track record was read from (metron-ops-I373); `None` when the
+    # reader was injected.
+    input_source: InputSource | None = None
 
     def stats_for(self, *, segment: str, window: int, horizon: int) -> RatingHorizonStats | None:
         """The one (segment, window, horizon) cell, or None if that combination isn't
@@ -196,12 +196,15 @@ def _int_list(raw: object) -> list[int]:
     return out
 
 
-def load_rating_performance(*, reader=None) -> RatingPerformance | None:
+def load_rating_performance(*, reader: ArtifactReader | None = None) -> RatingPerformance | None:
     """The rating's realized track record, or None when the producer artifact is absent,
     unparseable, or on a ``schema_version`` this consumer doesn't understand. ``reader`` is
     the injectable test seam (a no-arg callable returning the raw artifact dict); defaults
     to the S3 read."""
-    art = (reader or _default_reader)()
+    if reader is not None:
+        art, input_source = reader(), None
+    else:
+        art, input_source = _default_read()
     if not isinstance(art, dict):
         return None
     # Shared admission (metron-ops-I373): refuses a missing, non-integer (``true`` is not 1)
@@ -238,4 +241,5 @@ def load_rating_performance(*, reader=None) -> RatingPerformance | None:
         windows=_int_list(art.get("windows")),
         segments=segments,
         ic_series=_parse_ic_series(art.get("ic_series")),
+        input_source=input_source,
     )

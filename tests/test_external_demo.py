@@ -415,7 +415,7 @@ def rating_everywhere(monkeypatch, seeded):
             "ratings": {s: {"score": 0.6, "label": "Buy", "ma_score": 0.7, "osc_score": 0.5,
                             "n_buy": 8, "n_neutral": 2, "n_sell": 1, "n_votes": 11} for s in symbols},
         }
-    monkeypatch.setattr(technical_rating, "_default_intraday_reader", _art)
+    monkeypatch.setattr(technical_rating, "_default_intraday_read", lambda: (_art(), None))
 
 
 def test_leak_harness_detects_a_rating_on_the_owner_path(raw_client, seeded, rating_everywhere, monkeypatch):

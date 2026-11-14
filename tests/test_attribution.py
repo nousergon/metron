@@ -149,10 +149,11 @@ class TestComputeAttribution:
 
 
 class TestWindowedRead:
-    """metron-ops-I343: attribution reads only closes on/after its window start.
+    """metron-ops-I343: attribution reads only closes from shortly before its window start.
 
-    ``_window_return`` anchors on the first close on/after ``start``, so bars before it
-    never changed a result; reading them was pure egress."""
+    The window anchors on the first sector-ETF session on/after ``start``. Only a close
+    carried onto that anchor (metron-ops-I372) reaches back, by ``_READ_PAD_DAYS``; older
+    bars never change a result, so reading them would be pure egress."""
 
     TODAY = date(2024, 2, 20)
 
@@ -189,7 +190,7 @@ class TestWindowedRead:
         attribution.compute_attribution(
             db_session, uuid.UUID(tenant), uuid.UUID(pid), today=self.TODAY, benchmark_source=_bench
         )
-        assert seen and seen[-1].get("start_date") == self.TODAY - timedelta(days=90)
+        assert seen and seen[-1].get("start_date") == self.TODAY - timedelta(days=90 + attribution._READ_PAD_DAYS)
 
 
 class TestAttributionEndpoints:

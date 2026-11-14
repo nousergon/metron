@@ -291,7 +291,9 @@ export default function MethodologyPage() {
             holding&rsquo;s price return over one common window: from the first session every sector ETF has
             reached on or after the requested start, to the last session all of them have reached. Every leg,
             portfolio and benchmark, is measured over that same interval, and the result is dated by its end
-            &mdash; the freshness of the stalest leg, not the freshest.
+            &mdash; the freshness of the stalest leg, not the freshest. A security that did not trade on the first
+            or last session, such as a foreign listing on a local holiday, is priced at its previous close if that
+            close is at most five sessions earlier. A longer gap leaves the holding out of the attribution.
           </li>
           <li>
             <strong>Benchmark weights</strong> w<sub>b,i</sub>: the benchmark ETF&rsquo;s published sector
@@ -300,6 +302,8 @@ export default function MethodologyPage() {
           <li>
             <strong>Benchmark sector returns</strong> r<sub>b,i</sub>: the price return over the same window of
             each sector&rsquo;s Select Sector SPDR ETF (XLK, XLF, XLV, XLY, XLP, XLE, XLI, XLB, XLU, XLRE, XLC).
+            If a sector with benchmark weight has no return for its ETF over the window, attribution is not
+            computed, and the page names the ETF.
           </li>
         </Bullets>
         <p>

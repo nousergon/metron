@@ -20,6 +20,7 @@ import pytest
 
 from api.config import settings
 from api.services import attribution
+from portfolio_analytics.prices import ClosePoint
 from tests.test_attribution import _bench, _closes, _refresh, _sectors, _seed
 
 TODAY = date(2024, 2, 20)
@@ -139,3 +140,61 @@ def test_the_api_surfaces_the_window_and_what_was_left_out(client, tenant, monke
     assert body["start_date"] == FIRST.isoformat() and body["as_of"] == LAST.isoformat()
     assert body["requested_start"] is not None
     assert [(u["ticker"], u["reason"]) for u in body["unattributed"]] == [("XOM", "short_history")]
+
+
+# --- Endpoint gap tolerance and required benchmark legs (metron-ops-I372) ---------------
+
+GAP = attribution.ENDPOINT_GAP_SESSIONS
+
+
+def _pts(*days):
+    return [ClosePoint(FIRST + timedelta(days=d), 100.0 + d) for d in days]
+
+
+def test_an_endpoint_close_is_carried_over_at_most_the_declared_gap():
+    """A close up to GAP sessions before an endpoint prices it; one session more is a gap.
+    Before: a hole spanning the end was priced from whatever close preceded it."""
+    sessions = [FIRST + timedelta(days=i) for i in range(50)]
+    anchor, end = FIRST + timedelta(days=10), FIRST + timedelta(days=40)
+    ret, why = attribution._window_return(_pts(10 - GAP, 40 - GAP, 45), anchor, end, sessions)
+    assert why is None and ret == pytest.approx((140 - GAP) / (110 - GAP) - 1.0)
+    assert attribution._window_return(_pts(9 - GAP, 40, 45), anchor, end, sessions) == (None, "short_history")
+    assert attribution._window_return(_pts(10, 39 - GAP, 45), anchor, end, sessions) == (None, "stale")
+
+
+def test_the_gap_is_counted_in_reference_sessions_not_calendar_days():
+    sessions = [FIRST + timedelta(days=i) for i in range(0, 50, 2)]  # a session every other day
+    anchor, end = FIRST, FIRST + timedelta(days=40)
+    ret, why = attribution._window_return(_pts(0, 40 - 2 * GAP), anchor, end, sessions)
+    assert why is None and ret is not None
+
+
+def test_a_holding_closed_on_the_end_session_is_carried_not_left_out(client, db_session, tenant, monkeypatch):
+    """XOM's last close is 3 sessions before the window end, as for a foreign listing on a
+    local holiday. Before: it was left out as stale and coverage dropped."""
+    longer = {s: _closes(s, n=53) for s in ("AAPL", "XLK", "XLE", "XLV", "XLI", "XLF", "XLY", "XLP",
+                                             "XLU", "XLB", "XLRE", "XLC", "SPY")}
+    pid = _seed(client, tenant)
+    _refresh(client, tenant, pid, monkeypatch)
+    a = attribution.compute_attribution(
+        db_session, uuid.UUID(tenant), uuid.UUID(pid), today=date(2024, 2, 23), do_backfill=True,
+        price_source=_source(longer), sector_source=_sectors, benchmark_source=_bench,
+    )
+    assert a.computable and a.as_of == LAST + timedelta(days=3)
+    assert a.unattributed == [] and a.coverage == pytest.approx(1.0)
+    energy = next(e for e in a.sectors if e.sector == "Energy")
+    assert energy.port_return == pytest.approx(_ret(_closes("XOM"), FIRST, LAST))
+
+
+def test_a_benchmark_sector_etf_without_history_is_named_not_dropped(client, db_session, tenant, monkeypatch):
+    """Before: XLV was filtered out and Healthcare's benchmark weight entered R_b at 0%."""
+    a = _compute(client, db_session, tenant, monkeypatch, {"XLV": []})
+    assert not a.computable
+    assert a.reason is not None and "XLV (Healthcare)" in a.reason
+
+
+def test_a_benchmark_sector_etf_with_a_gap_at_the_end_is_named(client, db_session, tenant, monkeypatch):
+    xle = [*_closes("XLE")[: 49 - GAP - 1], ClosePoint(LAST + timedelta(days=1), 99.0)]
+    a = _compute(client, db_session, tenant, monkeypatch, {"XLE": xle})
+    assert not a.computable
+    assert a.reason is not None and "XLE (Energy): stale" in a.reason

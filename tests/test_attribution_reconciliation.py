@@ -155,6 +155,11 @@ def test_an_account_selection_reconciles_against_the_selected_accounts(
     assert rec.observed_portfolio_return == pytest.approx(0.08)
 
 
+def _daily(end):
+    """A reference calendar with a session every day from FIRST to ``end``."""
+    return [FIRST + timedelta(days=i) for i in range((end - FIRST).days + 1)]
+
+
 class TestReconcile:
     """``_reconcile`` alone: the tie case and the benchmark half's failure modes."""
 
@@ -166,7 +171,8 @@ class TestReconcile:
         end = pts[-1].snap_date
         spy = [ClosePoint(FIRST, 100.0), ClosePoint(end, 102.0)]
         rec = attribution._reconcile(
-            pts, spy, benchmark="SPY", anchor=FIRST, end=end, portfolio_return=0.03, benchmark_return=0.02,
+            pts, spy, benchmark="SPY", anchor=FIRST, end=end, sessions=_daily(end),
+            portfolio_return=0.03, benchmark_return=0.02,
         )
         assert rec.available and rec.within_tolerance
         assert rec.active_residual == pytest.approx(0.0)
@@ -176,7 +182,8 @@ class TestReconcile:
         end = pts[-1].snap_date
         spy = [ClosePoint(FIRST, 100.0), ClosePoint(end, 101.0)]
         rec = attribution._reconcile(
-            pts, spy, benchmark="SPY", anchor=FIRST, end=end, portfolio_return=0.03, benchmark_return=0.01,
+            pts, spy, benchmark="SPY", anchor=FIRST, end=end, sessions=_daily(end),
+            portfolio_return=0.03, benchmark_return=0.01,
         )
         assert rec.available and not rec.within_tolerance
         assert rec.portfolio_residual == pytest.approx(0.02)
@@ -184,11 +191,13 @@ class TestReconcile:
         assert rec.active_residual == pytest.approx(0.02)
 
     def test_a_stale_benchmark_series_is_named(self):
-        pts = self._points(1000.0, 1050.0)
+        pts = self._points(1000.0, 1020.0, 1050.0)
         end = pts[-1].snap_date
-        spy = [ClosePoint(FIRST, 100.0), ClosePoint(end - timedelta(days=2), 101.0)]
+        gap = attribution.ENDPOINT_GAP_SESSIONS + 1
+        spy = [ClosePoint(FIRST, 100.0), ClosePoint(end - timedelta(days=gap), 101.0)]
         rec = attribution._reconcile(
-            pts, spy, benchmark="QQQ", anchor=FIRST, end=end, portfolio_return=0.03, benchmark_return=0.01,
+            pts, spy, benchmark="QQQ", anchor=FIRST, end=end, sessions=_daily(end),
+            portfolio_return=0.03, benchmark_return=0.01,
         )
         assert rec.available is False
         assert rec.reason == "QQQ close history: stale"
@@ -200,7 +209,8 @@ class TestReconcile:
         end = pts[-1].snap_date
         spy = [ClosePoint(FIRST, 100.0), ClosePoint(end, 101.0)]
         rec = attribution._reconcile(
-            pts, spy, benchmark="SPY", anchor=FIRST, end=end, portfolio_return=0.03, benchmark_return=0.01,
+            pts, spy, benchmark="SPY", anchor=FIRST, end=end, sessions=_daily(end),
+            portfolio_return=0.03, benchmark_return=0.01,
         )
         assert rec.available is False and rec.reason == "a non-positive NAV inside the window"
         assert rec.observed_portfolio_return is None
