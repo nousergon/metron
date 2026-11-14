@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from api import entitlements
 from api.config import settings
+from api.lineage import InputSourceOut, lineage
 from api.services import indices, security_perf
 
 router = APIRouter(tags=["indices"])
@@ -49,6 +50,7 @@ class IndicesOut(BaseModel):
     as_of_utc: str | None = None
     stale: bool = False
     indices: list[IndexQuoteOut] = []
+    input_source: InputSourceOut | None = None  # the intraday object these quotes were read from
 
 
 @router.get("/indices/intraday", response_model=IndicesOut)
@@ -86,4 +88,5 @@ def get_indices_intraday(
         as_of_utc=snap.as_of_utc,
         stale=snap.stale,
         indices=[IndexQuoteOut.model_validate(q) for q in snap.indices],
+        input_source=lineage(snap.input_source),
     )
