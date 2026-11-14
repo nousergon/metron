@@ -257,10 +257,20 @@ export type GroupMedians = {
   dividend_yield: number | null; // fraction
 };
 
+/** The producer object (and immutable version) a served market value was read from (metron-ops-I373). */
+export type InputSource = {
+  artifact: string;
+  version_id: string | null;
+  etag: string | null;
+  adjustment_basis: string | null;
+  ref: string;
+};
+
 export type ValuationMedians = {
   as_of: string | null;
   by_sector: Record<string, GroupMedians>;
   by_country: Record<string, GroupMedians>;
+  input_source?: InputSource | null;
 };
 
 export type IncomeYear = {
@@ -1017,6 +1027,8 @@ export type Tearsheet = {
   consensus_available: boolean;
   consensus_as_of: string | null;
   consensus: TearsheetConsensus;
+  /** Producer objects the served values were read from, by reader (metron-ops-I373). */
+  input_sources?: Record<string, InputSource>;
   // Composite attractiveness gauge (metron-ops#106, Phase 2) — feed-gated; available is false
   // off-feed or on a total coverage gap.
   attractiveness: TearsheetAttractiveness;
@@ -2035,6 +2047,7 @@ export type Indices = {
   as_of_utc: string | null;
   stale: boolean;
   indices: IndexQuote[];
+  input_source?: InputSource | null;
 };
 
 /** Latest intraday index levels. `preview` is forwarded as X-Preview-* headers and is

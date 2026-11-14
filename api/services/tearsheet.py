@@ -28,6 +28,7 @@ from api.services import technical_rating as technical_rating_service
 from api.services import technical_rating_performance as technical_rating_performance_service
 from api.services import technicals as technicals_service
 from api.services.spine_artifacts import ArtifactReader
+from portfolio_analytics.prices.source import InputSource
 
 _FUNDAMENTALS_REASON = "Arrives with the fundamentals feed (alpha-engine-config#1022)."
 
@@ -205,6 +206,8 @@ class Tearsheet:
     consensus_as_of: date | None = None
     consensus: TearsheetConsensus = field(default_factory=TearsheetConsensus)
     attractiveness: TearsheetAttractiveness = field(default_factory=TearsheetAttractiveness)
+    # Producer objects the values above were read from, keyed by reader name.
+    input_sources: dict[str, InputSource] = field(default_factory=dict)
 
 
 def _performance_from_spine(
@@ -362,6 +365,7 @@ def tearsheet(
         by_account=account_positions,
     )
     as_of = security_perf_service.market_today()
+    sources: dict[str, InputSource | None] = {}
 
     if feed_enabled:
         yf = _yf_symbol_map(session, [ticker]).get(ticker, ticker)
@@ -374,6 +378,10 @@ def tearsheet(
         rating_snap = technical_rating_service.load_technical_rating(
             intraday_reader=rating_reader, technicals_reader=technicals_reader
         )
+        sources["security_performance"] = perf_snap.input_source
+        sources["technicals"] = tech_snap.input_source
+        for key, src in rating_snap.input_sources.items():
+            sources[f"technical_rating:{key}"] = src
         performance = _performance_from_spine(perf_snap.by_symbol.get(yf), holding.unrealized_pct)
         # Deferred, not module-level: demo_household imports goal -> performance ->
         # security_perf -> tearsheet at load, so a top-level import here closes an import
@@ -404,6 +412,7 @@ def tearsheet(
 
     if feed_enabled:
         snap = fundamentals_service.load_fundamentals(reader=fundamentals_reader)
+        sources["fundamentals"] = snap.input_source
         yf_map = _yf_symbol_map(session, [h.ticker for h in valued])
         fund = snap.by_symbol.get(yf_map.get(ticker, ticker))
         if fund is not None:
@@ -434,6 +443,8 @@ def tearsheet(
         a_snap = analyst_service.load_analyst(reader=analyst_reader)
         a = a_snap.by_symbol.get(yf)
         s_snap = sentiment_service.load_sentiment(reader=sentiment_reader)
+        sources["analyst"] = a_snap.input_source
+        sources["sentiment"] = s_snap.input_source
         s = s_snap.by_symbol.get(yf)
         if a is not None or s is not None:
             sheet.consensus_available = True
@@ -478,4 +489,5 @@ def tearsheet(
                     for p in att.pillars
                 ],
             )
+    sheet.input_sources = {name: src for name, src in sources.items() if src is not None}
     return sheet

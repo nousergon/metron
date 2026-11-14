@@ -18,6 +18,7 @@ risk) arrive in later PH1–PH3 increments.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Literal
 
@@ -31,6 +32,7 @@ from api import entitlements as ent
 from api.config import settings
 from api.db import models
 from api.db.session import get_session
+from api.lineage import InputSourceOut, lineage
 from api.services import (
     account_basis,
     account_meta,
@@ -75,12 +77,13 @@ from api.services import (
 )
 from api.services import valuation_medians as valuation_medians_service
 from portfolio_analytics.broker_io.csv_import import parse_transactions_csv
-from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult
+from portfolio_analytics.broker_io.file_import import FileImportError, FileImportResult, SkippedRecord
 from portfolio_analytics.broker_io.manual_entry import ManualEntryError, ManualPosition, build_manual_snapshot
 from portfolio_analytics.broker_io.ofx_import import parse_ofx
 from portfolio_analytics.broker_io.snaptrade_reader import SnapTradeReader
 from portfolio_analytics.domain.ledger import TxnType
 from portfolio_analytics.domain.tax import LotMethod, LotPick
+from portfolio_analytics.ingestion.base import ConnectorSnapshot
 from portfolio_analytics.ingestion.ibkr_flex_connector import IbkrFlexConnector
 from portfolio_analytics.ingestion.snaptrade import SnapTradeConnector
 
@@ -304,6 +307,7 @@ class ValuationMediansOut(BaseModel):
     as_of: date | None = None
     by_sector: dict[str, GroupMediansOut] = {}
     by_country: dict[str, GroupMediansOut] = {}
+    input_source: InputSourceOut | None = None  # the producer object the medians were read from
 
 
 class DeployCashConfigOut(BaseModel):
@@ -1709,7 +1713,14 @@ def put_holdings_view(
     )
 
 
-def _summarize(snapshot, persisted: persistence.PersistResult, *, parsed: int, skipped: int, errors) -> ImportOut:
+def _summarize(
+    snapshot: ConnectorSnapshot,
+    persisted: persistence.PersistResult,
+    *,
+    parsed: int,
+    skipped: int,
+    errors: Sequence[SkippedRecord],
+) -> ImportOut:
     """Build the import summary from a persisted snapshot — one shape for every source."""
     return ImportOut(
         source=snapshot.source,
@@ -2317,6 +2328,7 @@ def get_valuation_medians(
         as_of=snap.as_of,
         by_sector={k: v for k, v in snap.by_sector.items() if k in present_sectors},
         by_country={k: v for k, v in snap.by_country.items() if k in present_countries},
+        input_source=lineage(snap.input_source),
     )
 
 
@@ -3023,6 +3035,8 @@ class TearsheetOut(BaseModel):
     consensus_as_of: date | None = None
     consensus: TearsheetConsensusOut = TearsheetConsensusOut()
     attractiveness: TearsheetAttractivenessOut = TearsheetAttractivenessOut()
+    # Producer objects the served values were read from, by reader (metron-ops-I373).
+    input_sources: dict[str, InputSourceOut] = {}
 
 
 @router.get("/{portfolio_id}/tearsheet/{ticker}", response_model=TearsheetOut)
