@@ -8,7 +8,7 @@
 // as-is so every backend call still funnels through the SAME validated-URL / no-store /
 // error-shape path the rest of the app uses.
 
-import { apiFetch, MetronApiError } from "@/lib/api";
+import { apiFetch, MetronApiError, type InputSource } from "@/lib/api";
 import { DEMO_TENANT_ID } from "@/lib/demo";
 
 function authHeaders(apiAuth: string): Record<string, string> {
@@ -45,6 +45,8 @@ export type MarketBoard = {
   scope: MarketBoardScope;
   rows: MarketBoardRow[];
   track_record: MarketBoardTrackRecord | null;
+  /** Producer objects the board was read from, by reader (metron-ops-I373). */
+  input_sources?: Record<string, InputSource>;
 };
 
 export async function getMarketBoard(
