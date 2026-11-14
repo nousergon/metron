@@ -14,12 +14,12 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import cast
 
 from api.services import spine_artifacts
 from api.services.spine_artifacts import ArtifactReader, JsonObject
-from portfolio_analytics.admission import Invalid, admit_schema, read_number
+from portfolio_analytics.admission import Invalid, admit_schema, content_staleness, read_number
 from portfolio_analytics.prices.source import InputSource
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,20 @@ TECHNICALS_KEY = "market_data/technicals/latest.json"
 # tests/contracts/technicals.schema.json. Any other version is refused at
 # runtime (metron-ops-I373); re-pin both together when the producer bumps it.
 TECHNICALS_SCHEMA_VERSION = 4
+
+# The unit each field is declared in, as inclusive bounds — the same ranges as
+# tests/contracts/technicals_snapshot.schema.json. A finite value outside its range is a
+# value in the wrong unit or scale (a percent where a fraction is declared, a 0-1 ratio
+# where a 0-100 score is) and reads as invalid, not as a metric (metron-ops-I373).
+_BOUNDS: dict[str, tuple[float | None, float | None]] = {
+    "rsi_14": (0.0, 100.0),
+    "pct_to_ma_50": (-1.0, 5.0),
+    "pct_to_ma_200": (-1.0, 5.0),
+    "pct_in_52w_range": (0.0, 1.0),
+    "pct_from_52wk_high": (-1.0, 1.0),
+    "mom_20d": (-1.0, 5.0),
+    "mom_60d": (-1.0, 5.0),
+}
 
 
 @dataclass
@@ -68,6 +82,10 @@ class TechnicalsSnapshot:
     # `by_symbol` came from. Set for a refused artifact too, so the refusal names the
     # object it refused. `None` when the read failed or the reader was injected.
     input_source: InputSource | None = None
+    # Set when the content's own `as_of` is older than CONTENT_MAX_AGE_DAYS (or absent),
+    # whatever the object's write time says. The numbers are still served: stale is a flag
+    # the caller renders, not a refusal (metron-ops-I373).
+    stale_reason: str | None = None
 
 
 def _bucket() -> str:
@@ -84,7 +102,8 @@ def _f(d: JsonObject, key: str, invalid: list[str]) -> float | None:
     """A finite float, or None. A present-but-invalid value (NaN, Infinity, a
     non-numeric string) also reads as None, and its key is appended to ``invalid``
     so the snapshot can say so (metron-ops-I373)."""
-    reading = read_number(d.get(key))
+    lo, hi = _BOUNDS.get(key, (None, None))
+    reading = read_number(d.get(key), lo=lo, hi=hi)
     if isinstance(reading, Invalid):
         invalid.append(key)
         return None
@@ -109,7 +128,7 @@ def _parse(yf_symbol: str, d: JsonObject, invalid: list[str]) -> TickerTechnical
     )
 
 
-def load_technicals(*, reader: ArtifactReader | None = None) -> TechnicalsSnapshot:
+def load_technicals(*, reader: ArtifactReader | None = None, now: datetime | None = None) -> TechnicalsSnapshot:
     """The latest technicals snapshot, keyed by yf_symbol. ``reader`` (a no-arg callable
     returning the raw artifact dict) is injectable for tests; defaults to the S3 read,
     which also records the object version read in ``input_source``."""
@@ -149,9 +168,18 @@ def load_technicals(*, reader: ArtifactReader | None = None) -> TechnicalsSnapsh
             as_of = date.fromisoformat(str(raw_as_of)[:10])
         except ValueError:
             as_of = None
+    stale_reason = content_staleness(
+        as_of,
+        now=now or datetime.now(UTC),
+        written_at=input_source.last_modified if input_source else None,
+        artifact=TECHNICALS_KEY,
+    )
+    if stale_reason:
+        logger.warning("%s", stale_reason)
     return TechnicalsSnapshot(
         as_of=as_of,
         by_symbol=by_symbol,
+        stale_reason=stale_reason,
         schema_version=art.get("schema_version"),
         source=art.get("source"),
         invalid_fields=invalid_fields,

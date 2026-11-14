@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import cast
 
 
@@ -33,6 +33,9 @@ class InputSource:
     version_id: str | None = None
     etag: str | None = None
     adjustment_basis: str | None = None
+    # The store's write time (S3 ``LastModified``). It says when the key was last written,
+    # NOT how old the content is: a producer re-uploading old content refreshes it.
+    last_modified: datetime | None = field(default=None, compare=False)
 
     @property
     def ref(self) -> str:
@@ -53,6 +56,7 @@ def s3_input_source(bucket: str, key: str, response: Mapping[str, object], art: 
     way (metron-ops-I373)."""
     version_id = response.get("VersionId")
     etag = response.get("ETag")
+    modified = response.get("LastModified")
     basis = cast("dict[str, object]", art).get("adjustment_basis") if isinstance(art, dict) else None
     return InputSource(
         artifact=f"s3://{bucket}/{key}",
@@ -60,6 +64,7 @@ def s3_input_source(bucket: str, key: str, response: Mapping[str, object], art: 
         version_id=version_id if isinstance(version_id, str) and version_id not in ("", "null") else None,
         etag=etag.strip('"') if isinstance(etag, str) and etag.strip('"') else None,
         adjustment_basis=basis if isinstance(basis, str) else None,
+        last_modified=modified if isinstance(modified, datetime) else None,
     )
 
 
