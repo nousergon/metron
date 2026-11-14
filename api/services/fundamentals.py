@@ -16,7 +16,7 @@ from typing import cast
 
 from api.services import spine_artifacts
 from api.services.spine_artifacts import ArtifactReader, JsonObject
-from portfolio_analytics.admission import Invalid, admit_schema, content_staleness, read_number
+from portfolio_analytics.admission import Invalid, admit_schema, content_staleness, read_number, universe_shortfall
 from portfolio_analytics.prices.source import InputSource
 
 logger = logging.getLogger(__name__)
@@ -101,6 +101,9 @@ class FundamentalsSnapshot:
     # whatever the object's write time says. The numbers are still served: stale is a flag
     # the caller renders, not a refusal (metron-ops-I373).
     stale_reason: str | None = None
+    # Set when a PRESENT artifact's symbol map is empty or far below the product's minimum
+    # universe, so "no coverage" is not mistaken for a healthy producer (I373).
+    universe_reason: str | None = None
 
 
 def _bucket() -> str:
@@ -209,11 +212,15 @@ def load_fundamentals(*, reader: ArtifactReader | None = None, now: datetime | N
             as_of = date.fromisoformat(str(raw_as_of)[:10])
         except ValueError:
             as_of = None
-    stale_reason = content_staleness(
-        as_of,
-        now=now or datetime.now(UTC),
-        written_at=input_source.last_modified if input_source else None,
-        artifact=FUNDAMENTALS_KEY,
+    stale_reason = (
+        content_staleness(
+            as_of,
+            now=now or datetime.now(UTC),
+            written_at=input_source.last_modified if input_source else None,
+            artifact=FUNDAMENTALS_KEY,
+        )
+        if raw is not None
+        else None
     )
     if stale_reason:
         logger.warning("%s", stale_reason)
@@ -221,6 +228,7 @@ def load_fundamentals(*, reader: ArtifactReader | None = None, now: datetime | N
         as_of=as_of,
         by_symbol=by_symbol,
         stale_reason=stale_reason,
+        universe_reason=universe_shortfall(len(by_symbol), artifact=FUNDAMENTALS_KEY) if raw is not None else None,
         schema_version=art.get("schema_version"),
         source=art.get("source"),
         invalid_fields=invalid_fields,

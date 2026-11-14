@@ -245,6 +245,9 @@ export type Holding = {
   attractiveness_retired: boolean;
   /** Producer objects the enriched metrics were read from, by reader (metron-ops-I373). */
   input_sources?: Record<string, InputSource>;
+  /** Reader name -> why its content is stale / its symbol universe collapsed (metron-ops-I373). */
+  stale_reasons?: Record<string, string>;
+  universe_reasons?: Record<string, string>;
 };
 
 // Sector- / country-level median multiples (SP1500-broad peer benchmark) for the Holdings
@@ -273,6 +276,8 @@ export type ValuationMedians = {
   by_sector: Record<string, GroupMedians>;
   by_country: Record<string, GroupMedians>;
   input_source?: InputSource | null;
+  stale_reason?: string | null;
+  universe_reason?: string | null;
 };
 
 export type IncomeYear = {
@@ -635,6 +640,9 @@ export type WatchlistEntry = {
   attractiveness_retired: boolean; // metron-ops-I334 — see Holding.attractiveness_retired
   /** Producer objects the enriched metrics were read from, by reader (metron-ops-I373). */
   input_sources?: Record<string, InputSource>;
+  /** Reader name -> why its content is stale / its symbol universe collapsed (metron-ops-I373). */
+  stale_reasons?: Record<string, string>;
+  universe_reasons?: Record<string, string>;
 };
 
 export const getWatchlist = (apiAuth: string, id: string) =>
@@ -1033,6 +1041,9 @@ export type Tearsheet = {
   consensus: TearsheetConsensus;
   /** Producer objects the served values were read from, by reader (metron-ops-I373). */
   input_sources?: Record<string, InputSource>;
+  /** Reader name -> why its content is stale / its symbol universe collapsed (metron-ops-I373). */
+  stale_reasons?: Record<string, string>;
+  universe_reasons?: Record<string, string>;
   // Composite attractiveness gauge (metron-ops#106, Phase 2) — feed-gated; available is false
   // off-feed or on a total coverage gap.
   attractiveness: TearsheetAttractiveness;

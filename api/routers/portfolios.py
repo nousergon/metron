@@ -288,6 +288,9 @@ class HoldingOut(BaseModel):
     attractiveness_retired: bool = False
     # Producer objects the enriched metrics were read from, by reader (metron-ops-I373).
     input_sources: dict[str, InputSourceOut] = {}
+    # Reader name -> why its content is stale / its symbol universe collapsed (metron-ops-I373).
+    stale_reasons: dict[str, str] = {}
+    universe_reasons: dict[str, str] = {}
 
 
 class GroupMediansOut(BaseModel):
@@ -310,6 +313,8 @@ class ValuationMediansOut(BaseModel):
     by_sector: dict[str, GroupMediansOut] = {}
     by_country: dict[str, GroupMediansOut] = {}
     input_source: InputSourceOut | None = None  # the producer object the medians were read from
+    stale_reason: str | None = None  # content as_of older than the weekly cadence (metron-ops-I373)
+    universe_reason: str | None = None  # empty sector map (metron-ops-I373)
 
 
 class DeployCashConfigOut(BaseModel):
@@ -1079,6 +1084,9 @@ class WatchlistEntryOut(BaseModel):
     attractiveness_retired: bool = False
     # Producer objects the enriched metrics were read from, by reader (metron-ops-I373).
     input_sources: dict[str, InputSourceOut] = {}
+    # Reader name -> why its content is stale / its symbol universe collapsed (metron-ops-I373).
+    stale_reasons: dict[str, str] = {}
+    universe_reasons: dict[str, str] = {}
 
 
 class WatchlistIn(BaseModel):
@@ -2333,6 +2341,8 @@ def get_valuation_medians(
         by_sector={k: v for k, v in snap.by_sector.items() if k in present_sectors},
         by_country={k: v for k, v in snap.by_country.items() if k in present_countries},
         input_source=lineage(snap.input_source),
+        stale_reason=snap.stale_reason,
+        universe_reason=snap.universe_reason,
     )
 
 
@@ -3041,6 +3051,8 @@ class TearsheetOut(BaseModel):
     attractiveness: TearsheetAttractivenessOut = TearsheetAttractivenessOut()
     # Producer objects the served values were read from, by reader (metron-ops-I373).
     input_sources: dict[str, InputSourceOut] = {}
+    stale_reasons: dict[str, str] = {}
+    universe_reasons: dict[str, str] = {}
 
 
 @router.get("/{portfolio_id}/tearsheet/{ticker}", response_model=TearsheetOut)

@@ -99,6 +99,8 @@ class WatchlistEntry:
     attractiveness_stale: bool = False
     attractiveness_retired: bool = False
     input_sources: dict[str, InputSource] = field(default_factory=dict)  # metron-ops-I373
+    stale_reasons: dict[str, str] = field(default_factory=dict)
+    universe_reasons: dict[str, str] = field(default_factory=dict)
 
 
 def _norm(symbol: str) -> str:
@@ -222,6 +224,8 @@ def list_watchlist(
                 attractiveness_stale=h.attractiveness_stale,
                 attractiveness_retired=h.attractiveness_retired,
                 input_sources=h.input_sources,
+                stale_reasons=h.stale_reasons,
+                universe_reasons=h.universe_reasons,
             )
         )
     return out
