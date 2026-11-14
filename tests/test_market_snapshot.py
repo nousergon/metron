@@ -26,7 +26,7 @@ class TestSnapshotCache:
         # Fully reset the module cache + a controllable monotonic clock for each test.
         self.clock = [1000.0]
         monkeypatch.setattr(market_snapshot.time, "monotonic", lambda: self.clock[0])
-        monkeypatch.setattr(market_snapshot, "_snapshot_cache", None, raising=False)
+        monkeypatch.setattr(market_snapshot, "_snapshot_cache", (None, None), raising=False)
         monkeypatch.setattr(market_snapshot, "_snapshot_fetched_monotonic", 0.0, raising=False)
 
     def test_reads_once_within_ttl(self, monkeypatch):
@@ -34,7 +34,7 @@ class TestSnapshotCache:
 
         def _reader():
             calls["n"] += 1
-            return _art({"AAPL": {"last": 130.0}})
+            return _art({"AAPL": {"last": 130.0}}), None
 
         monkeypatch.setattr(market_snapshot, "_read_snapshot_s3", _reader)
         first = market_snapshot.read_cached_snapshot()
@@ -45,7 +45,7 @@ class TestSnapshotCache:
     def test_refetches_after_ttl(self, monkeypatch):
         calls = {"n": 0}
         monkeypatch.setattr(
-            market_snapshot, "_read_snapshot_s3", lambda: calls.__setitem__("n", calls["n"] + 1) or _art({})
+            market_snapshot, "_read_snapshot_s3", lambda: calls.__setitem__("n", calls["n"] + 1) or (_art({}), None)
         )
         market_snapshot.read_cached_snapshot()
         self.clock[0] += market_snapshot._SNAPSHOT_TTL_S + 1  # advance past the window
@@ -57,7 +57,7 @@ class TestSnapshotCache:
         for the window, then recovers after the TTL."""
         calls = {"n": 0}
         monkeypatch.setattr(
-            market_snapshot, "_read_snapshot_s3", lambda: calls.__setitem__("n", calls["n"] + 1) or None
+            market_snapshot, "_read_snapshot_s3", lambda: calls.__setitem__("n", calls["n"] + 1) or (None, None)
         )
         assert market_snapshot.read_cached_snapshot() is None
         assert market_snapshot.read_cached_snapshot() is None
@@ -70,10 +70,10 @@ class TestSnapshotCache:
 
         def _reader():
             calls["n"] += 1
-            return _art({"AAPL": {"last": 130.0}})
+            return _art({"AAPL": {"last": 130.0}}), None
 
         monkeypatch.setattr(market_snapshot, "_read_snapshot_s3", _reader)
         a = intraday._default_reader()
-        b = indices._default_reader()
+        b = indices._default_read()[0]
         assert a == b == _art({"AAPL": {"last": 130.0}})
         assert calls["n"] == 1  # one artifact snapshot served both consumers

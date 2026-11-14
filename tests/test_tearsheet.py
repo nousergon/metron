@@ -427,8 +427,8 @@ def test_tearsheet_endpoint_owner_build_shows_track_record(client, monkeypatch):
     monkeypatch.setattr(settings, "tier_simulator", False)
     monkeypatch.setattr(settings, "feed_entitled", True)
     fresh_art = {**_RATING_ART_FRESH, "as_of_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z")}
-    monkeypatch.setattr("api.services.technical_rating._default_intraday_reader", lambda: fresh_art)
-    monkeypatch.setattr("api.services.technical_rating_performance._default_reader", lambda: _RATING_PERF_ART)
+    monkeypatch.setattr("api.services.technical_rating._default_intraday_read", lambda: (fresh_art, None))
+    monkeypatch.setattr("api.services.technical_rating_performance._default_read", lambda: (_RATING_PERF_ART, None))
 
     tenant = str(uuid.uuid4())
     pid = client.post("/portfolios", json={"name": "P"}, headers={"X-Tenant-Id": tenant}).json()["id"]
@@ -452,7 +452,7 @@ def test_tearsheet_endpoint_beta_build_shows_no_track_record(client, monkeypatch
     def _boom(*args, **kwargs):  # pragma: no cover - fails the test if reached
         raise AssertionError("rating_performance reader must not be called off a feed-entitled build")
 
-    monkeypatch.setattr("api.services.technical_rating_performance._default_reader", _boom)
+    monkeypatch.setattr("api.services.technical_rating_performance._default_read", _boom)
 
     tenant = str(uuid.uuid4())
     pid = client.post("/portfolios", json={"name": "P"}, headers={"X-Tenant-Id": tenant}).json()["id"]
