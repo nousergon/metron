@@ -28,6 +28,7 @@ import concurrent.futures
 import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import date
 from typing import Any, cast
 
@@ -180,8 +181,24 @@ def spine_latest_closes(symbols: list[str], *, s3: Any = None) -> dict[str, Clos
     return out
 
 
+@dataclass(frozen=True)
+class SeriesRefusal:
+    """A close series refused whole: which one, why, and how much of it was seen.
+
+    ``rows`` is the number of rows in the series as read; ``bad_row`` is the index of
+    the first row that caused the refusal (``None`` when the series itself was not a
+    list). Collected by :func:`spine_close_history` so a caller can tell a refused
+    series from an absent one.
+    """
+
+    label: str
+    reason: str
+    rows: int
+    bad_row: int | None = None
+
+
 def _parse_series(
-    series: list[Any], start: date, end: date, *, label: str = "series", source: InputSource | None = None  # pyright: ignore[reportExplicitAny]  # raw JSON value: untyped at this boundary
+    series: list[Any], start: date, end: date, *, label: str = "series", source: InputSource | None = None, refusals: list[SeriesRefusal] | None = None  # pyright: ignore[reportExplicitAny]  # raw JSON value: untyped at this boundary
 ) -> list[ClosePoint]:
     """Parse raw series rows ``[[date, val], …]``, filter to window, return sorted.
 
@@ -192,10 +209,13 @@ def _parse_series(
     a real gap-free path. Rows outside ``[start, end]`` are filtered, not refused.
     """
     if not isinstance(series, list):
-        logger.error("data-spine %s refused: rows are a %s, not a list", label, type(series).__name__)
+        reason = f"rows are a {type(series).__name__}, not a list"
+        logger.error("data-spine %s refused: %s", label, reason)
+        if refusals is not None:
+            refusals.append(SeriesRefusal(label=label, reason=reason, rows=0))
         return []
     points: list[ClosePoint] = []
-    for row in series:
+    for index, row in enumerate(series):
         d = val = None
         if isinstance(row, (list, tuple)) and len(row) == 2:
             d, val = _parse_date(row[0]), _positive_finite(row[1])
@@ -204,6 +224,11 @@ def _parse_series(
                 "data-spine %s refused: row %r is not [ISO date, positive finite number]",
                 label, row,
             )
+            if refusals is not None:
+                refusals.append(SeriesRefusal(
+                    label=label, reason="row is not [ISO date, positive finite number]",
+                    rows=len(series), bad_row=index,
+                ))
             return []
         if start <= d <= end:
             points.append(ClosePoint(bar_date=d, close=val, source=source))
@@ -212,7 +237,9 @@ def _parse_series(
     return points
 
 
-def spine_close_history(symbols: list[str], start: date, end: date, *, s3: Any = None) -> dict[str, list[ClosePoint]]:  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
+def spine_close_history(
+    symbols: list[str], start: date, end: date, *, s3: Any = None, refusals: list[SeriesRefusal] | None = None  # pyright: ignore[reportExplicitAny]  # boto3 client / raw JSON value: untyped at this boundary
+) -> dict[str, list[ClosePoint]]:
     """Daily close series per symbol over ``[start, end]`` from the spine.
 
     Batches of ``CONSOLIDATED_MIN_SYMBOLS`` or more read the consolidated artifact at
@@ -224,7 +251,11 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3: Any =
     S3 reads are parallelized via ``ThreadPoolExecutor`` for the per-symbol fallback path:
     N tickers take ~1 round-trip latency instead of N sequential round-trips. The thread
     pool is kept small enough to avoid S3 rate limits for typical portfolio sizes (≤30
-    symbols)."""
+    symbols).
+
+    ``refusals``, when given, is appended with one :class:`SeriesRefusal` per series
+    refused whole (bad row or non-list rows), so a refused series is distinguishable from
+    an absent one. Callers that pass nothing see the same result as before."""
     if not symbols:
         return {}
     s3 = s3 or _s3()
@@ -238,7 +269,7 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3: Any =
             key = f"{FX_HISTORY_PREFIX}{ccy}.json"
             art, src = _read_admitted(s3, bucket, key, expected=FX_HISTORY_SCHEMA_VERSION)
             series = (art or {}).get("rates", [])
-            points = _parse_series(series, start, end, label=key, source=src)
+            points = _parse_series(series, start, end, label=key, source=src, refusals=refusals)
             if points:
                 out[sym] = points
 
@@ -273,7 +304,8 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3: Any =
             if not series:
                 continue
             points = _parse_series(
-                series, start, end, label=f"{CLOSE_HISTORY_CONSOLIDATED_KEY}[{sym}]", source=consolidated_src
+                series, start, end, label=f"{CLOSE_HISTORY_CONSOLIDATED_KEY}[{sym}]", source=consolidated_src,
+                refusals=refusals,
             )
             if points:
                 out[sym] = points
@@ -304,7 +336,7 @@ def spine_close_history(symbols: list[str], start: date, end: date, *, s3: Any =
         for sym in equity_symbols:
             art, src = raw.get(sym) or (None, None)
             series = (art or {}).get("closes", [])
-            points = _parse_series(series, start, end, label=f"{CLOSE_HISTORY_PREFIX}{sym}.json", source=src)
+            points = _parse_series(series, start, end, label=f"{CLOSE_HISTORY_PREFIX}{sym}.json", source=src, refusals=refusals)
             if points:
                 out[sym] = points
     return out
