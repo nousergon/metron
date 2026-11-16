@@ -20,13 +20,16 @@ redundant S3 reads and blending computation within the same request).
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date
+from typing import cast
 
 from nousergon_lib.quant.attractiveness import (
     PILLAR_ORDER,
     PILLAR_TO_FACTOR_KEY,
+    AttractivenessRecord,
     attractiveness_from_factor_profiles,
     normalize_pillar_weights,
 )
@@ -87,7 +90,7 @@ class Attractiveness:
 def _build_result(
     ticker: str,
     profile: dict,
-    blended: dict,
+    blended: AttractivenessRecord,
     catalog_weights: dict[str, float],
     as_of: date | None,
 ) -> Attractiveness | None:
@@ -123,8 +126,8 @@ def _build_result(
 
 def compute_universe(
     *,
-    profiles_reader=None,
-    weights_reader=None,
+    profiles_reader: object = None,
+    weights_reader: object = None,
 ) -> dict[str, Attractiveness]:
     """Blend the full scanner-universe factor profiles into per-ticker attractiveness.
 
@@ -171,8 +174,8 @@ def compute_universe(
 
 
 def _compute_universe_uncached(
-    profiles_reader=None,
-    weights_reader=None,
+    profiles_reader: object = None,
+    weights_reader: object = None,
 ) -> dict[str, Attractiveness]:
     """Compute universe blend without caching — internal helper."""
     snap = factor_profiles_service.load_factor_profiles(reader=profiles_reader)
@@ -180,7 +183,9 @@ def _compute_universe_uncached(
         return {}
     raw_weights = factor_profiles_service.load_pillar_weights(reader=weights_reader)
     catalog_weights = normalize_pillar_weights(raw_weights)
-    blended = attractiveness_from_factor_profiles(snap.by_ticker, pillar_weights=raw_weights)
+    blended = attractiveness_from_factor_profiles(
+        cast("Mapping[str, Mapping[str, object]]", snap.by_ticker), pillar_weights=raw_weights
+    )
     return {
         ticker.upper(): result
         for ticker, rec in blended.items()
