@@ -24,15 +24,20 @@ from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from nousergon_lib.quant.attractiveness import (
     PILLAR_ORDER,
     PILLAR_TO_FACTOR_KEY,
-    AttractivenessRecord,
     attractiveness_from_factor_profiles,
     normalize_pillar_weights,
 )
+
+if TYPE_CHECKING:
+    # Type-only: AttractivenessRecord first ships in nousergon-lib 0.124.220, and the
+    # deployed box can run an older lib inside the >=0.124.172 pin. A runtime import
+    # took metron-api down on 2026-11-16 (ImportError at start).
+    from nousergon_lib.quant.attractiveness import AttractivenessRecord
 
 from api import entitlements
 from api.config import settings
