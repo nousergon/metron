@@ -3,7 +3,7 @@ through the real readers and out to the API responses (``stale_reasons`` / ``uni
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -26,6 +26,9 @@ from tests.test_tearsheet import _PERF_ART, _TECH_ART, _seed
 _NOW = datetime(2026, 11, 14, 9, 0, tzinfo=UTC)
 _TODAY = "2026-11-13"
 _OLD = "2026-01-02"
+# The endpoint tests below go through readers that call datetime.now(UTC) themselves, so the "fresh"
+# artifact must be dated relative to the real clock; a fixed date ages past the staleness window.
+_FRESH = (datetime.now(UTC) - timedelta(days=1)).date().isoformat()
 
 
 def test_universe_shortfall():
@@ -149,7 +152,7 @@ def test_reader_flags_collects_only_set_reasons():
 
 _STALE_FUND = {"schema_version": 5, "as_of": _OLD, "fundamentals": {"AAPL": {"sector": "Tech"}}}
 _STALE_TECH = {"schema_version": 4, "as_of": _OLD, "technicals": {"AAPL": {"rsi_14": 50.0}}}
-_EMPTY_ANALYST = {"schema_version": 1, "as_of": _TODAY, "analyst": {}}
+_EMPTY_ANALYST = {"schema_version": 1, "as_of": _FRESH, "analyst": {}}
 
 
 def _patch(monkeypatch):
