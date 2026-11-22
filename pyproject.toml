@@ -26,7 +26,7 @@ dependencies = [
     "uvicorn[standard]>=0.54.0",
     # Process manager wrapping uvicorn workers (systemd ExecStart). Declared here
     # so no dependency-sync operation can strip it from the prod venv (metron-I333).
-    "gunicorn>=27.0.0",
+    "gunicorn>=27.0.1",
     # Cross-process compute cache backend (metron-ops#234) — diskcache uses SQLite with
     # file-level locking so multiple workers share a single cache store and single-flight
     # lock. Replaces the original in-process ``dict`` + ``threading.Lock``.
@@ -35,7 +35,7 @@ dependencies = [
     "python-multipart>=0.0.32",
     "sqlalchemy>=2.1.9",
     "pydantic>=2.14.1",
-    "pydantic-settings>=2.16.2",
+    "pydantic-settings>=2.16.3",
     # Verifies the shared nousergon-auth identity service's EdDSA/Ed25519 JWTs against
     # its JWKS (metron-ops#179) — [crypto] pulls in `cryptography` for the Ed25519 path.
     "pyjwt[crypto]>=2.15.1",
@@ -85,7 +85,7 @@ dependencies = [
     # via conftest's autouse `_no_live_aws_calls`, so no test exercises a real S3 call.
     # `<2` is close to free — boto3 has been on 1.x for its entire life — and it means a
     # major cannot arrive on a routine deploy the way snaptrade 12.x did (metron-ops#260).
-    "boto3>=1.44.1,<2",
+    "boto3>=1.44.6,<2",
     # Postgres driver (prod). SQLite is a dev/test fallback and needs nothing extra.
     "psycopg[binary]>=3.3.9",
 ]
